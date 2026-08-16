@@ -1,0 +1,135 @@
+# ============================================================================
+# 运动会智能编排系统 — 配置文件
+# ============================================================================
+# 三库支持，默认 SQLite（零配置）：
+#   java -jar sports-1.0.0.jar                          → SQLite（默认）
+#   java -jar sports-1.0.0.jar --spring.profiles.active=h2     → H2 文件模式
+#   java -jar sports-1.0.0.jar --spring.profiles.active=mysql  → MySQL 生产
+# ============================================================================
+
+spring:
+  application:
+    name: sports-meet
+
+  # ======================== SQLite 数据库（默认）==========================
+  datasource:
+    url: jdbc:sqlite:./sports_meet.db
+    driver-class-name: org.sqlite.JDBC
+    username:
+    password:
+
+  # ======================== JPA / Hibernate ===========================
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.community.dialect.SQLiteDialect
+        jdbc:
+          batch_size: 25
+        order_inserts: true
+
+  # ======================== Jackson ===================================
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+  # ======================== 文件上传 ===================================
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+  # ======================== 缓存 ======================================
+  cache:
+    type: simple
+
+# ======================== 服务器 =========================================
+server:
+  port: 8080
+  servlet:
+    context-path: /
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+# ======================== JWT 认证 =======================================
+jwt:
+  secret: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcA==
+  expiration: 86400000
+  refresh-expiration: 604800000
+
+# ======================== 运动会系统配置 ===================================
+sports:
+  # 文件存储路径（相对于 JAR 运行目录）
+  upload-path: ./data/uploads
+  export-path: ./data/exports
+  log-path: ./data/logs
+  backup-path: ./data/backup
+
+  # 默认规则
+  default:
+    lanes: 8
+    max-per-class: 3
+    max-per-athlete: 3
+    sprint-threshold: 400
+    score-decimals: 2
+
+  # 编排算法
+  arrange:
+    max-attempts: 1000
+    timeout-seconds: 30
+    local-optimize-rounds: 3
+
+  # 积分规则
+  scoring:
+    same-rank: true
+    record-bonus: false
+    record-bonus-points: 10
+    participation-points: false
+    participation-points-value: 1
+    relay-multiplier: 2.0
+    team-score-by: class
+    team-sort-by: total_score
+
+  # 运动会信息
+  meet:
+    name: 第X届田径运动会
+    location: 学校田径场
+
+# ======================== 日志 ===========================================
+logging:
+  level:
+    com.sports: DEBUG
+    org.springframework.security: INFO
+  charset:
+    console: ${file.encoding}
+    file: ${file.encoding}
+  file:
+    path: ./data/logs
+    name: ./data/logs/sports.log
+
+# ======================== Actuator =======================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+# ======================== SpringDoc / Swagger =============================
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
