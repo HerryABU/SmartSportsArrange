@@ -29,9 +29,12 @@ public class ArrangementService {
     private final ArrangementRepository arrangementRepository;
     private final RegistrationRepository registrationRepository;
     private final EventRepository eventRepository;
+    private final SystemService systemService;
 
+    // 默认算法参数（可被 arrange_rule.algorithm_params 覆盖）
     private static final int OPTIMIZATION_ROUNDS = 5;
     private static final int MAX_SWAP_ATTEMPTS = 500;
+    private static final int TIMEOUT_SECONDS = 30;
 
     // ==================== 编排适配方法（Controller 调用入口） ====================
 
@@ -45,13 +48,6 @@ public class ArrangementService {
 
         @SuppressWarnings("unchecked")
         Map<String, Boolean> ruleConfig = (Map<String, Boolean>) config.get("ruleConfig");
-        if (ruleConfig == null) {
-            ruleConfig = Map.of(
-                "preferDiffHeat", true,
-                "preferDiffLane", true,
-                "banSameClassSameLane", true
-            );
-        }
 
         long startTime = System.currentTimeMillis();
         Map<String, Object> result = arrange(eventId, grade, gender, lanes, ruleConfig);
@@ -127,7 +123,6 @@ public class ArrangementService {
                 Event event = eventRepository.findById(eventId)
                         .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
-                // 获取该项目的所有报名记录，按年级+性别分组
                 List<Registration> regs = registrationRepository.findApprovedByEventId(eventId);
                 Set<String> gradeGenderPairs = new HashSet<>();
                 for (Registration r : regs) {
@@ -143,14 +138,8 @@ public class ArrangementService {
                     String gender = parts[1];
                     int lanes = event.getDefaultLanes() != null ? event.getDefaultLanes() : 8;
 
-                    Map<String, Boolean> ruleConfig = Map.of(
-                        "preferDiffHeat", true,
-                        "preferDiffLane", true,
-                        "banSameClassSameLane", true
-                    );
-
                     try {
-                        arrange(eventId, grade, gender, lanes, ruleConfig);
+                        arrange(eventId, grade, gender, lanes, null);
                         success++;
                     } catch (Exception e) {
                         log.warn("批量编排失败: eventId={}, grade={}, gender={}: {}",
@@ -182,10 +171,31 @@ public class ArrangementService {
 
     /**
      * 智能编排算法 - 核心方法
+     * 读取 arrange_rule 配置，支持全部软约束（prefer_diff_heat / prefer_diff_lane /
+     * ban_same_class_same_lane / scramble_across_classes / center_best_athletes /
+     * same_class_max_per_heat）与算法参数（max_attempts / timeout_seconds / optimization_rounds）。
      */
     public Map<String, Object> arrange(Long eventId, String grade, String gender,
                                         int lanes, Map<String, Boolean> ruleConfig) {
         log.info("开始编排: eventId={}, grade={}, gender={}, lanes={}", eventId, grade, gender, lanes);
+
+        // 读取编排规则（本次请求 ruleConfig 优先覆盖已保存规则）
+        Map<String, Object> rule = systemService.getArrangeRule();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> soft = (Map<String, Object>) rule.getOrDefault("soft_constraints", Map.of());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) rule.getOrDefault("algorithm_params", Map.of());
+
+        boolean preferDiffHeat = bool(ruleConfig, "preferDiffHeat", soft.get("prefer_diff_heat"), true);
+        boolean preferDiffLane = bool(ruleConfig, "preferDiffLane", soft.get("prefer_diff_lane"), true);
+        boolean banSameClassSameLane = bool(ruleConfig, "banSameClassSameLane", soft.get("ban_same_class_same_lane"), true);
+        boolean scrambleAcrossClasses = bool(null, null, soft.get("scramble_across_classes"), false);
+        boolean centerBest = bool(null, null, soft.get("center_best_athletes"), false);
+        int sameClassMaxPerHeat = intVal(soft.get("same_class_max_per_heat"), 0);
+        int optimizationRounds = intVal(params.get("optimization_rounds"), OPTIMIZATION_ROUNDS);
+        int maxAttempts = intVal(params.get("max_attempts"), MAX_SWAP_ATTEMPTS);
+        int timeoutSeconds = intVal(params.get("timeout_seconds"), TIMEOUT_SECONDS);
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
 
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
@@ -198,7 +208,6 @@ public class ArrangementService {
             throw new RuntimeException("没有符合条件的已审核报名记录");
         }
 
-        // 获取运动员列表（带班级信息）
         List<Athlete> athletes = registrations.stream()
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
@@ -208,15 +217,13 @@ public class ArrangementService {
         // 2. 计算需要的组数
         int heats = (int) Math.ceil((double) athleteCount / lanes);
 
-        // 3. 按班级分组运动员
+        // 3. 按班级分组运动员（大班优先）
         Map<Long, List<Athlete>> classAthletes = athletes.stream()
                 .collect(Collectors.groupingBy(
                         a -> a.getClassInfo() != null ? a.getClassInfo().getId() : 0L,
                         LinkedHashMap::new,
-                        Collectors.toList()
-                ));
+                        Collectors.toList()));
 
-        // 按班级人数降序排列
         List<Map.Entry<Long, List<Athlete>>> sortedClasses = classAthletes.entrySet().stream()
                 .sorted((e1, e2) -> Integer.compare(e2.getValue().size(), e1.getValue().size()))
                 .collect(Collectors.toList());
@@ -224,15 +231,15 @@ public class ArrangementService {
         // 4. 初始化 heats × lanes 矩阵
         Athlete[][] matrix = new Athlete[heats][lanes];
 
-        // 记录每个heat中各班级已分配人数
         Map<Integer, Map<Long, Integer>> heatClassCounts = new HashMap<>();
         for (int h = 0; h < heats; h++) {
             heatClassCounts.put(h, new HashMap<>());
         }
 
-        // 5. 贪心分配：按班级从大到小，每个运动员分配到当前同班人数最少的组
+        int[] laneOrder = laneOrder(lanes, centerBest);
         List<String> warnings = new ArrayList<>();
 
+        // 5. 贪心分配：按班级从大到小，每个运动员分配到当前同班人数最少的组
         for (Map.Entry<Long, List<Athlete>> entry : sortedClasses) {
             Long classId = entry.getKey();
             List<Athlete> classAthleteList = new ArrayList<>(entry.getValue());
@@ -248,6 +255,8 @@ public class ArrangementService {
                             .mapToInt(Integer::intValue).sum();
 
                     if (totalInHeat >= lanes) continue;
+                    // 同班同组人数上限（硬约束）
+                    if (sameClassMaxPerHeat > 0 && sameClassInHeat >= sameClassMaxPerHeat) continue;
 
                     if (sameClassInHeat < minSameClass ||
                             (sameClassInHeat == minSameClass && totalInHeat < minTotal)) {
@@ -262,75 +271,82 @@ public class ArrangementService {
                     continue;
                 }
 
-                for (int l = 0; l < lanes; l++) {
-                    if (matrix[bestHeat][l] == null) {
-                        matrix[bestHeat][l] = athlete;
+                boolean placed = false;
+                for (int li : laneOrder) {
+                    if (matrix[bestHeat][li] == null) {
+                        matrix[bestHeat][li] = athlete;
                         heatClassCounts.get(bestHeat).merge(classId, 1, Integer::sum);
+                        placed = true;
                         break;
+                    }
+                }
+                if (!placed) {
+                    for (int l = 0; l < lanes; l++) {
+                        if (matrix[bestHeat][l] == null) {
+                            matrix[bestHeat][l] = athlete;
+                            heatClassCounts.get(bestHeat).merge(classId, 1, Integer::sum);
+                            break;
+                        }
                     }
                 }
             }
         }
 
-        // 6. 局部优化：尝试交换运动员以改善约束
-        if (ruleConfig != null) {
-            boolean banSameClassSameLane = ruleConfig.getOrDefault("banSameClassSameLane", true);
-            boolean preferDiffHeat = ruleConfig.getOrDefault("preferDiffHeat", true);
-            boolean preferDiffLane = ruleConfig.getOrDefault("preferDiffLane", true);
+        // 6. 局部优化：尝试交换运动员以改善约束（带超时保护）
+        for (int round = 0; round < optimizationRounds; round++) {
+            if (System.currentTimeMillis() > deadline) break;
+            boolean improved = false;
 
-            for (int round = 0; round < OPTIMIZATION_ROUNDS; round++) {
-                boolean improved = false;
+            for (int attempt = 0; attempt < maxAttempts; attempt++) {
+                if (System.currentTimeMillis() > deadline) break;
+                int h1 = (int) (Math.random() * heats);
+                int h2 = (int) (Math.random() * heats);
+                if (h1 == h2) continue;
 
-                for (int attempt = 0; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
-                    int h1 = (int) (Math.random() * heats);
-                    int h2 = (int) (Math.random() * heats);
-                    if (h1 == h2) continue;
-
-                    List<Integer> nonEmptyLanes1 = new ArrayList<>();
-                    List<Integer> nonEmptyLanes2 = new ArrayList<>();
-                    for (int l = 0; l < lanes; l++) {
-                        if (matrix[h1][l] != null) nonEmptyLanes1.add(l);
-                        if (matrix[h2][l] != null) nonEmptyLanes2.add(l);
-                    }
-                    if (nonEmptyLanes1.isEmpty() || nonEmptyLanes2.isEmpty()) continue;
-
-                    int l1 = nonEmptyLanes1.get((int) (Math.random() * nonEmptyLanes1.size()));
-                    int l2 = nonEmptyLanes2.get((int) (Math.random() * nonEmptyLanes2.size()));
-
-                    Athlete a1 = matrix[h1][l1];
-                    Athlete a2 = matrix[h2][l2];
-
-                    if (a1 == null || a2 == null) continue;
-
-                    Long c1 = a1.getClassInfo() != null ? a1.getClassInfo().getId() : 0L;
-                    Long c2 = a2.getClassInfo() != null ? a2.getClassInfo().getId() : 0L;
-
-                    double costBefore = calculateCost(matrix, heatClassCounts, h1, h2, l1, l2,
-                            banSameClassSameLane, preferDiffHeat, preferDiffLane);
-
-                    matrix[h1][l1] = a2;
-                    matrix[h2][l2] = a1;
-
-                    Map<Integer, Map<Long, Integer>> simulatedCounts = deepCopy(heatClassCounts);
-                    simulatedCounts.get(h1).merge(c1, -1, Integer::sum);
-                    simulatedCounts.get(h2).merge(c2, -1, Integer::sum);
-                    simulatedCounts.get(h1).merge(c2, 1, Integer::sum);
-                    simulatedCounts.get(h2).merge(c1, 1, Integer::sum);
-
-                    double costAfter = calculateCost(matrix, simulatedCounts, h1, h2, l1, l2,
-                            banSameClassSameLane, preferDiffHeat, preferDiffLane);
-
-                    if (costAfter < costBefore) {
-                        heatClassCounts = simulatedCounts;
-                        improved = true;
-                    } else {
-                        matrix[h1][l1] = a1;
-                        matrix[h2][l2] = a2;
-                    }
+                List<Integer> nonEmptyLanes1 = new ArrayList<>();
+                List<Integer> nonEmptyLanes2 = new ArrayList<>();
+                for (int l = 0; l < lanes; l++) {
+                    if (matrix[h1][l] != null) nonEmptyLanes1.add(l);
+                    if (matrix[h2][l] != null) nonEmptyLanes2.add(l);
                 }
+                if (nonEmptyLanes1.isEmpty() || nonEmptyLanes2.isEmpty()) continue;
 
-                if (!improved) break;
+                int l1 = nonEmptyLanes1.get((int) (Math.random() * nonEmptyLanes1.size()));
+                int l2 = nonEmptyLanes2.get((int) (Math.random() * nonEmptyLanes2.size()));
+
+                Athlete a1 = matrix[h1][l1];
+                Athlete a2 = matrix[h2][l2];
+
+                if (a1 == null || a2 == null) continue;
+
+                Long c1 = a1.getClassInfo() != null ? a1.getClassInfo().getId() : 0L;
+                Long c2 = a2.getClassInfo() != null ? a2.getClassInfo().getId() : 0L;
+
+                double costBefore = calculateCost(matrix, heatClassCounts, h1, h2, l1, l2,
+                        banSameClassSameLane, preferDiffHeat, preferDiffLane, scrambleAcrossClasses);
+
+                matrix[h1][l1] = a2;
+                matrix[h2][l2] = a1;
+
+                Map<Integer, Map<Long, Integer>> simulatedCounts = deepCopy(heatClassCounts);
+                simulatedCounts.get(h1).merge(c1, -1, Integer::sum);
+                simulatedCounts.get(h2).merge(c2, -1, Integer::sum);
+                simulatedCounts.get(h1).merge(c2, 1, Integer::sum);
+                simulatedCounts.get(h2).merge(c1, 1, Integer::sum);
+
+                double costAfter = calculateCost(matrix, simulatedCounts, h1, h2, l1, l2,
+                        banSameClassSameLane, preferDiffHeat, preferDiffLane, scrambleAcrossClasses);
+
+                if (costAfter < costBefore) {
+                    heatClassCounts = simulatedCounts;
+                    improved = true;
+                } else {
+                    matrix[h1][l1] = a1;
+                    matrix[h2][l2] = a2;
+                }
             }
+
+            if (!improved) break;
         }
 
         // 7. 创建Arrangement记录
@@ -458,8 +474,7 @@ public class ArrangementService {
                 .collect(Collectors.groupingBy(
                         a -> a.getClassInfo() != null ? a.getClassInfo().getId() : 0L,
                         LinkedHashMap::new,
-                        Collectors.toList()
-                ));
+                        Collectors.toList()));
 
         List<Map.Entry<Long, List<Athlete>>> sortedClasses = classAthletes.entrySet().stream()
                 .sorted((e1, e2) -> Integer.compare(e2.getValue().size(), e1.getValue().size()))
@@ -691,7 +706,6 @@ public class ArrangementService {
                         ath.getClassInfo() != null ? ath.getClassInfo().getName() : ""));
                 }
             }
-            // 转置表头：行式 → 列式
             java.util.List<java.util.List<String>> headCols = rows.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
             com.alibaba.excel.EasyExcel.write(out).head(headCols)
@@ -709,12 +723,12 @@ public class ArrangementService {
      */
     private double calculateCost(Athlete[][] matrix, Map<Integer, Map<Long, Integer>> heatClassCounts,
             int h1, int h2, int l1, int l2,
-            boolean banSameClassSameLane, boolean preferDiffHeat, boolean preferDiffLane) {
+            boolean banSameClassSameLane, boolean preferDiffHeat, boolean preferDiffLane,
+            boolean scrambleAcrossClasses) {
         double cost = 0;
         int totalHeats = matrix.length;
         int totalLanes = matrix[0].length;
 
-        // 检查涉及的两个heat的约束
         int[] checkHeats = {h1, h2};
         for (int h : checkHeats) {
             for (int l = 0; l < totalLanes; l++) {
@@ -722,11 +736,12 @@ public class ArrangementService {
                 if (a == null) continue;
                 Long classId = a.getClassInfo() != null ? a.getClassInfo().getId() : 0L;
 
-                // preferDiffHeat: 同班在同一heat中的惩罚
+                // preferDiffHeat: 同班在同一heat中的惩罚（scramble 时加重）
                 if (preferDiffHeat) {
                     int sameClassCount = heatClassCounts.get(h).getOrDefault(classId, 0);
                     if (sameClassCount > 1) {
-                        cost += (sameClassCount - 1) * 10.0;
+                        double weight = scrambleAcrossClasses ? 15.0 : 10.0;
+                        cost += (sameClassCount - 1) * weight;
                     }
                 }
 
@@ -744,7 +759,7 @@ public class ArrangementService {
                     }
                 }
 
-                // banSameClassSameLane: 同一heat中同班在不同lane的惩罚
+                // banSameClassSameLane: 同一heat中同班在不同lane的惩罚（严格禁止同班同组）
                 if (banSameClassSameLane) {
                     for (int otherL = 0; otherL < totalLanes; otherL++) {
                         if (otherL == l) continue;
@@ -761,6 +776,52 @@ public class ArrangementService {
         }
 
         return cost;
+    }
+
+    /** 道次填充顺序：centerOut=true 时从中道向两侧（成绩优秀者居中），否则从左到右 */
+    private int[] laneOrder(int lanes, boolean centerOut) {
+        int[] order = new int[lanes];
+        if (!centerOut || lanes <= 1) {
+            for (int i = 0; i < lanes; i++) order[i] = i;
+            return order;
+        }
+        boolean[] used = new boolean[lanes];
+        int center = (lanes - 1) / 2;
+        int idx = 0;
+        order[idx++] = center;
+        used[center] = true;
+        int offset = 1;
+        boolean right = true;
+        while (idx < lanes) {
+            int pos = right ? center + offset : center - offset;
+            if (pos >= 0 && pos < lanes && !used[pos]) {
+                order[idx++] = pos;
+                used[pos] = true;
+            }
+            if (right) { right = false; } else { right = true; offset++; }
+        }
+        return order;
+    }
+
+    private boolean bool(Map<String, Boolean> ruleConfig, String key, Object configVal, boolean def) {
+        if (ruleConfig != null && ruleConfig.containsKey(key) && ruleConfig.get(key) != null) {
+            return ruleConfig.get(key);
+        }
+        if (configVal instanceof Boolean b) return b;
+        if (configVal != null) {
+            String s = String.valueOf(configVal).trim().toLowerCase();
+            if ("true".equals(s) || "1".equals(s) || "yes".equals(s)) return true;
+            if ("false".equals(s) || "0".equals(s) || "no".equals(s)) return false;
+        }
+        return def;
+    }
+
+    private int intVal(Object v, int def) {
+        if (v instanceof Number n) return n.intValue();
+        if (v != null) {
+            try { return Integer.parseInt(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return def;
     }
 
     /**

@@ -1,17 +1,17 @@
 package com.sports.config;
 
-import com.sports.entity.User;
 import com.sports.repository.UserRepository;
+import com.sports.service.SetupService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
-
 /**
- * 数据初始化器 - 创建默认管理员账户
+ * 数据初始化器
+ * 1. 从建站向导安装配置重建管理员/站点（MySQL 场景重启后生效）；
+ * 2. 升级兼容：已有用户但无安装标记时补写标记（视为已安装）。
+ * 全新安装时不再自动创建默认账号，由建站向导负责创建管理员。
  */
 @Slf4j
 @Component
@@ -19,73 +19,18 @@ import java.time.LocalDateTime;
 public class DataInitializer implements CommandLineRunner {
 
     private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final SetupService setupService;
 
     @Override
     public void run(String... args) {
-        if (userRepository.count() == 0) {
-            log.info("=== 初始化默认用户 ===");
+        // 1. 从安装配置重建（MySQL 场景重启后）
+        setupService.ensureInstalledData();
 
-            // 超级管理员
-            User admin = User.builder()
-                    .username("admin")
-                    .password(passwordEncoder.encode("admin123"))
-                    .role("ROLE_SUPER_ADMIN")
-                    .name("系统管理员")
-                    .phone("13800000000")
-                    .status("active")
-                    .lastLogin(LocalDateTime.now())
-                    .createdAt(LocalDateTime.now())
-                    .updatedAt(LocalDateTime.now())
-                    .build();
-            userRepository.save(admin);
-            log.info("超级管理员: admin / admin123");
-
-            // 体育老师
-            User teacher = User.builder()
-                    .username("teacher")
-                    .password(passwordEncoder.encode("teacher123"))
-                    .role("ROLE_TEACHER")
-                    .name("张老师")
-                    .phone("13800000001")
-                    .status("active")
-                    .lastLogin(LocalDateTime.now())
-                    .createdAt(LocalDateTime.now())
-                    .updatedAt(LocalDateTime.now())
-                    .build();
-            userRepository.save(teacher);
-            log.info("体育老师: teacher / teacher123");
-
-            // 班主任
-            User classTeacher = User.builder()
-                    .username("class_teacher")
-                    .password(passwordEncoder.encode("class123"))
-                    .role("ROLE_CLASS_TEACHER")
-                    .name("李老师")
-                    .phone("13800000002")
-                    .status("active")
-                    .lastLogin(LocalDateTime.now())
-                    .createdAt(LocalDateTime.now())
-                    .updatedAt(LocalDateTime.now())
-                    .build();
-            userRepository.save(classTeacher);
-            log.info("班主任: class_teacher / class123");
-
-            // 学生
-            User student = User.builder()
-                    .username("student")
-                    .password(passwordEncoder.encode("student123"))
-                    .role("ROLE_STUDENT")
-                    .name("王小明")
-                    .status("active")
-                    .lastLogin(LocalDateTime.now())
-                    .createdAt(LocalDateTime.now())
-                    .updatedAt(LocalDateTime.now())
-                    .build();
-            userRepository.save(student);
-            log.info("学生: student / student123");
-
-            log.info("=== 初始化完成，共创建 " + userRepository.count() + " 个用户 ===");
+        // 2. 升级兼容：已有用户但无安装标记 → 补写标记（视为已安装，不触发向导）
+        if (!setupService.isInstalled() && userRepository.count() > 0) {
+            setupService.markInstalled();
+            log.info("检测到已有用户数据，已补写安装标记");
         }
     }
 }
+

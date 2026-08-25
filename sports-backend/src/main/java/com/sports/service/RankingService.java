@@ -20,15 +20,21 @@ public class RankingService {
 
     private final ResultRepository resultRepository;
     private final ClassInfoRepository classInfoRepository;
+    private final SystemService systemService;
 
     /**
-     * 获取团体总分排名（按班级聚合）
+     * 获取团体总分排名（按班级/年级聚合，排序方式可配置）
      */
     public Object getTeamScores(String grade) {
         List<Result> allResults = resultRepository.findAllValid();
 
-        // 按班级ID聚合分数
-        Map<Long, TeamScore> classScores = new LinkedHashMap<>();
+        Map<String, Object> rule = systemService.getScoringRule();
+        String teamScoreType = String.valueOf(rule.getOrDefault("team_score_type", "class"));
+        String teamScoreSort = String.valueOf(rule.getOrDefault("team_score_sort", "total_score"));
+        boolean byGrade = "grade".equalsIgnoreCase(teamScoreType);
+        boolean goldFirst = "gold_first".equalsIgnoreCase(teamScoreSort);
+
+        Map<String, TeamScore> map = new LinkedHashMap<>();
 
         for (Result result : allResults) {
             if (result.getScore() == null || result.getScore() <= 0) continue;
@@ -37,12 +43,19 @@ public class RankingService {
             if (classInfo == null) continue;
             if (grade != null && !grade.isEmpty() && !grade.equals(classInfo.getGrade())) continue;
 
-            Long classId = classInfo.getId();
-            TeamScore ts = classScores.computeIfAbsent(classId, id -> {
+            String key = byGrade ? (classInfo.getGrade() != null ? classInfo.getGrade() : "未知")
+                                 : String.valueOf(classInfo.getId());
+            TeamScore ts = map.computeIfAbsent(key, k -> {
                 TeamScore t = new TeamScore();
-                t.classId = classId;
-                t.className = classInfo.getName();
-                t.grade = classInfo.getGrade();
+                if (byGrade) {
+                    t.classId = null;
+                    t.className = classInfo.getGrade();
+                    t.grade = classInfo.getGrade();
+                } else {
+                    t.classId = classInfo.getId();
+                    t.className = classInfo.getName();
+                    t.grade = classInfo.getGrade();
+                }
                 return t;
             });
 
@@ -56,31 +69,41 @@ public class RankingService {
             }
         }
 
-        List<TeamScore> sorted = classScores.values().stream()
-                .sorted(Comparator
-                        .comparingDouble(TeamScore::getTotalScore).reversed()
-                        .thenComparingInt(TeamScore::getGoldCount).reversed()
-                        .thenComparingInt(TeamScore::getSilverCount).reversed()
-                        .thenComparingInt(TeamScore::getBronzeCount).reversed())
-                .collect(Collectors.toList());
+        List<TeamScore> sorted = new ArrayList<>(map.values());
+        if (goldFirst) {
+            // 注意：reversed() 必须放在整条链末尾，逐级 reversed() 会互相抵消导致排序方向错误
+            sorted.sort(Comparator
+                    .comparingInt(TeamScore::getGoldCount)
+                    .thenComparingInt(TeamScore::getSilverCount)
+                    .thenComparingInt(TeamScore::getBronzeCount)
+                    .thenComparingDouble(TeamScore::getTotalScore)
+                    .reversed());
+        } else {
+            sorted.sort(Comparator
+                    .comparingDouble(TeamScore::getTotalScore)
+                    .thenComparingInt(TeamScore::getGoldCount)
+                    .thenComparingInt(TeamScore::getSilverCount)
+                    .thenComparingInt(TeamScore::getBronzeCount)
+                    .reversed());
+        }
 
         List<Map<String, Object>> result = new ArrayList<>();
         int rank = 1;
         for (TeamScore ts : sorted) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("rank", rank++);
-            map.put("classId", ts.classId);
-            map.put("className", ts.className);
-            map.put("grade", ts.grade);
-            map.put("totalPoints", Math.round(ts.totalScore * 100.0) / 100.0);
-            map.put("goldCount", ts.goldCount);
-            map.put("silverCount", ts.silverCount);
-            map.put("bronzeCount", ts.bronzeCount);
-            map.put("medalCount", ts.medalCount);
-            result.add(map);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("rank", rank++);
+            m.put("classId", ts.classId);
+            m.put("className", ts.className);
+            m.put("grade", ts.grade);
+            m.put("totalPoints", Math.round(ts.totalScore * 100.0) / 100.0);
+            m.put("goldCount", ts.goldCount);
+            m.put("silverCount", ts.silverCount);
+            m.put("bronzeCount", ts.bronzeCount);
+            m.put("medalCount", ts.medalCount);
+            result.add(m);
         }
 
-        log.info("团体总分排名计算完成: 共{}个班级", result.size());
+        log.info("团体总分排名计算完成: 共{}个{}", result.size(), byGrade ? "年级" : "班级");
         return result;
     }
 

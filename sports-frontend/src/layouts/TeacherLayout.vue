@@ -18,6 +18,7 @@
         <el-menu-item-group title="赛事管理">
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
         </el-menu-item-group>
@@ -47,6 +48,7 @@
         <el-menu-item-group title="赛事管理">
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
         </el-menu-item-group>

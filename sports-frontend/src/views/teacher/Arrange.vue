@@ -243,6 +243,19 @@ onMounted(async () => {
   } catch (e) {
     console.error('加载项目列表失败', e)
   }
+
+  // 加载已保存的编排规则，作为默认编排参数
+  try {
+    const rule = await request.get('/system/arrange-rule')
+    if (rule && rule.soft_constraints) {
+      const s = rule.soft_constraints
+      if (s.prefer_diff_heat !== undefined) arrangeConfig.ruleConfig.preferDiffHeat = !!s.prefer_diff_heat
+      if (s.prefer_diff_lane !== undefined) arrangeConfig.ruleConfig.preferDiffLane = !!s.prefer_diff_lane
+      if (s.ban_same_class_same_lane !== undefined) arrangeConfig.ruleConfig.banSameClassSameLane = !!s.ban_same_class_same_lane
+    }
+  } catch (e) {
+    console.error('加载编排规则失败', e)
+  }
 })
 
 const filterNode = (value, data) => data.label.includes(value)

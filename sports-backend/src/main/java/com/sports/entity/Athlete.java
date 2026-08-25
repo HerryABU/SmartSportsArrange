@@ -50,6 +50,19 @@ public class Athlete {
     @JsonProperty("studentNo")
     private String studentId;
 
+    /**
+     * 班级名称（序列化用，前端表格直接取 className，避免懒加载 classInfo 为 null）
+     */
+    @JsonProperty("className")
+    public String getClassName() {
+        if (classInfo == null) return null;
+        try {
+            return classInfo.getName();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     @Column(length = 18, unique = true)
     private String idCard;
 

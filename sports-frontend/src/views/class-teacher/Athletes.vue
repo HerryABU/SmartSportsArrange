@@ -17,8 +17,8 @@
       </template>
 
       <el-table :data="tableData" border stripe>
-        <el-table-column prop="name" label="姓名" /><el-table-column prop="gender" label="性别" width="60"><template #default="{row}"><el-tag :type="row.gender==='M'?'primary':'danger'" size="small">{{row.gender==='M'?'男':'女'}}</el-tag></template></el-table-column>
-        <el-table-column prop="studentId" label="学号" width="120" /><el-table-column prop="number" label="号码布" width="100" />
+        <el-table-column prop="name" label="姓名" /><el-table-column prop="gender" label="性别" width="60"><template #default="{row}"><el-tag :type="row.gender==='M'?'primary':'danger'" size="small">{{row.gender==='M'?'男':row.gender==='F'?'女':row.gender}}</el-tag></template></el-table-column>
+        <el-table-column prop="studentNo" label="学号" width="120" /><el-table-column prop="number" label="号码布" width="100" />
         <el-table-column prop="grade" label="年级" width="80" /><el-table-column label="状态" width="80"><template #default="{row}"><el-tag :type="row.status==='normal'?'success':'warning'" size="small">{{row.status==='normal'?'正常':row.status}}</el-tag></template></el-table-column>
       </el-table>
       <div class="pagination-wrap" style="margin-top:12px"><el-pagination v-model:current-page="page" v-model:page-size="size" :total="total" layout="total,prev,pager,next" @current-change="fetchData"/></div>

@@ -193,10 +193,23 @@ public class ExcelService {
         String type = detectType(filename);
 
         List<Map<String, Object>> sheets = new ArrayList<>();
-        try (InputStream in = file.getInputStream()) {
-            List<Map<Integer, String>> rows = EasyExcel.read(in).sheet(0).headRowNumber(0).doReadSync();
+        // 多 Sheet 预览：依次读取前若干个 sheet
+        for (int si = 0; si < 10; si++) {
+            List<Map<Integer, String>> rows;
+            try (InputStream in = file.getInputStream()) {
+                rows = EasyExcel.read(in).sheet(si).headRowNumber(0).doReadSync();
+            } catch (IOException e) {
+                throw new RuntimeException("预览失败: " + e.getMessage());
+            } catch (Exception e) {
+                // 无更多 sheet
+                if (si == 0) throw new RuntimeException("读取Excel失败: " + e.getMessage());
+                break;
+            }
 
-            if (rows.isEmpty()) return Map.of("fileName",filename,"type",type,"sheets",List.of());
+            if (rows.isEmpty()) {
+                if (si == 0) break;
+                break;
+            }
 
             Map<Integer, String> headerRow = rows.get(0);
             List<String> headers = new ArrayList<>();
@@ -229,7 +242,7 @@ public class ExcelService {
             }
 
             Map<String, Object> sheetInfo = new LinkedHashMap<>();
-            sheetInfo.put("index", 0); sheetInfo.put("name", "Sheet1");
+            sheetInfo.put("index", si); sheetInfo.put("name", "Sheet" + (si + 1));
             sheetInfo.put("headers", headers);
             sheetInfo.put("previewRows", previewRows);
             sheetInfo.put("totalRows", rows.size());
@@ -239,8 +252,6 @@ public class ExcelService {
             sheetInfo.put("fieldOptions", fieldOptions);
             sheetInfo.put("availableFields", availableFields);
             sheets.add(sheetInfo);
-        } catch (IOException e) {
-            throw new RuntimeException("预览失败: " + e.getMessage());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();

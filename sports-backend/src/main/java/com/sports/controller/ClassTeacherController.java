@@ -4,6 +4,7 @@ import com.sports.common.ApiResponse;
 import com.sports.entity.*;
 import com.sports.repository.*;
 import com.sports.security.JwtUserDetails;
+import com.sports.service.NumberRuleService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -40,6 +41,7 @@ public class ClassTeacherController {
     private final UserRepository userRepository;
     private final SystemConfigRepository systemConfigRepository;
     private final PasswordEncoder passwordEncoder;
+    private final NumberRuleService numberRuleService;
 
     // ===== 获取当前班主任绑定的班级列表 =====
     private List<ClassInfo> getMyClasses() {
@@ -101,11 +103,17 @@ public class ClassTeacherController {
                     }
 
                     // 2. 创建运动员记录（如果不存在）
-                    String number = classInfo.getCode() != null
-                            ? classInfo.getCode() + String.format("%02d", i + 1)
-                            : "ATH" + String.format("%04d", i + 1);
-
                     if (athleteRepository.findByStudentId(studentId).isEmpty()) {
+                        // 按自定义号码簿规则生成号码（保证全局唯一）
+                        int seq = 1;
+                        String number;
+                        do {
+                            number = numberRuleService.generateNumber(
+                                    Athlete.builder().name(name).gender(mapGender(gender))
+                                            .grade(classInfo.getGrade()).classInfo(classInfo).build(),
+                                    classInfo, seq++);
+                        } while (athleteRepository.findByNumber(number).isPresent());
+
                         Athlete athlete = Athlete.builder()
                                 .name(name)
                                 .gender(mapGender(gender))

@@ -18,6 +18,12 @@ const routes = [
     component: () => import('@/views/login/Login.vue'),
     meta: { requiresAuth: false }
   },
+  {
+    path: '/setup',
+    name: 'Setup',
+    component: () => import('@/views/setup/Setup.vue'),
+    meta: { requiresAuth: false }
+  },
   // Teacher routes
   {
     path: '/teacher',
@@ -60,6 +66,12 @@ const routes = [
         name: 'TeacherArrange',
         component: () => import('@/views/teacher/Arrange.vue'),
         meta: { title: '智能编排' }
+      },
+      {
+        path: 'schedule',
+        name: 'TeacherSchedule',
+        component: () => import('@/views/teacher/Schedule.vue'),
+        meta: { title: '项目编排' }
       },
       {
         path: 'scores',
@@ -178,8 +190,35 @@ const router = createRouter({
   routes
 })
 
+// 安装状态缓存（null=未检查）
+let setupStatus = null
+
+async function checkInstalled() {
+  if (setupStatus !== null) return setupStatus
+  try {
+    const res = await fetch('/api/setup/status')
+    const data = await res.json()
+    setupStatus = data?.data?.installed ?? true
+  } catch (e) {
+    // 检查失败时按已安装处理，避免卡死在向导
+    setupStatus = true
+  }
+  return setupStatus
+}
+
 // Navigation guard
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
+  // ===== 建站向导守卫（严防死守）=====
+  if (to.path === '/setup') {
+    const installed = await checkInstalled()
+    if (installed) { next('/login'); return }
+    next()
+    return
+  }
+  // 未安装时，任何页面一律跳转安装向导
+  const installed = await checkInstalled()
+  if (!installed) { next('/setup'); return }
+
   const authStore = useAuthStore()
 
   // Allow access to login page without auth

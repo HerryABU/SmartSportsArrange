@@ -1,6 +1,6 @@
 <template>
   <div class="login-root">
-    <!-- ===== Left Panel ===== -->
+    <!-- ===== Left Panel（品牌展示，无动画角色） ===== -->
     <div class="leftPanel">
       <div class="leftTop">
         <div class="brandMark">
@@ -13,51 +13,15 @@
         <span class="brandName">运动会编排</span>
       </div>
 
-      <div class="charactersArea">
-        <div id="charactersContainer" style="position:relative;width:550px;height:400px">
-
-          <!-- Purple character -->
-          <div id="purpleChar" style="position:absolute;bottom:0;left:70px;width:180px;height:400px;background:#6C3FF5;border-radius:10px 10px 0 0;z-index:1;transform-origin:bottom center;will-change:transform;">
-            <div id="purpleFace" style="position:absolute;display:flex;gap:32px;left:45px;top:40px;">
-              <div class="eyeball" data-max-distance="5" style="border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;will-change:height;width:18px;height:18px;background:white;">
-                <div class="eyeball-pupil" style="width:7px;height:7px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              </div>
-              <div class="eyeball" data-max-distance="5" style="border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;will-change:height;width:18px;height:18px;background:white;">
-                <div class="eyeball-pupil" style="width:7px;height:7px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Black character -->
-          <div id="blackChar" style="position:absolute;bottom:0;left:240px;width:120px;height:310px;background:#2D2D2D;border-radius:8px 8px 0 0;z-index:2;transform-origin:bottom center;will-change:transform;overflow:hidden;">
-            <div id="blackFace" style="position:absolute;display:flex;gap:24px;left:26px;top:32px;">
-              <div class="eyeball" data-max-distance="4" style="border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;will-change:height;width:16px;height:16px;background:white;">
-                <div class="eyeball-pupil" style="width:6px;height:6px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              </div>
-              <div class="eyeball" data-max-distance="4" style="border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;will-change:height;width:16px;height:16px;background:white;">
-                <div class="eyeball-pupil" style="width:6px;height:6px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Orange character -->
-          <div id="orangeChar" style="position:absolute;bottom:0;left:0;width:240px;height:200px;background:#FF9B6B;border-radius:120px 120px 0 0;z-index:3;transform-origin:bottom center;will-change:transform;overflow:hidden;">
-            <div id="orangeFace" style="position:absolute;display:flex;gap:32px;left:82px;top:90px;">
-              <div class="pupil" data-max-distance="5" style="width:12px;height:12px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              <div class="pupil" data-max-distance="5" style="width:12px;height:12px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-            </div>
-          </div>
-
-          <!-- Yellow character -->
-          <div id="yellowChar" style="position:absolute;bottom:0;left:310px;width:140px;height:230px;background:#E8D754;border-radius:70px 70px 0 0;z-index:4;transform-origin:bottom center;will-change:transform;overflow:hidden;">
-            <div id="yellowFace" style="position:absolute;display:flex;gap:24px;left:52px;top:40px;">
-              <div class="pupil" data-max-distance="5" style="width:12px;height:12px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-              <div class="pupil" data-max-distance="5" style="width:12px;height:12px;border-radius:50%;background:#2D2D2D;will-change:transform;"></div>
-            </div>
-            <div id="yellowMouth" style="position:absolute;width:80px;height:4px;background:#2D2D2D;border-radius:9999px;left:40px;top:88px;will-change:transform;"></div>
-          </div>
-
-        </div>
+      <div class="leftBody">
+        <h2 class="heroTitle">运动会智能编排系统</h2>
+        <p class="heroSub">从班级名单到成绩排名，一站式赛事管理</p>
+        <ul class="featureList">
+          <li><span class="dot"></span>多角色协作：管理员 / 体育老师 / 班主任 / 学生</li>
+          <li><span class="dot"></span>Excel 智能导入导出</li>
+          <li><span class="dot"></span>道次编排 · 项目编排 · 排名积分</li>
+          <li><span class="dot"></span>规则完全自定义</li>
+        </ul>
       </div>
 
       <div class="decorBlur1"></div>
@@ -65,9 +29,9 @@
       <div class="decorGrid"></div>
     </div>
 
-    <!-- ===== Right Panel ===== -->
+    <!-- ===== Right Panel（登录表单） ===== -->
     <div class="rightPanel">
-      <div class="formWrapper">
+      <div class="formWrapper" :class="{ shaking: shaking }">
         <p class="panelTag">WELCOME</p>
         <div class="mobileLogo">
           <div class="mobileLogoIcon">
@@ -100,10 +64,9 @@
               <span class="prefixIcon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               </span>
-              <input type="text" id="username" v-model="loginForm.username" placeholder="请输入用户名" autocomplete="off"
-                     @focus="onUnameFocus" @blur="onUnameBlur">
+              <input type="text" id="username" v-model="loginForm.username" placeholder="请输入用户名" autocomplete="off">
             </div>
-            <div id="usernameError" style="display:none;font-size:13px;color:#b91c1c;margin-top:4px;"></div>
+            <div class="fieldError" v-if="usernameError">{{ usernameError }}</div>
           </div>
 
           <div class="inputGroup">
@@ -112,19 +75,16 @@
               <span class="prefixIcon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               </span>
-              <input type="password" id="password" v-model="loginForm.password" placeholder="请输入密码" autocomplete="off"
-                     @focus="onPwFocus" @blur="onPwBlur" @input="onPwInput">
-              <button type="button" class="eyeToggle" id="eyeToggle" tabindex="-1" @click="onEyeToggle">
-                <!-- Eye closed icon (default) -->
-                <svg id="eyeClosed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                <!-- Eye open icon (hidden by default) -->
-                <svg id="eyeOpen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <input :type="showPassword ? 'text' : 'password'" v-model="loginForm.password" placeholder="请输入密码" autocomplete="off">
+              <button type="button" class="eyeToggle" tabindex="-1" @click="showPassword = !showPassword">
+                <svg v-if="!showPassword" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
             </div>
-            <div id="passwordError" style="display:none;font-size:13px;color:#b91c1c;margin-top:4px;"></div>
+            <div class="fieldError" v-if="passwordError">{{ passwordError }}</div>
           </div>
 
-          <div class="errorBox" id="errorBox" style="display:none;"></div>
+          <div class="errorBox" v-if="errorMsg">{{ errorMsg }}</div>
 
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#64748b;cursor:pointer;user-select:none;">
@@ -133,7 +93,7 @@
             </label>
           </div>
 
-          <button type="submit" class="submitBtn" id="submitBtn" :disabled="loading">
+          <button type="submit" class="submitBtn" :disabled="loading">
             <span v-if="loading" class="spin"></span>{{loading?'安全验证中...':btnText}}
           </button>
         </form>
@@ -161,22 +121,25 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import gsap from 'gsap'
 
 const router = useRouter()
 const authStore = useAuthStore()
 
-// ─── Reactive state ────────────────────────────────────────
 const activeRole = ref('TEACHER')
 const loading = ref(false)
 const showForgot = ref(false)
 const showHelp = ref(false)
+const showPassword = ref(false)
 const loginForm = reactive({ username: '', password: '' })
 const rememberMe = ref(true)
+const usernameError = ref('')
+const passwordError = ref('')
+const errorMsg = ref('')
+const shaking = ref(false)
 
 const roles = [
   { key: 'ADMIN', icon: '🛡️', label: '管理员' },
@@ -192,464 +155,32 @@ const btnText = computed(() => ({
   STUDENT: '学生登录'
 }[activeRole.value] || '登录'))
 
-// ─── Animation state (mirrors original JS exactly) ──────────
-let showPassword = false
-let isTyping = false
-let passwordFocused = false
-let isLooking = false
-let isShaking = false
-
-const mouse = { x: 0, y: 0 }
-let rafId = 0
-let purpleBlinkTimer, blackBlinkTimer, purplePeekTimer, lookingTimer
-
-// ─── Helpers ───────────────────────────────────────────────
-const passwordLength = () => loginForm.password.length
-const isHidingPassword = () => passwordLength() > 0 && !showPassword
-const isShowingPassword = () => passwordLength() > 0 && showPassword
-const isPasswordGuardMode = () => passwordFocused
-
-function calcPos(el) {
-  const rect = el.getBoundingClientRect()
-  const cx = rect.left + rect.width / 2
-  const cy = rect.top + rect.height / 3
-  const dx = mouse.x - cx
-  const dy = mouse.y - cy
-  return {
-    faceX: Math.max(-15, Math.min(15, dx / 20)),
-    faceY: Math.max(-10, Math.min(10, dy / 30)),
-    bodySkew: Math.max(-6, Math.min(6, -dx / 120))
-  }
+function shake() {
+  shaking.value = false
+  requestAnimationFrame(() => { shaking.value = true })
+  setTimeout(() => { shaking.value = false }, 500)
 }
 
-function calcEyePos(el, maxDist) {
-  const r = el.getBoundingClientRect()
-  const cx = r.left + r.width / 2
-  const cy = r.top + r.height / 2
-  const dx = mouse.x - cx
-  const dy = mouse.y - cy
-  const dist = Math.min(Math.sqrt(dx * dx + dy * dy), maxDist)
-  const angle = Math.atan2(dy, dx)
-  return { x: Math.cos(angle) * dist, y: Math.sin(angle) * dist }
-}
-
-// ─── GSAP quickTo references (set after DOM ready) ─────────
-let qt = {}
-
-// ─── Animation presets ─────────────────────────────────────
-function applyLookAtEachOther() {
-  qt.purpleFaceLeft(55)
-  qt.purpleFaceTop(65)
-  qt.blackFaceLeft(32)
-  qt.blackFaceTop(12)
-  document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: 3, y: 4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#blackChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: 0, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-}
-
-function applyHidingPassword() {
-  qt.purpleFaceLeft(55)
-  qt.purpleFaceTop(65)
-}
-
-function applyShowPassword() {
-  qt.purpleSkew(0); qt.blackSkew(0); qt.orangeSkew(0); qt.yellowSkew(0)
-  qt.purpleX(0); qt.blackX(0); qt.purpleHeight(400)
-  qt.purpleFaceLeft(20); qt.purpleFaceTop(35)
-  qt.blackFaceLeft(10); qt.blackFaceTop(28)
-  qt.orangeFaceX(50 - 82); qt.orangeFaceY(85 - 90)
-  qt.yellowFaceX(20 - 52); qt.yellowFaceY(35 - 40)
-  qt.mouthX(10 - 40); qt.mouthY(0)
-
-  document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: -4, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#blackChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: -4, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#orangeChar .pupil').forEach(p => {
-    gsap.to(p, { x: -5, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#yellowChar .pupil').forEach(p => {
-    gsap.to(p, { x: -5, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-  })
-}
-
-function applyPasswordGuardMode() {
-  qt.purpleSkew(0); qt.blackSkew(0); qt.orangeSkew(0); qt.yellowSkew(0)
-  qt.purpleX(0); qt.blackX(0); qt.purpleHeight(400)
-  qt.purpleFaceLeft(24); qt.purpleFaceTop(22)
-  qt.blackFaceLeft(14); qt.blackFaceTop(20)
-  qt.orangeFaceX(22 - 82); qt.orangeFaceY(72 - 90)
-  qt.yellowFaceX(20 - 52); qt.yellowFaceY(22 - 40)
-  qt.mouthX(-8); qt.mouthY(-8)
-
-  document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: -5, y: -5, duration: 0.25, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#blackChar .eyeball-pupil').forEach(p => {
-    gsap.to(p, { x: -4, y: -4, duration: 0.25, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#orangeChar .pupil').forEach(p => {
-    gsap.to(p, { x: -5, y: -5, duration: 0.25, ease: 'power2.out', overwrite: 'auto' })
-  })
-  document.querySelectorAll('#yellowChar .pupil').forEach(p => {
-    gsap.to(p, { x: -5, y: -5, duration: 0.25, ease: 'power2.out', overwrite: 'auto' })
-  })
-}
-
-// ─── Shake heads on error ──────────────────────────────────
-function shakeHeads() {
-  if (isShaking) return
-  isShaking = true
-
-  gsap.to('.eyeball-pupil', { x: 0, y: -2, duration: 0.08, ease: 'power2.out' })
-  gsap.to('.pupil', { x: 0, y: -2, duration: 0.08, ease: 'power2.out' })
-
-  const purpleChar = document.getElementById('purpleChar')
-  const purpleFace = document.getElementById('purpleFace')
-  const blackChar = document.getElementById('blackChar')
-  const blackFace = document.getElementById('blackFace')
-  const orangeChar = document.getElementById('orangeChar')
-  const orangeFace = document.getElementById('orangeFace')
-  const yellowChar = document.getElementById('yellowChar')
-  const yellowFace = document.getElementById('yellowFace')
-  const yellowMouth = document.getElementById('yellowMouth')
-
-  const tl = gsap.timeline({
-    onComplete: () => {
-      gsap.set('.eyeball-pupil', { x: 0, y: 0 })
-      gsap.set('.pupil', { x: 0, y: 0 })
-      isShaking = false
-    }
-  })
-
-  const O = 'sine.inOut'
-  const SB = 'expo.out'
-  const SF = 'expo.out'
-
-  function add(target, kfs) { tl.add(gsap.to(target, { keyframes: kfs }), 0.04) }
-
-  add(purpleFace, [
-    { left: 25, duration: 0.14, ease: O }, { left: 55, duration: 0.13, ease: O },
-    { left: 34, duration: 0.11, ease: O }, { left: 48, duration: 0.09, ease: O },
-    { left: 43, duration: 0.06, ease: O }, { left: 45, duration: 0.48, ease: SF }
-  ])
-  add(purpleChar, [
-    { skewX: -3, x: 6, duration: 0.14, ease: O }, { skewX: 3, x: -6, duration: 0.13, ease: O },
-    { skewX: -2, x: 3, duration: 0.11, ease: O }, { skewX: 2, x: -3, duration: 0.09, ease: O },
-    { skewX: -1, x: 1, duration: 0.06, ease: O }, { skewX: 0, x: 0, duration: 0.32, ease: SB }
-  ])
-  add(blackFace, [
-    { left: 14, duration: 0.14, ease: O }, { left: 34, duration: 0.13, ease: O },
-    { left: 20, duration: 0.11, ease: O }, { left: 30, duration: 0.09, ease: O },
-    { left: 24, duration: 0.06, ease: O }, { left: 26, duration: 0.48, ease: SF }
-  ])
-  add(blackChar, [
-    { skewX: -2, x: 4, duration: 0.14, ease: O }, { skewX: 2, x: -4, duration: 0.13, ease: O },
-    { skewX: -1, x: 2, duration: 0.11, ease: O }, { skewX: 1, x: -2, duration: 0.09, ease: O },
-    { skewX: 0, x: 1, duration: 0.06, ease: O }, { skewX: 0, x: 0, duration: 0.32, ease: SB }
-  ])
-  add(orangeFace, [
-    { x: -20, duration: 0.14, ease: O }, { x: 13, duration: 0.13, ease: O },
-    { x: -7, duration: 0.11, ease: O }, { x: 6, duration: 0.09, ease: O },
-    { x: -2, duration: 0.06, ease: O }, { x: 0, duration: 0.48, ease: SF }
-  ])
-  add(orangeChar, [
-    { skewX: -2, duration: 0.14, ease: O }, { skewX: 2, duration: 0.13, ease: O },
-    { skewX: -1, duration: 0.11, ease: O }, { skewX: 1, duration: 0.09, ease: O },
-    { skewX: 0, duration: 0.32, ease: SB }
-  ])
-  add(yellowFace, [
-    { x: -18, duration: 0.14, ease: O }, { x: 11, duration: 0.13, ease: O },
-    { x: -6, duration: 0.11, ease: O }, { x: 5, duration: 0.09, ease: O },
-    { x: -2, duration: 0.06, ease: O }, { x: 0, duration: 0.48, ease: SF }
-  ])
-  add(yellowMouth, [
-    { x: -18, duration: 0.14, ease: O }, { x: 11, duration: 0.13, ease: O },
-    { x: -6, duration: 0.11, ease: O }, { x: 5, duration: 0.09, ease: O },
-    { x: -2, duration: 0.06, ease: O }, { x: 0, duration: 0.48, ease: SF }
-  ])
-  add(yellowChar, [
-    { skewX: -2, duration: 0.14, ease: O }, { skewX: 2, duration: 0.13, ease: O },
-    { skewX: -1, duration: 0.11, ease: O }, { skewX: 1, duration: 0.09, ease: O },
-    { skewX: 0, duration: 0.32, ease: SB }
-  ])
-}
-
-// ─── Main animation loop ──────────────────────────────────
-function tick() {
-  const container = document.getElementById('charactersContainer')
-  if (!container) { rafId = requestAnimationFrame(tick); return }
-  if (isShaking) { rafId = requestAnimationFrame(tick); return }
-
-  const guardMode = isPasswordGuardMode()
-  const typing = isTyping
-  const hidingPw = isHidingPassword()
-  const showingPw = isShowingPassword()
-
-  if (guardMode) {
-    applyPasswordGuardMode()
-    rafId = requestAnimationFrame(tick)
-    return
-  }
-
-  const purpleChar = document.getElementById('purpleChar')
-  const blackChar = document.getElementById('blackChar')
-  const orangeChar = document.getElementById('orangeChar')
-  const yellowChar = document.getElementById('yellowChar')
-
-  if (purpleChar && !showingPw) {
-    const pp = calcPos(purpleChar)
-    if (typing || hidingPw) {
-      qt.purpleSkew(pp.bodySkew - 12)
-      qt.purpleX(40)
-      qt.purpleHeight(440)
-    } else {
-      qt.purpleSkew(pp.bodySkew)
-      qt.purpleX(0)
-      qt.purpleHeight(400)
-    }
-  }
-
-  if (blackChar && !showingPw) {
-    const bp = calcPos(blackChar)
-    if (isLooking) {
-      qt.blackSkew(bp.bodySkew * 1.5 + 10)
-      qt.blackX(20)
-    } else if (typing || hidingPw) {
-      qt.blackSkew(bp.bodySkew * 1.5)
-      qt.blackX(0)
-    } else {
-      qt.blackSkew(bp.bodySkew)
-      qt.blackX(0)
-    }
-  }
-
-  if (orangeChar && !showingPw) {
-    const op = calcPos(orangeChar)
-    qt.orangeSkew(op.bodySkew)
-    qt.orangeFaceX(op.faceX)
-    qt.orangeFaceY(op.faceY)
-  }
-
-  if (yellowChar && !showingPw) {
-    const yp = calcPos(yellowChar)
-    qt.yellowSkew(yp.bodySkew)
-    qt.yellowFaceX(yp.faceX)
-    qt.yellowFaceY(yp.faceY)
-    qt.mouthX(yp.faceX)
-    qt.mouthY(yp.faceY)
-  }
-
-  if (purpleChar && !showingPw && !isLooking) {
-    const pp2 = calcPos(purpleChar)
-    const pfX = pp2.faceX >= 0 ? Math.min(25, pp2.faceX * 1.5) : pp2.faceX
-    qt.purpleFaceLeft(45 + pfX)
-    qt.purpleFaceTop(40 + pp2.faceY)
-  }
-
-  if (blackChar && !showingPw && !isLooking) {
-    const bp2 = calcPos(blackChar)
-    qt.blackFaceLeft(26 + bp2.faceX)
-    qt.blackFaceTop(32 + bp2.faceY)
-  }
-
-  if (!showingPw) {
-    container.querySelectorAll('.pupil').forEach(p => {
-      const maxDist = Number(p.dataset.maxDistance) || 5
-      const ePos = calcEyePos(p, maxDist)
-      gsap.set(p, { x: ePos.x, y: ePos.y })
-    })
-
-    if (!isLooking) {
-      container.querySelectorAll('.eyeball').forEach(eb => {
-        const maxDist = Number(eb.dataset.maxDistance) || 10
-        const pupil = eb.querySelector('.eyeball-pupil')
-        if (!pupil) return
-        const ePos = calcEyePos(eb, maxDist)
-        gsap.set(pupil, { x: ePos.x, y: ePos.y })
-      })
-    }
-  }
-
-  rafId = requestAnimationFrame(tick)
-}
-
-// ─── Blink animations ─────────────────────────────────────
-function schedulePurpleBlink() {
-  purpleBlinkTimer = setTimeout(() => {
-    const eyeballs = document.querySelectorAll('#purpleChar .eyeball')
-    eyeballs.forEach(el => gsap.to(el, { height: 2, duration: 0.08, ease: 'power2.in' }))
-    setTimeout(() => {
-      eyeballs.forEach(el => {
-        const size = Number(el.style.width.replace('px', '')) || 18
-        gsap.to(el, { height: size, duration: 0.08, ease: 'power2.out' })
-      })
-      schedulePurpleBlink()
-    }, 150)
-  }, Math.random() * 4000 + 3000)
-}
-
-function scheduleBlackBlink() {
-  blackBlinkTimer = setTimeout(() => {
-    const eyeballs = document.querySelectorAll('#blackChar .eyeball')
-    eyeballs.forEach(el => gsap.to(el, { height: 2, duration: 0.08, ease: 'power2.in' }))
-    setTimeout(() => {
-      eyeballs.forEach(el => {
-        const size = Number(el.style.width.replace('px', '')) || 16
-        gsap.to(el, { height: size, duration: 0.08, ease: 'power2.out' })
-      })
-      scheduleBlackBlink()
-    }, 150)
-  }, Math.random() * 4000 + 3000)
-}
-
-// ─── Peek behavior: purple leans in when password visible ──
-function schedulePeek() {
-  clearTimeout(purplePeekTimer)
-  purplePeekTimer = setTimeout(() => {
-    if (isPasswordGuardMode() || !isShowingPassword() || passwordLength() <= 0) return
-
-    document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => {
-      gsap.to(p, { x: 4, y: 5, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-    })
-    qt.purpleFaceLeft(20)
-    qt.purpleFaceTop(35)
-
-    setTimeout(() => {
-      document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => {
-        gsap.to(p, { x: -4, y: -4, duration: 0.3, ease: 'power2.out', overwrite: 'auto' })
-      })
-      schedulePeek()
-    }, 800)
-  }, Math.random() * 3000 + 2000)
-}
-
-// ─── Event handlers ───────────────────────────────────────
-function onUnameFocus() {
-  isTyping = true
-  document.getElementById('usernameError').style.display = 'none'
-  handleLookAtEachOther()
-}
-
-function onUnameBlur() {
-  isTyping = false
-  clearTimeout(lookingTimer)
-  isLooking = false
-  document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => gsap.killTweensOf(p))
-
-  const userEl = document.getElementById('username')
-  if (userEl.value && userEl.value.length < 3) {
-    document.getElementById('usernameError').textContent = '用户名长度不能少于3个字符'
-    document.getElementById('usernameError').style.display = 'block'
-  }
-}
-
-function onPwFocus() {
-  passwordFocused = true
-  isLooking = false
-  clearTimeout(lookingTimer)
-  applyPasswordGuardMode()
-  clearTimeout(purplePeekTimer)
-}
-
-function onPwBlur() {
-  passwordFocused = false
-  handleStateChange()
-  clearTimeout(purplePeekTimer)
-  if (isShowingPassword()) { schedulePeek() }
-}
-
-function onPwInput() {
-  handleStateChange()
-  clearTimeout(purplePeekTimer)
-  if (isShowingPassword()) { schedulePeek() }
-  document.getElementById('passwordError').style.display = 'none'
-}
-
-function onEyeToggle(e) {
-  e.preventDefault()
-  showPassword = !showPassword
-
-  const eyeClosed = document.getElementById('eyeClosed')
-  const eyeOpen = document.getElementById('eyeOpen')
-  const pwInput = document.getElementById('password')
-
-  if (showPassword) {
-    eyeClosed.style.display = 'none'
-    eyeOpen.style.display = 'block'
-    pwInput.type = 'text'
-  } else {
-    eyeClosed.style.display = 'block'
-    eyeOpen.style.display = 'none'
-    pwInput.type = 'password'
-  }
-
-  handleStateChange()
-  clearTimeout(purplePeekTimer)
-  if (isShowingPassword()) { schedulePeek() }
-}
-
-function handleStateChange() {
-  if (isPasswordGuardMode()) {
-    applyPasswordGuardMode()
-  } else if (isShowingPassword()) {
-    applyShowPassword()
-  } else if (isHidingPassword()) {
-    applyHidingPassword()
-  }
-}
-
-function handleLookAtEachOther() {
-  if (isPasswordGuardMode() || isShowingPassword()) return
-  isLooking = true
-  applyLookAtEachOther()
-  clearTimeout(lookingTimer)
-  lookingTimer = setTimeout(() => {
-    isLooking = false
-    document.querySelectorAll('#purpleChar .eyeball-pupil').forEach(p => gsap.killTweensOf(p))
-  }, 800)
-}
-
-// ─── Login ────────────────────────────────────────────────
 async function handleLogin() {
-  const errorBox = document.getElementById('errorBox')
-  const usernameError = document.getElementById('usernameError')
-  const passwordError = document.getElementById('passwordError')
-  const submitBtn = document.getElementById('submitBtn')
+  usernameError.value = ''
+  passwordError.value = ''
+  errorMsg.value = ''
 
   let valid = true
-  errorBox.style.display = 'none'
-  usernameError.style.display = 'none'
-  passwordError.style.display = 'none'
-
   if (!loginForm.username || loginForm.username.length < 3) {
-    usernameError.textContent = loginForm.username ? '用户名长度不能少于3个字符' : '请输入用户名'
-    usernameError.style.display = 'block'
+    usernameError.value = loginForm.username ? '用户名长度不能少于3个字符' : '请输入用户名'
     valid = false
   }
-
   if (!loginForm.password || loginForm.password.length < 6) {
-    passwordError.textContent = loginForm.password ? '密码长度不能少于6个字符' : '请输入密码'
-    passwordError.style.display = 'block'
+    passwordError.value = loginForm.password ? '密码长度不能少于6个字符' : '请输入密码'
     valid = false
   }
-
-  if (!valid) {
-    shakeHeads()
-    return
-  }
+  if (!valid) { shake(); return }
 
   loading.value = true
-
   try {
     const r = await authStore.login(loginForm.username, loginForm.password)
     if (r.success) {
-      // Remember me persistence
       if (rememberMe.value) {
         localStorage.setItem('saved_username', loginForm.username)
         localStorage.setItem('saved_role', activeRole.value)
@@ -657,32 +188,24 @@ async function handleLogin() {
         localStorage.removeItem('saved_username')
         localStorage.removeItem('saved_role')
       }
-
       ElMessage.success('登录成功')
       const role = authStore.userRole
       if (role === 'TEACHER' || role === 'SUPER_ADMIN') router.push('/teacher/dashboard')
       else if (role === 'CLASS_TEACHER') router.push('/class-teacher/dashboard')
       else router.push('/student/home')
     } else {
-      errorBox.textContent = r.message || '登录失败'
-      errorBox.style.display = 'block'
-      shakeHeads()
+      errorMsg.value = r.message || '登录失败'
+      shake()
     }
   } catch {
-    errorBox.textContent = '网络错误，请重试'
-    errorBox.style.display = 'block'
-    shakeHeads()
+    errorMsg.value = '网络错误，请重试'
+    shake()
   } finally {
     loading.value = false
   }
 }
 
-// ─── Mouse tracking handler ──────────────────────────────
-function onMouseMove(e) { mouse.x = e.clientX; mouse.y = e.clientY }
-
-// ─── Mount / Unmount ──────────────────────────────────────
 onMounted(() => {
-  // Restore saved credentials if remember me was checked
   const savedUsername = localStorage.getItem('saved_username')
   const savedRole = localStorage.getItem('saved_role')
   if (savedUsername) {
@@ -692,64 +215,10 @@ onMounted(() => {
   if (savedRole && roles.find(r => r.key === savedRole)) {
     activeRole.value = savedRole
   }
-
-  // Initialize GSAP quickTo
-  const purpleChar = document.getElementById('purpleChar')
-  const purpleFace = document.getElementById('purpleFace')
-  const blackChar = document.getElementById('blackChar')
-  const blackFace = document.getElementById('blackFace')
-  const orangeChar = document.getElementById('orangeChar')
-  const orangeFace = document.getElementById('orangeFace')
-  const yellowChar = document.getElementById('yellowChar')
-  const yellowFace = document.getElementById('yellowFace')
-  const yellowMouth = document.getElementById('yellowMouth')
-
-  gsap.set('.pupil', { x: 0, y: 0 })
-  gsap.set('.eyeball-pupil', { x: 0, y: 0 })
-
-  qt = {
-    purpleSkew: gsap.quickTo(purpleChar, 'skewX', { duration: 0.3, ease: 'power2.out' }),
-    blackSkew: gsap.quickTo(blackChar, 'skewX', { duration: 0.3, ease: 'power2.out' }),
-    orangeSkew: gsap.quickTo(orangeChar, 'skewX', { duration: 0.3, ease: 'power2.out' }),
-    yellowSkew: gsap.quickTo(yellowChar, 'skewX', { duration: 0.3, ease: 'power2.out' }),
-    purpleX: gsap.quickTo(purpleChar, 'x', { duration: 0.3, ease: 'power2.out' }),
-    blackX: gsap.quickTo(blackChar, 'x', { duration: 0.3, ease: 'power2.out' }),
-    purpleHeight: gsap.quickTo(purpleChar, 'height', { duration: 0.3, ease: 'power2.out' }),
-    purpleFaceLeft: gsap.quickTo(purpleFace, 'left', { duration: 0.3, ease: 'power2.out' }),
-    purpleFaceTop: gsap.quickTo(purpleFace, 'top', { duration: 0.3, ease: 'power2.out' }),
-    blackFaceLeft: gsap.quickTo(blackFace, 'left', { duration: 0.3, ease: 'power2.out' }),
-    blackFaceTop: gsap.quickTo(blackFace, 'top', { duration: 0.3, ease: 'power2.out' }),
-    orangeFaceX: gsap.quickTo(orangeFace, 'x', { duration: 0.2, ease: 'power2.out' }),
-    orangeFaceY: gsap.quickTo(orangeFace, 'y', { duration: 0.2, ease: 'power2.out' }),
-    yellowFaceX: gsap.quickTo(yellowFace, 'x', { duration: 0.2, ease: 'power2.out' }),
-    yellowFaceY: gsap.quickTo(yellowFace, 'y', { duration: 0.2, ease: 'power2.out' }),
-    mouthX: gsap.quickTo(yellowMouth, 'x', { duration: 0.2, ease: 'power2.out' }),
-    mouthY: gsap.quickTo(yellowMouth, 'y', { duration: 0.2, ease: 'power2.out' })
-  }
-
-  // Mouse tracking
-  window.addEventListener('mousemove', onMouseMove, { passive: true })
-
-  // Start animation loop
-  rafId = requestAnimationFrame(tick)
-
-  // Start blink timers
-  schedulePurpleBlink()
-  scheduleBlackBlink()
-})
-
-onUnmounted(() => {
-  clearTimeout(purpleBlinkTimer)
-  clearTimeout(blackBlinkTimer)
-  clearTimeout(purplePeekTimer)
-  clearTimeout(lookingTimer)
-  cancelAnimationFrame(rafId)
-  window.removeEventListener('mousemove', onMouseMove)
 })
 </script>
 
 <style scoped>
-/* ========== Reset & Base ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 .login-root {
@@ -805,11 +274,49 @@ onUnmounted(() => {
   letter-spacing: 1px;
 }
 
-.charactersArea {
+.leftBody {
   position: relative;
   z-index: 20;
-  display: flex; align-items: flex-end; justify-content: center;
-  flex: 1;
+  max-width: 440px;
+  margin: auto 0;
+}
+
+.heroTitle {
+  font-size: 34px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.3;
+  margin-bottom: 14px;
+  letter-spacing: -0.02em;
+}
+
+.heroSub {
+  font-size: 15px;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 32px;
+}
+
+.featureList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.featureList li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: rgba(255,255,255,0.85);
+}
+
+.dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #22d3ee;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px rgba(34,211,238,0.8);
 }
 
 .decorBlur1 {
@@ -859,6 +366,18 @@ onUnmounted(() => {
   box-shadow: 0 24px 50px rgba(30,41,59,0.12);
   backdrop-filter: blur(14px);
   padding: 36px 32px 30px;
+}
+
+.formWrapper.shaking {
+  animation: form-shake 0.4s ease;
+}
+
+@keyframes form-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(5px); }
 }
 
 .panelTag {
@@ -977,11 +496,15 @@ onUnmounted(() => {
 }
 .eyeToggle:hover { color: #0f766e; }
 
+.fieldError {
+  font-size: 13px; color: #b91c1c; margin-top: 4px;
+}
+
 .errorBox {
   padding: 11px 14px; font-size: 13px;
   color: #b91c1c; background: #fff1f2;
   border: 1px solid #fecdd3; border-radius: 12px;
-  margin-bottom: 16px; display: none;
+  margin-bottom: 16px;
 }
 
 .submitBtn {
@@ -1005,7 +528,6 @@ onUnmounted(() => {
   color: #64748b; margin: 20px 6px 0; line-height: 1.6;
 }
 
-/* spin */
 @keyframes spin2 { to { rotate: 360deg; } }
 .spin {
   width: 14px; height: 14px;

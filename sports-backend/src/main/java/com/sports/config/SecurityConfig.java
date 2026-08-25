@@ -45,6 +45,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/login").permitAll()
                         .requestMatchers("/api/auth/refresh").permitAll()
                         .requestMatchers("/api/system/health").permitAll()
+                        // 建站向导（安装后由业务层锁定）
+                        .requestMatchers("/api/setup/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/api-docs/**").permitAll()
 
                         // 模板下载 - 无需认证
@@ -84,8 +86,10 @@ public class SecurityConfig {
                         .requestMatchers("/api/system/config/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/system/grades/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
-                        // ===== 超级管理员独有（用户管理） =====
+                        // ===== 超级管理员独有（用户管理 / 数据库迁移 / 备份） =====
                         .requestMatchers("/api/system/**").hasAuthority("ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/db-migration/**").hasAuthority("ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/backup/**").hasAuthority("ROLE_SUPER_ADMIN")
 
                         // 其他所有请求需要认证
                         .anyRequest().authenticated()

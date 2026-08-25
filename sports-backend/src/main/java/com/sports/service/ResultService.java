@@ -28,6 +28,7 @@ public class ResultService {
     private final EventRepository eventRepository;
     private final SystemConfigRepository systemConfigRepository;
     private final ExcelService excelService;
+    private final SystemService systemService;
 
     /**
      * 录入成绩
@@ -90,7 +91,7 @@ public class ResultService {
     }
 
     /**
-     * 计算排名
+     * 计算排名（读取 scoring_rule 配置，支持并列处理/破纪录/参与分/接力加倍）
      */
     public List<Result> calculateRanking(Long eventId) {
         Event event = eventRepository.findById(eventId)
@@ -107,59 +108,65 @@ public class ResultService {
             return List.of();
         }
 
-        // 获取积分规则配置
-        String scoringRulesJson = event.getScoringRules();
-        Map<Integer, Double> scoringTable = parseScoringRules(scoringRulesJson);
+        // 读取积分规则配置（完全自定义）
+        Map<String, Object> rule = systemService.getScoringRule();
+        Map<Integer, Double> scoringTable = parseRankScores(rule.get("rank_scores"));
+        boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+        boolean recordBonusEnabled = boolVal(rule.get("record_bonus_enabled"), false);
+        int recordBonus = intVal(rule.get("record_bonus"), 10);
+        boolean participationEnabled = boolVal(rule.get("participation_score_enabled"), false);
+        int participationScore = intVal(rule.get("participation_score"), 1);
+        double relayMultiplier = doubleVal(rule.get("relay_multiplier"), 2.0);
+        boolean isRelay = "接力".equals(event.getCategory())
+                || (event.getName() != null && event.getName().contains("接力"));
 
-        // 分配排名和分数
+        // 分组处理并列排名：same_rank（同名次并列）/ sequential（顺延）
         int rank = 1;
-        int sameRankCount = 0;
-        Double lastTime = null;
-
-        for (int i = 0; i < validResults.size(); i++) {
-            Result result = validResults.get(i);
-
-            if (lastTime != null && Math.abs(result.getTimeSeconds() - lastTime) < 0.001) {
-                // 并列排名
-                sameRankCount++;
-            } else {
-                rank += sameRankCount;
-                sameRankCount = 0;
+        int i = 0;
+        int n = validResults.size();
+        while (i < n) {
+            int j = i;
+            while (j + 1 < n
+                    && Math.abs(validResults.get(j + 1).getTimeSeconds()
+                            - validResults.get(i).getTimeSeconds()) < 0.001) {
+                j++;
             }
+            int groupSize = j - i + 1;
+            for (int k = i; k <= j; k++) {
+                Result result = validResults.get(k);
+                result.setTotalRank(rank);
 
-            result.setTotalRank(rank);
-            lastTime = result.getTimeSeconds();
+                double score = scoringTable.getOrDefault(rank, 0.0);
+                result.setScore(score);
 
-            // 分配分数
-            Double score = scoringTable.getOrDefault(rank, 0.0);
-            result.setScore(score);
-
-            // 检查是否破纪录
-            if (event.getRecord() != null) {
-                try {
-                    double recordTime = parseTimeToSeconds(event.getRecord());
-                    if (result.getTimeSeconds() < recordTime) {
-                        result.setIsRecord(true);
-                        // 破纪录加分
-                        boolean recordBonus = systemConfigRepository
-                                .findByConfigKey("record_bonus")
-                                .map(c -> Boolean.parseBoolean(c.getConfigValue()))
-                                .orElse(false);
-                        if (recordBonus) {
-                            int bonusPoints = systemConfigRepository
-                                    .findByConfigKey("record_bonus_points")
-                                    .map(c -> Integer.parseInt(c.getConfigValue()))
-                                    .orElse(10);
-                            result.setScore(result.getScore() + bonusPoints);
+                // 破纪录加分
+                if (recordBonusEnabled && event.getRecord() != null) {
+                    try {
+                        double recordTime = parseTimeToSeconds(event.getRecord());
+                        if (result.getTimeSeconds() < recordTime) {
+                            result.setIsRecord(true);
+                            result.setScore(result.getScore() + recordBonus);
                         }
+                    } catch (NumberFormatException ignored) {
+                        // 记录格式无法解析，跳过
                     }
-                } catch (NumberFormatException ignored) {
-                    // 记录格式无法解析，跳过
                 }
-            }
 
-            result.setUpdatedAt(LocalDateTime.now());
-            resultRepository.save(result);
+                // 参与分（未进入积分名次者给基础分）
+                if (participationEnabled && result.getScore() <= 0) {
+                    result.setScore(result.getScore() + participationScore);
+                }
+
+                // 接力项目积分加倍
+                if (isRelay) {
+                    result.setScore(result.getScore() * relayMultiplier);
+                }
+
+                result.setUpdatedAt(LocalDateTime.now());
+                resultRepository.save(result);
+            }
+            rank += sequential ? groupSize : 1;
+            i = j + 1;
         }
 
         // 计算热次排名
@@ -405,11 +412,10 @@ public class ResultService {
     }
 
     /**
-     * 解析积分规则JSON
-     * 默认规则: 第1名9分, 第2名7分, 第3名6分, ...
+     * 解析积分规则中的 rank_scores（支持 {"1":9,"2":7,...} 或 {"1":9.0,...}）
      */
-    private Map<Integer, Double> parseScoringRules(String json) {
-        // 默认积分规则
+    @SuppressWarnings("unchecked")
+    private Map<Integer, Double> parseRankScores(Object rankScoresObj) {
         Map<Integer, Double> defaultScores = new LinkedHashMap<>();
         defaultScores.put(1, 9.0);
         defaultScores.put(2, 7.0);
@@ -420,19 +426,47 @@ public class ResultService {
         defaultScores.put(7, 2.0);
         defaultScores.put(8, 1.0);
 
-        if (json == null || json.isBlank()) {
+        if (!(rankScoresObj instanceof Map)) {
             return defaultScores;
         }
+        Map<Integer, Double> table = new LinkedHashMap<>();
+        Map<Object, Object> map = (Map<Object, Object>) rankScoresObj;
+        for (Map.Entry<Object, Object> e : map.entrySet()) {
+            try {
+                int rank = Integer.parseInt(String.valueOf(e.getKey()).trim());
+                double score = Double.parseDouble(String.valueOf(e.getValue()).trim());
+                table.put(rank, score);
+            } catch (NumberFormatException ignored) {
+                // 跳过非法项
+            }
+        }
+        return table.isEmpty() ? defaultScores : table;
+    }
 
-        // 尝试从配置中获取自定义规则
-        try {
-            // 简单的JSON解析 - 实际应使用Jackson
-            // 这里返回默认值，自定义规则在Event.scoringRules字段中配置
-            return defaultScores;
-        } catch (Exception e) {
-            log.warn("解析积分规则失败，使用默认规则", e);
-            return defaultScores;
+    private boolean boolVal(Object v, boolean def) {
+        if (v instanceof Boolean b) return b;
+        if (v != null) {
+            String s = String.valueOf(v).trim().toLowerCase();
+            if ("true".equals(s) || "1".equals(s) || "yes".equals(s)) return true;
+            if ("false".equals(s) || "0".equals(s) || "no".equals(s)) return false;
         }
+        return def;
+    }
+
+    private int intVal(Object v, int def) {
+        if (v instanceof Number n) return n.intValue();
+        if (v != null) {
+            try { return Integer.parseInt(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return def;
+    }
+
+    private double doubleVal(Object v, double def) {
+        if (v instanceof Number n) return n.doubleValue();
+        if (v != null) {
+            try { return Double.parseDouble(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return def;
     }
 
     /**

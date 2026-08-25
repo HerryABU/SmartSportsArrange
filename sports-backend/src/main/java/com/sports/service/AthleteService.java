@@ -33,6 +33,7 @@ public class AthleteService {
     private final AthleteRepository athleteRepository;
     private final ClassInfoRepository classInfoRepository;
     private final ExcelService excelService;
+    private final NumberRuleService numberRuleService;
 
     /** 分页查询 */
     @Transactional(readOnly = true)
@@ -52,7 +53,14 @@ public class AthleteService {
             }
             return cb.and(predicates.toArray(new Predicate[0]));
         };
-        return athleteRepository.findAll(spec, pageable);
+        Page<Athlete> result = athleteRepository.findAll(spec, pageable);
+        // 预加载 classInfo，避免序列化时懒加载导致班级信息为 null
+        result.getContent().forEach(a -> {
+            if (a.getClassInfo() != null) {
+                try { a.getClassInfo().getName(); } catch (Exception ignored) {}
+            }
+        });
+        return result;
     }
 
     @Transactional(readOnly = true)
@@ -117,22 +125,21 @@ public class AthleteService {
         excelService.exportAthletes(response);
     }
 
-    /** 批量生成号码簿 */
+    /** 批量生成号码簿（按自定义号码簿规则） */
     public int batchGenerateNumbers(String grade, Long classId) {
         List<Athlete> athletes;
         if (classId != null) athletes = athleteRepository.findByClassIdAndGrade(classId, grade);
         else if (grade != null) athletes = athleteRepository.findByGrade(grade);
         else athletes = athleteRepository.findAll();
-        int seq = 1, generated = 0;
+
+        Map<String, Object> rule = numberRuleService.getNumberRule();
+        int generated = 0;
         for (Athlete a : athletes) {
             if (a.getNumber() != null && !a.getNumber().isBlank()) continue;
-            String gradeCode = mapGradeToCode(a.getGrade());
-            String classCode = a.getClassInfo() != null
-                    ? String.format("%02d", a.getClassInfo().getClassOrder() != null
-                        ? a.getClassInfo().getClassOrder() : 1) : "00";
+            int seq = 1;
             String number;
             do {
-                number = gradeCode + classCode + String.format("%02d", seq++);
+                number = numberRuleService.generateNumber(rule, a, a.getClassInfo(), seq++);
             } while (athleteRepository.findByNumber(number).isPresent());
             a.setNumber(number);
             a.setUpdatedAt(LocalDateTime.now());
@@ -146,16 +153,5 @@ public class AthleteService {
     /** 下载模板 */
     public void downloadTemplate(HttpServletResponse response) {
         excelService.getTemplate("athlete", response);
-    }
-
-    private String mapGradeToCode(String grade) {
-        if (grade == null) return "00";
-        return switch (grade) {
-            case "一年级" -> "01"; case "二年级" -> "02"; case "三年级" -> "03";
-            case "四年级" -> "04"; case "五年级" -> "05"; case "六年级" -> "06";
-            case "初一年级" -> "07"; case "初二年级" -> "08"; case "初三年级" -> "09";
-            case "高一年级" -> "10"; case "高二年级" -> "11"; case "高三年级" -> "12";
-            default -> "00";
-        };
     }
 }

@@ -14,6 +14,14 @@ if (-not $SkipFrontend) {
   Set-Location "$root\sports-frontend"
   npx vite build
   if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Frontend failed" -ForegroundColor Red; exit 1 }
+  # 同步前端产物到后端静态资源目录（static 已 gitignore，构建时生成，保证 jar 打包包含前端）
+  $dist = Join-Path $root "sports-frontend\dist"
+  $static = Join-Path $root "sports-backend\src\main\resources\static"
+  if (Test-Path $dist) {
+    if (Test-Path $static) { Remove-Item -Recurse -Force $static }
+    Copy-Item -Recurse $dist $static
+    Write-Host "[1/2] Frontend assets synced to src/main/resources/static" -ForegroundColor Green
+  }
   Write-Host "[1/2] Frontend OK" -ForegroundColor Green
 }
 

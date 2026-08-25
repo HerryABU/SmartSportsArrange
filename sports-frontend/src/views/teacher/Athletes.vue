@@ -108,8 +108,8 @@
         <el-table-column prop="name" label="姓名" min-width="100" align="center" />
         <el-table-column prop="gender" label="性别" width="80" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.gender === '男' ? 'primary' : 'danger'" size="small">
-              {{ row.gender }}
+            <el-tag :type="row.gender === 'M' ? 'primary' : 'danger'" size="small">
+              {{ row.gender === 'M' ? '男' : row.gender === 'F' ? '女' : row.gender }}
             </el-tag>
           </template>
         </el-table-column>

@@ -1,6 +1,7 @@
 package com.sports.controller;
 
 import com.sports.common.ApiResponse;
+import com.sports.service.NumberRuleService;
 import com.sports.service.SystemService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,6 +17,7 @@ import java.util.Map;
 public class SystemController {
 
     private final SystemService systemService;
+    private final NumberRuleService numberRuleService;
 
     // ---- 配置 ----
 
@@ -49,6 +51,69 @@ public class SystemController {
         log.info("保存积分规则");
         systemService.saveScoring(body);
         return ApiResponse.success("积分规则保存成功", null);
+    }
+
+    // ---- 号码簿规则（完全自定义） ----
+
+    @GetMapping("/number-rule")
+    public ApiResponse<?> getNumberRule() {
+        return ApiResponse.success(numberRuleService.getNumberRule());
+    }
+
+    @PutMapping("/number-rule")
+    public ApiResponse<?> saveNumberRule(@RequestBody Map<String, Object> body) {
+        log.info("保存号码簿规则: {}", body);
+        return ApiResponse.success("号码簿规则保存成功", numberRuleService.saveNumberRule(body));
+    }
+
+    @PostMapping("/number-rule/preview")
+    public ApiResponse<?> previewNumberRule(@RequestBody Map<String, Object> body) {
+        String template = (String) body.getOrDefault("template", "{grade}{class}{seq:02d}");
+        String gradeName = (String) body.getOrDefault("grade", "高一年级");
+        String className = (String) body.getOrDefault("className", "高一1班");
+        int seq = body.get("seq") instanceof Number n ? n.intValue() : 1;
+        boolean autoPadZero = !"false".equals(String.valueOf(body.getOrDefault("auto_pad_zero", true)));
+        String number = numberRuleService.preview(template, gradeName, className, seq, autoPadZero);
+        return ApiResponse.success(Map.of("number", number));
+    }
+
+    // ---- 编排规则（完全自定义） ----
+
+    @GetMapping("/arrange-rule")
+    public ApiResponse<?> getArrangeRule() {
+        return ApiResponse.success(systemService.getArrangeRule());
+    }
+
+    @PutMapping("/arrange-rule")
+    public ApiResponse<?> saveArrangeRule(@RequestBody Map<String, Object> body) {
+        log.info("保存编排规则: {}", body);
+        return ApiResponse.success("编排规则保存成功", systemService.saveArrangeRule(body));
+    }
+
+    // ---- 积分规则（完全自定义） ----
+
+    @GetMapping("/scoring-rule")
+    public ApiResponse<?> getScoringRule() {
+        return ApiResponse.success(systemService.getScoringRule());
+    }
+
+    @PutMapping("/scoring-rule")
+    public ApiResponse<?> saveScoringRule(@RequestBody Map<String, Object> body) {
+        log.info("保存积分规则: {}", body);
+        return ApiResponse.success("积分规则保存成功", systemService.saveScoringRule(body));
+    }
+
+    // ---- 应用运行配置（服务端口，重启生效） ----
+
+    @GetMapping("/app-config")
+    public ApiResponse<?> getAppConfig() {
+        return ApiResponse.success(systemService.getAppConfig());
+    }
+
+    @PutMapping("/app-config")
+    public ApiResponse<?> saveAppConfig(@RequestBody Map<String, Object> body) {
+        log.info("保存应用运行配置: {}", body);
+        return ApiResponse.success("应用运行配置保存成功（重启后生效）", systemService.saveAppConfig(body));
     }
 
     // ---- 年级 ----
@@ -87,6 +152,12 @@ public class SystemController {
                 "service", "Sports Meet System",
                 "timestamp", String.valueOf(System.currentTimeMillis())
         ));
+    }
+
+    /** 健康检查详情（管理员面板展示） */
+    @GetMapping("/health-detail")
+    public ApiResponse<?> healthDetail() {
+        return ApiResponse.success(systemService.getHealthDetail());
     }
 
     @GetMapping("/logs")
