@@ -427,24 +427,28 @@ sys_user ──┐
 # 默认 SQLite（零配置）
 java -jar sports-1.0.0.jar
 
-# 指定端口
+# 自定义端口 + 绑定地址（推荐写法）
+java -jar sports-1.0.0.jar --app.port=8899 --app.host=::
+
+# 等价的 Spring 标准写法
 java -jar sports-1.0.0.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-1.0.0.jar > app.log 2>&1 &
+nohup java -jar sports-1.0.0.jar --app.port=8899 > app.log 2>&1 &
 ```
 
-### 🔄 更换服务端口（四种方式，优先级从高到低）
+### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-1.0.0.jar --server.port=9090`<br>`.\start.ps1 -Port 9090` / `start.bat --server.port=9090` | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-1.0.0.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
 | ② 环境变量 | `SERVER_PORT=9090 java -jar sports-1.0.0.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell）<br>Docker：`docker run -e SERVER_PORT=9090 ...` | 立即（本次运行） |
-| ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090}`（不存在则新建），或用系统设置界面保存 | 重启后生效 |
+| ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}`（不存在则新建），或用系统设置界面保存端口 | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 应用运行配置 → 服务端口** → 保存端口配置 → 重启应用 | 重启后生效 |
 
 **说明：**
-- 未做任何配置时默认端口为 **8080**；端口被占用会报 `Port 8080 was already in use`，换一个端口即可。
+- 未做任何配置时默认端口为 **8080**、绑定全部网卡（0.0.0.0 / ::）；端口被占用会报 `Port 8080 was already in use`，换一个端口即可。
+- `--app.host` 支持 IPv4 / IPv6 与通配地址：`0.0.0.0`（仅 IPv4 全网卡）、`::`（IPv6 全网卡，兼容 IPv4）、`127.0.0.1` / `::1`（仅本机）。
 - `data/app-config.json`、`sports_meet.db` 均相对**项目根目录**解析；请使用仓库根目录下的 `start.bat` / `start.ps1` 启动（脚本会自动切换到根目录），或先 `cd` 到根目录再运行 `java -jar`。
 - 命令行参数（方式①）优先级最高，可临时覆盖配置文件与环境变量中的端口。
 

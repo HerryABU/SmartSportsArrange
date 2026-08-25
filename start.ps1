@@ -1,4 +1,4 @@
-param([int]$Port = -1)
+param([int]$Port = -1, [string]$Host = "")
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
@@ -25,7 +25,10 @@ if ($Port -lt 0) {
 }
 if ($Port -lt 0) { $Port = 8080 }
 
-Write-Host "=== Starting on port $Port ===" -ForegroundColor Green
+$extra = @("--app.port=$Port")
+if ($Host -ne "") { $extra += "--app.host=$Host" }
+
+Write-Host "=== Starting on port $Port ($(if ($Host -ne '') { "host $Host" } else { 'all interfaces' })) ===" -ForegroundColor Green
 Write-Host "    Open: http://localhost:$Port" -ForegroundColor Cyan
 Write-Host ""
-java -jar $jar --server.port=$Port
+java -jar $jar @extra
