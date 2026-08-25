@@ -171,6 +171,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
 const viewMode = ref('list')
@@ -324,11 +325,11 @@ function handleView(row) {
 }
 
 function downloadTemplate() {
-  window.open('/api/excel/template/registration', '_blank')
+  window.open(apiBase() + '/excel/template/registration', '_blank')
 }
 
 function handleExport() {
-  window.open('/api/registrations/export', '_blank')
+  window.open(apiBase() + '/registrations/export', '_blank')
 }
 
 onMounted(() => {

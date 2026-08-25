@@ -1,9 +1,10 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { apiBase } from '@/utils/base'
 
 const request = axios.create({
-  baseURL: '/api',
+  baseURL: apiBase(),
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
@@ -78,7 +79,7 @@ request.interceptors.response.use(
           isRefreshing = true
 
           return new Promise((resolve, reject) => {
-            axios.post('/api/auth/refresh', { refreshToken })
+            axios.post(apiBase() + '/auth/refresh', { refreshToken })
               .then(res => {
                 const data = res.data?.data || res.data
                 const newToken = data?.accessToken

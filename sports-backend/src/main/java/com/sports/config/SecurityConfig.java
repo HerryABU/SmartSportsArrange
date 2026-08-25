@@ -40,6 +40,15 @@ public class SecurityConfig {
                         .requestMatchers("/", "/index.html", "/favicon.svg", "/icons.svg").permitAll()
                         .requestMatchers("/assets/**").permitAll()
                         .requestMatchers("/login", "/teacher/**", "/class-teacher/**", "/student/**").permitAll()
+                        // 任意 GET 且非 API 的路径放行 —— 兼容反向代理子路径部署（如 /sportmg/login 帽子+SPA 路由）
+                        // API 均以 /api 开头，不在此放行范围，仍由下方规则按角色鉴权
+                        .requestMatchers(req -> {
+                            if (!"GET".equalsIgnoreCase(req.getMethod())) return false;
+                            String p = req.getRequestURI();
+                            if (p.startsWith("/api/")) return false;
+                            if (p.startsWith("/actuator")) return false;
+                            return true;
+                        }).permitAll()
 
                         // 公开 API
                         .requestMatchers("/api/auth/login").permitAll()

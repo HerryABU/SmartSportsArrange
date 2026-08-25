@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { appBase, apiBase } from '@/utils/base'
 
 const routes = [
   {
@@ -186,7 +187,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(appBase()),
   routes
 })
 
@@ -196,7 +197,7 @@ let setupStatus = null
 async function checkInstalled() {
   if (setupStatus !== null) return setupStatus
   try {
-    const res = await fetch('/api/setup/status')
+    const res = await fetch(apiBase() + '/setup/status')
     const data = await res.json()
     setupStatus = data?.data?.installed ?? true
   } catch (e) {

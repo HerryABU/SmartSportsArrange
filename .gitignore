@@ -15,6 +15,9 @@ dist_old*/
 
 # 前端构建产物（已同步至后端静态资源目录，构建时生成，不纳入版本控制）
 sports-backend/src/main/resources/static/
+# 构建前重命名的旧静态目录（规避构建清空拦截，构建后清理）
+static_old*/
+sports-backend/src/main/resources/static_old/
 
 # ---------- 工作区本地数据（记忆/技能等，不提交） ----------
 .workbuddy/

@@ -64,6 +64,33 @@ java -jar sports-1.0.0.jar
 
 > ⚠️ Windows CMD 用户：执行前先运行 `chcp 65001`，或直接双击 `start.bat`。PowerShell 用户运行 `.\start.ps1`。JAR 已内置终端编码自动检测，非 UTF-8 终端会输出英文提示。
 
+### 反向代理子路径部署（如 `/sportmg/` 帽子）
+
+系统原生支持挂在任意反向代理子路径下：`http://主站/:port/{name}/【正常业务路径】`，其中 `{name}`（如 `sportmg`）只是例子，**任意帽子均可、严禁也不需要在代码里写死**。前端资源（js/css）采用相对路径构建，后端内置「智能前缀剥离」过滤器，自动兼容两种反向代理形态：
+
+**形态 A：保留帽子转发**（推荐，后端收到 `/sportmg/...`，由后端智能剥离）
+
+```nginx
+location /sportmg/ {
+    proxy_pass http://127.0.0.1:8080;          # 不带尾部斜杠 = 保留前缀
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+**形态 B：剥掉帽子转发**（后端收到 `/login`、`/api/...` 干净路径）
+
+```nginx
+location /sportmg/ {
+    proxy_pass http://127.0.0.1:8080/;         # 带尾部斜杠 = 剥离前缀
+    proxy_set_header Host $host;
+    ...
+}
+```
+
+两种形态下浏览器地址均保持 `http://host/sportmg/login` 形态，路由、资源、API 全部自适应；无反向代理时直接访问 `http://localhost:8080` 行为与之前完全一致。访问 `http://host/sportmg/` 会自动进入登录/安装向导页。
+
 ---
 
 ## 👥 默认账号

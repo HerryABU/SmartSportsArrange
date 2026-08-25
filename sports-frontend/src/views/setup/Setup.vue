@@ -108,6 +108,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
+import { appBase } from '@/utils/base'
 
 const router = useRouter()
 const step = ref(0)
@@ -179,10 +180,10 @@ async function doInstall() {
 }
 
 function goLogin() {
-  window.location.href = '/login'
+  window.location.href = appBase() + '/login'
 }
 function reloadPage() {
-  window.location.href = '/'
+  window.location.href = appBase() + '/'
 }
 </script>
 

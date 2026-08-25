@@ -152,6 +152,7 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -213,7 +214,7 @@ async function generateOrderBook() {
 }
 
 function exportOrderBook() {
-  window.open('/api/excel/export/order-book', '_blank')
+  window.open(apiBase() + '/excel/export/order-book', '_blank')
 }
 
 async function generateResultBook() {
@@ -239,7 +240,7 @@ async function generateResultBook() {
 }
 
 function exportResultBook() {
-  window.open('/api/excel/export/result-book', '_blank')
+  window.open(apiBase() + '/excel/export/result-book', '_blank')
 }
 
 async function fetchStatistics() {

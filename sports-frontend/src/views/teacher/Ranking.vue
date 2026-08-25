@@ -201,6 +201,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
 const activeTab = ref('individual')
@@ -316,13 +317,13 @@ function onTabChange(tab) {
 }
 
 function exportIndividual() {
-  window.open('/api/ranking/individual-score/export', '_blank')
+  window.open(apiBase() + '/ranking/individual-score/export', '_blank')
 }
 function exportTeam() {
-  window.open('/api/ranking/team-score/export', '_blank')
+  window.open(apiBase() + '/ranking/team-score/export', '_blank')
 }
 function exportRecords() {
-  window.open('/api/ranking/records/export', '_blank')
+  window.open(apiBase() + '/ranking/records/export', '_blank')
 }
 
 onMounted(() => {

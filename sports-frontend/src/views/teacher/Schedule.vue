@@ -133,6 +133,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Download, RefreshLeft, EditPen } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
 const arranging = ref(false)
@@ -238,7 +239,7 @@ async function saveEdit() {
 }
 
 function exportSheet() {
-  window.open('/api/schedule/export', '_blank')
+  window.open(apiBase() + '/schedule/export', '_blank')
 }
 
 async function clearAll() {

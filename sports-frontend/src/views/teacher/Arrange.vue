@@ -193,6 +193,7 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 import HeatGrid from './components/HeatGrid.vue'
 
 const searchKeyword = ref('')
@@ -368,7 +369,7 @@ const rollbackArrange = async () => {
 }
 
 const exportSheet = () => {
-  window.open('/api/arrange/events/' + selectedEvent.value.id + '/export', '_blank')
+  window.open(apiBase() + '/arrange/events/' + selectedEvent.value.id + '/export', '_blank')
 }
 </script>
 

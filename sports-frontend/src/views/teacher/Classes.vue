@@ -203,6 +203,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, DocumentCopy } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 // ---------- grade options ----------
 const gradeOptions = [
@@ -275,7 +276,7 @@ const formRules = {
 
 // ---------- upload ----------
 const token = localStorage.getItem('token') || ''
-const importUrl = '/api/classes/import'
+const importUrl = apiBase() + '/classes/import'
 const uploadHeaders = computed(() => ({
   Authorization: token ? `Bearer ${token}` : ''
 }))
@@ -434,7 +435,7 @@ function handleImportError(error, uploadFile) {
 }
 
 function downloadTemplate() {
-  window.open('/api/classes/template', '_blank')
+  window.open(apiBase() + '/classes/template', '_blank')
 }
 
 async function handleExport() {
@@ -442,7 +443,7 @@ async function handleExport() {
     // Use axios directly for blob download since the interceptor unwraps JSON
     const axios = (await import('axios')).default
     const token = localStorage.getItem('token')
-    const response = await axios.get('/api/classes/export', {
+    const response = await axios.get(apiBase() + '/classes/export', {
       responseType: 'blob',
       headers: token ? { Authorization: `Bearer ${token}` } : {}
     })

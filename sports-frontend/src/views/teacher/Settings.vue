@@ -613,6 +613,7 @@ import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, DocumentCopy, Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -794,7 +795,7 @@ async function deleteBackup(row) {
 }
 
 function downloadBackup(row) {
-  window.open('/api/backup/download/' + encodeURIComponent(row.fileName), '_blank')
+  window.open(apiBase() + '/backup/download/' + encodeURIComponent(row.fileName), '_blank')
 }
 
 // ============ 健康检查 ============
@@ -868,7 +869,7 @@ async function fetchClassList() {
 const userForm = reactive({ username:'', realName:'', role:'TEACHER', password:'', phone:'' })
 const gradeForm = reactive({ name:'', sortOrder:0 })
 
-const userImportUrl = '/api/system/users/import'
+const userImportUrl = apiBase() + '/system/users/import'
 const uploadHeaders = computed(() => ({
   Authorization: 'Bearer ' + authStore.token
 }))
@@ -1236,7 +1237,7 @@ function onUserImportError() {
   ElMessage.error('导入失败，请检查文件格式')
 }
 function downloadUserTemplate() {
-  window.open('/api/system/users/template', '_blank')
+  window.open(apiBase() + '/system/users/template', '_blank')
 }
 
 onMounted(() => {

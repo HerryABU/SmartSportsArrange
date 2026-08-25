@@ -249,6 +249,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Edit, Delete, Upload, Download, DocumentCopy, List } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 import ImportPreview from '@/components/ImportPreview.vue'
 
 // ==================== 响应式数据 ====================
@@ -526,7 +527,7 @@ function onImported(result) {
 }
 
 function downloadTemplate() {
-  window.open('/api/athletes/template', '_blank')
+  window.open(apiBase() + '/athletes/template', '_blank')
 }
 
 async function handleExport() {

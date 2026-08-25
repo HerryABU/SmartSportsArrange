@@ -299,6 +299,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy, Plus, CircleCheck, Upload, Download } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 // ==================== 类型定义 ====================
 interface EventItem {
@@ -399,7 +400,7 @@ const formRules: FormRules = {
 
 // ==================== 导入/导出 ====================
 const token = localStorage.getItem('token') || ''
-const importUrl = '/api/events/import'
+const importUrl = apiBase() + '/events/import'
 const uploadHeaders = computed(() => ({ Authorization: token ? `Bearer ${token}` : '' }))
 
 function onImportSuccess(res: any) {
@@ -418,7 +419,7 @@ function downloadTemplate() {
 }
 
 function handleExport() {
-  window.open('/api/events/export', '_blank')
+  window.open(apiBase() + '/events/export', '_blank')
 }
 
 // ==================== 方法 ====================

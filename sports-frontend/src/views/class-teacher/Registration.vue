@@ -166,6 +166,7 @@ import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, DocumentCopy, Search, Download } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
 const importing = ref(false)
@@ -260,7 +261,7 @@ async function cancelReg(row) {
 async function exportRegistrations() {
   const token = localStorage.getItem('token') || ''
   try {
-    const res = await fetch('/api/class-teacher/registrations/export', {
+    const res = await fetch(apiBase() + '/class-teacher/registrations/export', {
       headers: { Authorization: `Bearer ${token}` }
     })
     if (!res.ok) throw new Error('导出失败')
@@ -275,7 +276,7 @@ async function exportRegistrations() {
 
 // ===== 导入 =====
 const token = localStorage.getItem('token') || ''
-const importRosterUrl = '/api/class-teacher/import-roster'
+const importRosterUrl = apiBase() + '/class-teacher/import-roster'
 const uploadHeaders = computed(() => ({ Authorization: token ? `Bearer ${token}` : '' }))
 
 function onImportSuccess(res) {

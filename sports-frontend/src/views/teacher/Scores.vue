@@ -121,6 +121,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
 const eventList = ref([])
@@ -140,7 +141,7 @@ const isTrackEvent = computed(() => {
 const unitLabel = computed(() => isTrackEvent.value ? '秒' : '米')
 const scorePlaceholder = computed(() => isTrackEvent.value ? '如：12.34' : '如：5.20')
 
-const uploadUrl = computed(() => `/api/results/import?eventId=${selectedEventId.value}&heat=${selectedHeat.value || ''}`)
+const uploadUrl = computed(() => apiBase() + '/results/import?eventId=' + selectedEventId.value + '&heat=' + (selectedHeat.value || ''))
 const uploadHeaders = computed(() => ({
   Authorization: `Bearer ${localStorage.getItem('token')}`
 }))

@@ -43,12 +43,13 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, DocumentCopy, Plus } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { apiBase } from '@/utils/base'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore=useAuthStore();const loading=ref(false);const tableData=ref([])
 const page=ref(1);const size=ref(50);const total=ref(0);const showAdd=ref(false);const adding=ref(false)
 const form=reactive({name:'',gender:'M',studentId:''})
-const uploadUrl='/api/class-teacher/import-roster';const uploadHeaders=computed(()=>({Authorization:'Bearer '+authStore.token}))
+const uploadUrl=apiBase()+'/class-teacher/import-roster';const uploadHeaders=computed(()=>({Authorization:'Bearer '+authStore.token}))
 
 function beforeUpload(f){const e=f.name.endsWith('.xlsx')||f.name.endsWith('.xls');if(!e)ElMessage.error('请上传.xlsx/.xls');return e}
 function onImportSuccess(r){if(r?.code===200){ElMessage.success(`导入：学生${r.data.createdUsers}个，运动员${r.data.createdAthletes}个`);fetchData()}else ElMessage.error(r?.message||'失败')}
