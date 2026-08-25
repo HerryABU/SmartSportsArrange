@@ -7,6 +7,7 @@ import com.sports.repository.UserRepository;
 import com.sports.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,14 +31,14 @@ public class AuthService {
      */
     public LoginResponse login(LoginRequest request) {
         User user = userRepository.findByUsername(request.getUsername())
-                .orElseThrow(() -> new RuntimeException("用户名或密码错误"));
+                .orElseThrow(() -> new BadCredentialsException("用户名或密码错误"));
 
         if (!"active".equals(user.getStatus())) {
             throw new RuntimeException("账号已被禁用，请联系管理员");
         }
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            throw new RuntimeException("用户名或密码错误");
+            throw new BadCredentialsException("用户名或密码错误");
         }
 
         // 更新最后登录时间

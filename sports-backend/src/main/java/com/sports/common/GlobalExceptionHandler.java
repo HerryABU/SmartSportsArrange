@@ -1,7 +1,9 @@
 package com.sports.common;
 
 import jakarta.validation.ConstraintViolationException;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.catalina.connector.ClientAbortException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -75,8 +77,24 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(400, e.getMessage()));
     }
 
+    /**
+     * 客户端连接中断（如浏览器刷新/取消请求、反向代理超时导致静态资源传输被掐断）。
+     * 此时响应已经开始写出，无法也无需再回写错误体，静默降级即可，
+     * 避免被兜底 handler 当成 500「系统异常」产生大量噪音，甚至二次异常。
+     */
+    @ExceptionHandler(ClientAbortException.class)
+    public void handleClientAbort(ClientAbortException e) {
+        log.debug("客户端连接中断（响应传输被取消）: {}", e.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponse<Void>> handleException(Exception e) {
+    public ResponseEntity<ApiResponse<Void>> handleException(Exception e, HttpServletResponse response) {
+        if (response.isCommitted()) {
+            // 响应已开始写出（如静态资源传输中断），Content-Type 已锁定，
+            // 无法回写错误 JSON，仅记录日志，避免二次异常
+            log.error("系统异常（响应已提交，无法返回错误体）: {}", e.getMessage());
+            return null;
+        }
         log.error("系统异常", e);
         return ResponseEntity.status(500)
                 .body(ApiResponse.error(500, "系统内部错误: " + e.getMessage()));
