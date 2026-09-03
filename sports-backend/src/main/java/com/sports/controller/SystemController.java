@@ -90,6 +90,25 @@ public class SystemController {
         return ApiResponse.success("编排规则保存成功", systemService.saveArrangeRule(body));
     }
 
+    // ---- 运动会日程配置（日期/时段/年级顺序/串行并行，全部可配置） ----
+
+    @GetMapping("/meet-schedule")
+    public ApiResponse<?> getMeetSchedule() {
+        return ApiResponse.success(systemService.getMeetSchedule());
+    }
+
+    @PutMapping("/meet-schedule")
+    public ApiResponse<?> saveMeetSchedule(@RequestBody Map<String, Object> body) {
+        log.info("保存运动会日程配置: {}", body);
+        return ApiResponse.success("运动会日程配置保存成功", systemService.saveMeetSchedule(body));
+    }
+
+    /** 年级出场顺序（按 sortOrder 升序，管理员可调） */
+    @GetMapping("/grade-order")
+    public ApiResponse<?> getGradeOrder() {
+        return ApiResponse.success(systemService.getGradeOrder());
+    }
+
     // ---- 积分规则（完全自定义） ----
 
     @GetMapping("/scoring-rule")
