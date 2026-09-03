@@ -38,6 +38,31 @@ public class Registration {
     @Builder.Default
     private String status = "pending";
 
+    // ==================== 团体赛支持（表格1 的 G 列） ====================
+
+    /** 是否团体赛报名（冗余自 event.team，便于查询） */
+    @Column
+    @Builder.Default
+    @com.fasterxml.jackson.annotation.JsonProperty("isTeam")
+    private Boolean team = false;
+
+    /**
+     * 队伍序号：同一班级在同一项目可报多支队伍（如 4×100 接力报两队），1-based。
+     * 非团体赛固定为 0。
+     */
+    @Column
+    @Builder.Default
+    private Integer teamNo = 0;
+
+    /** 队伍显示名，如"高一(1)班 1 队" */
+    @Column(length = 50)
+    private String teamName;
+
+    /** 报名来源：onsite=班主任现场报名；offline=后置导入（已报名表导入） */
+    @Column(length = 20)
+    @Builder.Default
+    private String source = "onsite";
+
     @Column(nullable = true)
     private Long registeredBy;
 
