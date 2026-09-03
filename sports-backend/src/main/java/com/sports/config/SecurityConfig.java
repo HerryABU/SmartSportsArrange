@@ -80,6 +80,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/athletes/**").hasAnyAuthority("ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/classes/**").hasAnyAuthority("ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/statistics/**").hasAnyAuthority("ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        // 入场式得分：班主任可查，班主任端（现场报名）亦需读
+                        .requestMatchers(HttpMethod.GET, "/api/parade-score/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
                         // ===== 体育老师端 - 管理 =====
                         .requestMatchers("/api/classes/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
@@ -90,10 +92,15 @@ public class SecurityConfig {
                         .requestMatchers("/api/ranking/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/statistics/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/excel/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/parade-score/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
                         // ===== 体育老师可访问的系统配置 =====
+                        // 运动会日程（日期/时段/年级顺序/串行并行）与编排规则由体育老师调整
                         .requestMatchers("/api/system/config/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/system/grades/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/system/meet-schedule/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/system/grade-order/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/system/arrange-rule/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
                         // ===== 超级管理员独有（用户管理 / 数据库迁移 / 备份） =====
                         .requestMatchers("/api/system/**").hasAuthority("ROLE_SUPER_ADMIN")

@@ -3,8 +3,10 @@ package com.sports.service;
 import com.sports.entity.Athlete;
 import com.sports.entity.ClassInfo;
 import com.sports.entity.Event;
+import com.sports.entity.ParadeScore;
 import com.sports.entity.Result;
 import com.sports.repository.ClassInfoRepository;
+import com.sports.repository.ParadeScoreRepository;
 import com.sports.repository.ResultRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,20 +21,25 @@ import static org.mockito.Mockito.*;
 
 /**
  * 排名与积分聚合测试。
- * 覆盖：团体总分聚合与排序、个人积分聚合与分页、单项目排名。
+ * 覆盖：团体总分聚合与排序、合分排行（男女/入场式口径）、个人积分聚合与分页、单项目排名。
  */
 @ExtendWith(MockitoExtension.class)
 class RankingServiceTest {
 
     @Mock private ResultRepository resultRepository;
     @Mock private ClassInfoRepository classInfoRepository;
+    @Mock private ParadeScoreRepository paradeScoreRepository;
     @Mock private SystemService systemService;
 
     @InjectMocks private RankingService rankingService;
 
     private Result result(Long id, double score, Integer rank, ClassInfo ci) {
+        return result(id, score, rank, ci, "男");
+    }
+
+    private Result result(Long id, double score, Integer rank, ClassInfo ci, String gender) {
         Athlete a = Athlete.builder().id(id).name("R" + id).grade("高一")
-                .gender("男").classInfo(ci).build();
+                .gender(gender).classInfo(ci).build();
         return Result.builder().id(id).athlete(a).event(Event.builder().id(1L).build())
                 .score(score).totalRank(rank).status("valid").build();
     }
@@ -91,6 +98,67 @@ class RankingServiceTest {
         assertEquals(3, list.size());
         assertEquals(1, list.get(0).get("rank"));
         assertEquals(3, ranking.get("totalCount"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_aggregatesGenderAndParade() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        ClassInfo cb = ClassInfo.builder().id(2L).name("高一2班").grade("高一").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, ca),               // 男
+                result(2L, 7.0, 2, ca, "女"),         // 女
+                result(3L, 6.0, 3, cb));              // 男
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of(
+                ParadeScore.builder().id(1L).classInfo(ca).className("高一1班").grade("高一").score(5.0).build()));
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> board = rankingService.getScoreBoard(null, true, 0, false);
+
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
+        assertEquals(2, rows.size());
+
+        Map<String, Object> a = rows.get(0);
+        assertEquals("高一1班", a.get("className"));
+        assertEquals(9.0, (Double) a.get("maleScore"), 0.001);
+        assertEquals(7.0, (Double) a.get("femaleScore"), 0.001);
+        assertEquals(16.0, (Double) a.get("totalScore"), 0.001);
+        assertEquals(5.0, (Double) a.get("paradeScore"), 0.001);
+        // includeParade=true → totalWithParade = 赛事 16 + 入场式 5 = 21
+        assertEquals(21.0, (Double) a.get("totalWithParade"), 0.001);
+        assertEquals(1, a.get("rank"));
+
+        // 高一2班未录入入场式 → 不累加入场式分
+        Map<String, Object> b = rows.get(1);
+        assertEquals(Boolean.FALSE, b.get("hasParade"));
+        assertEquals(6.0, (Double) b.get("totalWithParade"), 0.001);
+        assertEquals(2, b.get("rank"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_gradeFilterAndTopN() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        ClassInfo cb = ClassInfo.builder().id(3L).name("高二1班").grade("高二").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, ca),
+                result(2L, 6.0, 2, cb));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of());
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        // 按年级过滤：只统计高二 → 1 班
+        Map<String, Object> board = rankingService.getScoreBoard("高二", false, 0, false);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
+        assertEquals(1, rows.size());
+        assertEquals("高二1班", rows.get(0).get("className"));
+
+        // topN=1：只返回第一名
+        Map<String, Object> board2 = rankingService.getScoreBoard(null, false, 1, false);
+        List<Map<String, Object>> top = (List<Map<String, Object>>) board2.get("top");
+        assertEquals(1, top.size());
+        assertEquals("高一1班", top.get(0).get("className"));
     }
 
     private Map<String, Object> defaultRule(String type, String sort) {

@@ -13,6 +13,8 @@ public interface ClassInfoRepository extends JpaRepository<ClassInfo, Long>, Jpa
 
     Optional<ClassInfo> findByName(String name);
 
+    Optional<ClassInfo> findByGradeAndName(String grade, String name);
+
     Optional<ClassInfo> findByCode(String code);
 
     List<ClassInfo> findByGrade(String grade);
