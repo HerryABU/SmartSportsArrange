@@ -226,9 +226,10 @@
           <el-input v-model="formData.name" placeholder="请输入项目名称" maxlength="50" show-word-limit />
         </el-form-item>
         <el-form-item label="项目类型" prop="eventType">
-          <el-select v-model="formData.eventType" placeholder="请选择项目类型" style="width: 100%">
-            <el-option label="径赛" value="径赛" />
-            <el-option label="田赛" value="田赛" />
+          <el-select v-model="formData.eventType" placeholder="请选择项目类型" style="width: 100%"
+                     @change="onEventTypeChange">
+            <el-option label="径赛（田径/竞速，占道次）" value="径赛" />
+            <el-option label="田赛（跳跃/投掷，不占道次）" value="田赛" />
           </el-select>
         </el-form-item>
         <el-form-item label="性别" prop="gender">
@@ -237,6 +238,46 @@
             <el-option label="女子组" value="女子组" />
             <el-option label="混合组" value="混合组" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="项目编码" prop="code">
+          <el-input v-model="formData.code" placeholder="如 100M / TY_F（报名表 F 列可填）" maxlength="20" />
+        </el-form-item>
+        <el-form-item label="道次" prop="laneCount">
+          <el-input-number
+            v-model="formData.laneCount"
+            :min="0"
+            :max="12"
+            :disabled="formData.eventType === '田赛'"
+            placeholder="径赛填道次，田赛为 0"
+            style="width: 100%"
+          />
+          <div class="form-tip" v-if="formData.eventType === '田赛'">田赛不占道次，固定为 0</div>
+          <div class="form-tip" v-else>径赛跑道数（默认 8）</div>
+        </el-form-item>
+        <el-form-item label="团体每队人数" prop="teamSize">
+          <el-input-number
+            v-model="formData.teamSize"
+            :min="0"
+            :max="99"
+            placeholder="0 = 非团体赛"
+            style="width: 100%"
+          />
+          <div class="form-tip">接力等团体项目填写每队人数（4×100 → 4）；0 表示个人项目</div>
+        </el-form-item>
+        <el-form-item label="调度模式" prop="scheduleMode">
+          <el-select v-model="formData.scheduleMode" style="width: 100%">
+            <el-option label="串行（独占场地依次进行）" value="serial" />
+            <el-option label="并行（多场地同时开赛）" value="parallel" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="默认场地" prop="defaultVenue">
+          <el-input v-model="formData.defaultVenue" placeholder="如 田径场 / 田赛A区" maxlength="50" />
+        </el-form-item>
+        <el-form-item label="最大用时/间隔">
+          <div style="display:flex;gap:8px;width:100%">
+            <el-input-number v-model="formData.maxDurationMinutes" :min="1" :max="600" placeholder="最大用时(分)" style="flex:1" />
+            <el-input-number v-model="formData.intervalMinutes" :min="0" :max="120" placeholder="间隔(分)" style="flex:1" />
+          </div>
         </el-form-item>
         <el-form-item label="年级组" prop="gradeGroup">
           <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%">
@@ -312,6 +353,16 @@ interface EventItem {
   description: string
   sortOrder: number
   enabled: boolean
+  // 表格2 / 调度字段
+  code?: string
+  isTrack?: boolean
+  laneCount?: number
+  isTeam?: boolean
+  teamSize?: number
+  scheduleMode?: string
+  defaultVenue?: string
+  maxDurationMinutes?: number
+  intervalMinutes?: number
 }
 
 interface TemplateItem {
@@ -388,6 +439,15 @@ const formData = reactive<EventItem>({
   description: '',
   sortOrder: 0,
   enabled: true,
+  code: '',
+  isTrack: true,
+  laneCount: 8,
+  isTeam: false,
+  teamSize: 0,
+  scheduleMode: 'serial',
+  defaultVenue: '',
+  maxDurationMinutes: undefined,
+  intervalMinutes: undefined,
 })
 
 const formRules: FormRules = {
@@ -496,6 +556,7 @@ function selectTemplate(tpl: TemplateItem) {
   formData.description = ''
   formData.sortOrder = 0
   formData.enabled = true
+  onEventTypeChange(tpl.eventType)
 
   isEdit.value = false
   editingId.value = null
@@ -514,14 +575,7 @@ function openAddDialog() {
 function openEditDialog(row: EventItem) {
   isEdit.value = true
   editingId.value = row.id ?? null
-  formData.name = row.name
-  formData.eventType = row.eventType
-  formData.gender = row.gender
-  formData.gradeGroup = row.gradeGroup
-  formData.maxParticipants = row.maxParticipants
-  formData.description = row.description ?? ''
-  formData.sortOrder = row.sortOrder ?? 0
-  formData.enabled = row.enabled
+  fillFormFromRow(row)
   formDialogVisible.value = true
 }
 
@@ -535,6 +589,59 @@ function resetFormData() {
   formData.description = ''
   formData.sortOrder = 0
   formData.enabled = true
+  formData.code = ''
+  formData.isTrack = true
+  formData.laneCount = 8
+  formData.isTeam = false
+  formData.teamSize = 0
+  formData.scheduleMode = 'serial'
+  formData.defaultVenue = ''
+  formData.maxDurationMinutes = undefined
+  formData.intervalMinutes = undefined
+}
+
+// 组装提交体：径赛/田赛 自动联动 道次
+function buildPayload() {
+  const isTrack = formData.eventType !== '田赛'
+  return {
+    ...formData,
+    isTrack,
+    laneCount: isTrack ? (formData.laneCount ?? 8) : 0,
+    teamSize: formData.teamSize ?? 0,
+  }
+}
+
+// 把服务端行数据填回表单（含表格2/调度字段兼容）
+function fillFormFromRow(row: EventItem) {
+  const isTrack = row.eventType !== '田赛'
+  formData.name = row.name
+  formData.eventType = row.eventType
+  formData.gender = row.gender
+  formData.gradeGroup = row.gradeGroup
+  formData.maxParticipants = row.maxParticipants
+  formData.description = row.description ?? ''
+  formData.sortOrder = row.sortOrder ?? 0
+  formData.enabled = row.enabled
+  formData.code = row.code ?? ''
+  formData.isTrack = row.isTrack ?? isTrack
+  formData.laneCount = isTrack ? (row.laneCount ?? 8) : 0
+  formData.isTeam = !!row.isTeam
+  formData.teamSize = row.teamSize ?? 0
+  formData.scheduleMode = row.scheduleMode || (isTrack ? 'serial' : 'parallel')
+  formData.defaultVenue = row.defaultVenue ?? ''
+  formData.maxDurationMinutes = row.maxDurationMinutes ?? undefined
+  formData.intervalMinutes = row.intervalMinutes ?? undefined
+}
+
+function onEventTypeChange(val: string) {
+  formData.eventType = val
+  if (val === '田赛') {
+    formData.laneCount = 0
+    formData.scheduleMode = 'parallel'
+  } else {
+    formData.laneCount = formData.laneCount && formData.laneCount > 0 ? formData.laneCount : 8
+    formData.scheduleMode = formData.scheduleMode === 'parallel' ? 'serial' : formData.scheduleMode
+  }
 }
 
 // 关闭对话框时重置表单
@@ -549,11 +656,12 @@ async function handleSubmit() {
 
   submitLoading.value = true
   try {
+    const payload = buildPayload()
     if (isEdit.value && editingId.value !== null) {
-      await request.put(`/events/${editingId.value}`, { ...formData })
+      await request.put(`/events/${editingId.value}`, payload)
       ElMessage.success('项目更新成功')
     } else {
-      await request.post('/events', { ...formData })
+      await request.post('/events', payload)
       ElMessage.success('项目创建成功')
     }
     formDialogVisible.value = false
@@ -717,5 +825,13 @@ onMounted(() => {
   .events-container { padding: 8px; }
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-left, .toolbar-right { flex-wrap: wrap; }
+}
+
+.form-tip {
+  width: 100%;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 </style>
