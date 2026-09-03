@@ -69,6 +69,56 @@ public class ArrangementController {
         return ApiResponse.success("回滚成功", arrangementService.rollback(eventId));
     }
 
+    // ==================== 预赛淘汰（径赛 needHeats） ====================
+
+    /** 生成预赛编排 */
+    @PostMapping("/events/{eventId}/preliminary")
+    public ApiResponse<?> generatePreliminary(@PathVariable Long eventId,
+                                              @RequestBody Map<String, Object> config) {
+        String grade = (String) config.get("grade");
+        String gender = (String) config.get("gender");
+        log.info("生成预赛编排: eventId={}, grade={}, gender={}", eventId, grade, gender);
+        return ApiResponse.success("预赛编排成功", arrangementService.generatePreliminary(eventId, grade, gender));
+    }
+
+    /** 录入预赛成绩 items: [{athleteId, time}] */
+    @PostMapping("/events/{eventId}/prelim-results")
+    public ApiResponse<?> savePrelimResults(@PathVariable Long eventId,
+                                            @RequestBody Map<String, Object> body) {
+        String grade = (String) body.get("grade");
+        String gender = (String) body.get("gender");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
+        log.info("录入预赛成绩: eventId={}, grade={}, gender={}, {}条", eventId, grade, gender,
+                items != null ? items.size() : 0);
+        return ApiResponse.success("预赛成绩已保存",
+                arrangementService.savePrelimResults(eventId, grade, gender,
+                        items != null ? items : List.of()));
+    }
+
+    /** 预赛淘汰「立刻计算」并生成决赛编排 */
+    @PostMapping("/events/{eventId}/qualify")
+    public ApiResponse<?> computeQualifiers(@PathVariable Long eventId,
+                                            @RequestBody Map<String, Object> body) {
+        String grade = (String) body.get("grade");
+        String gender = (String) body.get("gender");
+        Integer advanceCount = body.get("advanceCount") instanceof Number n
+                ? n.intValue() : null;
+        log.info("预赛淘汰计算: eventId={}, grade={}, gender={}, advanceCount={}",
+                eventId, grade, gender, advanceCount);
+        return ApiResponse.success("晋级计算完成",
+                arrangementService.computeQualifiers(eventId, grade, gender, advanceCount));
+    }
+
+    /** 查看晋级名单 */
+    @GetMapping("/events/{eventId}/qualifiers")
+    public ApiResponse<?> viewQualifiers(@PathVariable Long eventId,
+                                         @RequestParam(required = false) String grade,
+                                         @RequestParam(required = false) String gender) {
+        log.info("查看晋级名单: eventId={}, grade={}, gender={}", eventId, grade, gender);
+        return ApiResponse.success(arrangementService.viewQualifiers(eventId, grade, gender));
+    }
+
     @GetMapping("/events/{eventId}/export")
     public void exportLaneSheet(@PathVariable Long eventId, HttpServletResponse response) throws IOException {
         log.info("导出道次表: eventId={}", eventId);

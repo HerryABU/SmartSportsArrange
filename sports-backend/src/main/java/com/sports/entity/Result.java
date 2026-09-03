@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @Entity
 @Table(name = "result",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"event_id", "athlete_id"}),
+        uniqueConstraints = @UniqueConstraint(columnNames = {"event_id", "athlete_id", "round"}),
         indexes = {
                 @Index(name = "idx_result_event", columnList = "event_id"),
                 @Index(name = "idx_result_athlete", columnList = "athlete_id"),
@@ -34,6 +34,14 @@ public class Result {
     @ManyToOne(optional = false)
     @JoinColumn(name = "athlete_id", nullable = false)
     private Athlete athlete;
+
+    /**
+     * 赛次：preliminary=预赛成绩，final=决赛成绩，single=直接决赛。
+     * 预赛淘汰项目按赛次分别录成绩与排名。
+     */
+    @Column(length = 20)
+    @Builder.Default
+    private String round = "final";
 
     @Column
     private Integer heat;
