@@ -133,9 +133,13 @@ public class RegistrationService {
         String status = "offline".equals(src) ? "approved" : "pending";
         log.info("导入报名表: file={}, source={}", file.getOriginalFilename(), src);
 
-        // 角色范围：班主任只能导入自己绑定的班级
-        Set<Long> myClassIds = currentUserClassIds();   // 空 = 体育老师/管理员（不限班）
-        boolean restricted = !myClassIds.isEmpty();
+        // 角色范围：班主任只能导入自己绑定的班级；体育老师/管理员不限班
+        UserScope scope = currentUserScope();
+        boolean restricted = scope.restricted;
+        Set<Long> myClassIds = scope.classIds;
+        if (restricted && myClassIds.isEmpty()) {
+            throw new RuntimeException("当前班主任账号尚未绑定班级，请联系管理员在「班级管理」中绑定后再导入");
+        }
 
         List<Map<Integer, String>> rows;
         try (InputStream in = file.getInputStream()) {
@@ -167,25 +171,35 @@ public class RegistrationService {
                 String studentNo = cell(row, colStudentNo);
                 String teamText = cell(row, colTeam);
 
-                // ---- 定位班级（班主任受限时只允许自己班） ----
+                // ---- 定位班级（班主任受限时只允许自己绑定班；体育老师按表内 班级列 解析） ----
                 ClassInfo classInfo = null;
-                if (!restricted) {
+                if (restricted) {
+                    if (!classText.isEmpty()) {
+                        // 表内填了班级 → 必须是班主任自己的班
+                        ClassInfo byName = classInfoRepository.findByName(classText).orElse(null);
+                        ClassInfo byGrade = (!gradeText.isEmpty() && byName == null)
+                                ? classInfoRepository.findByGradeAndName(gradeText, classText).orElse(null)
+                                : null;
+                        ClassInfo hit = byName != null ? byName : byGrade;
+                        if (hit != null && myClassIds.contains(hit.getId())) {
+                            classInfo = hit;
+                        }
+                    }
+                    if (classInfo == null && myClassIds.size() == 1) {
+                        classInfo = classInfoRepository.findById(myClassIds.iterator().next()).orElse(null);
+                    }
+                } else {
                     if (!classText.isEmpty()) {
                         classInfo = classInfoRepository.findByName(classText).orElse(null);
                         if (classInfo == null && !gradeText.isEmpty()) {
                             classInfo = classInfoRepository.findByGradeAndName(gradeText, classText).orElse(null);
                         }
-                    } else if (!gradeText.isEmpty() && myClassIds.size() == 1) {
-                        classInfo = classInfoRepository.findById(myClassIds.iterator().next()).orElse(null);
                     }
-                } else {
-                    // 班主任：以绑定班级为准（学号/班级列仅作校验提示）
-                    Long cid = myClassIds.iterator().next();
-                    classInfo = classInfoRepository.findById(cid).orElse(null);
-                    if (classText.isEmpty()) classText = classInfo != null ? classInfo.getName() : classText;
                 }
                 if (classInfo == null) {
-                    errors.add(err(rowNum, "无法确定目标班级（班主任需先绑定班级，体育老师需填写「班级」列）"));
+                    errors.add(err(rowNum, restricted
+                            ? "只能导入本人绑定班级的报名（当前班级不在绑定范围或未绑定）"
+                            : "无法确定目标班级，请填写「班级」列"));
                     continue;
                 }
 
@@ -260,12 +274,30 @@ public class RegistrationService {
         return result;
     }
 
-    /** 当前用户绑定的班级 id 集合（体育老师/管理员为空 → 不限班） */
-    private Set<Long> currentUserClassIds() {
+    /**
+     * 当前用户作用域：班主任(ROLE_CLASS_TEACHER)受限本人绑定班级；
+     * 体育老师/管理员(ROLE_TEACHER/ROLE_SUPER_ADMIN)不受限（可导入任意班）。
+     */
+    private UserScope currentUserScope() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null || !(auth.getPrincipal() instanceof JwtUserDetails ud)) return Set.of();
+        if (auth == null || !(auth.getPrincipal() instanceof JwtUserDetails ud)) {
+            return new UserScope(false, Set.of());
+        }
+        boolean restricted = "ROLE_CLASS_TEACHER".equals(ud.getRole());
+        if (!restricted) return new UserScope(false, Set.of());
         List<ClassInfo> classes = classInfoRepository.findByTeacherUserId(ud.getUserId());
-        return classes.stream().map(ClassInfo::getId).collect(Collectors.toSet());
+        Set<Long> ids = classes.stream().map(ClassInfo::getId).collect(Collectors.toSet());
+        return new UserScope(true, ids);
+    }
+
+    private static class UserScope {
+        final boolean restricted;
+        final Set<Long> classIds;
+
+        UserScope(boolean restricted, Set<Long> classIds) {
+            this.restricted = restricted;
+            this.classIds = classIds;
+        }
     }
 
     /** 按学号 → (姓名+班级+性别) 匹配；都不存在则建档 */
