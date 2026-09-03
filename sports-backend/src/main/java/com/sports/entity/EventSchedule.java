@@ -34,6 +34,14 @@ public class EventSchedule {
     @Column(nullable = false)
     private Integer day;
 
+    /** 具体日期 yyyy-MM-dd（由 meet_schedule 的 startDate 推算） */
+    @Column(length = 10)
+    private String scheduleDate;
+
+    /** 年级（赛程按年级顺序展开；不分年级时为 null） */
+    @Column(length = 20)
+    private String grade;
+
     /** 时段，如 "上午" / "下午" / "晚上" */
     @Column(length = 20)
     private String timeSlot;
