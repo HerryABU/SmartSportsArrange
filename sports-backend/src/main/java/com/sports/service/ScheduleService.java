@@ -117,6 +117,14 @@ public class ScheduleService {
             }
 
             int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
+
+            // 该单元没有任何有效(已审核)报名 → 不生成空项目，避免赛程被占位刷满
+            if (u.participants <= 0) {
+                warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                        u.event.getName(), u.grade == null ? "不分年级" : u.grade));
+                continue;
+            }
+
             Slot placed = cursor.place(windows, u.duration, interval);
             if (placed == null) {
                 warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
