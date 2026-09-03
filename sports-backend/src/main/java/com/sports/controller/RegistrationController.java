@@ -11,6 +11,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
@@ -117,5 +118,20 @@ public class RegistrationController {
     public void export(HttpServletResponse response) throws IOException {
         log.info("导出报名数据");
         registrationService.export(response);
+    }
+
+    /** 报名表（表格1）导入：班主任(现场/后置)或体育老师(后置)统一入口 */
+    @PostMapping("/import-sheet")
+    public ApiResponse<?> importSignupSheet(@RequestParam MultipartFile file,
+                                            @RequestParam(defaultValue = "offline") String source) {
+        log.info("导入报名表: file={}, source={}", file.getOriginalFilename(), source);
+        return ApiResponse.success("导入完成", registrationService.importSignupSheet(file, source));
+    }
+
+    /** 报名表（表格1）导入模板 */
+    @GetMapping("/template")
+    public void signupTemplate(HttpServletResponse response) throws IOException {
+        log.info("下载报名表模板");
+        registrationService.exportSignupTemplate(response);
     }
 }

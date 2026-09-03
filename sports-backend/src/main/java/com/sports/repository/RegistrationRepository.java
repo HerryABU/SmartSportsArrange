@@ -50,4 +50,7 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
 
     @Query("SELECT COUNT(r) FROM Registration r WHERE r.status = 'pending'")
     long countPending();
+
+    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.athlete.classInfo.id = :classId")
+    List<Registration> findByEventIdAndClassId(@Param("eventId") Long eventId, @Param("classId") Long classId);
 }

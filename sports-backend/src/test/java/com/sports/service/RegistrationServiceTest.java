@@ -7,17 +7,23 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockMultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.*;
 
 /**
  * 报名服务约束逻辑测试。
- * 覆盖：成功报名、重复报名拦截、性别不匹配拦截、班级/个人报名上限拦截、审核/取消/统计。
+ * 覆盖：成功报名、重复报名拦截、性别不匹配拦截、班级/个人报名上限拦截、审核/取消/统计、
+ *       报名表（表格1）导入。
  */
 @ExtendWith(MockitoExtension.class)
 class RegistrationServiceTest {
@@ -25,7 +31,9 @@ class RegistrationServiceTest {
     @Mock private RegistrationRepository registrationRepository;
     @Mock private AthleteRepository athleteRepository;
     @Mock private EventRepository eventRepository;
+    @Mock private ClassInfoRepository classInfoRepository;
     @Mock private SystemConfigRepository systemConfigRepository;
+    @Mock private NumberRuleService numberRuleService;
 
     @InjectMocks private RegistrationService registrationService;
 
@@ -148,5 +156,85 @@ class RegistrationServiceTest {
         assertEquals(3L, stats.get("total"));
         assertEquals(2L, stats.get("approved"));
         assertEquals(1L, stats.get("pending"));
+    }
+
+    // ==================== 报名表（表格1）导入 ====================
+
+    private MockMultipartFile csv(String body) {
+        return new MockMultipartFile("file", "signup.csv", "text/csv",
+                body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importSignupSheet_offlineCreatesAthletesAndRegistrations() {
+        ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
+        Event e100 = Event.builder().id(1L).name("100米").genderLimit("M").build();
+        Event e200 = Event.builder().id(2L).name("200米").genderLimit(null).build();
+
+        when(classInfoRepository.findByName("高一1班")).thenReturn(Optional.of(ci));
+        when(eventRepository.findByCode("100M")).thenReturn(Optional.of(e100));
+        when(eventRepository.findByCode("200M")).thenReturn(Optional.empty());
+        when(eventRepository.findByNameAndIsEnabledTrue("200M")).thenReturn(Optional.of(e200));
+        when(numberRuleService.generateNumber(any(), eq(ci), anyInt()))
+                .thenAnswer(inv -> "N" + inv.getArgument(2));
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(registrationRepository.save(any(Registration.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        String body = "年级,班级,姓名,性别,学号,项目,是否团体赛数量,成绩\n"
+                + "高一年级,高一1班,张三,男,20260001,100M,0,\n"
+                + "高一年级,高一1班,李四,女,20260002,200M,0,\n";
+
+        Map<String, Object> result = registrationService.importSignupSheet(csv(body), "offline");
+        assertEquals(2, result.get("success"));
+        assertEquals(2, result.get("createdAthletes"));
+        assertEquals(0, result.get("failed"));
+        assertEquals("approved", result.get("status"));
+
+        verify(registrationRepository, times(2)).save(any(Registration.class));
+        // 顺带校验 genderLimit 校验：100米仅限 M，张三(男) 通过；无多余失败
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importSignupSheet_duplicateRowsAreSkipped() {
+        ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
+        Event e100 = Event.builder().id(1L).name("100米").genderLimit(null).build();
+        Athlete existing = Athlete.builder().id(50L).name("张三").gender("M")
+                .studentId("20260001").number("A001").classInfo(ci).build();
+
+        when(classInfoRepository.findByName("高一1班")).thenReturn(Optional.of(ci));
+        when(eventRepository.findByCode("100M")).thenReturn(Optional.of(e100));
+        when(athleteRepository.findByStudentId("20260001")).thenReturn(Optional.of(existing));
+        when(registrationRepository.existsByAthleteIdAndEventId(50L, 1L)).thenReturn(true);
+
+        String body = "年级,班级,姓名,性别,学号,项目,是否团体赛数量,成绩\n"
+                + "高一年级,高一1班,张三,男,20260001,100M,0,\n"
+                + "高一年级,高一1班,张三,男,20260001,100M,0,\n";
+
+        Map<String, Object> result = registrationService.importSignupSheet(csv(body), "onsite");
+        assertEquals(0, result.get("success"));
+        assertEquals(2, result.get("skipped"));
+        assertEquals("pending", result.get("status"));
+        verify(registrationRepository, never()).save(any(Registration.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importSignupSheet_missingEventReportsError() {
+        ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
+        when(classInfoRepository.findByName("高一1班")).thenReturn(Optional.of(ci));
+        when(eventRepository.findByCode("999M")).thenReturn(Optional.empty());
+        when(eventRepository.findByNameAndIsEnabledTrue("999M")).thenReturn(Optional.empty());
+        when(eventRepository.findByIsEnabledTrueAndNameContaining("999M")).thenReturn(List.of());
+
+        String body = "年级,班级,姓名,性别,学号,项目,是否团体赛数量,成绩\n"
+                + "高一年级,高一1班,张三,男,20260001,999M,0,\n";
+
+        Map<String, Object> result = registrationService.importSignupSheet(csv(body), "offline");
+        assertEquals(0, result.get("success"));
+        assertEquals(1, result.get("failed"));
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) result.get("errors");
+        assertTrue(String.valueOf(errors.get(0).get("message")).contains("未找到项目"));
     }
 }
