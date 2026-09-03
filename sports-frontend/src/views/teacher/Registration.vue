@@ -42,6 +42,10 @@
             搜索
           </el-button>
           <el-button @click="handleReset">重置</el-button>
+          <el-button type="success" @click="openImportDialog">
+            <el-icon><Upload /></el-icon>
+            导入报名表
+          </el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -163,13 +167,52 @@
         <el-descriptions-item label="备注" :span="2">{{ currentRow.remark || '无' }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
+
+    <!-- 导入报名表向导（三种模式：班主任现场 / 班主任后置 / 体育老师后置） -->
+    <el-dialog v-model="importVisible" title="导入报名表" width="760px" :close-on-click-modal="false">
+      <el-alert type="info" show-icon :closable="false"
+        title="导入方式说明：① 后置导入＝把已经报名完成的报名表整表导入（直接置为已通过）；② 现场报名＝班主任现场登记，导入为待审核，需另行审核通过。" />
+      <el-form label-width="110px" style="margin-top: 16px">
+        <el-form-item label="导入模式">
+          <el-radio-group v-model="importMode">
+            <el-radio-button value="offline">后置导入（已报好表）</el-radio-button>
+            <el-radio-button value="onsite">现场报名（登记待审核）</el-radio-button>
+          </el-radio-group>
+          <div class="import-tip">体育老师/管理员可导入任意班级；班主任账号只能导入本人绑定班级。</div>
+        </el-form-item>
+        <el-form-item label="下载模板">
+          <el-button link type="primary" @click="downloadSignupTemplate">报名表模板（年级/班级/姓名/性别/学号/项目/是否团体赛数量/成绩）</el-button>
+        </el-form-item>
+        <el-form-item label="选择文件">
+          <input type="file" accept=".xlsx,.xls,.csv" @change="onFileChange" />
+          <div class="import-tip">支持 Excel / CSV；「项目」列可填项目编码（如 100M）或精确项目名称。</div>
+        </el-form-item>
+      </el-form>
+
+      <el-alert v-if="importResult" :type="importResult.failed > 0 ? 'warning' : 'success'"
+        :title="`导入完成：成功 ${importResult.success} 条，跳过(重复) ${importResult.skipped} 条，失败 ${importResult.failed} 条${importResult.createdAthletes ? '，新建运动员 ' + importResult.createdAthletes + ' 名' : ''}`"
+        show-icon :closable="false" style="margin-top: 8px" />
+      <div v-if="importResult && importResult.errors && importResult.errors.length" class="import-errors">
+        <div class="import-errors-title">失败明细（第 N 行从模板表头下一行起算）：</div>
+        <div v-for="(e, i) in importResult.errors" :key="i" class="import-error-item">
+          第 {{ e.row }} 行：{{ e.message }}
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!selectedFile" @click="doImport">
+          开始导入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DocumentCopy } from '@element-plus/icons-vue'
+import { DocumentCopy, Upload } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
@@ -332,6 +375,54 @@ function handleExport() {
   window.open(apiBase() + '/registrations/export', '_blank')
 }
 
+// ==================== 报名表导入向导（三种模式） ====================
+const importVisible = ref(false)
+const importMode = ref('offline')
+const selectedFile = ref(null)
+const importing = ref(false)
+const importResult = ref(null)
+
+function openImportDialog() {
+  importVisible.value = true
+  importMode.value = 'offline'
+  selectedFile.value = null
+  importResult.value = null
+}
+
+function downloadSignupTemplate() {
+  window.open(apiBase() + '/registrations/template', '_blank')
+}
+
+function onFileChange(e) {
+  selectedFile.value = e.target.files?.[0] || null
+  importResult.value = null
+}
+
+async function doImport() {
+  if (!selectedFile.value) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  importing.value = true
+  importResult.value = null
+  try {
+    const fd = new FormData()
+    fd.append('file', selectedFile.value)
+    const res = await request.post('/registrations/import-sheet', fd, {
+      params: { source: importMode.value },
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    importResult.value = res || {}
+    ElMessage.success(`导入完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    fetchData()
+    fetchAllRegistrations()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(() => {
   fetchOptions()
   fetchData()
@@ -434,5 +525,36 @@ onMounted(() => {
 @media (max-width: 768px) {
   .view-toggle { justify-content: center; }
   .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+
+.import-tip {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.import-errors {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #e6a23c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fdf6ec;
+}
+
+.import-errors-title {
+  font-size: 12px;
+  color: #e6a23c;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.import-error-item {
+  font-size: 12px;
+  color: #7a6a3e;
+  line-height: 1.6;
 }
 </style>

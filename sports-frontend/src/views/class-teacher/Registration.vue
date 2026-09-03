@@ -1,5 +1,47 @@
 <template>
   <div class="ct-registration" v-loading="loading">
+    <!-- ===== 批量报名导入（班主任：现场 or 后置） ===== -->
+    <el-card shadow="never" class="roster-card batch-card">
+      <template #header>
+        <div class="card-header">
+          <span>🗂️ 批量报名导入（表格1：年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <el-radio-group v-model="ctImportMode" size="small">
+              <el-radio-button value="offline">后置导入（已报好表→直接通过）</el-radio-button>
+              <el-radio-button value="onsite">现场导入（→待审核）</el-radio-button>
+            </el-radio-group>
+            <el-button size="small" plain @click="downloadSignupTemplate">
+              <el-icon><DocumentCopy /></el-icon> 模板
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px">
+        <template #title>
+          两种报名方式任选：① 用上方「现场报名」逐个登记（→ 待审核）；② 直接把整理好的「报名表 Excel/CSV」批量导入。
+          班主任只允许导入自己绑定班级；项目列可填项目编码（如 100M）或精确项目名称；未建档的学生将自动建档并生成号码簿。
+        </template>
+      </el-alert>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input ref="ctFileInput" type="file" accept=".xlsx,.xls,.csv" style="display:none"
+          @change="onCtFile" />
+        <el-button type="primary" @click="ctFileInput?.click()">
+          <el-icon><Upload /></el-icon> 选择报名表
+        </el-button>
+        <span v-if="ctFile" class="batch-file">{{ ctFile.name }}</span>
+        <el-button type="success" :loading="ctImporting" :disabled="!ctFile" @click="doCtImport">
+          开始导入
+        </el-button>
+      </div>
+      <el-alert v-if="ctResult" :type="ctResult.failed > 0 ? 'warning' : 'success'" show-icon
+        style="margin-top:10px"
+        :title="`导入完成：成功 ${ctResult.success} 条，跳过(重复) ${ctResult.skipped} 条，失败 ${ctResult.failed} 条${ctResult.createdAthletes ? '，新建运动员 ' + ctResult.createdAthletes + ' 名' : ''}`" />
+      <div v-if="ctResult && ctResult.errors && ctResult.errors.length" class="batch-errors">
+        <div class="batch-errors-title">失败明细（行号自表头下一行起）：</div>
+        <div v-for="(e, i) in ctResult.errors" :key="i" class="batch-error-item">第 {{ e.row }} 行：{{ e.message }}</div>
+      </div>
+    </el-card>
+
     <!-- ===== 第①步：导入班级名单 ===== -->
     <el-card shadow="never" class="roster-card" v-if="!athletes.length">
       <template #header>
@@ -311,6 +353,43 @@ async function fetchRegistrations() {
 }
 async function fetchAll() { loading.value = true; await Promise.all([fetchAthletes(), fetchEvents(), fetchRegistrations()]); loading.value = false }
 
+// ===== 批量报名导入（现场 or 后置） =====
+const ctFileInput = ref(null)
+const ctImportMode = ref('offline')
+const ctFile = ref(null)
+const ctImporting = ref(false)
+const ctResult = ref(null)
+
+function downloadSignupTemplate() {
+  window.open(apiBase() + '/registrations/template', '_blank')
+}
+
+function onCtFile(e) {
+  ctFile.value = e.target.files?.[0] || null
+  ctResult.value = null
+}
+
+async function doCtImport() {
+  if (!ctFile.value) return
+  ctImporting.value = true
+  ctResult.value = null
+  try {
+    const fd = new FormData()
+    fd.append('file', ctFile.value)
+    const res = await request.post('/registrations/import-sheet', fd, {
+      params: { source: ctImportMode.value },
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    ctResult.value = res || {}
+    ElMessage.success(`导入完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    fetchAll()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    ctImporting.value = false
+  }
+}
+
 onMounted(() => fetchAll())
 </script>
 
@@ -338,6 +417,16 @@ onMounted(() => fetchAll())
 .reg-badge.avail { color:#409eff; background:#ecf5ff; }
 .reg-badge.limit { color:#909399; background:#f4f4f5; }
 .reg-badge.hint { color:#e6a23c; background:#fdf6ec; }
+
+.batch-card { border-left-color:#67c23a; }
+.batch-file { font-size:13px; color:#606266; }
+.batch-errors {
+  margin-top:10px; max-height:200px; overflow-y:auto;
+  border:1px solid #e6a23c; border-radius:6px; padding:8px 12px; background:#fdf6ec;
+}
+.batch-errors-title { font-size:12px; color:#e6a23c; font-weight:600; margin-bottom:4px; }
+.batch-error-item { font-size:12px; color:#7a6a3e; line-height:1.6; }
+
 @media(max-width:768px) {
   .card-header { flex-direction: column; align-items: flex-start; }
   .stat-num { font-size: 20px; }
