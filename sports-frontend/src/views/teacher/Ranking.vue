@@ -211,11 +211,17 @@
           </template>
 
           <div class="filter-bar">
-            <el-select v-model="boardFilter.grade" placeholder="年级（全校/该年级内班级）" clearable style="width: 200px">
+            <el-select v-model="boardFilter.grade" placeholder="年级（全校/该年级内班级）" clearable style="width: 190px">
               <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
             </el-select>
+            <el-select v-model="boardFilter.gender" placeholder="性别（全部/男榜/女榜）" clearable style="width: 160px">
+              <el-option label="男生榜" value="男" />
+              <el-option label="女生榜" value="女" />
+            </el-select>
             <el-switch v-model="boardFilter.includeParade" active-text="总分含入场式" inactive-text="去除入场式" />
-            <span class="hint">名次口径：{{ boardFilter.includeParade ? '赛事 + 入场式' : '纯赛事得分' }}</span>
+            <span class="hint">
+              口径：{{ boardFilter.gender ? (boardFilter.gender === '男' ? '男生' : '女生') + '得分 · ' : '' }}{{ boardFilter.includeParade ? '赛事 + 入场式' : '纯赛事得分' }}
+            </span>
             <el-button type="primary" @click="fetchScoreboard">查询</el-button>
           </div>
 
@@ -326,7 +332,7 @@ const indFilter = reactive({ grade: '', eventId: '' })
 const indPagination = reactive({ page: 1, size: 10, total: 0 })
 const teamFilter = reactive({ grade: '' })
 const recFilter = reactive({ grade: '', eventId: '' })
-const boardFilter = reactive({ grade: '', includeParade: false })
+const boardFilter = reactive({ grade: '', gender: '', includeParade: false })
 
 // 入场式得分
 const paradeVisible = ref(false)
@@ -440,6 +446,7 @@ async function fetchScoreboard() {
   try {
     const params = { includeParade: boardFilter.includeParade }
     if (boardFilter.grade) params.grade = boardFilter.grade
+    if (boardFilter.gender) params.gender = boardFilter.gender
     const res = await request.get('/ranking/scoreboard', { params })
     boardRows.value = res.rows || []
     gradeSummary.value = res.gradeSummary || []
