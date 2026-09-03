@@ -192,14 +192,122 @@
           </el-table>
         </el-card>
       </el-tab-pane>
+
+      <!-- 合分排行（含/去除入场式） -->
+      <el-tab-pane label="合分排行" name="scoreboard">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span>合分排行</span>
+              <div>
+                <el-button type="warning" size="small" @click="openParadeDialog">
+                  <el-icon><Trophy /></el-icon> 入场式得分
+                </el-button>
+                <el-button type="primary" size="small" @click="fetchScoreboard">
+                  <el-icon><Refresh /></el-icon> 刷新
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <div class="filter-bar">
+            <el-select v-model="boardFilter.grade" placeholder="年级（全校/该年级内班级）" clearable style="width: 200px">
+              <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
+            </el-select>
+            <el-switch v-model="boardFilter.includeParade" active-text="总分含入场式" inactive-text="去除入场式" />
+            <span class="hint">名次口径：{{ boardFilter.includeParade ? '赛事 + 入场式' : '纯赛事得分' }}</span>
+            <el-button type="primary" @click="fetchScoreboard">查询</el-button>
+          </div>
+
+          <el-alert type="success" :closable="false" style="margin-bottom: 12px"
+            :title="`班级维度 × 男女分列 × 计分排行${boardFilter.includeParade ? '（已计入入场式）' : '（未计入入场式）'}`" />
+
+          <el-table :data="boardRows" border stripe>
+            <el-table-column prop="rank" label="名次" width="60" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.rank <= 3" :type="['danger', 'warning', 'success'][row.rank - 1]" size="small" effect="dark">
+                  {{ row.rank }}
+                </el-tag>
+                <span v-else>{{ row.rank }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="className" label="班级" min-width="120" />
+            <el-table-column prop="grade" label="年级" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" type="info" effect="plain">{{ row.grade || '—' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="maleScore" label="男得分" width="90" align="center" />
+            <el-table-column prop="femaleScore" label="女得分" width="90" align="center" />
+            <el-table-column prop="goldCount" label="🏅" width="60" align="center">
+              <template #default="{ row }"><b style="color:#F56C6C">{{ row.goldCount || 0 }}</b></template>
+            </el-table-column>
+            <el-table-column prop="silverCount" label="🥈" width="55" align="center" />
+            <el-table-column prop="bronzeCount" label="🥉" width="55" align="center" />
+            <el-table-column prop="totalScore" label="赛事总分" width="100" align="center">
+              <template #default="{ row }"><b>{{ row.totalScore }}</b></template>
+            </el-table-column>
+            <el-table-column label="入场式" width="100" align="center">
+              <template #default="{ row }">
+                <span v-if="row.hasParade" style="color:#E6A23C;font-weight:600">{{ row.paradeScore }}</span>
+                <span v-else style="color:#c0c4cc">未录入</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="最终合分" width="110" align="center">
+              <template #default="{ row }">
+                <span v-if="boardFilter.includeParade" style="color:#409EFF;font-weight:700">{{ row.totalWithParade }}</span>
+                <span v-else style="color:#409EFF;font-weight:700">{{ row.totalScore }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!boardRows.length" description="暂无成绩数据" :image-size="60" />
+
+          <div v-if="gradeSummary.length" class="grade-summary">
+            <div class="grade-summary-title">年级汇总</div>
+            <el-table :data="gradeSummary" size="small" border>
+              <el-table-column prop="grade" label="年级" width="120" />
+              <el-table-column prop="maleScore" label="男得分" align="center" />
+              <el-table-column prop="femaleScore" label="女得分" align="center" />
+              <el-table-column prop="totalScore" label="年级总分" align="center">
+                <template #default="{ row }"><b>{{ row.totalScore }}</b></template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
+
+    <!-- 入场式得分录入/导入 -->
+    <el-dialog v-model="paradeVisible" title="入场式得分（手动录入 / Excel 导入）" width="760px" :close-on-click-modal="false">
+      <el-alert type="info" show-icon :closable="false"
+        title="为每个班级录入入场式（开幕式方阵）得分；合分排行中可切换「含/去除入场式」两种口径。" style="margin-bottom:12px" />
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <el-button type="primary" plain @click="loadParadeClasses">载入全部班级</el-button>
+        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" ref="paradeFile"
+          @change="onParadeFile" />
+        <el-button @click="triggerParadeFile">导入 Excel（班级|得分 或 年级|班级|得分）</el-button>
+      </div>
+      <el-table :data="paradeRows" size="small" border max-height="380">
+        <el-table-column prop="grade" label="年级" width="110" />
+        <el-table-column prop="className" label="班级" min-width="140" />
+        <el-table-column label="得分" width="160">
+          <template #default="{ row }">
+            <el-input-number v-model="row.score" :min="0" :max="1000" :step="0.1" size="small" style="width:120px" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="paradeVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="paradeSaving" @click="saveParade">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
+import { Download, Trophy, Refresh } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
@@ -209,6 +317,8 @@ const eventList = ref([])
 const individualData = ref([])
 const teamData = ref([])
 const recordData = ref([])
+const boardRows = ref([])
+const gradeSummary = ref([])
 
 const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
 
@@ -216,6 +326,13 @@ const indFilter = reactive({ grade: '', eventId: '' })
 const indPagination = reactive({ page: 1, size: 10, total: 0 })
 const teamFilter = reactive({ grade: '' })
 const recFilter = reactive({ grade: '', eventId: '' })
+const boardFilter = reactive({ grade: '', includeParade: false })
+
+// 入场式得分
+const paradeVisible = ref(false)
+const paradeRows = ref([])
+const paradeSaving = ref(false)
+const paradeFile = ref(null)
 
 function rankType(rank) {
   if (rank === 1) return 'danger'
@@ -314,6 +431,95 @@ function onTabChange(tab) {
   if (tab === 'individual') fetchIndividual()
   else if (tab === 'team') fetchTeam()
   else if (tab === 'records') fetchRecords()
+  else if (tab === 'scoreboard') fetchScoreboard()
+}
+
+// ==================== 合分排行 ====================
+async function fetchScoreboard() {
+  loading.value = true
+  try {
+    const params = { includeParade: boardFilter.includeParade }
+    if (boardFilter.grade) params.grade = boardFilter.grade
+    const res = await request.get('/ranking/scoreboard', { params })
+    boardRows.value = res.rows || []
+    gradeSummary.value = res.gradeSummary || []
+  } catch (e) {
+    boardRows.value = []
+    gradeSummary.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+// ==================== 入场式得分 ====================
+function openParadeDialog() {
+  paradeVisible.value = true
+  paradeRows.value = []
+  loadParadeClasses()
+}
+
+async function loadParadeClasses() {
+  try {
+    const res = await request.get('/classes')
+    const list = Array.isArray(res) ? res : (res.records || res.list || [])
+    // 合并已录入分数（若有）
+    let existing = []
+    try {
+      const pr = await request.get('/parade-score', { params: { grade: boardFilter.grade || undefined } })
+      existing = Array.isArray(pr) ? pr : (pr.records || pr.list || [])
+    } catch (e) { existing = [] }
+    const map = {}
+    existing.forEach(p => { if (p.classId || p.classInfoId) map[p.classId || p.classInfoId] = p.score })
+    paradeRows.value = list
+      .filter(c => c.isParticipating !== false)
+      .map(c => ({
+        classId: c.id,
+        className: c.name,
+        grade: c.grade,
+        score: map[c.id] != null ? map[c.id] : 0
+      }))
+  } catch (e) {
+    ElMessage.error('载入班级失败')
+  }
+}
+
+async function saveParade() {
+  paradeSaving.value = true
+  try {
+    const items = paradeRows.value
+      .filter(r => r.classId && r.score != null && Number(r.score) > 0)
+      .map(r => ({ classId: r.classId, score: Number(r.score) }))
+    await request.post('/parade-score', items)
+    ElMessage.success('入场式得分已保存')
+    paradeVisible.value = false
+    fetchScoreboard()
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    paradeSaving.value = false
+  }
+}
+
+function triggerParadeFile() {
+  paradeFile.value?.click()
+}
+
+async function onParadeFile(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  const fd = new FormData()
+  fd.append('file', file)
+  try {
+    const res = await request.post('/parade-score/import', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    ElMessage.success(`导入完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    e.target.value = ''
+    loadParadeClasses()
+    fetchScoreboard()
+  } catch (err) {
+    ElMessage.error('入场式导入失败')
+  }
 }
 
 function exportIndividual() {
@@ -358,6 +564,12 @@ onMounted(() => {
   max-height: 300px;
   overflow-y: auto;
 }
+
+.hint { font-size: 12px; color: #909399; }
+
+.grade-summary { margin-top: 16px; }
+.grade-summary-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: #303133; }
+
 @media(max-width:768px) {
   .filter-bar { flex-direction: column; }
   .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
