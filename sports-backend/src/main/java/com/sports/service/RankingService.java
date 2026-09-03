@@ -117,12 +117,19 @@ public class RankingService {
      * @param includeParade true 则总分口径为 赛事得分 + 入场式得分，否则纯赛事得分
      * @param topN         &gt;0 时返回 top 字段只保留前 N 名
      * @param byGrade      true 时返回按年级聚合的排行（维度=年级）
+     * @param gender       男/M 或 女/F 时只统计该性别运动员得分（得出男生榜/女生榜）
      */
-    public Map<String, Object> getScoreBoard(String grade, boolean includeParade, int topN, boolean byGrade) {
+    public Map<String, Object> getScoreBoard(String grade, boolean includeParade, int topN,
+                                             boolean byGrade, String gender) {
         List<Result> allResults = resultRepository.findAllValid();
         Map<String, Object> rule = systemService.getScoringRule();
         boolean goldFirst = "gold_first".equalsIgnoreCase(
                 String.valueOf(rule.getOrDefault("team_score_sort", "total_score")));
+
+        // 性别过滤维度（兼容 男/M、女/F 写法）
+        String genderNorm = com.sports.common.GenderUtil.normalize(gender);
+        boolean filterMale = "M".equals(genderNorm);
+        boolean filterFemale = "F".equals(genderNorm);
 
         Map<Long, BoardRow> byClass = new LinkedHashMap<>();
         Map<String, GradeRow> byGradeAgg = new LinkedHashMap<>();
@@ -133,9 +140,14 @@ public class RankingService {
             ClassInfo ci = result.getAthlete().getClassInfo();
             if (grade != null && !grade.isBlank() && !grade.equals(ci.getGrade())) continue;
 
+            String genderRaw = result.getAthlete().getGender();
+            String genderKey = com.sports.common.GenderUtil.normalize(genderRaw); // M/F/其他
+            boolean isMale = "M".equals(genderKey);
+            boolean isFemale = "F".equals(genderKey);
+            if (filterMale && !isMale) continue;
+            if (filterFemale && !isFemale) continue;
+
             double score = result.getScore();
-            String gender = result.getAthlete().getGender() == null ? "未知"
-                    : result.getAthlete().getGender();
 
             BoardRow row = byClass.computeIfAbsent(ci.getId(), id -> {
                 BoardRow r = new BoardRow();
@@ -145,8 +157,8 @@ public class RankingService {
                 return r;
             });
             row.total += score;
-            if ("男".equals(gender)) row.male += score;
-            else if ("女".equals(gender)) row.female += score;
+            if (isMale) row.male += score;
+            else if (isFemale) row.female += score;
             else row.other += score;
             row.scoredEvents++;
 
@@ -159,8 +171,8 @@ public class RankingService {
             String g = ci.getGrade() != null ? ci.getGrade() : "未知";
             GradeRow gr = byGradeAgg.computeIfAbsent(g, k -> new GradeRow());
             gr.total += score;
-            if ("男".equals(gender)) gr.male += score;
-            else if ("女".equals(gender)) gr.female += score;
+            if (isMale) gr.male += score;
+            else if (isFemale) gr.female += score;
             else gr.other += score;
         }
 
@@ -235,6 +247,8 @@ public class RankingService {
         result.put("totalClasses", rows.size());
         result.put("dimension", byGrade ? "grade" : "class");
         result.put("filterGrade", grade);
+        result.put("filterGender", gender == null || gender.isBlank() ? null
+                : ("M".equals(genderNorm) ? "男" : "F".equals(genderNorm) ? "女" : gender.trim()));
         return result;
     }
 

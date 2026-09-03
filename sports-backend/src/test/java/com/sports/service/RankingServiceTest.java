@@ -114,7 +114,7 @@ class RankingServiceTest {
                 ParadeScore.builder().id(1L).classInfo(ca).className("高一1班").grade("高一").score(5.0).build()));
         when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
 
-        Map<String, Object> board = rankingService.getScoreBoard(null, true, 0, false);
+        Map<String, Object> board = rankingService.getScoreBoard(null, true, 0, false, null);
 
         List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
         assertEquals(2, rows.size());
@@ -149,16 +149,49 @@ class RankingServiceTest {
         when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
 
         // 按年级过滤：只统计高二 → 1 班
-        Map<String, Object> board = rankingService.getScoreBoard("高二", false, 0, false);
+        Map<String, Object> board = rankingService.getScoreBoard("高二", false, 0, false, null);
         List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
         assertEquals(1, rows.size());
         assertEquals("高二1班", rows.get(0).get("className"));
 
         // topN=1：只返回第一名
-        Map<String, Object> board2 = rankingService.getScoreBoard(null, false, 1, false);
+        Map<String, Object> board2 = rankingService.getScoreBoard(null, false, 1, false, null);
         List<Map<String, Object>> top = (List<Map<String, Object>>) board2.get("top");
         assertEquals(1, top.size());
         assertEquals("高一1班", top.get(0).get("className"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_genderDimensionFiltersMaleAndFemale() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        // 库内真实存法：M / F（及中文字符兼容）
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, ca, "M"),
+                result(2L, 7.0, 2, ca, "F"),
+                result(3L, 5.0, 3, ca, "女"));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of());
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        // 男生榜：只含 M（男）得分 9
+        Map<String, Object> maleBoard = rankingService.getScoreBoard(null, false, 0, false, "男");
+        List<Map<String, Object>> maleRows = (List<Map<String, Object>>) maleBoard.get("rows");
+        assertEquals(1, maleRows.size());
+        assertEquals(9.0, (Double) maleRows.get(0).get("totalScore"), 0.001);
+        assertEquals(9.0, (Double) maleRows.get(0).get("maleScore"), 0.001);
+
+        // 女生榜：F 7 + 女 5 = 12
+        Map<String, Object> femaleBoard = rankingService.getScoreBoard(null, false, 0, false, "女");
+        List<Map<String, Object>> femaleRows = (List<Map<String, Object>>) femaleBoard.get("rows");
+        assertEquals(1, femaleRows.size());
+        assertEquals(12.0, (Double) femaleRows.get(0).get("totalScore"), 0.001);
+        assertEquals(12.0, (Double) femaleRows.get(0).get("femaleScore"), 0.001);
+
+        // 不带性别过滤：男 M 9 + 女 F 7 + 5 = 21
+        Map<String, Object> allBoard = rankingService.getScoreBoard(null, false, 0, false, null);
+        List<Map<String, Object>> allRows = (List<Map<String, Object>>) allBoard.get("rows");
+        assertEquals(21.0, (Double) allRows.get(0).get("totalScore"), 0.001);
     }
 
     private Map<String, Object> defaultRule(String type, String sort) {

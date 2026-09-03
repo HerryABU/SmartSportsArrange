@@ -30,16 +30,17 @@ public class RankingController {
         return ApiResponse.success(rankingService.getTeamScores(grade));
     }
 
-    /** 合分排行总览（班级×男女，含/去除入场式） */
+    /** 合分排行总览（班级×男女×项目，含/去除入场式；gender=男/女 出单性别榜） */
     @GetMapping("/scoreboard")
     public ApiResponse<?> getScoreBoard(
             @RequestParam(required = false) String grade,
             @RequestParam(defaultValue = "false") boolean includeParade,
             @RequestParam(defaultValue = "0") int topN,
-            @RequestParam(defaultValue = "false") boolean byGrade) {
-        log.info("查询合分排行: grade={}, includeParade={}, topN={}, byGrade={}",
-                grade, includeParade, topN, byGrade);
-        return ApiResponse.success(rankingService.getScoreBoard(grade, includeParade, topN, byGrade));
+            @RequestParam(defaultValue = "false") boolean byGrade,
+            @RequestParam(required = false) String gender) {
+        log.info("查询合分排行: grade={}, includeParade={}, topN={}, byGrade={}, gender={}",
+                grade, includeParade, topN, byGrade, gender);
+        return ApiResponse.success(rankingService.getScoreBoard(grade, includeParade, topN, byGrade, gender));
     }
 
     @GetMapping("/team-score/breakdown")

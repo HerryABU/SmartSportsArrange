@@ -71,8 +71,7 @@ public class RegistrationService {
                 .orElseThrow(() -> new IllegalArgumentException("项目不存在"));
         if (registrationRepository.existsByAthleteIdAndEventId(athleteId, eventId))
             throw new IllegalArgumentException("该运动员已报名此项目");
-        if (event.getGenderLimit() != null && !"mixed".equals(event.getGenderLimit())
-                && !event.getGenderLimit().equalsIgnoreCase(athlete.getGender()))
+        if (!com.sports.common.GenderUtil.matches(event.getGenderLimit(), athlete.getGender()))
             throw new IllegalArgumentException("性别不符合项目要求");
         int maxPerClass = getConfig("maxAthletesPerEvent", 3);
         long classCount = registrationRepository.countByClassAndEvent(
@@ -220,9 +219,7 @@ public class RegistrationService {
                     skipped++; // 重复报名，幂等跳过
                     continue;
                 }
-                if (event.getGenderLimit() != null && !"mixed".equalsIgnoreCase(event.getGenderLimit())
-                        && athlete.getGender() != null
-                        && !event.getGenderLimit().equalsIgnoreCase(athlete.getGender())) {
+                if (!com.sports.common.GenderUtil.matches(event.getGenderLimit(), athlete.getGender())) {
                     errors.add(err(rowNum, "性别不符合项目「" + event.getName() + "」要求"));
                     continue;
                 }

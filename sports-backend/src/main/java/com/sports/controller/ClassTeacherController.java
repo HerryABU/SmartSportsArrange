@@ -260,9 +260,8 @@ public class ClassTeacherController {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在"));
 
-        // 性别检查
-        if (event.getGenderLimit() != null && !"mixed".equals(event.getGenderLimit())
-                && !event.getGenderLimit().equalsIgnoreCase(athlete.getGender())) {
+        // 性别检查（归一化：兼容 男子组/M、女子组/F 双轨写法）
+        if (!com.sports.common.GenderUtil.matches(event.getGenderLimit(), athlete.getGender())) {
             throw new RuntimeException("性别不符合项目要求");
         }
 
