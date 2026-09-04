@@ -1,281 +1,317 @@
 <template>
-  <div class="ct-registration" v-loading="loading">
-    <!-- 页面头（班主任现场/后置报名） -->
+  <div class="ct-reg" v-loading="loading">
+    <!-- ===== 页面头 ===== -->
     <div class="pg-head rise-in">
       <div class="pg-titles">
         <span class="pg-ico">🎯</span>
         <div>
-          <h3 class="pg-title">运动会报名</h3>
-          <p class="pg-desc">① 现场/逐个报名提交后进入「待审核」，由体育老师通过后生效；② 批量导入可直接选「后置导入（已报好表）→ 直接通过」</p>
+          <h3 class="pg-title">运动会 · 现场报名</h3>
+          <p class="pg-desc">
+            单人逐个报名（学号/姓名定位）或「按项目批量勾选」整队报名；已报好的整表可用「批量导入-后置」直接通过。
+            逐个/现场报名提交后为待审核，由体育老师审核通过
+          </p>
         </div>
       </div>
       <div class="pg-actions">
         <span class="chip" style="background:#eff6ff;color:#2563eb">仅限本班</span>
-        <el-button type="success" size="small" @click="exportRegistrations">
+        <el-button size="small" type="success" @click="exportRegistrations">
           <el-icon><Download /></el-icon> 导出报名表
+        </el-button>
+        <el-button size="small" plain @click="openImportDialog">
+          <el-icon><Upload /></el-icon> 批量导入报名表
         </el-button>
       </div>
     </div>
 
-    <!-- ===== 批量报名导入（班主任：现场 or 后置） ===== -->
-    <el-card shadow="never" class="roster-card batch-card">
-      <template #header>
-        <div class="card-header">
-          <span>🗂️ 批量报名导入（表格1：年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）</span>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <el-radio-group v-model="ctImportMode" size="small">
-              <el-radio-button value="offline">后置导入（已报好表→直接通过）</el-radio-button>
-              <el-radio-button value="onsite">现场导入（→待审核）</el-radio-button>
-            </el-radio-group>
-            <el-button size="small" plain @click="downloadSignupTemplate">
-              <el-icon><DocumentCopy /></el-icon> 模板
-            </el-button>
-          </div>
-        </div>
+    <!-- ===== 概览条 ===== -->
+    <div class="overview">
+      <div class="ov-item main"><b>{{ athletes.length }}</b><span>本班学生</span></div>
+      <div class="ov-item"><b>{{ regStats.regCount }}</b><span>报名人次</span></div>
+      <div class="ov-item warn"><b>{{ pendingCount }}</b><span>待审核</span></div>
+      <div class="ov-item danger"><b>{{ unregisteredAthletes.length }}</b><span>尚未报名</span></div>
+      <div class="ov-item ok"><b>{{ approvedCount }}</b><span>已通过</span></div>
+      <div class="ov-progress">
+        <span class="ov-progress-label">报名覆盖率</span>
+        <div class="pg-track"><div class="pg-fill" :style="{ width: coveragePct + '%' }"></div></div>
+        <span class="ov-progress-num">{{ coveragePct }}%</span>
+      </div>
+    </div>
+
+    <!-- ===== 名单为空提醒（现场报名前先建花名册） ===== -->
+    <el-alert v-if="!athletes.length" type="warning" show-icon :closable="false" class="empty-roster-alert">
+      <template #title>
+        尚未导入班级名单，请先导入全班花名册（Excel / CSV：学号,姓名,性别，自动识别 UTF-8 / GBK）：
+        <span style="display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle">
+          <el-upload :action="importRosterUrl" :headers="uploadHeaders" :show-file-list="false"
+            accept=".xlsx,.xls,.csv" :on-success="onImportSuccess" :on-error="onImportError"
+            style="display:inline-block">
+            <el-button type="primary" size="small">导入班级名单</el-button>
+          </el-upload>
+          <el-button size="small" plain @click="downloadRosterTemplate">下载模板</el-button>
+        </span>
       </template>
-      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px">
-        <template #title>
-          两种报名方式任选：① 用上方「现场报名」逐个登记（→ 待审核）；② 直接把整理好的「报名表 Excel/CSV」批量导入。
-          班主任只允许导入自己绑定班级；项目列可填项目编码（如 100M）或精确项目名称；未建档的学生将自动建档并生成号码簿。
-        </template>
-      </el-alert>
+    </el-alert>
+
+    <!-- ===== 工作台（名单已就绪时展示） ===== -->
+    <div v-if="athletes.length" class="workspace">
+      <!-- 左侧：报名工作台 -->
+      <section class="ws-main">
+        <el-tabs v-model="workMode">
+          <!-- ---------- 单人报名 ---------- -->
+          <el-tab-pane name="single">
+            <template #label><span class="tab-ico">👤</span> 单人报名</template>
+            <div class="single-box">
+              <el-input v-model="searchKw" size="large" placeholder="输入学号或姓名，自动定位学生" clearable
+                class="search-input">
+                <template #prefix><el-icon><Search /></el-icon></template>
+              </el-input>
+
+              <!-- 定位结果 -->
+              <div v-if="searched" class="person-bar">
+                <template v-if="foundAthlete">
+                  <div class="person-avatar">{{ (foundAthlete.name || '?').slice(0, 1) }}</div>
+                  <div class="person-info">
+                    <div class="person-name">
+                      {{ foundAthlete.name }}
+                      <el-tag size="small" :type="foundAthlete.gender === 'M' ? 'primary' : 'danger'" effect="plain">
+                        {{ foundAthlete.gender === 'M' ? '男' : '女' }}
+                      </el-tag>
+                      <el-tag v-if="regOf(foundAthlete).length" size="small" effect="plain">
+                        已报 {{ regOf(foundAthlete).length }} 项
+                      </el-tag>
+                    </div>
+                    <div class="person-sub">
+                      学号 {{ foundAthlete.studentNo }} · {{ foundAthlete.grade || '' }}
+                      <span v-if="regOf(foundAthlete).length" class="person-regs">
+                        已报：{{ regOf(foundAthlete).map(r => r.eventName).join('、') }}
+                      </span>
+                    </div>
+                  </div>
+                  <el-tag v-if="regOf(foundAthlete).length >= 3" type="warning" effect="dark">已报满 3 项</el-tag>
+                </template>
+                <div v-else class="person-none">未找到「{{ searchKw }}」，请核对学号或先导入班级名单</div>
+              </div>
+
+              <!-- 项目类别过滤 -->
+              <div v-if="foundAthlete" class="cat-filter">
+                <el-radio-group v-model="singleCat" size="small">
+                  <el-radio-button value="">全部</el-radio-button>
+                  <el-radio-button value="径赛">径赛</el-radio-button>
+                  <el-radio-button value="田赛">田赛</el-radio-button>
+                </el-radio-group>
+                <span class="cat-hint">点击项目卡片即可报名（提交后待审核）</span>
+              </div>
+
+              <!-- 可报项目 -->
+              <div v-if="foundAthlete && singleProjects.length" class="proj-grid">
+                <div v-for="evt in singleProjects" :key="evt.id"
+                  :class="['proj-card', { reg: isRegSingle(evt), off: !canSingle(evt) }]" @click="singleReg(evt)">
+                  <div class="proj-name">{{ evt.name }}</div>
+                  <div class="proj-meta">
+                    <el-tag size="small" :type="evtType(evt) === '径赛' ? 'danger' : 'warning'" effect="light">
+                      {{ evtType(evt) }}
+                    </el-tag>
+                    <el-tag size="small" effect="plain">{{ genderLabel(evt.gender) }}</el-tag>
+                  </div>
+                  <div class="proj-state">
+                    <span v-if="isRegSingle(evt)" class="st done">✓ 已报</span>
+                    <span v-else-if="!canSingle(evt)" class="st limit">{{ whyOff(evt) }}</span>
+                    <span v-else class="st avail">点击报名</span>
+                  </div>
+                </div>
+              </div>
+              <div v-else-if="foundAthlete" class="cat-empty">该项目类下暂无未报且性别符合的项目</div>
+            </div>
+          </el-tab-pane>
+
+          <!-- ---------- 按项目批量 ---------- -->
+          <el-tab-pane name="batch">
+            <template #label><span class="tab-ico">👥</span> 按项目批量报名</template>
+            <div class="batch-box">
+              <div class="batch-event-pick">
+                <span class="batch-label">选择项目</span>
+                <el-select v-model="batchEventId" filterable placeholder="搜索并选择项目" size="large" style="width: 320px">
+                  <el-option v-for="evt in events" :key="evt.id" :label="evt.name" :value="evt.id">
+                    <span>{{ evt.name }}</span>
+                    <span style="float:right;color:#94a3b8;font-size:12px">
+                      {{ evtType(evt) }} · {{ genderLabel(evt.gender) }}
+                    </span>
+                  </el-option>
+                </el-select>
+                <template v-if="batchEvent">
+                  <el-tag size="large" effect="plain" style="margin-left:10px">{{ genderLabel(batchEvent.gender) }}</el-tag>
+                  <el-tag size="large" type="warning" effect="plain">剩余名额 {{ quotaLeft }} 人</el-tag>
+                  <el-tag size="large" type="success" effect="plain">本项目已报 {{ classEventRegs.length }} 人</el-tag>
+                </template>
+              </div>
+
+              <template v-if="batchEvent">
+                <el-input v-model="batchKw" placeholder="过滤姓名 / 学号" clearable style="width: 260px; margin: 8px 0 10px">
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <div class="batch-quota-tip">
+                  仅列出未报且性别符合的学生（每项目限报 3 人/班，勾选上限 = 剩余名额），勾选后一键提交（→ 待审核）
+                </div>
+                <div class="batch-check-wrap">
+                  <label v-for="a in batchCandidates" :key="a.id" class="check-item"
+                    :class="{ picked: checkedIds.includes(a.id) }">
+                    <el-checkbox v-model="checkedIds" :value="a.id" :disabled="checkedIds.length >= quotaLeft && !checkedIds.includes(a.id)">
+                      <div class="check-person">
+                        <span class="ck-name">{{ a.name }}</span>
+                        <span class="ck-sub">学号 {{ a.studentNo }} · {{ a.gender === 'M' ? '男' : '女' }} ·
+                          已报 {{ regOf(a).length }}/3</span>
+                      </div>
+                    </el-checkbox>
+                  </label>
+                  <div v-if="!batchCandidates.length" class="batch-empty">没有可报该项目的学生（可能均已报或名额已满/性别不符）</div>
+                </div>
+                <div class="batch-actions">
+                  <el-button @click="checkAllBatch" :disabled="batchCandidates.length === 0 || quotaLeft <= 0">
+                    全选可报名
+                  </el-button>
+                  <el-button type="primary" size="large" :loading="batchSubmitting" :disabled="!checkedIds.length"
+                    @click="submitBatch">
+                    <el-icon><Check /></el-icon> 为 {{ checkedIds.length }} 名同学提交报名
+                  </el-button>
+                </div>
+              </template>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+
+        <!-- ===== 报名清单 ===== -->
+        <el-card shadow="never" class="panel-card list-card">
+          <template #header>
+            <div class="card-head">
+              <span>📋 报名清单（{{ registrations.length }} 条）</span>
+              <el-tag type="info" effect="plain" round>待审核 {{ pendingCount }} · 已通过 {{ approvedCount }}</el-tag>
+            </div>
+          </template>
+          <el-table :data="registrations" size="small" border max-height="300">
+            <el-table-column label="姓名" width="100">
+              <template #default="{ row }">{{ row.athleteName }}</template>
+            </el-table-column>
+            <el-table-column label="学号" width="110">
+              <template #default="{ row }">{{ sidOf(row.athleteName) }}</template>
+            </el-table-column>
+            <el-table-column prop="eventName" label="项目" min-width="140" />
+            <el-table-column label="类型" width="70" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.eventType === '径赛' ? 'danger' : 'warning'" effect="plain">
+                  {{ row.eventType || '-' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'approved' ? 'success' : row.status === 'withdrawn' ? 'info' : 'warning'"
+                  size="small">{{ row.status === 'approved' ? '已通过' : row.status === 'withdrawn' ? '已取消' : '待审核' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="70" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="row.status !== 'withdrawn'" type="danger" size="small" link @click="cancelReg(row)">取消</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </section>
+
+      <!-- 右侧：快捷信息 -->
+      <aside class="ws-side">
+        <el-card shadow="never" class="panel-card side-card">
+          <template #header><div class="card-head">⚠️ 尚未报名的学生</div></template>
+          <div class="unreg-list">
+            <button v-for="a in unregisteredAthletes" :key="a.id" class="unreg-item" @click="gotoSingle(a)">
+              <span class="ur-name">{{ a.name }}</span>
+              <span class="ur-sub">{{ a.studentNo }}</span>
+              <el-icon style="color:#2563eb"><ArrowRight /></el-icon>
+            </button>
+            <div v-if="!unregisteredAthletes.length" class="side-empty">太棒了，本班学生都已报名 🎉</div>
+          </div>
+        </el-card>
+        <el-card shadow="never" class="panel-card side-card">
+          <template #header><div class="card-head">📌 报名说明</div></template>
+          <ul class="side-tips">
+            <li>现场/逐个报名 → <b>待审核</b>，体育老师通过后才生效；</li>
+            <li>批量导入选「后置导入（已报好表）」可<b>直接通过</b>；</li>
+            <li>每人最多报 3 项、每项目每班限 3 人（体育老师可在积分/系统配置调整）；</li>
+            <li>性别不符 / 已报名 / 名额已满的项目会被拦截。</li>
+          </ul>
+        </el-card>
+      </aside>
+    </div>
+
+    <!-- ===== 批量导入报名表（现场/后置） ===== -->
+    <el-dialog v-model="showBatch" title="批量导入报名表" width="680px" :close-on-click-modal="false">
+      <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px"
+        title="① 现场导入＝把现场收集的登记表整批导入（→待审核）；② 后置导入＝报名已定稿，直接置为已通过。" />
+      <el-radio-group v-model="ctImportMode" style="margin-bottom:14px">
+        <el-radio-button value="onsite">现场导入（→待审核）</el-radio-button>
+        <el-radio-button value="offline">后置导入（已报好表 → 直接通过）</el-radio-button>
+      </el-radio-group>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input ref="ctFileInput" type="file" accept=".xlsx,.xls,.csv" style="display:none"
-          @change="onCtFile" />
-        <el-button type="primary" @click="ctFileInput?.click()">
-          <el-icon><Upload /></el-icon> 选择报名表
-        </el-button>
-        <span v-if="ctFile" class="batch-file">{{ ctFile.name }}</span>
-        <el-button type="success" :loading="ctImporting" :disabled="!ctFile" @click="doCtImport">
-          开始导入
-        </el-button>
+        <input ref="ctFileInput" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onCtFile" />
+        <el-button type="primary" @click="ctFileInput && ctFileInput.click()"><el-icon><Upload /></el-icon> 选择报名表</el-button>
+        <el-button link type="primary" @click="downloadSignupTemplate">下载表格1模板（年级|班级|姓名|性别|学号|项目|数量|成绩）</el-button>
       </div>
-      <el-alert v-if="ctResult" :type="ctResult.failed > 0 ? 'warning' : 'success'" show-icon
-        style="margin-top:10px"
-        :title="`导入完成：成功 ${ctResult.success} 条，跳过(重复) ${ctResult.skipped} 条，失败 ${ctResult.failed} 条${ctResult.createdAthletes ? '，新建运动员 ' + ctResult.createdAthletes + ' 名' : ''}`" />
+      <div v-if="ctFile" class="ct-file-line">
+        <span>已选：{{ ctFile.name }}</span>
+        <el-button type="success" :loading="ctImporting" @click="doCtImport">开始导入</el-button>
+      </div>
+      <el-alert v-if="ctResult" :type="ctResult.failed > 0 ? 'warning' : 'success'" show-icon style="margin-top:10px"
+        :title="`导入完成：成功 ${ctResult.success} 条，重复跳过 ${ctResult.skipped} 条，失败 ${ctResult.failed} 条${ctResult.createdAthletes ? '，自动建档运动员 ' + ctResult.createdAthletes + ' 名' : ''}`" />
       <div v-if="ctResult && ctResult.errors && ctResult.errors.length" class="batch-errors">
-        <div class="batch-errors-title">失败明细（行号自表头下一行起）：</div>
-        <div v-for="(e, i) in ctResult.errors" :key="i" class="batch-error-item">第 {{ e.row }} 行：{{ e.message }}</div>
+        <div class="batch-errors-title">失败明细：</div>
+        <div v-for="(e, i) in ctResult.errors" :key="i">第 {{ e.row }} 行：{{ e.message }}</div>
       </div>
-    </el-card>
-
-    <!-- ===== 第①步：导入班级名单 ===== -->
-    <el-card shadow="never" class="roster-card" v-if="!athletes.length">
-      <template #header>
-        <div class="card-header">
-          <span>📋 ① 导入班级名单</span>
-          <el-tag type="warning">请先导入全班花名册</el-tag>
-        </div>
-      </template>
-      <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
-        <template #title>导入格式：Excel 第1列=学号, 第2列=姓名, 第3列=性别 (男/女/M/F)；CSV 同样按「学号,姓名,性别」，支持 UTF-8 / GBK 等编码自动识别。导入后将自动创建学生账号。</template>
-      </el-alert>
-      <div style="display:flex;gap:8px">
-        <el-upload :action="importRosterUrl" :headers="uploadHeaders" :show-file-list="false"
-          accept=".xlsx,.xls,.csv" :on-success="onImportSuccess" :on-error="onImportError">
-          <el-button type="primary" size="default" :loading="importing">
-            <el-icon><Upload /></el-icon> 导入班级名单 (Excel/CSV)
-          </el-button>
-        </el-upload>
-        <el-button size="default" plain @click="downloadRosterTemplate">
-          <el-icon><DocumentCopy /></el-icon> 下载模板
-        </el-button>
-      </div>
-    </el-card>
-
-    <!-- ===== 名单已导入 — 统计摘要 ===== -->
-    <el-card shadow="never" class="roster-card" v-else>
-      <template #header>
-        <div class="card-header">
-          <span>📋 班级名单</span>
-          <div style="display:flex;gap:8px;align-items:center">
-            <el-tag type="success">已导入 {{ athletes.length }} 名运动员</el-tag>
-            <el-upload :action="importRosterUrl" :headers="uploadHeaders" :show-file-list="false"
-              accept=".xlsx,.xls,.csv" :on-success="onImportSuccess" :on-error="onImportError" style="display:inline-block">
-              <el-button size="small" plain><el-icon><Upload /></el-icon> 重新导入</el-button>
-            </el-upload>
-          </div>
-        </div>
-      </template>
-      <!-- 统计条 -->
-      <el-row :gutter="16" style="margin-bottom:4px">
-        <el-col :xs="12" :sm="6"><div class="stat-item"><span class="stat-num">{{ athletes.length }}</span><span class="stat-label">全班人数</span></div></el-col>
-        <el-col :xs="12" :sm="6"><div class="stat-item"><span class="stat-num">{{ regStats.regCount }}</span><span class="stat-label">已报名人次</span></div></el-col>
-        <el-col :xs="12" :sm="6"><div class="stat-item"><span class="stat-num">{{ regStats.athleteCount }}</span><span class="stat-label">已报名人数</span></div></el-col>
-        <el-col :xs="12" :sm="6"><div class="stat-item warn"><span class="stat-num">{{ athletes.length - regStats.athleteCount }}</span><span class="stat-label">未报名人数</span></div></el-col>
-      </el-row>
-    </el-card>
-
-    <!-- ===== 第②步：运动员报名 ===== -->
-    <el-card shadow="never" style="margin-top:12px" v-if="athletes.length">
-      <template #header>
-        <div class="card-header">
-          <span>🎯 ② 运动员报名</span>
-          <el-button size="small" type="success" @click="exportRegistrations">
-            <el-icon><Download /></el-icon> 导出报名表
-          </el-button>
-        </div>
-      </template>
-
-      <!-- 学号搜索 -->
-      <el-form inline style="margin-bottom:8px">
-        <el-form-item label="输入学号">
-          <el-input v-model="searchId" placeholder="如：2024001" clearable style="width:160px"
-            @input="onSearchId" @clear="clearSearch">
-            <template #prefix><el-icon><Search /></el-icon></template>
-          </el-input>
-        </el-form-item>
-        <el-form-item>
-          <template v-if="foundAthlete">
-            <el-tag type="success" size="large" effect="dark" style="font-size:14px;padding:6px 14px">
-              {{ foundAthlete.name }}
-              <span style="margin-left:6px;opacity:0.7">
-                ({{ foundAthlete.gender==='M'?'男':'女' }} | {{ foundAthlete.grade }} | 已报{{ getRegCount(foundAthlete) }}项)
-              </span>
-            </el-tag>
-            <!-- 该运动员已报项目 -->
-            <span v-if="getAthleteRegs(foundAthlete).length" style="margin-left:8px;font-size:12px;color:#909399">
-              已报: {{ getAthleteRegs(foundAthlete).map(r=>r.eventName).join('、') }}
-            </span>
-          </template>
-          <el-tag v-else-if="searchId && searched" type="danger" effect="dark">
-            未找到学号「{{ searchId }}」
-          </el-tag>
-          <span v-else style="color:#909399;font-size:13px">输入学号后自动显示姓名，然后点击下方项目完成报名</span>
-        </el-form-item>
-      </el-form>
-
-      <el-divider style="margin:8px 0" />
-
-      <!-- 可选项目卡片 -->
-      <h4 style="margin:0 0 10px;color:#606266">可选项目（点击报名）</h4>
-      <el-row :gutter="10">
-        <el-col :xs="12" :sm="8" :md="4" v-for="evt in events" :key="evt.id" style="margin-bottom:10px">
-          <div :class="['event-card', { registered: isRegistered(foundAthlete, evt), disabled: !canReg(foundAthlete, evt) }]"
-            @click="tryRegister(evt)">
-            <div class="event-name">{{ evt.name }}</div>
-            <div class="event-meta">
-              <el-tag size="small" :type="evtType(evt)==='径赛'?'danger':''">{{ evtType(evt) }}</el-tag>
-              <el-tag size="small" effect="plain">{{ genderLabel(evt.gender || evt.genderLimit) }}</el-tag>
-            </div>
-            <div class="event-status">
-              <span v-if="isRegistered(foundAthlete, evt)" class="reg-badge done">✓ 已报</span>
-              <span v-else-if="!foundAthlete" class="reg-badge hint">输入学号</span>
-              <span v-else-if="!canReg(foundAthlete, evt)" class="reg-badge limit">不可报</span>
-              <span v-else class="reg-badge avail">点击报名</span>
-            </div>
-          </div>
-        </el-col>
-      </el-row>
-    </el-card>
-
-    <!-- ===== 已报名列表 ===== -->
-    <el-card shadow="never" style="margin-top:12px" v-if="registrations.length">
-      <template #header>
-        <div class="card-header">
-          <span>📋 报名清单 ({{ registrations.length }}条)</span>
-          <el-button size="small" type="success" @click="exportRegistrations">
-            <el-icon><Download /></el-icon> 导出Excel
-          </el-button>
-        </div>
-      </template>
-      <el-table :data="registrations" border size="small" max-height="400">
-        <el-table-column prop="athleteName" label="姓名" width="90" />
-        <el-table-column label="学号" width="100">
-          <template #default="{row}">{{ getAthleteSid(row.athleteName) }}</template>
-        </el-table-column>
-        <el-table-column prop="eventName" label="项目" />
-        <el-table-column prop="eventType" label="类型" width="60" />
-        <el-table-column prop="status" label="状态" width="80">
-          <template #default="{row}">
-            <el-tag :type="row.status==='approved'?'success':row.status==='withdrawn'?'info':'warning'" size="small">
-              {{ row.status==='approved'?'已通过':row.status==='withdrawn'?'已取消':'待审核' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="60" fixed="right">
-          <template #default="{row}">
-            <el-button v-if="row.status!=='withdrawn'" type="danger" size="small" link @click="cancelReg(row)">取消</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <!-- ===== 未报名名单 ===== -->
-    <el-card shadow="never" style="margin-top:12px" v-if="unregisteredAthletes.length">
-      <template #header><span>⚠️ 未报名运动员 ({{ unregisteredAthletes.length }}人)</span></template>
-      <el-table :data="unregisteredAthletes" border size="small" max-height="250">
-        <el-table-column prop="name" label="姓名" />
-        <el-table-column prop="studentNo" label="学号" />
-        <el-table-column label="性别" width="60">
-          <template #default="{row}">{{ row.gender==='M'?'男':'女' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="80">
-          <template #default="{row}">
-            <el-button type="primary" size="small" link @click="quickSearch(row.studentNo)">去报名</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, DocumentCopy, Search, Download } from '@element-plus/icons-vue'
+import { Search, Download, Upload, Check, ArrowRight } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
 const loading = ref(false)
-const importing = ref(false)
 const athletes = ref([])
 const events = ref([])
 const registrations = ref([])
-const searchId = ref('')
-const searched = ref(false)
 
-const foundAthlete = computed(() => {
-  if (!searchId.value) return null
-  return athletes.value.find(a => a.studentNo === searchId.value.trim()) || null
-})
-
+// ---------- 概览 ----------
 const regStats = computed(() => {
   const active = registrations.value.filter(r => r.status !== 'withdrawn')
-  const names = new Set(active.map(r => r.athleteName))
-  return { regCount: active.length, athleteCount: names.size }
+  return { regCount: active.length, athleteCount: new Set(active.map(r => r.athleteName)).size }
 })
-
+const pendingCount = computed(() => registrations.value.filter(r => r.status === 'pending').length)
+const approvedCount = computed(() => registrations.value.filter(r => r.status === 'approved').length)
 const unregisteredAthletes = computed(() => {
-  const regNames = new Set(registrations.value.filter(r => r.status !== 'withdrawn').map(r => r.athleteName))
-  return athletes.value.filter(a => !regNames.has(a.name))
+  const has = new Set(registrations.value.filter(r => r.status !== 'withdrawn').map(r => r.athleteName))
+  return athletes.value.filter(a => !has.has(a.name))
 })
+const coveragePct = computed(() => athletes.value.length
+  ? Math.round(regStats.value.athleteCount / athletes.value.length * 100) : 0)
 
-function quickSearch(sid) {
-  searchId.value = sid
-  searched.value = true
+// ---------- 通用 ----------
+function regOf(athlete) {
+  if (!athlete) return []
+  return registrations.value.filter(r => r.athleteName === athlete.name && r.status !== 'withdrawn')
 }
-
-function getAthleteSid(name) {
-  const a = athletes.value.find(a => a.name === name)
+function isRegOf(athlete, evt) {
+  if (!athlete) return false
+  return regOf(athlete).some(r => r.eventName === evt.name)
+}
+function sidOf(name) {
+  const a = athletes.value.find(x => x.name === name)
   return a ? (a.studentNo || a.studentId || '') : ''
 }
-
-function onSearchId() { searched.value = !!searchId.value }
-function clearSearch() { searched.value = false }
-
-/** 项目类型（兼容 eventType/category/isTrack 多种来源） */
 function evtType(evt) {
   if (evt.eventType) return evt.eventType
   if (evt.isTrack === false) return '田赛'
   return evt.isTrack ? '径赛' : (evt.category || '径赛')
-}
-/** 性别显示（男子组/M/男 → 男子；女子组/F/女 → 女子；其余混合） */
-function genderLabel(g) {
-  const t = String(g || '').trim()
-  if (['M', '男', '男子组', '男子'].includes(t)) return '男子'
-  if (['F', '女', '女子组', '女子'].includes(t)) return '女子'
-  return '混合'
 }
 function normGender(g) {
   const t = String(g || '').trim()
@@ -283,68 +319,139 @@ function normGender(g) {
   if (['F', '女', '女子组', '女子'].includes(t)) return 'F'
   return ''
 }
+function genderLabel(g) {
+  const n = normGender(g)
+  return n === 'M' ? '男子' : n === 'F' ? '女子' : '混合'
+}
 function genderMatch(limit, athleteGender) {
   const l = normGender(limit)
-  if (!l || l === 'X') return true // 混合/未限制
+  if (!l) return true
   const a = normGender(athleteGender)
   return !a || a === l
 }
 
-function getRegCount(athlete) {
-  if (!athlete) return 0
-  return registrations.value.filter(r => r.athleteName === athlete.name && r.status !== 'withdrawn').length
-}
-
-function getAthleteRegs(athlete) {
-  if (!athlete) return []
-  return registrations.value.filter(r => r.athleteName === athlete.name && r.status !== 'withdrawn')
-}
-
-function isRegistered(athlete, event) {
+// ---------- 单人现场报名 ----------
+const workMode = ref('single')
+const searchKw = ref('')
+const singleCat = ref('')
+const foundAthlete = computed(() => {
+  const kw = searchKw.value.trim()
+  if (!kw) return null
+  return athletes.value.find(a => a.name === kw || (a.studentNo && a.studentNo === kw)) || null
+})
+const searched = computed(() => !!searchKw.value.trim())
+const singleProjects = computed(() => {
+  if (!foundAthlete.value) return []
+  const cat = singleCat.value
+  return events.value.filter(evt => {
+    if (cat && evtType(evt) !== cat) return false
+    if (isRegOf(foundAthlete.value, evt)) return true // 已报也展示（打勾态）
+    return canReg(foundAthlete.value, evt)
+  })
+})
+function canReg(athlete, evt) {
   if (!athlete) return false
-  return registrations.value.some(r => r.athleteName === athlete.name && r.eventName === event.name && r.status !== 'withdrawn')
-}
-
-function canReg(athlete, event) {
-  if (!athlete) return false
-  if (isRegistered(athlete, event)) return false
-  if (!genderMatch(event.gender || event.genderLimit, athlete.gender)) return false
-  if (getRegCount(athlete) >= 3) return false
+  if (isRegOf(athlete, evt)) return false
+  if (!genderMatch(evt.gender, athlete.gender)) return false
+  if (regOf(athlete).length >= 3) return false
   return true
 }
-
-async function tryRegister(event) {
-  if (!foundAthlete.value) { ElMessage.warning('请先输入学号定位运动员'); return }
-  if (isRegistered(foundAthlete.value, event)) { ElMessage.info('已报名此项目'); return }
-  if (!canReg(foundAthlete.value, event)) {
-    if (!genderMatch(event.gender || event.genderLimit, foundAthlete.value.gender))
-      ElMessage.warning('性别不符合项目要求')
-    else if (getRegCount(foundAthlete.value) >= 3)
-      ElMessage.warning('已报满3项')
+function isRegSingle(evt) { return isRegOf(foundAthlete.value, evt) }
+function canSingle(evt) { return canReg(foundAthlete.value, evt) }
+function whyOff(evt) {
+  if (!genderMatch(evt.gender, foundAthlete.value?.gender)) return '性别不符'
+  if (regOf(foundAthlete.value).length >= 3) return '已满3项'
+  return '不可报'
+}
+function gotoSingle(a) {
+  workMode.value = 'single'
+  singleCat.value = ''
+  searchKw.value = a.studentNo || a.name
+}
+async function singleReg(evt) {
+  const a = foundAthlete.value
+  if (!a) { ElMessage.warning('请先输入学号/姓名'); return }
+  if (isRegOf(a, evt)) { ElMessage.info('已报名此项目'); return }
+  if (!canReg(a, evt)) {
+    ElMessage.warning(whyOff(evt))
     return
   }
   loading.value = true
   try {
-    await request.post('/class-teacher/register', { athleteId: foundAthlete.value.id, eventId: event.id })
-    ElMessage.success(`${foundAthlete.value.name} 报名 ${event.name} 已提交，等待体育老师审核`)
-    await fetchRegistrations()
+    await request.post('/class-teacher/register', { athleteId: a.id, eventId: evt.id })
+    ElMessage.success(`${a.name} 已提交「${evt.name}」，待体育老师审核`)
+    await refreshRegs()
   } catch (e) { console.error(e) }
   finally { loading.value = false }
 }
 
+// ---------- 按项目批量报名 ----------
+const batchEventId = ref('')
+const batchKw = ref('')
+const batchSubmitting = ref(false)
+const checkedIds = ref([])
+const batchEvent = computed(() => events.value.find(e => e.id === batchEventId.value) || null)
+const classEventRegs = computed(() => batchEvent.value
+  ? registrations.value.filter(r => r.eventName === batchEvent.value.name && r.status !== 'withdrawn')
+  : [])
+const quotaLeft = computed(() => Math.max(0, 3 - classEventRegs.value.length))
+const batchCandidates = computed(() => {
+  if (!batchEvent.value) return []
+  const kw = batchKw.value.trim()
+  return athletes.value.filter(a => {
+    if (kw && a.name.indexOf(kw) < 0 && (a.studentNo || '').indexOf(kw) < 0) return false
+    if (isRegOf(a, batchEvent.value)) return false
+    if (!genderMatch(batchEvent.value.gender, a.gender)) return false
+    return true
+  })
+})
+watch(batchEventId, () => { checkedIds.value = []; batchKw.value = '' })
+function checkAllBatch() {
+  if (batchCandidates.value.length <= quotaLeft.value) {
+    checkedIds.value = batchCandidates.value.map(a => a.id)
+  } else {
+    checkedIds.value = batchCandidates.value.slice(0, quotaLeft.value).map(a => a.id)
+    ElMessage.info('名额有限，已自动勾选前 ' + quotaLeft.value + ' 人')
+  }
+}
+async function submitBatch() {
+  if (!batchEvent.value) return
+  if (!checkedIds.value.length) { ElMessage.warning('请先勾选学生'); return }
+  batchSubmitting.value = true
+  let ok = 0
+  const fails = []
+  for (const id of checkedIds.value) {
+    try {
+      await request.post('/class-teacher/register', { athleteId: id, eventId: batchEvent.value.id })
+      ok++
+    } catch (e) {
+      const a = athletes.value.find(x => x.id === id)
+      fails.push((a ? a.name : id) + '：' + (e?.response?.data?.message || e?.message || '失败'))
+    }
+  }
+  ElMessage[ok ? 'success' : 'error'](ok
+    ? `已为 ${ok} 名同学提交「${batchEvent.value.name}」报名（待审核）${fails.length ? '，' + fails.length + ' 人失败' : ''}`
+    : '提交失败')
+  if (fails.length) console.warn(fails)
+  checkedIds.value = []
+  await refreshRegs()
+  batchSubmitting.value = false
+}
+
+// ---------- 取消报名 ----------
 async function cancelReg(row) {
   try {
-    await ElMessageBox.confirm(`确定取消「${row.athleteName}」的「${row.eventName}」？`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(`确定取消「${row.athleteName}」的「${row.eventName}」报名？`, '提示', { type: 'warning' })
     await request.delete('/class-teacher/register/' + row.id)
     ElMessage.success('已取消')
-    fetchRegistrations()
+    refreshRegs()
   } catch (e) { if (e !== 'cancel') console.error(e) }
 }
 
-// 导出报名表
+// ---------- 导出 ----------
 async function exportRegistrations() {
-  const token = localStorage.getItem('token') || ''
   try {
+    const token = localStorage.getItem('token') || ''
     const res = await fetch(apiBase() + '/class-teacher/registrations/export', {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -358,20 +465,17 @@ async function exportRegistrations() {
   } catch (e) { ElMessage.error('导出失败') }
 }
 
-// ===== 导入 =====
+// ---------- 名单导入 ----------
 const token = localStorage.getItem('token') || ''
 const importRosterUrl = apiBase() + '/class-teacher/import-roster'
 const uploadHeaders = computed(() => ({ Authorization: token ? `Bearer ${token}` : '' }))
-
 function onImportSuccess(res) {
-  importing.value = false
-  const d = res.data || res
-  ElMessage.success(`导入完成：新增运动员 ${d.createdAthletes||0} 人，跳过 ${d.skipped||0} 条`)
+  const d = res?.data || res
+  ElMessage.success(`导入完成：新增学生 ${d?.createdUsers || 0}，运动员 ${d?.createdAthletes || 0}，跳过 ${d?.skipped || 0}`)
   fetchAthletes()
+  refreshRegs()
 }
-
-function onImportError() { importing.value = false; ElMessage.error('导入失败，请检查文件格式') }
-
+function onImportError() { ElMessage.error('导入失败，请检查文件格式') }
 function downloadRosterTemplate() {
   const csv = '学号,姓名,性别\n2024001,张三,男\n2024002,李四,女'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
@@ -380,37 +484,21 @@ function downloadRosterTemplate() {
   URL.revokeObjectURL(url)
 }
 
-// ===== 数据获取 =====
-async function fetchAthletes() {
-  try { const res = await request.get('/class-teacher/athletes', { params: { page: 1, size: 200 } }); athletes.value = res.records || [] }
-  catch (e) { console.error(e) }
-}
-async function fetchEvents() {
-  try { const res = await request.get('/class-teacher/events'); events.value = Array.isArray(res) ? res : (res.records || []) }
-  catch (e) { console.error(e) }
-}
-async function fetchRegistrations() {
-  try { const res = await request.get('/class-teacher/registrations'); registrations.value = res.records || [] }
-  catch (e) { console.error(e) }
-}
-async function fetchAll() { loading.value = true; await Promise.all([fetchAthletes(), fetchEvents(), fetchRegistrations()]); loading.value = false }
-
-// ===== 批量报名导入（现场 or 后置） =====
-const ctFileInput = ref(null)
-const ctImportMode = ref('offline')
+// ---------- 批量导入报名表（表格1：现场/后置） ----------
+const showBatch = ref(false)
+const ctImportMode = ref('onsite')
 const ctFile = ref(null)
 const ctImporting = ref(false)
 const ctResult = ref(null)
-
-function downloadSignupTemplate() {
-  window.open(apiBase() + '/registrations/template', '_blank')
-}
-
-function onCtFile(e) {
-  ctFile.value = e.target.files?.[0] || null
+const ctFileInput = ref(null)
+function openImportDialog() {
+  showBatch.value = true
+  ctImportMode.value = 'onsite'
+  ctFile.value = null
   ctResult.value = null
 }
-
+function downloadSignupTemplate() { window.open(apiBase() + '/registrations/template', '_blank') }
+function onCtFile(e) { ctFile.value = e.target.files?.[0] || null; ctResult.value = null }
 async function doCtImport() {
   if (!ctFile.value) return
   ctImporting.value = true
@@ -424,53 +512,161 @@ async function doCtImport() {
     })
     ctResult.value = res || {}
     ElMessage.success(`导入完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
-    fetchAll()
-  } catch {
-    // 拦截器已提示
-  } finally {
-    ctImporting.value = false
-  }
+    refreshRegs()
+    fetchAthletes()
+  } catch (e) { console.error(e) }
+  finally { ctImporting.value = false }
 }
 
-onMounted(() => fetchAll())
+// ---------- 数据 ----------
+async function fetchAthletes() {
+  try {
+    const res = await request.get('/class-teacher/athletes', { params: { page: 1, size: 500 } })
+    athletes.value = res.records || []
+  } catch (e) { console.error(e) }
+}
+async function fetchEvents() {
+  try {
+    const res = await request.get('/class-teacher/events')
+    events.value = Array.isArray(res) ? res : (res.records || [])
+  } catch (e) { console.error(e) }
+}
+async function refreshRegs() {
+  try {
+    const res = await request.get('/class-teacher/registrations')
+    registrations.value = res.records || []
+  } catch (e) { console.error(e) }
+}
+async function fetchAll() {
+  loading.value = true
+  await Promise.all([fetchAthletes(), fetchEvents(), refreshRegs()])
+  loading.value = false
+}
+onMounted(fetchAll)
 </script>
 
 <style scoped>
-.ct-registration { display:flex; flex-direction:column; }
-.card-header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
-.roster-card { border-left:4px solid #409eff; }
+.ct-reg { display: flex; flex-direction: column; gap: 14px; }
 
-.stat-item { text-align:center; padding:10px 0; background:#f5f7fa; border-radius:8px; }
-.stat-num { display:block; font-size:26px; font-weight:700; color:#303133; }
-.stat-label { font-size:12px; color:#909399; margin-top:2px; display:block; }
-.stat-item.warn .stat-num { color:#e6a23c; }
-
-.event-card { cursor:pointer; transition:all .2s; border:1px solid #e4e7ed; border-radius:10px; text-align:center;
-  padding:14px 8px; min-height:90px; display:flex; flex-direction:column; justify-content:center; background:#fff; }
-.event-card:hover { border-color:#409eff; box-shadow:0 4px 16px rgba(64,158,255,.15); transform:translateY(-2px); }
-.event-card.registered { border-color:#67c23a; background:#f0f9eb; }
-.event-card.disabled { opacity:.5; cursor:not-allowed; }
-.event-card.disabled:hover { border-color:#e4e7ed; box-shadow:none; transform:none; }
-.event-name { font-size:14px; font-weight:600; color:#303133; margin-bottom:6px; }
-.event-meta { display:flex; justify-content:center; gap:4px; margin-bottom:4px; }
-.event-status { font-size:11px; }
-.reg-badge { padding:1px 6px; border-radius:8px; font-size:11px; }
-.reg-badge.done { color:#67c23a; background:#e1f3d8; }
-.reg-badge.avail { color:#409eff; background:#ecf5ff; }
-.reg-badge.limit { color:#909399; background:#f4f4f5; }
-.reg-badge.hint { color:#e6a23c; background:#fdf6ec; }
-
-.batch-card { border-left-color:#67c23a; }
-.batch-file { font-size:13px; color:#606266; }
-.batch-errors {
-  margin-top:10px; max-height:200px; overflow-y:auto;
-  border:1px solid #e6a23c; border-radius:6px; padding:8px 12px; background:#fdf6ec;
+/* 概览条 */
+.overview {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px 16px;
 }
-.batch-errors-title { font-size:12px; color:#e6a23c; font-weight:600; margin-bottom:4px; }
-.batch-error-item { font-size:12px; color:#7a6a3e; line-height:1.6; }
+.ov-item { text-align: center; padding: 0 12px; border-right: 1px solid #eef2f7; min-width: 74px; }
+.ov-item.main { border-left: 3px solid #3b82f6; }
+.ov-item b { display: block; font-size: 24px; font-weight: 800; line-height: 1.1; color: #0f172a; }
+.ov-item span { font-size: 11.5px; color: #64748b; }
+.ov-item.warn b { color: #d97706; } .ov-item.danger b { color: #dc2626; }
+.ov-item.ok b { color: #16a34a; }
+.ov-progress { flex: 1; min-width: 240px; display: flex; align-items: center; gap: 8px; margin-left: 8px; }
+.ov-progress-label { font-size: 12px; color: #475569; white-space: nowrap; }
+.pg-track { flex: 1; height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+.pg-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .6s; }
+.ov-progress-num { font-size: 13px; font-weight: 700; color: #3b82f6; min-width: 42px; text-align: right; }
 
-@media(max-width:768px) {
-  .card-header { flex-direction: column; align-items: flex-start; }
-  .stat-num { font-size: 20px; }
+.empty-roster-alert { border-radius: 12px; }
+.workspace { display: grid; grid-template-columns: 1fr 300px; gap: 14px; align-items: start; }
+
+/* 左栏 */
+.ws-main { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 4px 16px 16px; }
+.tab-ico { font-size: 15px; margin-right: 4px; }
+.single-box, .batch-box { padding-top: 6px; }
+.search-input { width: 100%; max-width: 480px; }
+
+.person-bar {
+  display: flex; align-items: center; gap: 12px;
+  margin: 14px 0; padding: 12px 14px; border-radius: 14px;
+  background: linear-gradient(120deg, #eff6ff, #eef2ff);
+  border: 1px solid #dbeafe;
+}
+.person-avatar {
+  width: 44px; height: 44px; border-radius: 50%; color: #fff; font-size: 20px;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.person-info { flex: 1; }
+.person-name { font-size: 17px; font-weight: 800; display: flex; gap: 8px; align-items: center; }
+.person-sub { font-size: 12px; color: #475569; margin-top: 3px; }
+.person-regs { margin-left: 6px; color: #64748b; }
+.person-none { color: #dc2626; padding: 10px 0; }
+
+.cat-filter { display: flex; align-items: center; gap: 14px; margin: 6px 0 10px; }
+.cat-hint { font-size: 12px; color: #94a3b8; }
+.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.proj-card {
+  border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; cursor: pointer;
+  text-align: center; transition: all .2s; background: #fbfdff;
+}
+.proj-card:hover { border-color: #3b82f6; transform: translateY(-2px); box-shadow: 0 6px 16px rgba(59,130,246,.14); }
+.proj-card.reg { background: #f0fdf4; border-color: #86efac; }
+.proj-card.off { opacity: .55; cursor: not-allowed; }
+.proj-name { font-weight: 700; margin-bottom: 6px; color: #0f172a; }
+.proj-meta { display: flex; justify-content: center; gap: 4px; margin-bottom: 6px; }
+.proj-state { font-size: 11px; }
+.st { padding: 1px 8px; border-radius: 999px; }
+.st.done { color: #16a34a; background: #dcfce7; }
+.st.avail { color: #2563eb; background: #dbeafe; }
+.st.limit { color: #64748b; background: #f1f5f9; }
+.cat-empty { color: #94a3b8; text-align: center; padding: 20px 0; }
+
+/* 批量 */
+.batch-event-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.batch-label { font-size: 14px; font-weight: 700; margin-right: 6px; }
+.batch-quota-tip { font-size: 12px; color: #64748b; margin-bottom: 8px; }
+.batch-check-wrap {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px; max-height: 340px; overflow-y: auto; padding: 2px;
+}
+.check-item {
+  border: 1px solid #e2e8f0; border-radius: 12px; padding: 8px 10px;
+  display: flex; align-items: center; cursor: pointer; background: #fff; transition: all .15s;
+}
+.check-item:hover { border-color: #93c5fd; }
+.check-item.picked { background: #eff6ff; border-color: #3b82f6; }
+.check-person { display: flex; flex-direction: column; line-height: 1.4; margin-left: 6px; }
+.ck-name { font-weight: 700; font-size: 14px; }
+.ck-sub { font-size: 11.5px; color: #64748b; }
+.batch-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 24px 0; }
+.batch-actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+
+/* 清单卡 */
+.list-card { margin-top: 8px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+.panel-card { border-radius: 16px; }
+
+/* 右栏 */
+.ws-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 8px; }
+.side-card :deep(.el-card__body) { padding: 12px; }
+.unreg-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.unreg-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid #f1f5f9; border-radius: 10px; cursor: pointer; background: #fbfdff;
+  font-size: 13px; transition: all .15s;
+}
+.unreg-item:hover { background: #eff6ff; transform: translateX(2px); }
+.ur-name { font-weight: 700; }
+.ur-sub { flex: 1; color: #94a3b8; font-size: 12px; }
+.side-empty { color: #94a3b8; font-size: 13px; text-align: center; padding: 16px 0; }
+.side-tips { margin: 0; padding-left: 18px; color: #475569; font-size: 12.5px; line-height: 1.9; }
+.side-tips b { color: #0f172a; }
+
+.ct-file-line {
+  margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: #f8fafc;
+  display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #475569;
+}
+.batch-errors {
+  margin-top: 10px; max-height: 200px; overflow-y: auto;
+  border: 1px solid #fcd34d; border-radius: 10px; padding: 8px 12px; background: #fffbeb;
+  font-size: 12px; color: #92400e; line-height: 1.8;
+}
+.batch-errors-title { font-weight: 700; margin-bottom: 4px; }
+
+@media (max-width: 1100px) { .workspace { grid-template-columns: 1fr; } .ws-side { position: static; } }
+@media (max-width: 720px) {
+  .overview { gap: 4px; }
+  .ov-item { min-width: 0; padding: 0 8px; }
+  .ov-item b { font-size: 18px; }
+  .ws-main { padding: 4px 8px 12px; }
 }
 </style>
