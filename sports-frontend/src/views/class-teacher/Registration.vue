@@ -88,6 +88,9 @@
                     </div>
                   </div>
                   <el-tag v-if="regOf(foundAthlete).length >= 3" type="warning" effect="dark">已报满 3 项</el-tag>
+                  <el-button v-else type="primary" round size="small" style="flex-shrink:0" @click="openPicker(foundAthlete)">
+                    <el-icon><Check /></el-icon> 为该生多选报名
+                  </el-button>
                 </template>
                 <div v-else class="person-none">未找到「{{ searchKw }}」，请核对学号或先导入班级名单</div>
               </div>
@@ -99,13 +102,14 @@
                   <el-radio-button value="径赛">径赛</el-radio-button>
                   <el-radio-button value="田赛">田赛</el-radio-button>
                 </el-radio-group>
-                <span class="cat-hint">点击项目卡片即可报名（提交后待审核）</span>
+                <span class="cat-hint">点击项目小方块 → 弹出报名框可继续多选其他项目</span>
               </div>
 
-              <!-- 可报项目 -->
+              <!-- 可报项目（点击进弹窗多选） -->
               <div v-if="foundAthlete && singleProjects.length" class="proj-grid">
                 <div v-for="evt in singleProjects" :key="evt.id"
-                  :class="['proj-card', { reg: isRegSingle(evt), off: !canSingle(evt) }]" @click="singleReg(evt)">
+                  :class="['proj-card', { reg: isRegSingle(evt), off: !canSingle(evt) }]"
+                  @click="isRegSingle(evt) ? ElMessage.info('该生已报「' + evt.name + '」') : openPicker(foundAthlete, evt)">
                   <div class="proj-name">{{ evt.name }}</div>
                   <div class="proj-meta">
                     <el-tag size="small" :type="evtType(evt) === '径赛' ? 'danger' : 'warning'" effect="light">
@@ -116,7 +120,7 @@
                   <div class="proj-state">
                     <span v-if="isRegSingle(evt)" class="st done">✓ 已报</span>
                     <span v-else-if="!canSingle(evt)" class="st limit">{{ whyOff(evt) }}</span>
-                    <span v-else class="st avail">点击报名</span>
+                    <span v-else class="st avail">点击多选报名</span>
                   </div>
                 </div>
               </div>
@@ -208,8 +212,10 @@
                   size="small">{{ row.status === 'approved' ? '已通过' : row.status === 'withdrawn' ? '已取消' : '待审核' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="70" align="center" fixed="right">
+            <el-table-column label="操作" width="120" align="center" fixed="right">
               <template #default="{ row }">
+                <el-button v-if="row.status !== 'withdrawn'" type="primary" size="small" link
+                  @click="openPickerByName(row.athleteName)">补报</el-button>
                 <el-button v-if="row.status !== 'withdrawn'" type="danger" size="small" link @click="cancelReg(row)">取消</el-button>
               </template>
             </el-table-column>
@@ -222,9 +228,9 @@
         <el-card shadow="never" class="panel-card side-card">
           <template #header><div class="card-head">⚠️ 尚未报名的学生</div></template>
           <div class="unreg-list">
-            <button v-for="a in unregisteredAthletes" :key="a.id" class="unreg-item" @click="gotoSingle(a)">
+            <button v-for="a in unregisteredAthletes" :key="a.id" class="unreg-item" @click="openPicker(a)">
               <span class="ur-name">{{ a.name }}</span>
-              <span class="ur-sub">{{ a.studentNo }}</span>
+              <span class="ur-sub">{{ a.studentNo }} · 点击报名</span>
               <el-icon style="color:#2563eb"><ArrowRight /></el-icon>
             </button>
             <div v-if="!unregisteredAthletes.length" class="side-empty">太棒了，本班学生都已报名 🎉</div>
@@ -265,6 +271,76 @@
         <div class="batch-errors-title">失败明细：</div>
         <div v-for="(e, i) in ctResult.errors" :key="i">第 {{ e.row }} 行：{{ e.message }}</div>
       </div>
+    </el-dialog>
+
+    <!-- ===== 学生多选报名弹窗（项目堆表，行列自适应） ===== -->
+    <el-dialog v-model="showPicker" width="820px" top="4vh" :close-on-click-modal="false"
+      class="picker-dialog">
+      <template #header>
+        <div class="picker-head">
+          <span class="picker-avatar">{{ (picker.athlete?.name || '?').slice(0, 1) }}</span>
+          <div class="picker-title">
+            <b>{{ picker.athlete?.name }}</b>
+            <span class="picker-sub">
+              学号 {{ picker.athlete?.studentNo }} · {{ picker.athlete?.gender === 'M' ? '男' : '女' }} ·
+              已报 {{ regOf(picker.athlete).length }}/3 项
+            </span>
+          </div>
+          <span class="chip" style="background:#eff6ff;color:#2563eb">提交后待体育老师审核</span>
+        </div>
+      </template>
+
+      <div class="picker-bar">
+        <span class="picker-ok">已勾选 <b>{{ picker.checked.length }}</b> / 还可选 {{ pickerLeft }} 项</span>
+        <el-radio-group v-model="pickerCat" size="small">
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="径赛">径赛</el-radio-button>
+          <el-radio-button value="田赛">田赛</el-radio-button>
+        </el-radio-group>
+        <el-input v-model="pickerKw" placeholder="搜索项目" clearable size="small" style="width:160px" />
+      </div>
+
+      <!-- 项目堆表：小方块、行列自适应、可多选 -->
+      <div class="picker-grid">
+        <div v-for="evt in pickerProjects" :key="evt.id" class="tile"
+          :class="{
+            picked: picker.checked.includes(evt.id),
+            off: !pickerCanPick(evt),
+            done: isRegOf(picker.athlete, evt)
+          }" @click="togglePick(evt)">
+          <div class="tile-check" v-if="picker.checked.includes(evt.id)">✓</div>
+          <div class="tile-name">{{ evt.name }}</div>
+          <div class="tile-tags">
+            <span class="tile-tag" :class="evtType(evt) === '径赛' ? 'run' : 'field'">{{ evtType(evt) }}</span>
+            <span class="tile-tag plain">{{ genderLabel(evt.gender) }}</span>
+          </div>
+          <div class="tile-foot">
+            <span v-if="isRegOf(picker.athlete, evt)" class="tile-state ok">✓ 已报</span>
+            <span v-else-if="!genderMatch(evt.gender, picker.athlete?.gender)" class="tile-state no">性别不符</span>
+            <span v-else-if="classRegCount(evt) >= 3" class="tile-state no">班级已满(3)</span>
+            <span v-else-if="regOf(picker.athlete).length + picker.checked.length >= 3" class="tile-state no">已达3项上限</span>
+            <span v-else class="tile-state">{{ classRegCount(evt) }}/3 班名额</span>
+          </div>
+        </div>
+        <div v-if="!pickerProjects.length" class="picker-empty">
+          {{ picker.athlete ? '没有更多可报项目（可能已报满 3 项，或所有项目性别/名额不符）' : '请先选择学生' }}
+        </div>
+      </div>
+
+      <!-- 已选摘要 -->
+      <div v-if="picker.checked.length" class="picker-selected">
+        已选：
+        <el-tag v-for="id in picker.checked" :key="id" closable type="primary" effect="light"
+          @close="unpick(id)">{{ evtNameOf(id) }}</el-tag>
+      </div>
+
+      <template #footer>
+        <el-button @click="closePicker">关闭</el-button>
+        <el-button type="primary" :loading="pickerSubmitting" :disabled="!picker.checked.length"
+          @click="submitPicker">
+          <el-icon><Check /></el-icon> 为 {{ picker.athlete?.name }} 提交 {{ picker.checked.length }} 项报名
+        </el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -363,26 +439,91 @@ function whyOff(evt) {
   if (regOf(foundAthlete.value).length >= 3) return '已满3项'
   return '不可报'
 }
-function gotoSingle(a) {
-  workMode.value = 'single'
-  singleCat.value = ''
-  searchKw.value = a.studentNo || a.name
+// ---------- 学生多选报名（弹窗 + 项目堆表） ----------
+const showPicker = ref(false)
+const pickerCat = ref('')
+const pickerKw = ref('')
+const pickerSubmitting = ref(false)
+const picker = reactive({ athlete: null, checked: [] })
+
+function openPicker(athlete, presetEvent) {
+  if (!athlete) return
+  picker.athlete = athlete
+  picker.checked = presetEvent ? [presetEvent.id] : []
+  pickerCat.value = ''
+  pickerKw.value = ''
+  showPicker.value = true
 }
-async function singleReg(evt) {
-  const a = foundAthlete.value
-  if (!a) { ElMessage.warning('请先输入学号/姓名'); return }
-  if (isRegOf(a, evt)) { ElMessage.info('已报名此项目'); return }
-  if (!canReg(a, evt)) {
-    ElMessage.warning(whyOff(evt))
-    return
+function openPickerByName(name) {
+  const a = athletes.value.find(x => x.name === name)
+  if (a) openPicker(a)
+  else ElMessage.warning('未找到该学生，可能已从名单移除')
+}
+function closePicker() { showPicker.value = false; picker.athlete = null; picker.checked = [] }
+function unpick(id) { picker.checked = picker.checked.filter(x => x !== id) }
+function evtNameOf(id) { const e = events.value.find(x => x.id === id); return e ? e.name : '' }
+function classRegCount(evt) {
+  return registrations.value.filter(r => r.eventName === evt.name && r.status !== 'withdrawn').length
+}
+const pickerLeft = computed(() => {
+  const used = picker.athlete ? regOf(picker.athlete).length + picker.checked.length : 0
+  return Math.max(0, 3 - used)
+})
+const pickerProjects = computed(() => {
+  const a = picker.athlete
+  if (!a) return []
+  const kw = pickerKw.value.trim()
+  return events.value.filter(evt => {
+    if (isRegOf(a, evt)) return true // 已报项目灰显占位（提示不可重复）
+    if (kw && evt.name.indexOf(kw) < 0) return false
+    if (pickerCat.value && evtType(evt) !== pickerCat.value) return false
+    if (!genderMatch(evt.gender, a.gender)) return true // 展示性别不符态
+    if (classRegCount(evt) >= 3) return true // 展示班级满态
+    if (regOf(a).length + picker.checked.length >= 3) return true
+    return true
+  })
+})
+function pickerCanPick(evt) {
+  const a = picker.athlete
+  if (!a || !evt) return false
+  if (picker.checked.includes(evt.id)) return true // 已勾选的可再点取消
+  if (isRegOf(a, evt)) return false
+  if (!genderMatch(evt.gender, a.gender)) return false
+  if (classRegCount(evt) >= 3) return false
+  if (regOf(a).length + picker.checked.length >= 3) return false
+  return true
+}
+function togglePick(evt) {
+  const a = picker.athlete
+  if (!a) return
+  if (picker.checked.includes(evt.id)) { unpick(evt.id); return }
+  if (isRegOf(a, evt)) { ElMessage.info('该生已报「' + evt.name + '」'); return }
+  if (!genderMatch(evt.gender, a.gender)) { ElMessage.warning('性别不符合「' + evt.name + '」'); return }
+  if (classRegCount(evt) >= 3) { ElMessage.warning('该项目本班名额已满(3人)'); return }
+  if (regOf(a).length + picker.checked.length >= 3) { ElMessage.warning('每名学生最多报 3 项，已达上限'); return }
+  picker.checked = [...picker.checked, evt.id]
+}
+async function submitPicker() {
+  const a = picker.athlete
+  if (!a || !picker.checked.length) return
+  pickerSubmitting.value = true
+  let ok = 0
+  const fails = []
+  for (const id of picker.checked) {
+    try {
+      await request.post('/class-teacher/register', { athleteId: a.id, eventId: id })
+      ok++
+    } catch (e) {
+      fails.push(evtNameOf(id) + '：' + (e?.response?.data?.message || e?.message || '失败'))
+    }
   }
-  loading.value = true
-  try {
-    await request.post('/class-teacher/register', { athleteId: a.id, eventId: evt.id })
-    ElMessage.success(`${a.name} 已提交「${evt.name}」，待体育老师审核`)
-    await refreshRegs()
-  } catch (e) { console.error(e) }
-  finally { loading.value = false }
+  ElMessage[ok ? 'success' : 'error'](ok
+    ? `${a.name} 已提交 ${ok} 项报名（待审核）${fails.length ? '，' + fails.length + ' 项失败' : ''}`
+    : '提交失败')
+  if (fails.length) ElMessage.warning(fails[0])
+  await refreshRegs()
+  closePicker()
+  pickerSubmitting.value = false
 }
 
 // ---------- 按项目批量报名 ----------
@@ -669,4 +810,56 @@ onMounted(fetchAll)
   .ov-item b { font-size: 18px; }
   .ws-main { padding: 4px 8px 12px; }
 }
+
+/* ===== 多选报名弹窗 ===== */
+.picker-head { display: flex; align-items: center; gap: 12px; }
+.picker-avatar {
+  width: 42px; height: 42px; border-radius: 50%; color: #fff; font-size: 19px;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.picker-title { flex: 1; line-height: 1.4; }
+.picker-title b { font-size: 17px; }
+.picker-sub { display: block; font-size: 12px; color: #64748b; }
+.picker-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin: 4px 0 10px;
+}
+.picker-ok { font-size: 13px; color: #334155; }
+.picker-ok b { color: #2563eb; font-size: 16px; }
+
+/* 堆表：小方块 · 行列自适应 */
+.picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px; max-height: 380px; overflow-y: auto; padding: 2px;
+}
+.tile {
+  position: relative; border: 1.5px solid #dbe4f0; border-radius: 12px;
+  padding: 10px 8px 8px; cursor: pointer; text-align: center;
+  background: #fbfdff; transition: all .18s;
+}
+.tile:hover { border-color: #60a5fa; transform: translateY(-2px); box-shadow: 0 6px 14px rgba(59,130,246,.12); }
+.tile.picked { background: linear-gradient(160deg, #eff6ff, #e0edff); border-color: #2563eb; box-shadow: 0 4px 14px rgba(37,99,235,.18); }
+.tile.off { opacity: .45; cursor: not-allowed; }
+.tile.off:hover { transform: none; box-shadow: none; border-color: #dbe4f0; }
+.tile.done { background: #f0fdf4; border-color: #86efac; cursor: not-allowed; }
+.tile-check {
+  position: absolute; top: -7px; right: -7px; width: 22px; height: 22px;
+  border-radius: 50%; background: #2563eb; color: #fff; font-size: 13px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(37,99,235,.4);
+}
+.tile-name { font-size: 13px; font-weight: 700; color: #0f172a; line-height: 1.35; min-height: 34px; }
+.tile-tags { display: flex; justify-content: center; gap: 4px; margin: 5px 0 6px; }
+.tile-tag { font-size: 10px; border-radius: 6px; padding: 1px 5px; }
+.tile-tag.run { color: #dc2626; background: #fee2e2; }
+.tile-tag.field { color: #b45309; background: #fef3c7; }
+.tile-tag.plain { color: #475569; background: #f1f5f9; }
+.tile-state { font-size: 11px; color: #64748b; }
+.tile-state.ok { color: #16a34a; font-weight: 700; }
+.tile-state.no { color: #dc2626; font-weight: 700; }
+.tile-foot { min-height: 16px; }
+.picker-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 26px 0; }
+.picker-selected { margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: #475569; }
 </style>
