@@ -46,6 +46,8 @@ public class StatisticsService {
             counts.put("pending", pending);
             counts.put("rejected", rejected);
             counts.put("cancelled", cancelled);
+            counts.put("capacity", event.getMaxParticipants() != null
+                    ? event.getMaxParticipants().longValue() : 0L);
             byEvent.put(event.getName(), counts);
         }
 
@@ -57,6 +59,17 @@ public class StatisticsService {
                             && r.getAthlete().getClassInfo().getId().equals(ci.getId()))
                     .collect(Collectors.toList());
             byClass.put(ci.getName(), (long) classRegs.size());
+        }
+
+        // 按年级统计（供报表「各年级参赛人数」）
+        Map<String, Long> byGrade = new LinkedHashMap<>();
+        for (ClassInfo ci : classes) {
+            String g = ci.getGrade() != null ? ci.getGrade() : "未分年级";
+            long count = allRegs.stream()
+                    .filter(r -> r.getAthlete().getClassInfo() != null
+                            && r.getAthlete().getClassInfo().getId().equals(ci.getId()))
+                    .count();
+            byGrade.merge(g, count, Long::sum);
         }
 
         // 按状态统计
@@ -79,6 +92,7 @@ public class StatisticsService {
         ));
         result.put("byEvent", byEvent);
         result.put("byClass", byClass);
+        result.put("byGrade", byGrade);
 
         return result;
     }
