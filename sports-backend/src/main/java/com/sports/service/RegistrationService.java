@@ -41,17 +41,20 @@ public class RegistrationService {
     private final SystemConfigRepository systemConfigRepository;
     private final NumberRuleService numberRuleService;
 
-    /** 分页查询报名 */
+    /** 分页查询报名（班主任自动限本人绑定班级，无法越班查询） */
     @Transactional(readOnly = true)
     public Page<Registration> list(Pageable pageable, Long eventId, Long classId, String status) {
+        UserScope scope = currentUserScope();
         Specification<Registration> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (eventId != null)
                 predicates.add(cb.equal(root.get("event").get("id"), eventId));
-            if (classId != null)
+            if (classId != null && (!scope.restricted || scope.classIds.contains(classId)))
                 predicates.add(cb.equal(root.get("athlete").get("classInfo").get("id"), classId));
             if (status != null && !status.isBlank())
                 predicates.add(cb.equal(root.get("status"), status));
+            if (scope.restricted) // 班主任：只看得到自己班级的报名
+                predicates.add(root.get("athlete").get("classInfo").get("id").in(scope.classIds));
             return cb.and(predicates.toArray(new Predicate[0]));
         };
         return registrationRepository.findAll(spec, pageable);
@@ -59,8 +62,20 @@ public class RegistrationService {
 
     @Transactional(readOnly = true)
     public Registration getById(Long id) {
-        return registrationRepository.findById(id)
+        Registration reg = registrationRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("报名记录不存在"));
+        UserScope scope = currentUserScope();
+        if (scope.restricted && !belongsToMyClass(reg, scope)) {
+            throw new IllegalArgumentException("无权访问其他班级的报名记录");
+        }
+        return reg;
+    }
+
+    /** 报名记录是否属于当前班主任绑定班级 */
+    private boolean belongsToMyClass(Registration reg, UserScope scope) {
+        if (!scope.restricted) return true;
+        if (reg.getAthlete() == null || reg.getAthlete().getClassInfo() == null) return false;
+        return scope.classIds.contains(reg.getAthlete().getClassInfo().getId());
     }
 
     /** 单个报名 */
@@ -107,9 +122,9 @@ public class RegistrationService {
         return results;
     }
 
-    /** 取消报名 */
+    /** 取消报名（班主任仅限本班） */
     public void cancel(Long id) {
-        Registration reg = getById(id);
+        Registration reg = getById(id); // 内含班主任班级越权校验
         reg.setStatus("withdrawn");
         reg.setUpdatedAt(LocalDateTime.now());
         registrationRepository.save(reg);
@@ -119,9 +134,11 @@ public class RegistrationService {
     // ==================== 报名表（表格1）导入 ====================
     //
     // 三种模式统一入口（列布局：年级|班级|姓名|性别|学号|项目|是否团体赛数量(0=个人)|成绩）：
-    //   1. 班主任 · 现场报名   —— source=onsite，落库 status=pending，仅限本人绑定班级
-    //   2. 班主任 · 后置导入   —— source=offline，落库 status=approved，仅限本人绑定班级
-    //   3. 体育老师 · 后置导入 —— source=offline，任意班级，落库 status=approved
+    //   1. 班主任 · 现场报名   —— source=onsite，落库 status=pending，由体育老师审核；仅限本人绑定班级
+    //   2. 班主任 · 后置导入   —— source=offline，落库 status=approved；仅限本人绑定班级
+    //   3. 体育老师/管理员 · 后置导入 —— 一律按后置导入处理(status=approved)，任意班级
+    // 角色强制：体育老师/管理员入口不接受 onsite（服务端自动归一为 offline），
+    //          班主任仅可操作本人绑定班级（列表/详情/取消均受限，且无审核权限）。
     // 成绩列为预留列（可空）：当前导入环节不落成绩。
 
     /**
@@ -129,16 +146,23 @@ public class RegistrationService {
      * 匹配不到则自动建档（运动员 + 学号账号）。
      */
     public Map<String, Object> importSignupSheet(MultipartFile file, String source) {
-        String src = "offline".equalsIgnoreCase(source) ? "offline" : "onsite";
-        String status = "offline".equals(src) ? "approved" : "pending";
-        log.info("导入报名表: file={}, source={}", file.getOriginalFilename(), src);
-
-        // 角色范围：班主任只能导入自己绑定的班级；体育老师/管理员不限班
         UserScope scope = currentUserScope();
         boolean restricted = scope.restricted;
         Set<Long> myClassIds = scope.classIds;
+        // 角色 × 来源强制：体育老师/管理员 = 后置导入(approved)；班主任可 现场(pending)/后置(approved)
+        String src;
+        if (restricted) {
+            src = "offline".equalsIgnoreCase(source) ? "offline" : "onsite";
+        } else {
+            if (!"offline".equalsIgnoreCase(source)) {
+                log.warn("体育老师导入仅支持后置(offline)模式，已自动归一: source={}", source);
+            }
+            src = "offline";
+        }
+        String status = "offline".equals(src) ? "approved" : "pending";
+        log.info("导入报名表: file={}, source={}, roleRestricted={}", file.getOriginalFilename(), src, restricted);
         if (restricted && myClassIds.isEmpty()) {
-            throw new RuntimeException("当前班主任账号尚未绑定班级，请联系管理员在「班级管理」中绑定后再导入");
+            throw new IllegalArgumentException("当前班主任账号尚未绑定班级，请联系管理员在「班级管理」中绑定后再导入");
         }
 
         List<Map<Integer, String>> rows;
@@ -452,9 +476,10 @@ public class RegistrationService {
     }
 
 
-    /** 审核 */
+    /** 审核（仅体育老师/管理员；班主任无审核权限——现场报名由体育老师把关） */
     public Registration approve(Long id, String remark) {
         Registration reg = getById(id);
+        assertNotRestricted("班主任无审核权限，现场报名的审核由体育老师完成");
         reg.setStatus("approved");
         reg.setAuditRemark(remark);
         reg.setAuditTime(LocalDateTime.now());
@@ -464,15 +489,24 @@ public class RegistrationService {
         return saved;
     }
 
-    /** 拒绝报名 */
+    /** 拒绝报名（仅体育老师/管理员） */
     public Registration reject(Long id) {
         Registration reg = getById(id);
+        assertNotRestricted("班主任无审核权限，现场报名的审核由体育老师完成");
         reg.setStatus("rejected");
         reg.setAuditTime(LocalDateTime.now());
         reg.setUpdatedAt(LocalDateTime.now());
         Registration saved = registrationRepository.save(reg);
         log.info("拒绝报名: id={}", id);
         return saved;
+    }
+
+    /** 班主任无审核权限时抛错 */
+    private void assertNotRestricted(String message) {
+        UserScope scope = currentUserScope();
+        if (scope.restricted) {
+            throw new IllegalArgumentException(message);
+        }
     }
 
     /** 统计 */
