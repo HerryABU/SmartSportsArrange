@@ -152,6 +152,10 @@
                 :disabled="!prelimHeats.length" @click="submitPrelimTimes">② 录入预赛成绩</el-button>
               <el-button size="small" type="danger" plain :loading="prelimWorking"
                 :disabled="!prelimHeats.length" @click="computeQualify">③ 立即计算晋级并排决赛</el-button>
+              <span class="prelim-advance-label">晋级前</span>
+              <el-input-number v-model="prelimAdvance" :min="1" :max="99" size="small" style="width:80px"
+                :title="'晋级人数（默认 ' + (selectedEvent.advanceCount || 8) + ' 名）'" />
+              <span class="hint" style="font-size:12px">名</span>
               <el-button size="small" plain :disabled="!prelimHeats.length" @click="loadQualifiers">查看晋级名单</el-button>
             </div>
 
@@ -196,19 +200,8 @@
             基本参数
           </div>
           <el-form-item label="年级">
-            <el-select v-model="arrangeConfig.grade" style="width: 100%">
-              <el-option label="一年级" value="一年级" />
-              <el-option label="二年级" value="二年级" />
-              <el-option label="三年级" value="三年级" />
-              <el-option label="四年级" value="四年级" />
-              <el-option label="五年级" value="五年级" />
-              <el-option label="六年级" value="六年级" />
-              <el-option label="初一年级" value="初一年级" />
-              <el-option label="初二年级" value="初二年级" />
-              <el-option label="初三年级" value="初三年级" />
-              <el-option label="高一年级" value="高一年级" />
-              <el-option label="高二年级" value="高二年级" />
-              <el-option label="高三年级" value="高三年级" />
+            <el-select v-model="arrangeConfig.grade" style="width: 100%" filterable>
+              <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
             </el-select>
           </el-form-item>
           <el-form-item label="性别">
@@ -259,7 +252,8 @@ import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import HeatGrid from './components/HeatGrid.vue'
 
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一年级', '初二年级', '初三年级', '高一年级', '高二年级', '高三年级']
+// 年级列表：动态来自 系统设置·年级管理（严禁硬编码）
+const gradeOptions = ref([])
 const searchKeyword = ref('')
 const eventTree = ref([])
 const treeRef = ref(null)
@@ -276,9 +270,10 @@ const mobileDrawer = ref(false)
 // ===== 预赛淘汰 =====
 const roundsData = ref([])
 const activeRound = ref('final')
-const prelimGrade = ref('高一年级')
+const prelimGrade = ref('')
 const prelimGender = ref('M')
 const prelimWorking = ref(false)
+const prelimAdvance = ref(8)
 const qualifiers = ref([])
 const prelimTimeMap = reactive({})
 const prelimEnabled = computed(() =>
@@ -329,7 +324,7 @@ const refreshArrangement = async () => {
 }
 
 const arrangeConfig = reactive({
-  grade: '高一年级',
+  grade: '',
   gender: 'M',
   lanes: 8,
   ruleConfig: {
@@ -345,6 +340,19 @@ watch(searchKeyword, (val) => {
 })
 
 onMounted(async () => {
+  // 年级列表：来自系统设置·年级管理（不硬编码），默认选第一个
+  try {
+    const gs = await request.get('/system/grades')
+    const list = Array.isArray(gs) ? gs : (gs?.records || [])
+    gradeOptions.value = list.map(g => (g && g.name) || '').filter(Boolean)
+    if (gradeOptions.value.length) {
+      arrangeConfig.grade = arrangeConfig.grade || gradeOptions.value[0]
+      prelimGrade.value = prelimGrade.value || gradeOptions.value[0]
+    }
+  } catch (e) {
+    gradeOptions.value = []
+  }
+
   try {
     const events = await request.get('/events')
     if (Array.isArray(events)) {
@@ -387,8 +395,10 @@ const onEventClick = async (data) => {
     name: data.event.name,
     gender: data.event.genderLimit,
     isTrack: data.event.isTrack !== false && data.event.category !== '田赛',
-    needHeats: data.event.needHeats !== false
+    needHeats: data.event.needHeats !== false,
+    advanceCount: data.event.advanceCount ?? 8
   }
+  prelimAdvance.value = selectedEvent.value.advanceCount
   previewData.value = null
   qualifiers.value = []
   Object.keys(prelimTimeMap).forEach(k => delete prelimTimeMap[k])
@@ -537,7 +547,8 @@ const computeQualify = async () => {
   try {
     const res = await request.post('/arrange/events/' + selectedEvent.value.id + '/qualify', {
       grade: prelimGrade.value,
-      gender: prelimGender.value
+      gender: prelimGender.value,
+      advanceCount: prelimAdvance.value
     })
     await refreshArrangement()
     qualifiers.value = res.qualifiers || []
@@ -748,6 +759,7 @@ const exportSheet = () => {
 }
 .prelim-body { display: flex; flex-direction: column; gap: 12px; }
 .prelim-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prelim-advance-label { font-size: 13px; color: #606266; margin-left: 4px; }
 .prelim-times { display: flex; flex-direction: column; gap: 10px; }
 .prelim-heat-row { border: 1px solid #ebeef5; border-radius: 8px; padding: 6px 8px; }
 .prelim-heat-label { font-size: 13px; font-weight: 600; color: #303133; margin: 2px 0 6px; }

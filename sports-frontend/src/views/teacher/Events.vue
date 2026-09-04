@@ -40,21 +40,11 @@
           v-model="filters.grade"
           placeholder="年级筛选"
           clearable
-          style="width: 120px"
+          filterable
+          style="width: 130px"
           @change="handleFilterChange"
         >
-          <el-option label="一年级" value="一年级" />
-          <el-option label="二年级" value="二年级" />
-          <el-option label="三年级" value="三年级" />
-          <el-option label="四年级" value="四年级" />
-          <el-option label="五年级" value="五年级" />
-          <el-option label="六年级" value="六年级" />
-          <el-option label="初一年级" value="初一年级" />
-          <el-option label="初二年级" value="初二年级" />
-          <el-option label="初三年级" value="初三年级" />
-          <el-option label="高一年级" value="高一年级" />
-          <el-option label="高二年级" value="高二年级" />
-          <el-option label="高三年级" value="高三年级" />
+          <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
         </el-select>
         <el-select
           v-model="filters.gender"
@@ -254,6 +244,21 @@
           <div class="form-tip" v-if="formData.eventType === '田赛'">田赛不占道次，固定为 0</div>
           <div class="form-tip" v-else>径赛跑道数（默认 8）</div>
         </el-form-item>
+        <template v-if="formData.eventType === '径赛'">
+          <el-form-item label="预赛淘汰">
+            <el-switch v-model="formData.needHeats" inline-prompt active-text="需要预赛淘汰"
+              inactive-text="直接决赛" />
+            <div class="form-tip">需要预赛的项目：编排页先「生成预赛 → 录预赛成绩 → 立即计算晋级」，系统自动排出决赛</div>
+          </el-form-item>
+          <el-form-item label="晋级人数" v-if="formData.needHeats">
+            <el-input-number v-model="formData.advanceCount" :min="1" :max="99" style="width: 100%" />
+            <div class="form-tip">预赛结束后全场取前 N 名晋级决赛</div>
+          </el-form-item>
+          <el-form-item label="每组上限">
+            <el-input-number v-model="formData.maxPerHeat" :min="1" :max="12" style="width: 100%" />
+            <div class="form-tip">单组最多人数（一般等于道次数）</div>
+          </el-form-item>
+        </template>
         <el-form-item label="团体每队人数" prop="teamSize">
           <el-input-number
             v-model="formData.teamSize"
@@ -280,19 +285,8 @@
           </div>
         </el-form-item>
         <el-form-item label="年级组" prop="gradeGroup">
-          <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%">
-            <el-option label="一年级" value="一年级" />
-            <el-option label="二年级" value="二年级" />
-            <el-option label="三年级" value="三年级" />
-            <el-option label="四年级" value="四年级" />
-            <el-option label="五年级" value="五年级" />
-            <el-option label="六年级" value="六年级" />
-            <el-option label="初一年级" value="初一年级" />
-            <el-option label="初二年级" value="初二年级" />
-            <el-option label="初三年级" value="初三年级" />
-            <el-option label="高一年级" value="高一年级" />
-            <el-option label="高二年级" value="高二年级" />
-            <el-option label="高三年级" value="高三年级" />
+          <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%" filterable>
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
         <el-form-item label="最大报名人数" prop="maxParticipants">
@@ -363,6 +357,10 @@ interface EventItem {
   defaultVenue?: string
   maxDurationMinutes?: number
   intervalMinutes?: number
+  // 预赛淘汰字段（径赛 needHeats=true 时先预赛后晋级决赛）
+  needHeats?: boolean
+  advanceCount?: number
+  maxPerHeat?: number
 }
 
 interface TemplateItem {
@@ -410,6 +408,8 @@ const loading = ref(false)
 const submitLoading = ref(false)
 const tableData = ref<EventItem[]>([])
 const formRef = ref<FormInstance>()
+// 年级下拉：动态来自 系统设置·年级管理（不硬编码）
+const gradeOptions = ref<string[]>([])
 
 const filters = reactive({
   grade: '',
@@ -448,6 +448,9 @@ const formData = reactive<EventItem>({
   defaultVenue: '',
   maxDurationMinutes: undefined,
   intervalMinutes: undefined,
+  needHeats: true,
+  advanceCount: 8,
+  maxPerHeat: 8,
 })
 
 const formRules: FormRules = {
@@ -604,6 +607,9 @@ function resetFormData() {
   formData.defaultVenue = ''
   formData.maxDurationMinutes = undefined
   formData.intervalMinutes = undefined
+  formData.needHeats = true
+  formData.advanceCount = 8
+  formData.maxPerHeat = 8
 }
 
 // 组装提交体：径赛/田赛 自动联动 道次
@@ -614,6 +620,9 @@ function buildPayload() {
     isTrack,
     laneCount: isTrack ? (formData.laneCount ?? 8) : 0,
     teamSize: formData.teamSize ?? 0,
+    needHeats: isTrack ? (formData.needHeats ?? true) : false,
+    advanceCount: isTrack ? (formData.advanceCount ?? 8) : null,
+    maxPerHeat: isTrack ? (formData.maxPerHeat ?? formData.laneCount ?? 8) : 1,
   }
 }
 
@@ -637,6 +646,9 @@ function fillFormFromRow(row: EventItem) {
   formData.defaultVenue = row.defaultVenue ?? ''
   formData.maxDurationMinutes = row.maxDurationMinutes ?? undefined
   formData.intervalMinutes = row.intervalMinutes ?? undefined
+  formData.needHeats = row.needHeats ?? true
+  formData.advanceCount = row.advanceCount ?? 8
+  formData.maxPerHeat = row.maxPerHeat ?? (isTrack ? (row.laneCount ?? 8) : 1)
 }
 
 function onEventTypeChange(val: string) {
@@ -737,8 +749,19 @@ async function handleDelete(row: EventItem) {
 }
 
 // ==================== 生命周期 ====================
+async function loadGradeOptions() {
+  try {
+    const res = await request.get('/system/grades')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    gradeOptions.value = list.map((g: any) => (g && g.name) || '').filter(Boolean)
+  } catch {
+    gradeOptions.value = []
+  }
+}
+
 onMounted(() => {
   fetchData()
+  loadGradeOptions()
 })
 </script>
 
