@@ -209,7 +209,8 @@ public class RegistrationService {
                             classInfo = hit;
                         }
                     }
-                    if (classInfo == null && myClassIds.size() == 1) {
+                    // 班级列为空且恰好绑定 1 个班时，才自动归班；填了其他班绝不静默改绑
+                    if (classInfo == null && classText.isEmpty() && myClassIds.size() == 1) {
                         classInfo = classInfoRepository.findById(myClassIds.iterator().next()).orElse(null);
                     }
                 } else {

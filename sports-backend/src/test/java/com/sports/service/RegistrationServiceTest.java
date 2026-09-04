@@ -2,12 +2,17 @@ package com.sports.service;
 
 import com.sports.entity.*;
 import com.sports.repository.*;
+import com.sports.security.JwtUserDetails;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -36,6 +41,19 @@ class RegistrationServiceTest {
     @Mock private NumberRuleService numberRuleService;
 
     @InjectMocks private RegistrationService registrationService;
+
+    @AfterEach
+    void clearAuth() {
+        SecurityContextHolder.clearContext();
+    }
+
+    /** 模拟当前登录用户（角色带 ROLE_ 前缀） */
+    private void loginAs(String role, Long userId) {
+        var principal = new JwtUserDetails(userId, "u" + userId, role,
+                List.of(new SimpleGrantedAuthority(role)));
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities()));
+    }
 
     private Athlete athlete(Long id, String gender, Long classId) {
         ClassInfo ci = ClassInfo.builder().id(classId).name("高一1班").build();
@@ -198,6 +216,7 @@ class RegistrationServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void importSignupSheet_duplicateRowsAreSkipped() {
+        // 未登录/体育老师侧：即使传 onsite 也会被服务端归一为「后置导入」→ approved（鉴权收紧后语义）
         ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
         Event e100 = Event.builder().id(1L).name("100米").genderLimit(null).build();
         Athlete existing = Athlete.builder().id(50L).name("张三").gender("M")
@@ -215,8 +234,56 @@ class RegistrationServiceTest {
         Map<String, Object> result = registrationService.importSignupSheet(csv(body), "onsite");
         assertEquals(0, result.get("success"));
         assertEquals(2, result.get("skipped"));
-        assertEquals("pending", result.get("status"));
+        assertEquals("approved", result.get("status")); // 体育老师侧 onsite 自动归一为后置
         verify(registrationRepository, never()).save(any(Registration.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importSignupSheet_classTeacherOnsiteStaysPending() {
+        // 班主任「现场报名」→ pending（待体育老师审核），且仅限本人绑定班级
+        loginAs("ROLE_CLASS_TEACHER", 9L);
+        ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
+        Event e100 = Event.builder().id(1L).name("100米").genderLimit(null).build();
+
+        when(classInfoRepository.findByTeacherUserId(9L)).thenReturn(List.of(ci));
+        when(classInfoRepository.findByName("高一1班")).thenReturn(Optional.of(ci));
+        when(eventRepository.findByCode("100M")).thenReturn(Optional.of(e100));
+        when(numberRuleService.generateNumber(any(), eq(ci), anyInt()))
+                .thenAnswer(inv -> "N" + inv.getArgument(2));
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+        // 新建档运动员 id 为空 → 重复校验走默认 false（不显式 stub 以免 anyLong 无法匹配 null）
+        when(registrationRepository.save(any(Registration.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        String body = "年级,班级,姓名,性别,学号,项目,是否团体赛数量,成绩\n"
+                + "高一年级,高一1班,张三,男,20260001,100M,0,\n";
+
+        Map<String, Object> result = registrationService.importSignupSheet(csv(body), "onsite");
+        assertEquals(1, result.get("success"), "导入失败明细: " + result.get("errors"));
+        assertEquals("pending", result.get("status")); // 班主任现场报名保持待审
+        assertEquals("onsite", result.get("source"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importSignupSheet_classTeacherCannotImportOtherClass() {
+        // 班主任试图导入非绑定班级 → 按行报错
+        loginAs("ROLE_CLASS_TEACHER", 9L);
+        ClassInfo mine = ClassInfo.builder().id(5L).name("高一1班").grade("高一").build();
+        ClassInfo other = ClassInfo.builder().id(6L).name("高一2班").grade("高一").build();
+        Event e100 = Event.builder().id(1L).name("100米").genderLimit(null).build();
+
+        when(classInfoRepository.findByTeacherUserId(9L)).thenReturn(List.of(mine));
+        when(classInfoRepository.findByName("高一2班")).thenReturn(Optional.of(other));
+
+        String body = "年级,班级,姓名,性别,学号,项目,是否团体赛数量,成绩\n"
+                + "高一年级,高一2班,李四,男,20260002,100M,0,\n";
+
+        Map<String, Object> result = registrationService.importSignupSheet(csv(body), "offline");
+        assertEquals(0, result.get("success"));
+        assertEquals(1, result.get("failed"));
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) result.get("errors");
+        assertTrue(String.valueOf(errors.get(0).get("message")).contains("只能导入本人绑定班级"));
     }
 
     @Test
