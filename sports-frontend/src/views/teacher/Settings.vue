@@ -1,5 +1,18 @@
 <template>
   <div class="settings-page" v-loading="loading">
+    <!-- 页面头 -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">⚙️</span>
+        <div>
+          <h3 class="pg-title">系统设置</h3>
+          <p class="pg-desc">基本信息 · 积分规则 · 号码簿 · 年级管理 · 编排规则 · 数据库迁移 · 用户/批量创建（管理员）</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#f0fdf4;color:#15803d">配置即保存，所见即所得</span>
+      </div>
+    </div>
     <el-tabs v-model="activeTab" :tab-position="isMobile ? 'top' : 'left'">
       <!-- Basic Settings -->
       <el-tab-pane label="基本设置" name="basic">
