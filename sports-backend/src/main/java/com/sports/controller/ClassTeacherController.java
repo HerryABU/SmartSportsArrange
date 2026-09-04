@@ -145,6 +145,58 @@ public class ClassTeacherController {
         return ApiResponse.success("导入完成", result);
     }
 
+    // ===== 手动添加单个运动员（学号/姓名/性别）→ 自动创建学生账号 + 运动员 =====
+    @PostMapping("/athlete")
+    @Transactional
+    public ApiResponse<?> addAthlete(@RequestBody Map<String, Object> body) {
+        String studentId = String.valueOf(body.getOrDefault("studentId", "")).trim();
+        String name = String.valueOf(body.getOrDefault("name", "")).trim();
+        String gender = mapGender(String.valueOf(body.getOrDefault("gender", "")).trim());
+        if (studentId.isEmpty() || name.isEmpty()) {
+            throw new RuntimeException("学号与姓名不能为空");
+        }
+        Long classId = getMyClassId();
+        ClassInfo classInfo = classInfoRepository.findById(classId)
+                .orElseThrow(() -> new RuntimeException("班级不存在，请先绑定班级"));
+
+        if (athleteRepository.findByStudentId(studentId).isPresent()) {
+            throw new RuntimeException("该学号已存在（" + studentId + "），请勿重复添加");
+        }
+        if (userRepository.findByUsername(studentId).isEmpty()) {
+            userRepository.save(User.builder()
+                    .username(studentId)
+                    .password(passwordEncoder.encode(studentId))
+                    .name(name)
+                    .role("ROLE_STUDENT")
+                    .status("active")
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build());
+        }
+        int seq = 1;
+        String number;
+        do {
+            number = numberRuleService.generateNumber(
+                    Athlete.builder().name(name).gender(gender)
+                            .grade(classInfo.getGrade()).classInfo(classInfo).build(),
+                    classInfo, seq++);
+        } while (athleteRepository.findByNumber(number).isPresent());
+
+        Athlete athlete = athleteRepository.save(Athlete.builder()
+                .name(name)
+                .gender(gender)
+                .grade(classInfo.getGrade())
+                .classInfo(classInfo)
+                .studentId(studentId)
+                .number(number)
+                .status("normal")
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build());
+        log.info("班主任手动添加运动员: classId={}, studentId={}, name={}", classId, studentId, name);
+        return ApiResponse.success("添加成功", athlete);
+    }
+
     // ===== 获取本班运动员列表 =====
     @GetMapping("/athletes")
     public ApiResponse<?> athletes(@RequestParam(defaultValue = "1") int page,
@@ -235,6 +287,9 @@ public class ClassTeacherController {
                         m.put("athleteName", athleteNames.get(a.getId()));
                         m.put("heat", arr.getHeat());
                         m.put("laneNumber", arr.getLane());
+                        com.sports.entity.Event ev = arr.getEvent();
+                        m.put("eventType", ev != null && ev.getCategory() != null ? ev.getCategory() : "");
+                        m.put("gender", ev != null && ev.getGenderLimit() != null ? ev.getGenderLimit() : "");
                         list.add(m);
                     }
                 }
@@ -284,13 +339,13 @@ public class ClassTeacherController {
             throw new RuntimeException("该运动员已报名此项目");
 
         Registration reg = Registration.builder()
-                .athlete(athlete).event(event).status("approved")
+                .athlete(athlete).event(event).status("pending").source("onsite")
                 .registrationTime(LocalDateTime.now())
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         registrationRepository.save(reg);
 
-        log.info("班主任报名: athlete={}, event={}", athlete.getName(), event.getName());
-        return ApiResponse.success("报名成功", reg);
+        log.info("班主任现场报名(待审核): athlete={}, event={}", athlete.getName(), event.getName());
+        return ApiResponse.success("报名已提交，等待体育老师审核", reg);
     }
 
     // ===== 取消报名 =====
