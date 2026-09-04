@@ -184,6 +184,7 @@ public class EventService {
         log.info("导入项目: {}", fn);
         int success = 0;
         List<Map<String, Object>> errors = new ArrayList<>();
+        boolean table2 = true; // 布局结果（供返回信息使用，需在 try 之外可见）
         try {
             List<Map<Integer, String>> rows;
             if (fn != null && fn.toLowerCase().endsWith(".csv")) {
@@ -194,7 +195,7 @@ public class EventService {
                         .headRowNumber(0).doReadSync();
             }
             // 自动识别列布局：表格2（代码/项目/是否田径/道次）或传统模板（项目名称/项目编码/...）
-            boolean table2 = detectTable2Layout(rows);
+            table2 = detectTable2Layout(rows);
             int rowNum = 1;
             for (Map<Integer, String> row : rows) {
                 rowNum++;
