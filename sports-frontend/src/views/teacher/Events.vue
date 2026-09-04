@@ -470,11 +470,17 @@ function onImportSuccess(res: any) {
 function onImportError() { ElMessage.error('导入失败，请检查文件格式') }
 
 function downloadTemplate() {
-  const csv = '项目名称,项目代码,类别(径赛/田赛),性别限制(M/F/mixed),道数,需要预赛(是/否),计分方式(global/grade),纪录(秒/米)\n100米,M100,径赛,M,8,是,global,\n跳远,TY_F,田赛,F,1,否,global,'
+  // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛=0）→ 与「导出」及 /events/import 解析一致
+  const csv =
+    '代码,项目,是否田径(是/否),道次(田赛写0),性别,年级组,是否团体(是/否),团体人数,调度模式(serial/parallel),场地,最大用时(分),间隔(分)\n' +
+    '100M,100米,是,8,男子组,高一年级,否,0,serial,田径场,20,10\n' +
+    '100F,100米(女子),是,8,女子组,高一年级,否,0,serial,田径场,20,10\n' +
+    '4X100M,4×100米接力,是,8,男子组,高一年级,是,4,serial,田径场,30,15\n' +
+    'TY_F,跳远(女子),否,0,女子组,高一年级,否,0,parallel,田赛A区,90,10\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = '项目导入模板.csv'; a.click()
+  a.href = url; a.download = '项目表模板_表格2.csv'; a.click()
   URL.revokeObjectURL(url)
 }
 

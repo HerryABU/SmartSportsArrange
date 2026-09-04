@@ -368,7 +368,8 @@ function handleView(row) {
 }
 
 function downloadTemplate() {
-  window.open(apiBase() + '/excel/template/registration', '_blank')
+  // 与导入向导同源：表格1 报名表模板（年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）
+  window.open(apiBase() + '/registrations/template', '_blank')
 }
 
 function handleExport() {

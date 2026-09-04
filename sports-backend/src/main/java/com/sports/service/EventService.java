@@ -189,7 +189,9 @@ public class EventService {
             if (fn != null && fn.toLowerCase().endsWith(".csv")) {
                 rows = readCsv(file);
             } else {
-                rows = com.alibaba.excel.EasyExcel.read(file.getInputStream()).sheet().doReadSync();
+                // headRowNumber(0)：保留表头行，否则 detectTable2Layout 会拿首条数据行误判布局
+                rows = com.alibaba.excel.EasyExcel.read(file.getInputStream()).sheet()
+                        .headRowNumber(0).doReadSync();
             }
             // 自动识别列布局：表格2（代码/项目/是否田径/道次）或传统模板（项目名称/项目编码/...）
             boolean table2 = detectTable2Layout(rows);
@@ -230,7 +232,7 @@ public class EventService {
         result.put("total", success + errors.size());
         result.put("success", success);
         result.put("failed", errors.size());
-        result.put("layout", "table2");
+        result.put("layout", table2 ? "table2" : "legacy");
         result.put("errors", errors);
         return result;
     }
