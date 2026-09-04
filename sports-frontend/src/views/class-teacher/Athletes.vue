@@ -11,9 +11,9 @@
       </div>
       <div class="pg-actions">
         <el-button type="success" @click="openAdd"><el-icon><Plus /></el-icon> 手动添加</el-button>
-        <el-upload :action="uploadUrl" :headers="uploadHeaders" :show-file-list="false" accept=".xlsx,.xls"
+        <el-upload :action="uploadUrl" :headers="uploadHeaders" :show-file-list="false" accept=".xlsx,.xls,.csv"
           :on-success="onImportSuccess" :before-upload="beforeUpload" style="display:inline-block">
-          <el-button type="primary"><el-icon><Upload /></el-icon> Excel 导入</el-button>
+          <el-button type="primary"><el-icon><Upload /></el-icon> Excel/CSV 导入</el-button>
         </el-upload>
         <el-button @click="downloadTemplate" plain><el-icon><DocumentCopy /></el-icon> 下载模板</el-button>
       </div>
@@ -62,7 +62,11 @@ const page=ref(1);const size=ref(50);const total=ref(0);const showAdd=ref(false)
 const form=reactive({name:'',gender:'M',studentId:''})
 const uploadUrl=apiBase()+'/class-teacher/import-roster';const uploadHeaders=computed(()=>({Authorization:'Bearer '+authStore.token}))
 
-function beforeUpload(f){const e=f.name.endsWith('.xlsx')||f.name.endsWith('.xls');if(!e)ElMessage.error('请上传.xlsx/.xls');return e}
+function beforeUpload(f){
+  const ok = /\.(xlsx|xls|csv)$/i.test(f.name || '')
+  if(!ok)ElMessage.error('请上传 .xlsx / .xls / .csv 文件')
+  return ok
+}
 function onImportSuccess(r){if(r?.code===200){ElMessage.success(`导入：学生${r.data.createdUsers}个，运动员${r.data.createdAthletes}个`);fetchData()}else ElMessage.error(r?.message||'失败')}
 function downloadTemplate(){const t='学号,姓名,性别\n2024001,张三,男\n2024002,李四,女\n';const b=new Blob(['\uFEFF'+t],{type:'text/csv'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='名单模板.csv';a.click();URL.revokeObjectURL(u)}
 

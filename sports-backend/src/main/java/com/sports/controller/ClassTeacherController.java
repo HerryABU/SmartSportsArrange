@@ -70,9 +70,28 @@ public class ClassTeacherController {
         int createdUsers = 0, createdAthletes = 0, skipped = 0;
         List<String> errors = new ArrayList<>();
 
+        List<Map<Integer, String>> rows;
+        boolean isCsv = file.getOriginalFilename() != null
+                && file.getOriginalFilename().toLowerCase().endsWith(".csv");
         try {
-            List<Map<Integer, String>> rows = com.alibaba.excel.EasyExcel.read(file.getInputStream())
-                    .sheet().headRowNumber(1).doReadSync();
+            if (isCsv) {
+                // CSV：自动识别 UTF-8/GB18030 等编码，跳过「学号,姓名,性别」表头
+                rows = new ArrayList<>();
+                String text = com.sports.common.FileEncoding.decode(file.getBytes());
+                String[] lines = text.split("\r?\n", -1);
+                boolean isFirst = true;
+                for (String line : lines) {
+                    if (line.trim().isEmpty()) continue;
+                    if (isFirst) { isFirst = false; continue; }
+                    String[] cols = line.split("[,，]", -1);
+                    Map<Integer, String> row = new HashMap<>();
+                    for (int i = 0; i < cols.length; i++) row.put(i, cols[i].trim());
+                    rows.add(row);
+                }
+            } else {
+                rows = com.alibaba.excel.EasyExcel.read(file.getInputStream())
+                        .sheet().headRowNumber(1).doReadSync();
+            }
 
             for (int i = 0; i < rows.size(); i++) {
                 Map<Integer, String> row = rows.get(i);

@@ -196,16 +196,14 @@ public class ParadeScoreService {
 
     private List<Map<Integer, String>> readCsv(MultipartFile file) throws IOException {
         List<Map<Integer, String>> rows = new ArrayList<>();
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                String[] cols = line.split("[,，]", -1);
-                Map<Integer, String> row = new HashMap<>();
-                for (int i = 0; i < cols.length; i++) row.put(i, cols[i].trim());
-                rows.add(row);
-            }
+        String text = com.sports.common.FileEncoding.decode(file.getBytes());
+        String[] lines = text.split("\r?\n", -1);
+        for (String line : lines) {
+            if (line.trim().isEmpty()) continue;
+            String[] cols = line.split("[,，]", -1);
+            Map<Integer, String> row = new HashMap<>();
+            for (int i = 0; i < cols.length; i++) row.put(i, cols[i].trim());
+            rows.add(row);
         }
         return rows;
     }

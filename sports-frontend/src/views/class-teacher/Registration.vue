@@ -68,13 +68,13 @@
         </div>
       </template>
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
-        <template #title>导入格式：Excel 第1列=学号, 第2列=姓名, 第3列=性别 (男/女/M/F)。导入后将自动创建学生账号。</template>
+        <template #title>导入格式：Excel 第1列=学号, 第2列=姓名, 第3列=性别 (男/女/M/F)；CSV 同样按「学号,姓名,性别」，支持 UTF-8 / GBK 等编码自动识别。导入后将自动创建学生账号。</template>
       </el-alert>
       <div style="display:flex;gap:8px">
         <el-upload :action="importRosterUrl" :headers="uploadHeaders" :show-file-list="false"
-          accept=".xlsx,.xls" :on-success="onImportSuccess" :on-error="onImportError">
+          accept=".xlsx,.xls,.csv" :on-success="onImportSuccess" :on-error="onImportError">
           <el-button type="primary" size="default" :loading="importing">
-            <el-icon><Upload /></el-icon> 导入班级名单 (Excel)
+            <el-icon><Upload /></el-icon> 导入班级名单 (Excel/CSV)
           </el-button>
         </el-upload>
         <el-button size="default" plain @click="downloadRosterTemplate">
@@ -91,7 +91,7 @@
           <div style="display:flex;gap:8px;align-items:center">
             <el-tag type="success">已导入 {{ athletes.length }} 名运动员</el-tag>
             <el-upload :action="importRosterUrl" :headers="uploadHeaders" :show-file-list="false"
-              accept=".xlsx,.xls" :on-success="onImportSuccess" :on-error="onImportError" style="display:inline-block">
+              accept=".xlsx,.xls,.csv" :on-success="onImportSuccess" :on-error="onImportError" style="display:inline-block">
               <el-button size="small" plain><el-icon><Upload /></el-icon> 重新导入</el-button>
             </el-upload>
           </div>
