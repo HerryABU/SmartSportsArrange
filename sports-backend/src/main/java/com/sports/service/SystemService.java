@@ -302,9 +302,14 @@ public class SystemService {
                 saved.put(e.getKey(), e.getValue());
             }
         }
-        if (saved.get("gradeOrder") == null || ((List<?>) saved.get("gradeOrder")).isEmpty()) {
+        // 未显式自定义出场顺序（存空）时，实时跟随「年级管理」的 sortOrder；
+        // gradeOrderCustom 供前端判断：true = 已显式定制（可编辑），false = 跟随年级设置（只读）
+        boolean storedEmpty = saved.get("gradeOrder") == null
+                || ((List<?>) saved.get("gradeOrder")).isEmpty();
+        if (storedEmpty) {
             saved.put("gradeOrder", getGradeOrder());
         }
+        saved.put("gradeOrderCustom", !storedEmpty);
         return saved;
     }
 
@@ -334,6 +339,16 @@ public class SystemService {
                 normalized.add(dayCfg);
             }
             body.put("dayConfigs", normalized);
+        }
+        // 年级出场顺序去冻结：若提交的顺序与「年级管理」当前推导一致（=未自定义），
+        // 归一化为空，使后续在「年级管理」调整 sortOrder 依然能实时传导到赛程。
+        if (body.containsKey("gradeOrder") && body.get("gradeOrder") instanceof List<?> list) {
+            List<String> incoming = new ArrayList<>();
+            for (Object o : list) {
+                if (o != null && !String.valueOf(o).isBlank()) incoming.add(String.valueOf(o).trim());
+            }
+            List<String> derived = getGradeOrder();
+            body.put("gradeOrder", incoming.equals(derived) ? new ArrayList<String>() : incoming);
         }
         writeJsonConfig("meet_schedule", body);
         log.info("运动会日程配置已保存");

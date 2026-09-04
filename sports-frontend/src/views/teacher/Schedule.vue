@@ -17,7 +17,7 @@
     </el-card>
 
     <el-alert type="info" show-icon :closable="false"
-      title="编排规则：项目按年级顺序（可在“系统设置 → 年级管理”调整出场次序）与项目排序展开；径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自左侧“运动会日程配置”，可每天不同。"
+      title="编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自日程配置，可每天不同。"
       style="border-radius: 10px" />
 
     <!-- 空态 -->
@@ -105,12 +105,35 @@
         </el-form-item>
         <el-form-item label="年级出场顺序">
           <div style="width:100%">
-            <el-tag v-for="g in meetForm.gradeOrder" :key="g" style="margin-right:6px" size="small">
-              {{ g }}
-            </el-tag>
-            <span class="hint" style="display:block;margin-top:4px">
-              顺序由「系统设置 → 年级管理」控制（调整 sortOrder 即可改变出场先后），此处仅展示。
-            </span>
+            <el-switch v-model="useCustomOrder" inline-prompt active-text="自定义顺序" inactive-text="跟随年级设置"
+              style="margin-bottom:8px" @change="onCustomOrderChange" />
+            <template v-if="!useCustomOrder">
+              <div>
+                <el-tag v-for="g in meetForm.gradeOrder" :key="g" style="margin-right:6px" size="small">
+                  {{ g }}
+                </el-tag>
+              </div>
+              <span class="hint" style="display:block;margin-top:6px">
+                出场顺序实时跟随「系统设置 → 年级管理」的 sortOrder；调整后重新点击「一键编排赛程」即生效。
+              </span>
+            </template>
+            <template v-else>
+              <div class="grade-order-edit">
+                <div v-for="(g, gi) in meetForm.gradeOrder" :key="g" class="grade-order-row">
+                  <span class="go-idx">{{ gi + 1 }}</span>
+                  <span class="go-name">{{ g }}</span>
+                  <el-button-group>
+                    <el-button :icon="Top" size="small" :disabled="gi === 0" title="上移" @click="moveGrade(gi, -1)" />
+                    <el-button :icon="Bottom" size="small" :disabled="gi === meetForm.gradeOrder.length - 1"
+                      title="下移" @click="moveGrade(gi, 1)" />
+                  </el-button-group>
+                </div>
+                <el-button link type="primary" @click="useCustomOrder = false">恢复跟随年级设置</el-button>
+              </div>
+              <span class="hint" style="display:block;margin-top:4px">
+                已启用自定义出场顺序（保存后以本处顺序为准）。
+              </span>
+            </template>
           </div>
         </el-form-item>
 
@@ -229,7 +252,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete } from '@element-plus/icons-vue'
+import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
@@ -240,6 +263,8 @@ const items = ref([])
 const showEditDialog = ref(false)
 const showConfigDialog = ref(false)
 const editingId = ref(null)
+// 年级出场顺序是否自定义（false=跟随系统设置·年级管理的 sortOrder，保存时回传空数组避免冻结）
+const useCustomOrder = ref(false)
 
 const defaultVenues = ['田径场', '田赛A区', '田赛B区']
 
@@ -331,16 +356,34 @@ async function openMeetConfig() {
       }))
     }))
     meetForm.venues = res.venues && res.venues.length ? res.venues : [...defaultVenues]
-    if (!meetForm.gradeOrder || !meetForm.gradeOrder.length) {
-      try {
-        const order = await request.get('/system/grade-order')
-        meetForm.gradeOrder = Array.isArray(order) ? order : (order || [])
-      } catch (e) { meetForm.gradeOrder = [] }
-    }
+    // 服务端已自动填充 gradeOrder（跟随年级设置或已显式定制）
+    useCustomOrder.value = !!res.gradeOrderCustom
+    meetForm.gradeOrder = (res.gradeOrder && res.gradeOrder.length) ? [...res.gradeOrder] : []
+    defaultOrderSnapshot.value = [...meetForm.gradeOrder]
   } catch (e) {
     // 读取失败仍可编辑默认值
   }
 }
+
+function onCustomOrderChange(val) {
+  // 从“跟随”切到“自定义”时，以当前（推导）顺序为底稿
+  if (val && !meetForm.gradeOrder.length) {
+    try {
+      meetForm.gradeOrder = [...defaultOrderSnapshot.value]
+    } catch (e) { /* ignore */ }
+  }
+}
+
+function moveGrade(index, dir) {
+  const target = index + dir
+  if (target < 0 || target >= meetForm.gradeOrder.length) return
+  const arr = [...meetForm.gradeOrder]
+  ;[arr[index], arr[target]] = [arr[target], arr[index]]
+  meetForm.gradeOrder = arr
+}
+
+// 打开配置时抓一份“跟随”底稿，供切到自定义时回填
+const defaultOrderSnapshot = ref([])
 
 function syncDates() {
   if (!meetForm.startDate) return
@@ -388,7 +431,8 @@ async function saveMeetConfig() {
       startDate: meetForm.startDate,
       days: meetForm.dayConfigs.length,
       dayConfigs: meetForm.dayConfigs,
-      gradeOrder: meetForm.gradeOrder,
+      // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
+      gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
       venues: meetForm.venues,
       trackMode: meetForm.trackMode,
       fieldMode: meetForm.fieldMode,
@@ -495,6 +539,17 @@ onMounted(fetchList)
   padding: 10px 12px;
   margin-bottom: 8px;
 }
+.grade-order-edit { display: flex; flex-direction: column; gap: 6px; }
+.grade-order-row {
+  display: flex; align-items: center; gap: 10px;
+  background: #f8fafc; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
+}
+.grade-order-row .go-idx {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #6366f1); color: #fff;
+  font-size: 12px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600;
+}
+.grade-order-row .go-name { flex: 1; font-size: 14px; color: #303133; }
 .day-config-title { font-weight: 600; margin-bottom: 8px; color: #303133; }
 .slot-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
 @media (max-width: 768px) {
