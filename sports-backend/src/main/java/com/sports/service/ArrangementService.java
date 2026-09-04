@@ -573,7 +573,6 @@ public class ArrangementService {
                         LinkedHashMap::new, Collectors.toList()));
 
         List<Map<String, Object>> rounds = new ArrayList<>();
-        Map<String, Object> lastRoundTopLevel = null;
 
         for (Map.Entry<String, List<Arrangement>> entry : byRound.entrySet()) {
             Map<Integer, List<Arrangement>> byHeat = entry.getValue().stream()
@@ -603,21 +602,33 @@ public class ArrangementService {
             roundResult.put("version", version);
             roundResult.put("statistics", Map.of("totalAthletes", total, "totalHeats", byHeat.size()));
             rounds.add(roundResult);
-            lastRoundTopLevel = roundResult;
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("eventId", eventId);
         result.put("eventName", event.getName());
         result.put("rounds", rounds);
-        // 兼容：单赛次时直接平铺 heats
-        if (rounds.size() == 1 && lastRoundTopLevel != null) {
-            result.put("heats", lastRoundTopLevel.get("heats"));
-            result.put("version", lastRoundTopLevel.get("version"));
-            result.put("statistics", lastRoundTopLevel.get("statistics"));
+        // 顶层 heats 用于「成绩录入」等按组次落成绩的场景：
+        //   单赛次 → 平铺该赛次；多赛次（预赛+决赛）→ 平铺决赛赛次（成绩表只录决赛成绩），
+        //   尚无决赛而只有预赛时退化为最后一个赛次（由编排页走预赛成绩流）。
+        Map<String, Object> topRound = null;
+        if (rounds.size() == 1) {
+            topRound = rounds.get(0);
+        } else {
+            topRound = rounds.stream()
+                    .filter(r -> ROUND_FINAL.equals(r.get("round")))
+                    .findFirst()
+                    .orElse(rounds.get(rounds.size() - 1));
+        }
+        if (topRound != null) {
+            result.put("heats", topRound.get("heats"));
+            result.put("version", topRound.get("version"));
+            result.put("statistics", topRound.get("statistics"));
+            result.put("activeRound", topRound.get("round"));
         } else {
             result.put("heats", List.of());
             result.put("statistics", Map.of("totalAthletes", 0, "totalHeats", 0));
+            result.put("activeRound", null);
         }
         return result;
     }
