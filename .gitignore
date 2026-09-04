@@ -65,3 +65,9 @@ data/installed.flag
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# backend runtime logs from tests/boot
+sports-backend/data/
+
+# backend runtime logs from tests/boot
+sports-backend/data/
