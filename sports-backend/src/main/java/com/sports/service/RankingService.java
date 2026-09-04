@@ -183,13 +183,14 @@ public class RankingService {
         }
 
         List<BoardRow> values = new ArrayList<>(byClass.values());
+        // 含入场式口径时，排序基准必须是 赛事得分+入场式得分，否则名次/TOP 与最终总分不一致
         Comparator<BoardRow> cmp = goldFirst
                 ? Comparator.comparingInt((BoardRow r) -> r.gold)
                         .thenComparingInt(r -> r.silver)
                         .thenComparingInt(r -> r.bronze)
-                        .thenComparingDouble(r -> r.total)
+                        .thenComparingDouble(r -> effScore(r, includeParade, paradeByClass))
                         .reversed()
-                : Comparator.comparingDouble((BoardRow r) -> r.total)
+                : Comparator.comparingDouble((BoardRow r) -> effScore(r, includeParade, paradeByClass))
                         .thenComparingInt(r -> r.gold)
                         .thenComparingInt(r -> r.silver)
                         .thenComparingInt(r -> r.bronze)
@@ -265,6 +266,16 @@ public class RankingService {
             }
             rows.get(i).put("rank", rank);
         }
+    }
+
+    /** 排行有效分：含入场式口径 = 赛事得分 + 入场式得分（未录入入场式按 0） */
+    private static double effScore(BoardRow r, boolean includeParade, Map<Long, Double> paradeByClass) {
+        double base = r.total;
+        if (includeParade) {
+            Double ps = paradeByClass.get(r.classId);
+            if (ps != null) base += ps;
+        }
+        return base;
     }
 
     private static double round2(double v) {
