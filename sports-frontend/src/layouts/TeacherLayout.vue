@@ -24,6 +24,8 @@
         <el-menu-item-group title="③ 统计排名">
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+          <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
+          <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <template v-if="isAdmin">
@@ -56,6 +58,8 @@
         <el-menu-item-group title="③ 统计排名">
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+          <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
+          <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <template v-if="isAdmin">
@@ -142,8 +146,8 @@ async function doPwd() {
   try { await request.post('/auth/change-password',{oldPassword:pf.old,newPassword:pf.new1}); ElMessage.success('密码修改成功'); showPwd.value=false }
   catch(e){} finally { pwdLoading.value=false }
 }
-onMounted(()=>{activeMenu.value=route.path})
-watch(() => route.path, (p) => { activeMenu.value = p }, { immediate: true })
+onMounted(()=>{activeMenu.value=route.fullPath})
+watch(() => route.fullPath, (p) => { activeMenu.value = p }, { immediate: true })
 </script>
 
 <style scoped>

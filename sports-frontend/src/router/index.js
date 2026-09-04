@@ -178,6 +178,13 @@ const routes = [
       }
     ]
   },
+  // 现场大屏（数据大屏 / 排行榜大屏，全屏投屏用）
+  {
+    path: '/screen',
+    name: 'ScreenBoard',
+    component: () => import('@/views/screen/MeetBoard.vue'),
+    meta: { requiresAuth: true, role: ['TEACHER', 'SUPER_ADMIN'] }
+  },
   // 404 catch-all
   {
     path: '/:pathMatch(.*)*',
