@@ -218,6 +218,7 @@ public class ClassTeacherController {
 
     // ===== 获取本班运动员列表 =====
     @GetMapping("/athletes")
+    @Transactional(readOnly = true)
     public ApiResponse<?> athletes(@RequestParam(defaultValue = "1") int page,
                                     @RequestParam(defaultValue = "50") int size) {
         Long classId = getMyClassId();
@@ -234,6 +235,7 @@ public class ClassTeacherController {
 
     // ===== 仪表盘 =====
     @GetMapping("/dashboard")
+    @Transactional(readOnly = true)
     public ApiResponse<?> dashboard() {
         Long classId = getMyClassId();
         ClassInfo ci = classInfoRepository.findById(classId).orElse(null);
@@ -369,6 +371,7 @@ public class ClassTeacherController {
 
     // ===== 取消报名 =====
     @DeleteMapping("/register/{id}")
+    @Transactional
     public ApiResponse<?> cancelRegistration(@PathVariable Long id) {
         Registration reg = registrationRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("报名记录不存在"));
@@ -380,6 +383,7 @@ public class ClassTeacherController {
 
     // ===== 报名列表 =====
     @GetMapping("/registrations")
+    @Transactional(readOnly = true)
     public ApiResponse<?> registrations() {
         Long classId = getMyClassId();
         List<Athlete> athletes = athleteRepository.findByClassInfoId(classId);
@@ -414,6 +418,7 @@ public class ClassTeacherController {
 
     // ===== 导出报名表 =====
     @GetMapping("/registrations/export")
+    @Transactional(readOnly = true)
     public void exportRegistrations(HttpServletResponse response) throws IOException {
         Long classId = getMyClassId();
         ClassInfo ci = classInfoRepository.findById(classId).orElse(null);
@@ -464,12 +469,14 @@ public class ClassTeacherController {
 
     // ===== 赛程查看 =====
     @GetMapping("/schedule")
+    @Transactional(readOnly = true)
     public ApiResponse<?> schedule() {
         return ApiResponse.success(getSchedules(getMyClassId()));
     }
 
     // ===== 成绩查看 =====
     @GetMapping("/results")
+    @Transactional(readOnly = true)
     public ApiResponse<?> results() {
         Long classId = getMyClassId();
         List<Athlete> athletes = athleteRepository.findByClassInfoId(classId);
@@ -519,6 +526,7 @@ public class ClassTeacherController {
 
     // ===== 可用项目列表（供班主任报名使用） =====
     @GetMapping("/events")
+    @Transactional(readOnly = true)
     public ApiResponse<?> events() {
         return ApiResponse.success(eventRepository.findByIsEnabledTrueOrderBySortOrderAsc());
     }
