@@ -1,18 +1,29 @@
 <template>
   <div class="ct-athletes" v-loading="loading">
+    <!-- 页面头 -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">👥</span>
+        <div>
+          <h3 class="pg-title">班级名单</h3>
+          <p class="pg-desc">本班花名册（Excel：学号|姓名|性别 导入自动创建学生账号与号码布）；如需新增不在名单中的同学可直接手动添加</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <el-button type="success" @click="openAdd"><el-icon><Plus /></el-icon> 手动添加</el-button>
+        <el-upload :action="uploadUrl" :headers="uploadHeaders" :show-file-list="false" accept=".xlsx,.xls"
+          :on-success="onImportSuccess" :before-upload="beforeUpload" style="display:inline-block">
+          <el-button type="primary"><el-icon><Upload /></el-icon> Excel 导入</el-button>
+        </el-upload>
+        <el-button @click="downloadTemplate" plain><el-icon><DocumentCopy /></el-icon> 下载模板</el-button>
+      </div>
+    </div>
+
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
           <span>🏃 本班运动员 (共 {{ total }} 人)</span>
-          <div>
-            <el-button type="success" @click="openAdd">
-              <el-icon><Plus /></el-icon> 手动添加
-            </el-button>
-            <el-upload :action="uploadUrl" :headers="uploadHeaders" :show-file-list="false" accept=".xlsx,.xls" :on-success="onImportSuccess" :before-upload="beforeUpload" style="display:inline-block;margin-left:8px">
-              <el-button type="primary"><el-icon><Upload /></el-icon> Excel导入</el-button>
-            </el-upload>
-            <el-button @click="downloadTemplate" plain style="margin-left:8px"><el-icon><DocumentCopy /></el-icon> 下载模板</el-button>
-          </div>
+          <span class="header-hint">学号 = 学生登录账号</span>
         </div>
       </template>
 
@@ -60,11 +71,7 @@ async function doAdd(){
   if(!form.name||!form.studentId){ElMessage.warning('请填写完整');return}
   adding.value=true
   try{
-    // 先导入单个学生（复用 import-roster 逻辑：通过创建临时 CSV）
-    const csv=`学号,姓名,性别\n${form.studentId},${form.name},${form.gender==='M'?'男':'女'}\n`
-    const blob=new Blob(['\uFEFF'+csv],{type:'text/csv'})
-    const fd=new FormData();fd.append('file',blob,'add.csv')
-    await request.post('/class-teacher/import-roster',fd,{headers:{'Content-Type':'multipart/form-data'}})
+    await request.post('/class-teacher/athlete',{studentId:form.studentId,name:form.name,gender:form.gender})
     ElMessage.success('添加成功');showAdd.value=false;fetchData()
   }catch(e){console.error(e)}
   finally{adding.value=false}
@@ -75,5 +82,7 @@ onMounted(()=>fetchData())
 </script>
 
 <style scoped>
-.ct-athletes{display:flex;flex-direction:column}.card-header{display:flex;justify-content:space-between;align-items:center}
+.ct-athletes{display:flex;flex-direction:column;gap:12px}
+.card-header{display:flex;justify-content:space-between;align-items:center}
+.header-hint{font-size:12px;color:#909399}
 </style>

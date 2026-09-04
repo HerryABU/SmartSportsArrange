@@ -1,5 +1,22 @@
 <template>
   <div class="ct-registration" v-loading="loading">
+    <!-- 页面头（班主任现场/后置报名） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">🎯</span>
+        <div>
+          <h3 class="pg-title">运动会报名</h3>
+          <p class="pg-desc">① 现场/逐个报名提交后进入「待审核」，由体育老师通过后生效；② 批量导入可直接选「后置导入（已报好表）→ 直接通过」</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">仅限本班</span>
+        <el-button type="success" size="small" @click="exportRegistrations">
+          <el-icon><Download /></el-icon> 导出报名表
+        </el-button>
+      </div>
+    </div>
+
     <!-- ===== 批量报名导入（班主任：现场 or 后置） ===== -->
     <el-card shadow="never" class="roster-card batch-card">
       <template #header>
@@ -138,8 +155,8 @@
             @click="tryRegister(evt)">
             <div class="event-name">{{ evt.name }}</div>
             <div class="event-meta">
-              <el-tag size="small" :type="evt.category==='径赛'?'danger':''">{{ evt.category }}</el-tag>
-              <el-tag size="small" effect="plain">{{ genderLabel(evt.genderLimit) }}</el-tag>
+              <el-tag size="small" :type="evtType(evt)==='径赛'?'danger':''">{{ evtType(evt) }}</el-tag>
+              <el-tag size="small" effect="plain">{{ genderLabel(evt.gender || evt.genderLimit) }}</el-tag>
             </div>
             <div class="event-status">
               <span v-if="isRegistered(foundAthlete, evt)" class="reg-badge done">✓ 已报</span>
@@ -189,13 +206,13 @@
       <template #header><span>⚠️ 未报名运动员 ({{ unregisteredAthletes.length }}人)</span></template>
       <el-table :data="unregisteredAthletes" border size="small" max-height="250">
         <el-table-column prop="name" label="姓名" />
-        <el-table-column prop="studentId" label="学号" />
+        <el-table-column prop="studentNo" label="学号" />
         <el-table-column label="性别" width="60">
           <template #default="{row}">{{ row.gender==='M'?'男':'女' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="80">
           <template #default="{row}">
-            <el-button type="primary" size="small" link @click="quickSearch(row.studentId)">去报名</el-button>
+            <el-button type="primary" size="small" link @click="quickSearch(row.studentNo)">去报名</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -220,7 +237,7 @@ const searched = ref(false)
 
 const foundAthlete = computed(() => {
   if (!searchId.value) return null
-  return athletes.value.find(a => a.studentId === searchId.value.trim()) || null
+  return athletes.value.find(a => a.studentNo === searchId.value.trim()) || null
 })
 
 const regStats = computed(() => {
@@ -241,12 +258,37 @@ function quickSearch(sid) {
 
 function getAthleteSid(name) {
   const a = athletes.value.find(a => a.name === name)
-  return a ? a.studentId : ''
+  return a ? (a.studentNo || a.studentId || '') : ''
 }
 
 function onSearchId() { searched.value = !!searchId.value }
 function clearSearch() { searched.value = false }
-function genderLabel(g) { return g === 'M' ? '男' : g === 'F' ? '女' : '混合' }
+
+/** 项目类型（兼容 eventType/category/isTrack 多种来源） */
+function evtType(evt) {
+  if (evt.eventType) return evt.eventType
+  if (evt.isTrack === false) return '田赛'
+  return evt.isTrack ? '径赛' : (evt.category || '径赛')
+}
+/** 性别显示（男子组/M/男 → 男子；女子组/F/女 → 女子；其余混合） */
+function genderLabel(g) {
+  const t = String(g || '').trim()
+  if (['M', '男', '男子组', '男子'].includes(t)) return '男子'
+  if (['F', '女', '女子组', '女子'].includes(t)) return '女子'
+  return '混合'
+}
+function normGender(g) {
+  const t = String(g || '').trim()
+  if (['M', '男', '男子组', '男子'].includes(t)) return 'M'
+  if (['F', '女', '女子组', '女子'].includes(t)) return 'F'
+  return ''
+}
+function genderMatch(limit, athleteGender) {
+  const l = normGender(limit)
+  if (!l || l === 'X') return true // 混合/未限制
+  const a = normGender(athleteGender)
+  return !a || a === l
+}
 
 function getRegCount(athlete) {
   if (!athlete) return 0
@@ -266,7 +308,7 @@ function isRegistered(athlete, event) {
 function canReg(athlete, event) {
   if (!athlete) return false
   if (isRegistered(athlete, event)) return false
-  if (event.genderLimit && event.genderLimit !== 'mixed' && event.genderLimit !== athlete.gender) return false
+  if (!genderMatch(event.gender || event.genderLimit, athlete.gender)) return false
   if (getRegCount(athlete) >= 3) return false
   return true
 }
@@ -275,7 +317,7 @@ async function tryRegister(event) {
   if (!foundAthlete.value) { ElMessage.warning('请先输入学号定位运动员'); return }
   if (isRegistered(foundAthlete.value, event)) { ElMessage.info('已报名此项目'); return }
   if (!canReg(foundAthlete.value, event)) {
-    if (event.genderLimit && event.genderLimit !== 'mixed' && event.genderLimit !== foundAthlete.value.gender)
+    if (!genderMatch(event.gender || event.genderLimit, foundAthlete.value.gender))
       ElMessage.warning('性别不符合项目要求')
     else if (getRegCount(foundAthlete.value) >= 3)
       ElMessage.warning('已报满3项')
@@ -284,7 +326,7 @@ async function tryRegister(event) {
   loading.value = true
   try {
     await request.post('/class-teacher/register', { athleteId: foundAthlete.value.id, eventId: event.id })
-    ElMessage.success(`${foundAthlete.value.name} 报名 ${event.name} 成功`)
+    ElMessage.success(`${foundAthlete.value.name} 报名 ${event.name} 已提交，等待体育老师审核`)
     await fetchRegistrations()
   } catch (e) { console.error(e) }
   finally { loading.value = false }
