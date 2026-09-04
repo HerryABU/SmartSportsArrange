@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>com.sports</groupId>
 	<artifactId>sports</artifactId>
-	<version>1.0.0</version>
+	<version>2.0.0</version>
 	<name>运动会智能编排系统</name>
 	<description>Sports Meet Intelligent Scheduling System</description>
 

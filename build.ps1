@@ -33,11 +33,11 @@ if (-not $SkipBackend) {
   Write-Host "[2/2] Backend OK" -ForegroundColor Green
 }
 
-$jar = Join-Path $root "sports-backend\target\sports-1.0.0.jar"
+$jar = Join-Path $root "sports-backend\target\sports-2.0.0.jar"
 if (Test-Path $jar) {
   Copy-Item $jar $root -Force
-  $sizeMb = [math]::Round((Get-Item (Join-Path $root "sports-1.0.0.jar")).Length / 1MB, 1)
-  Write-Host "[OUTPUT] sports-1.0.0.jar ($sizeMb MB)" -ForegroundColor Cyan
+  $sizeMb = [math]::Round((Get-Item (Join-Path $root "sports-2.0.0.jar")).Length / 1MB, 1)
+  Write-Host "[OUTPUT] sports-2.0.0.jar ($sizeMb MB)" -ForegroundColor Cyan
 }
 
 $elapsed = $timer.Elapsed.TotalSeconds.ToString("0.0")

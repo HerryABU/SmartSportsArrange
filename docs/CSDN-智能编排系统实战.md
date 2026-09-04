@@ -156,12 +156,12 @@ private static void autoDetectConsoleEncoding() {
 
 - `vite.config.js` 的构建输出指向 `../sports-backend/src/main/resources/static`；
 - 后端用 `SpaFallbackConfig` 做 SPA 回退（未知路由转发到 `index.html`）；
-- 一键脚本 `build.ps1`：前端 Vite → 后端 Maven → 根目录产出 `sports-1.0.0.jar`。
+- 一键脚本 `build.ps1`：前端 Vite → 后端 Maven → 根目录产出 `sports-2.0.0.jar`。
 
 最终用户拿到一个 JAR：
 
 ```bash
-java -jar sports-1.0.0.jar        # 默认 SQLite，零配置，访问 http://localhost:8080
+java -jar sports-2.0.0.jar        # 默认 SQLite，零配置，访问 http://localhost:8080
 ```
 
 ---
