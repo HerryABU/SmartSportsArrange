@@ -1,5 +1,18 @@
 <template>
   <div class="classes-container">
+    <!-- 页面头（工作流 ① 导入） -->
+    <div class="pg-head rise-in" style="margin-bottom:14px">
+      <div class="pg-titles">
+        <span class="pg-ico">🏫</span>
+        <div>
+          <h3 class="pg-title">班级管理（名单）</h3>
+          <p class="pg-desc">运动会参赛班级花名册 —— 维护年级/班级/班主任，支持 Excel 导入；班主任账号在此绑定到对应班级</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+      </div>
+    </div>
     <!-- Search / Filter Bar -->
     <el-card class="search-card" shadow="never">
       <el-form :model="searchForm" inline>

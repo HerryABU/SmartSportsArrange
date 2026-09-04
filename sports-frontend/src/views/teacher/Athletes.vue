@@ -1,5 +1,18 @@
 <template>
   <div class="athletes-container">
+    <!-- 页面头（工作流 ① 导入） -->
+    <div class="pg-head rise-in" style="margin-bottom:14px">
+      <div class="pg-titles">
+        <span class="pg-ico">👟</span>
+        <div>
+          <h3 class="pg-title">运动员名单</h3>
+          <p class="pg-desc">各班级运动员档案与号码簿管理 —— 支持 Excel 名单导入（姓名/性别/年级/班级/学号/号码布…），班主任端可导入花名册自动建档</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+      </div>
+    </div>
     <!-- 搜索/筛选区域 -->
     <el-card class="search-card" shadow="never">
       <el-form :model="searchForm" inline>

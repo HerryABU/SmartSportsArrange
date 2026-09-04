@@ -4,7 +4,7 @@
     <el-card shadow="never" class="toolbar-card">
       <div class="toolbar">
         <div class="toolbar-left">
-          <el-tag type="primary" effect="dark" size="large" round>📅 项目编排</el-tag>
+          <el-tag type="primary" effect="dark" size="large" round>📅 赛程编排</el-tag>
           <span class="hint">先配置运动会日期/时段/年级顺序，再一键生成赛程（径赛串行、田赛并行）</span>
         </div>
         <div class="toolbar-right">

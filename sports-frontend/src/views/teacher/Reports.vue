@@ -30,7 +30,7 @@
                 </el-button>
                 <el-button type="success" :disabled="!orderBookContent" @click="exportOrderBook">
                   <el-icon><Download /></el-icon>
-                  导出PDF
+                  导出Excel
                 </el-button>
               </div>
             </div>
