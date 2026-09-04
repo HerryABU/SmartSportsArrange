@@ -211,7 +211,7 @@
           </template>
 
           <div class="filter-bar">
-            <el-select v-model="boardFilter.grade" placeholder="年级（全校/该年级内班级）" clearable style="width: 190px">
+            <el-select v-model="boardFilter.grade" placeholder="年级（全校/该年级内班级）" clearable style="width: 190px" filterable>
               <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
             </el-select>
             <el-select v-model="boardFilter.gender" placeholder="性别（全部/男榜/女榜）" clearable style="width: 160px">
@@ -219,6 +219,10 @@
               <el-option label="女生榜" value="女" />
             </el-select>
             <el-switch v-model="boardFilter.includeParade" active-text="总分含入场式" inactive-text="去除入场式" />
+            <span class="hint">TOP</span>
+            <el-input-number v-model="boardFilter.topN" :min="0" :max="50" size="small" style="width: 110px"
+              :step="5" :title="'只显示前 N 名；0 = 全部'" />
+            <span class="hint">0=全部</span>
             <span class="hint">
               口径：{{ boardFilter.gender ? (boardFilter.gender === '男' ? '男生' : '女生') + '得分 · ' : '' }}{{ boardFilter.includeParade ? '赛事 + 入场式' : '纯赛事得分' }}
             </span>
@@ -326,13 +330,14 @@ const recordData = ref([])
 const boardRows = ref([])
 const gradeSummary = ref([])
 
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
+// 年级下拉：动态来自 系统设置·年级管理（不硬编码）
+const gradeOptions = ref([])
 
 const indFilter = reactive({ grade: '', eventId: '' })
 const indPagination = reactive({ page: 1, size: 10, total: 0 })
 const teamFilter = reactive({ grade: '' })
 const recFilter = reactive({ grade: '', eventId: '' })
-const boardFilter = reactive({ grade: '', gender: '', includeParade: false })
+const boardFilter = reactive({ grade: '', gender: '', includeParade: false, topN: 0 })
 
 // 入场式得分
 const paradeVisible = ref(false)
@@ -447,8 +452,10 @@ async function fetchScoreboard() {
     const params = { includeParade: boardFilter.includeParade }
     if (boardFilter.grade) params.grade = boardFilter.grade
     if (boardFilter.gender) params.gender = boardFilter.gender
+    if (boardFilter.topN > 0) params.topN = boardFilter.topN
     const res = await request.get('/ranking/scoreboard', { params })
-    boardRows.value = res.rows || []
+    // 后端按 topN 返回 top 字段（0=全部返回 rows）
+    boardRows.value = (res.top && res.top.length) ? res.top : (res.rows || [])
     gradeSummary.value = res.gradeSummary || []
   } catch (e) {
     boardRows.value = []
@@ -539,9 +546,20 @@ function exportRecords() {
   window.open(apiBase() + '/ranking/records/export', '_blank')
 }
 
+async function loadGrades() {
+  try {
+    const res = await request.get('/system/grades')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    gradeOptions.value = list.map(g => (g && g.name) || '').filter(Boolean)
+  } catch {
+    gradeOptions.value = []
+  }
+}
+
 onMounted(() => {
   fetchEvents()
   fetchIndividual()
+  loadGrades()
 })
 </script>
 
