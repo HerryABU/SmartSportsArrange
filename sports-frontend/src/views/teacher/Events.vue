@@ -1,9 +1,19 @@
 <template>
   <div class="events-container">
-    <!-- 页面标题 -->
-    <div class="page-header">
-      <h2 class="page-title">项目管理</h2>
-      <p class="page-desc">管理运动会比赛项目，支持预设模板快速创建</p>
+    <!-- 页面标题（表格2 项目字典 · 工作流①导入） -->
+    <div class="pg-head rise-in" style="margin-bottom:14px">
+      <div class="pg-titles">
+        <span class="pg-ico">🏆</span>
+        <div>
+          <h3 class="pg-title">比赛项目（表格2）</h3>
+          <p class="pg-desc">A代码 | B项目 | C是否田径 | D道次（田赛=0）… 报名表 F 列通过「代码/名称」软链本表；径赛可开预赛淘汰并设置晋级人数</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+        <el-button plain @click="downloadTemplate" :icon="Download">下载表格2模板</el-button>
+        <el-button plain @click="handleExport" :icon="Download">导出</el-button>
+      </div>
     </div>
 
     <!-- 操作栏 -->
@@ -28,12 +38,6 @@
         >
           <el-button type="warning"><el-icon><Upload /></el-icon> 导入Excel/CSV</el-button>
         </el-upload>
-        <el-button plain @click="downloadTemplate" style="margin-left:8px">
-          <el-icon><Download /></el-icon> 下载模板
-        </el-button>
-        <el-button plain @click="handleExport" style="margin-left:4px">
-          <el-icon><Download /></el-icon> 导出
-        </el-button>
       </div>
       <div class="toolbar-right">
         <el-select
