@@ -38,45 +38,29 @@
           <template #header>
             <div class="card-header">
               <el-icon><Connection /></el-icon>
-              <span>快捷操作</span>
+              <span>运动会工作流 · 导入 → 编排 → 统计</span>
             </div>
           </template>
-          <div class="quick-actions">
-            <div class="quick-item" @click="$router.push('/teacher/events')">
-              <div class="quick-icon" style="background: #ecf5ff; color: #409eff;">
-                <el-icon :size="22"><Trophy /></el-icon>
+          <div class="flow-steps">
+            <div v-for="stage in flowStages" :key="stage.step" class="flow-stage">
+              <div class="flow-stage-head">
+                <span class="flow-no">{{ stage.step }}</span>
+                <div class="flow-head-text">
+                  <div class="flow-title">{{ stage.title }}</div>
+                  <div class="flow-desc">{{ stage.desc }}</div>
+                </div>
               </div>
-              <span>赛事管理</span>
-            </div>
-            <div class="quick-item" @click="$router.push('/teacher/arrange')">
-              <div class="quick-icon" style="background: #fdf6ec; color: #e6a23c;">
-                <el-icon :size="22"><Grid /></el-icon>
+              <div class="flow-links">
+                <div v-for="link in stage.links" :key="link.path" class="flow-link"
+                  @click="$router.push(link.path)">
+                  <span class="flow-link-icon" :style="{ background: link.bg, color: link.color }">
+                    <el-icon :size="16"><component :is="link.icon" /></el-icon>
+                  </span>
+                  <span class="flow-link-label">{{ link.label }}</span>
+                  <el-badge v-if="todoBadge(link.path)" :value="todoBadge(link.path)" :max="99"
+                    :type="badgeTypeOf(link.path)" style="margin-left:auto" />
+                </div>
               </div>
-              <span>编排管理</span>
-            </div>
-            <div class="quick-item" @click="$router.push('/teacher/scores')">
-              <div class="quick-icon" style="background: #f0f9eb; color: #67c23a;">
-                <el-icon :size="22"><EditPen /></el-icon>
-              </div>
-              <span>成绩录入</span>
-            </div>
-            <div class="quick-item" @click="$router.push('/teacher/registrations')">
-              <div class="quick-icon" style="background: #fef0f0; color: #f56c6c;">
-                <el-icon :size="22"><Document /></el-icon>
-              </div>
-              <span>报名管理</span>
-            </div>
-            <div class="quick-item" @click="$router.push('/teacher/ranking')">
-              <div class="quick-icon" style="background: #f0f5ff; color: #409eff;">
-                <el-icon :size="22"><Medal /></el-icon>
-              </div>
-              <span>排名积分</span>
-            </div>
-            <div class="quick-item" @click="$router.push('/teacher/reports')">
-              <div class="quick-icon" style="background: #fef0f0; color: #f56c6c;">
-                <el-icon :size="22"><DataAnalysis /></el-icon>
-              </div>
-              <span>导出中心</span>
             </div>
           </div>
         </el-card>
@@ -208,6 +192,50 @@ const stats = ref([
   { label: '比赛项目', value: 0, icon: Trophy, color: '#E6A23C' },
   { label: '报名总数', value: 0, icon: Document, color: '#F56C6C' }
 ])
+
+// 三步工作流：导入 → 编排 → 统计
+const flowStages = [
+  {
+    step: 1, title: '导入报名', desc: '班级 → 运动员 → 项目 → 报名表',
+    links: [
+      { label: '班级管理', path: '/teacher/classes', icon: School, color: '#409eff', bg: '#ecf5ff' },
+      { label: '运动员名单', path: '/teacher/athletes', icon: UserFilled, color: '#67c23a', bg: '#f0f9eb' },
+      { label: '比赛项目', path: '/teacher/events', icon: Trophy, color: '#e6a23c', bg: '#fdf6ec' },
+      { label: '报名表导入·审核', path: '/teacher/registrations', icon: Document, color: '#f56c6c', bg: '#fef0f0' }
+    ]
+  },
+  {
+    step: 2, title: '编排比赛', desc: '日程 → 道次分组 → 成绩',
+    links: [
+      { label: '赛程编排', path: '/teacher/schedule', icon: Clock, color: '#6366f1', bg: '#eef2ff' },
+      { label: '道次编排', path: '/teacher/arrange', icon: Grid, color: '#0ea5e9', bg: '#ecfeff' },
+      { label: '成绩录入', path: '/teacher/scores', icon: EditPen, color: '#f59e0b', bg: '#fffbeb' }
+    ]
+  },
+  {
+    step: 3, title: '统计排名', desc: '合分排行 → 秩序册/成绩册',
+    links: [
+      { label: '合分排行', path: '/teacher/ranking', icon: Medal, color: '#ef4444', bg: '#fef2f2' },
+      { label: '报表中心', path: '/teacher/reports', icon: DataAnalysis, color: '#8b5cf6', bg: '#f5f3ff' }
+    ]
+  }
+]
+
+const todoCountOf = (label) => {
+  const t = todos.value.find(x => x.label === label)
+  return t && t.count ? t.count : 0
+}
+function todoBadge(path) {
+  if (path === '/teacher/registrations') return todoCountOf('待审核报名')
+  if (path === '/teacher/arrange') return todoCountOf('未编排项目')
+  if (path === '/teacher/scores') return todoCountOf('待录入成绩')
+  return 0
+}
+function badgeTypeOf(path) {
+  if (path === '/teacher/registrations') return 'warning'
+  if (path === '/teacher/arrange') return 'primary'
+  return 'danger'
+}
 
 const todos = ref([])
 const registrationProgress = ref([])
@@ -386,33 +414,44 @@ onBeforeUnmount(() => {
   color: #303133;
 }
 
-.quick-actions {
+.flow-steps {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 14px;
-  padding: 8px 0;
+  padding: 4px 0;
 }
-.quick-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 8px;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.25s;
-  font-size: 13px;
-  color: #606266;
-}
-.quick-item:hover { background: #f5f7fa; transform: translateY(-2px); }
-.quick-item:active { transform: scale(0.97); }
-.quick-icon {
-  width: 48px; height: 48px;
+.flow-stage {
+  border: 1px solid #ebeef5;
   border-radius: 14px;
-  display: flex; align-items: center; justify-content: center;
-  transition: transform 0.25s;
+  padding: 14px;
+  background: linear-gradient(180deg, #fafcff 0%, #ffffff 100%);
+  transition: all 0.25s;
 }
-.quick-item:hover .quick-icon { transform: scale(1.08); }
+.flow-stage:hover { box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06); transform: translateY(-2px); }
+.flow-stage-head { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.flow-no {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-info));
+  color: #fff; font-size: 15px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.flow-head-text { line-height: 1.3; }
+.flow-title { font-size: 15px; font-weight: 700; color: #303133; }
+.flow-desc { font-size: 11px; color: #909399; }
+.flow-links { display: flex; flex-direction: column; gap: 8px; }
+.flow-link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 10px;
+  cursor: pointer; font-size: 13px; color: #303133;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+.flow-link:hover { background: #f5f7fa; border-color: #e4e7ed; transform: translateX(2px); }
+.flow-link-icon {
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.flow-link-label { color: #303133; }
 
 .todo-list { padding: 4px 0; }
 .todo-item {
@@ -475,5 +514,6 @@ onBeforeUnmount(() => {
   .quick-actions { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .quick-item { padding: 10px 4px; font-size: 12px; }
   .quick-icon { width: 40px; height: 40px; }
+  .flow-steps { grid-template-columns: 1fr; }
 }
 </style>

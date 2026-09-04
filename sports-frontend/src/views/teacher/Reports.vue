@@ -1,5 +1,18 @@
 <template>
   <div class="reports-page" v-loading="loading">
+    <!-- 页面头（工作流 ③ 统计） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">📋</span>
+        <div>
+          <h3 class="pg-title">秩序册 · 成绩册 · 统计报表</h3>
+          <p class="pg-desc">一键生成并导出秩序册（项目按径赛/田赛分组 + 班级花名册）与成绩册（分项目排名 + 破纪录汇总），另提供报名与成绩统计看板</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#f5f3ff;color:#7c3aed">③ 统计排名</span>
+      </div>
+    </div>
     <el-tabs v-model="activeTab">
       <!-- Order Book -->
       <el-tab-pane label="秩序册" name="orderBook">
@@ -159,7 +172,7 @@ const appStore = useAppStore()
 const loading = ref(false)
 const activeTab = ref('orderBook')
 
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
+const gradeOptions = ref([])
 
 const obFilter = reactive({ grade: '' })
 const rbFilter = reactive({ grade: '', eventType: '' })
@@ -258,17 +271,30 @@ async function fetchStatistics() {
         { label: '成绩记录', value: scoreStats?.totalResults || 0 }
       ]
     }
-    // 按班级统计
-    if (regStats?.byClass) {
-      gradeStats.value = Object.entries(regStats.byClass).map(([name, count]) => ({
-        grade: name, count: count, percentage: 0
+    // 按年级统计参赛人数（含占比）
+    if (regStats?.byGrade) {
+      const rows = Object.entries(regStats.byGrade).map(([grade, count]) => ({
+        grade, count: Number(count) || 0
+      }))
+      const sum = rows.reduce((acc, r) => acc + r.count, 0)
+      gradeStats.value = rows.map(r => ({
+        grade: r.grade,
+        count: r.count,
+        percentage: sum > 0 ? Math.round(r.count / sum * 100) : 0
       }))
     }
-    // 按项目统计
+    // 按项目统计（含满额率）
     if (regStats?.byEvent) {
-      eventStats.value = Object.entries(regStats.byEvent).map(([name, counts]) => ({
-        eventName: name, count: counts.total || 0, capacity: 0
-      }))
+      eventStats.value = Object.entries(regStats.byEvent).map(([name, counts]) => {
+        const total = Number(counts.total) || 0
+        const cap = Number(counts.capacity) || 0
+        return {
+          eventName: name,
+          count: total,
+          approved: Number(counts.approved) || 0,
+          capacity: cap > 0 ? Math.min(100, Math.round(total / cap * 100)) : 0
+        }
+      })
     }
   } catch (e) {
     console.error('获取统计数据失败', e)
@@ -283,6 +309,18 @@ watch(activeTab, (tab) => {
     fetchStatistics()
   }
 }, { immediate: true })
+
+async function loadGradeOptions() {
+  try {
+    const res = await request.get('/system/grades')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    gradeOptions.value = list.map(g => (g && g.name) || '').filter(Boolean)
+  } catch {
+    gradeOptions.value = []
+  }
+}
+
+onMounted(() => { loadGradeOptions() })
 </script>
 
 <style scoped>

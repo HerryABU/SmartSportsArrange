@@ -48,49 +48,49 @@ const routes = [
         path: 'athletes',
         name: 'TeacherAthletes',
         component: () => import('@/views/teacher/Athletes.vue'),
-        meta: { title: '运动员管理' }
+        meta: { title: '运动员名单' }
       },
       {
         path: 'events',
         name: 'TeacherEvents',
         component: () => import('@/views/teacher/Events.vue'),
-        meta: { title: '项目管理' }
+        meta: { title: '比赛项目' }
       },
       {
         path: 'registrations',
         name: 'TeacherRegistrations',
         component: () => import('@/views/teacher/Registration.vue'),
-        meta: { title: '报名管理' }
+        meta: { title: '报名表导入·审核' }
       },
       {
         path: 'arrange',
         name: 'TeacherArrange',
         component: () => import('@/views/teacher/Arrange.vue'),
-        meta: { title: '智能编排' }
+        meta: { title: '道次编排' }
       },
       {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),
-        meta: { title: '项目编排' }
+        meta: { title: '赛程编排' }
       },
       {
         path: 'scores',
         name: 'TeacherScores',
         component: () => import('@/views/teacher/Scores.vue'),
-        meta: { title: '成绩管理' }
+        meta: { title: '成绩录入' }
       },
       {
         path: 'ranking',
         name: 'TeacherRanking',
         component: () => import('@/views/teacher/Ranking.vue'),
-        meta: { title: '排名积分' }
+        meta: { title: '合分排行' }
       },
       {
         path: 'reports',
         name: 'TeacherReports',
         component: () => import('@/views/teacher/Reports.vue'),
-        meta: { title: '统计报表' }
+        meta: { title: '报表中心' }
       },
       {
         path: 'settings',

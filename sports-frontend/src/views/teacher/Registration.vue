@@ -1,5 +1,20 @@
 <template>
   <div class="registration-page" v-loading="loading">
+    <!-- 页面头（工作流 ① 导入） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico"><el-icon :size="20"><Document /></el-icon></span>
+        <div>
+          <h3 class="pg-title">报名表导入 · 审核</h3>
+          <p class="pg-desc">表格1（年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）导入 —— 体育老师后置导入直接生效；班主任端另支持现场报名（导入为待审核）</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+        <el-button type="success" :icon="Upload" @click="openImportDialog">导入报名表</el-button>
+      </div>
+    </div>
+
     <!-- View Toggle -->
     <div class="view-toggle">
       <el-radio-group v-model="viewMode" size="small">
@@ -11,11 +26,6 @@
     <!-- Search & Filter -->
     <el-card class="filter-card" shadow="never">
       <el-form :model="filterForm" inline>
-        <el-form-item label="年级">
-          <el-select v-model="filterForm.grade" placeholder="全部年级" clearable style="width: 140px">
-            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="班级">
           <el-select v-model="filterForm.classId" placeholder="全部班级" clearable filterable style="width: 160px">
             <el-option v-for="c in classList" :key="c.id" :label="c.name" :value="c.id" />
@@ -175,10 +185,12 @@
       <el-form label-width="110px" style="margin-top: 16px">
         <el-form-item label="导入模式">
           <el-radio-group v-model="importMode">
-            <el-radio-button value="offline">后置导入（已报好表）</el-radio-button>
-            <el-radio-button value="onsite">现场报名（登记待审核）</el-radio-button>
+            <el-radio-button value="offline">后置导入（已报好的报名表，直接生效）</el-radio-button>
+            <el-radio-button value="onsite" disabled title="现场报名请使用班主任账号登录后操作">
+              现场报名（班主任端）
+            </el-radio-button>
           </el-radio-group>
-          <div class="import-tip">体育老师/管理员可导入任意班级；班主任账号只能导入本人绑定班级。</div>
+          <div class="import-tip">体育老师/管理员仅支持「后置导入」，可导入任意班级；班主任可在班主任端进行现场报名（待审核）或后置导入（限本人绑定班）。</div>
         </el-form-item>
         <el-form-item label="下载模板">
           <el-button link type="primary" @click="downloadSignupTemplate">报名表模板（年级/班级/姓名/性别/学号/项目/是否团体赛数量/成绩）</el-button>
@@ -212,7 +224,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DocumentCopy, Upload } from '@element-plus/icons-vue'
+import { DocumentCopy, Upload, Document } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
@@ -225,8 +237,6 @@ const eventList = ref([])
 const allRegistrations = ref([])
 const detailVisible = ref(false)
 const currentRow = ref(null)
-
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
 
 const filterForm = reactive({
   grade: '',

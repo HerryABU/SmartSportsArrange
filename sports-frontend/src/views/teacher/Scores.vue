@@ -1,5 +1,18 @@
 <template>
   <div class="scores-page" v-loading="loading">
+    <!-- 页面头（工作流 ② 编排比赛） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">🏁</span>
+        <div>
+          <h3 class="pg-title">成绩录入</h3>
+          <p class="pg-desc">选择项目与组次 → 录入成绩（径赛秒 / 田赛米，支持 DNS/DNF/DSQ）→ 批量保存并自动计算排名与积分</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#fffbeb;color:#d97706">② 编排比赛</span>
+      </div>
+    </div>
     <!-- Event & Heat Selector -->
     <el-card class="selector-card" shadow="never">
       <el-row :gutter="16">

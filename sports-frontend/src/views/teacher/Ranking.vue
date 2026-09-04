@@ -1,5 +1,18 @@
 <template>
   <div class="ranking-page" v-loading="loading">
+    <!-- 页面头（工作流 ③ 统计） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">🏅</span>
+        <div>
+          <h3 class="pg-title">合分排行 · 统计</h3>
+          <p class="pg-desc">每班 / 年级内班级 / 按项目 / 男女 / TOP 排名与计分；入场式得分可手动录入或 Excel 导入，支持「含入场式 / 去除入场式」双口径最终总分</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#fef2f2;color:#dc2626">③ 统计排名</span>
+      </div>
+    </div>
     <el-tabs v-model="activeTab" @tab-change="onTabChange">
       <!-- Individual Rankings -->
       <el-tab-pane label="个人排名" name="individual">

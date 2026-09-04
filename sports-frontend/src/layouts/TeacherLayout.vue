@@ -10,19 +10,21 @@
       </div>
       <el-menu :default-active="activeMenu" router class="sidebar-menu">
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="基础数据">
+        <el-menu-item-group title="① 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
-          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员管理</span></el-menu-item>
-          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>项目管理</span></el-menu-item>
+          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
+          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="赛事管理">
-          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
-          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
-          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
-          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
-          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
+        <el-menu-item-group title="② 编排比赛">
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
+          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>统计报表</span></el-menu-item>
+        <el-menu-item-group title="③ 统计排名">
+          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
+          <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
@@ -40,19 +42,21 @@
       </template>
       <el-menu :default-active="activeMenu" router class="sidebar-menu" @select="drawerVisible = false">
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="基础数据">
+        <el-menu-item-group title="① 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
-          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员管理</span></el-menu-item>
-          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>项目管理</span></el-menu-item>
+          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
+          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="赛事管理">
-          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
-          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
-          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
-          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
-          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
+        <el-menu-item-group title="② 编排比赛">
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
+          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>统计报表</span></el-menu-item>
+        <el-menu-item-group title="③ 统计排名">
+          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
+          <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
