@@ -2,9 +2,12 @@ package com.sports.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sports.common.Grades;
 import com.sports.entity.Athlete;
 import com.sports.entity.ClassInfo;
 import com.sports.entity.SystemConfig;
+import com.sports.repository.AthleteRepository;
+import com.sports.repository.ClassInfoRepository;
 import com.sports.repository.SystemConfigRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,7 +16,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,6 +46,9 @@ public class NumberRuleService {
     private static final String CONFIG_KEY = "number_rule";
 
     private final SystemConfigRepository systemConfigRepository;
+    private final ClassInfoRepository classInfoRepository;
+    private final AthleteRepository athleteRepository;
+    private final SystemService systemService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 占位符：{var} 或 {var:NNd} */
@@ -94,6 +103,79 @@ public class NumberRuleService {
         systemConfigRepository.save(config);
         log.info("号码簿规则已保存");
         return getNumberRule();
+    }
+
+    // ==================== 号码簿 · 按名单顺序重新排列（重排号码簿） ====================
+
+    /**
+     * 按「年级（系统设置顺序）→ 班级（班级序号）→ 名单（导入顺序）」重排全部（或指定年级）
+     * 运动员号码簿：每个班级内序号从 1 重新连续编号，号码模板沿用当前规则。
+     *
+     * @param gradeScope null/空 = 全部；否则仅该年级（容忍 高一/高一年级 写法）
+     * @return 汇总（班级数 / 更新人数 / 样例）
+     */
+    @Transactional
+    public Map<String, Object> reassignNumbers(String gradeScope) {
+        Map<String, Object> rule = getNumberRule();
+
+        // 年级出场顺序（系统设置）
+        List<String> order = new ArrayList<>();
+        for (Map<String, Object> g : systemService.getGrades()) {
+            Object nm = g.get("name");
+            if (nm != null && !nm.toString().isBlank()) order.add(nm.toString());
+        }
+
+        List<ClassInfo> classes = new ArrayList<>();
+        for (ClassInfo ci : classInfoRepository.findAll()) {
+            if (ci.getDeletedAt() != null) continue;
+            if (gradeScope != null && !gradeScope.isBlank()
+                    && !Grades.same(gradeScope, ci.getGrade())) continue;
+            classes.add(ci);
+        }
+        classes.sort(Comparator
+                .comparingInt((ClassInfo c) -> gradeIdx(order, c.getGrade()))
+                .thenComparingInt(c -> c.getClassOrder() == null ? 0 : c.getClassOrder())
+                .thenComparingLong(ClassInfo::getId));
+
+        int updated = 0, classesDone = 0;
+        List<String> sample = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        for (ClassInfo ci : classes) {
+            List<Athlete> list = athleteRepository.findByClassInfoId(ci.getId());
+            list.removeIf(a -> a.getDeletedAt() != null);
+            list.sort(Comparator.comparingLong(Athlete::getId));
+            if (list.isEmpty()) continue;
+            classesDone++;
+            int seq = 1;
+            for (Athlete a : list) {
+                String no = generateNumber(rule, a, ci, seq);
+                if (no != null && !no.equals(a.getNumber())) {
+                    a.setNumber(no);
+                    a.setUpdatedAt(now);
+                    athleteRepository.save(a);
+                    updated++;
+                    if (sample.size() < 5) sample.add(a.getName() + " → " + no);
+                }
+                seq++;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalClasses", classesDone);
+        result.put("updated", updated);
+        result.put("sample", sample);
+        result.put("gradeScope", gradeScope == null || gradeScope.isBlank() ? null : gradeScope);
+        log.info("号码簿重排完成: grade={}, classes={}, updated={}",
+                result.get("gradeScope"), classesDone, updated);
+        return result;
+    }
+
+    private static int gradeIdx(List<String> order, String grade) {
+        if (grade == null) return 999;
+        for (int i = 0; i < order.size(); i++) {
+            if (Grades.same(order.get(i), grade)) return i;
+        }
+        return 999;
     }
 
     // ==================== 号码生成 ====================

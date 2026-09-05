@@ -183,6 +183,25 @@
             </el-form-item>
           </el-form>
         </el-card>
+
+        <el-card shadow="never" style="margin-top:12px">
+          <template #header><span>号码簿 · 按名单顺序重排</span></template>
+          <el-alert type="info" :closable="false" style="margin-bottom:12px"
+            title="按「年级（系统设置顺序）→ 班级序号 → 名单（导入顺序）」为运动员重新编号；同一班级内序号从 1 连续递增，号码仍套用上方模板。" />
+          <el-form label-width="140px" style="max-width: 760px">
+            <el-form-item label="范围年级">
+              <el-select v-model="reassignGrade" clearable placeholder="全部年级" style="width:220px">
+                <el-option v-for="g in reassignGradeOptions" :key="g" :label="g" :value="g" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="warning" :loading="reassigning" @click="doReassignNumberBook">
+                生成 / 重排号码簿
+              </el-button>
+              <span class="form-tip" style="margin-left:10px">重排会覆盖现有号码，请先保存上方模板</span>
+            </el-form-item>
+          </el-form>
+        </el-card>
       </el-tab-pane>
 
       <!-- Arrange Rule -->
@@ -1121,6 +1140,31 @@ async function saveNumberRule() {
     ElMessage.success('号码簿规则保存成功')
   } catch (e) { console.error(e) }
   finally { loading.value = false }
+}
+
+// ---- 号码簿 · 按名单顺序重排 ----
+const reassignGrade = ref('')
+const reassigning = ref(false)
+const reassignGradeOptions = computed(() => {
+  const s = new Set()
+  ;(numberRuleForm.gradeMapping || []).forEach(g => { if (g && g.name && g.name.trim()) s.add(g.name.trim()) })
+  return [...s]
+})
+async function doReassignNumberBook() {
+  try {
+    await ElMessageBox.confirm(
+      '将按「年级顺序 → 班级顺序 → 名单顺序」为范围内运动员重新生成号码簿并覆盖现有号码。是否继续？',
+      '号码簿重排确认', { confirmButtonText: '开始重排', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  reassigning.value = true
+  try {
+    const res = await request.post('/system/number-rule/reassign', { grade: reassignGrade.value || '' })
+    ElMessage.success(`号码簿重排完成：${res?.totalClasses ?? 0} 个班级、更新 ${res?.updated ?? 0} 人`)
+    if (res?.sample && res.sample.length) {
+      console.info('号码簿重排样例', res.sample)
+    }
+  } catch (e) { console.error(e) }
+  finally { reassigning.value = false }
 }
 
 // ---- 编排规则 ----

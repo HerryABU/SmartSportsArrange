@@ -77,6 +77,16 @@ public class SystemController {
         return ApiResponse.success(Map.of("number", number));
     }
 
+    /** 号码簿 · 按名单顺序重排（年级顺序 → 班级顺序 → 名单顺序，班级内序号从 1 重编） */
+    @PostMapping("/number-rule/reassign")
+    public ApiResponse<?> reassignNumbers(@RequestBody(required = false) Map<String, Object> body) {
+        String grade = body != null && body.get("grade") != null
+                ? body.get("grade").toString().trim() : "";
+        log.info("号码簿按名单顺序重排: grade={}", grade);
+        return ApiResponse.success("号码簿重排完成",
+                numberRuleService.reassignNumbers(grade.isBlank() ? null : grade));
+    }
+
     // ---- 编排规则（完全自定义） ----
 
     @GetMapping("/arrange-rule")
