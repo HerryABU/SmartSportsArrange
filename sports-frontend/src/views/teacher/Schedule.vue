@@ -452,17 +452,23 @@ async function saveMeetConfig() {
   }
 }
 
-// ==================== 一键编排 ====================
+// ==================== 一键编排（赛程 + 自动道次） ====================
 async function doAutoSchedule() {
   arranging.value = true
   try {
     const res = await request.post('/schedule/auto', {})
     items.value = res.items || []
-    if (res.warnings && res.warnings.length) {
-      ElMessage.warning('编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0])
-    } else {
-      ElMessage.success('赛程编排完成！共 ' + (res.total || 0) + ' 个单元')
+    const auto = res.autoArrange || null
+    let autoTip = ''
+    if (auto) {
+      autoTip = `；已自动生成道次编排 ${auto.ok} 个（性别组）${auto.failed ? '，' + auto.failed + ' 个失败' : ''}`
     }
+    if (res.warnings && res.warnings.length) {
+      ElMessage.warning('编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip)
+    } else {
+      ElMessage.success('赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip)
+    }
+    if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
   } catch (e) {
     if (e && e.message) ElMessage.error(e.message)
   } finally {

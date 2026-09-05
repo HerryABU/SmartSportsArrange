@@ -7,6 +7,7 @@ import com.sports.entity.Registration;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
+import com.sports.repository.ArrangementRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,8 @@ public class ScheduleService {
     private final EventScheduleRepository scheduleRepository;
     private final EventRepository eventRepository;
     private final RegistrationRepository registrationRepository;
+    private final ArrangementRepository arrangementRepository;
+    private final ArrangementService arrangementService;
     private final SystemService systemService;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
@@ -93,6 +96,8 @@ public class ScheduleService {
 
         List<EventSchedule> saved = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        int autoArrangeOk = 0;
+        List<String> autoArrangeFails = new ArrayList<>();
         int order = 1;
 
         for (Unit u : units) {
@@ -150,6 +155,11 @@ public class ScheduleService {
                     .updatedAt(LocalDateTime.now())
                     .build();
             saved.add(scheduleRepository.save(s));
+
+            // 自动道次编排：径赛项目排入时间表后，立即按 年级×性别 生成决赛道次（复用编排引擎）
+            if (!Boolean.FALSE.equals(u.event.getTrack()) && u.participants > 0) {
+                autoArrangeOk += autoArrangeFor(u, autoArrangeFails);
+            }
         }
 
         log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}, 田赛{}",
@@ -158,7 +168,46 @@ public class ScheduleService {
         Map<String, Object> result = buildResult();
         result.put("warnings", warnings);
         result.put("configUsed", cfg);
+        result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         return result;
+    }
+
+    /**
+     * 为单个径赛单元自动生成决赛道次（先清理该 事件×年级×性别 的旧决赛记录，保留预赛晋级流）。
+     *
+     * @return 成功生成的 性别组 数量（男/女各计 1）
+     */
+    private int autoArrangeFor(Unit u, List<String> arrFails) {
+        Event e = u.event;
+        int lanes = e.getLaneCount() != null && e.getLaneCount() > 0
+                ? e.getLaneCount()
+                : (e.getDefaultLanes() != null ? e.getDefaultLanes() : 8);
+        List<String> genders = new ArrayList<>();
+        String gl = e.getGenderLimit();
+        if ("女子组".equals(gl)) {
+            genders.add("F");
+        } else if ("男子组".equals(gl)) {
+            genders.add("M");
+        } else { // 混合/未指定：男女各排一版
+            genders.add("M");
+            genders.add("F");
+        }
+        int ok = 0;
+        for (String g : genders) {
+            try {
+                arrangementRepository.deleteByEventRoundGradeGender(e.getId(), ArrangementService.ROUND_FINAL, u.grade, g);
+                arrangementService.arrange(e.getId(), u.grade, g, lanes, null, ArrangementService.ROUND_FINAL);
+                ok++;
+            } catch (Exception ex) {
+                arrFails.add(String.format("%s（%s %s）：%s", e.getName(), u.grade,
+                        "M".equals(g) ? "男子" : "女子",
+                        ex.getMessage() == null ? ex.toString() : ex.getMessage()));
+            }
+        }
+        if (ok > 0) {
+            log.info("自动道次编排: event={}({}), grade={}, genders={}", e.getName(), e.getId(), u.grade, genders);
+        }
+        return ok;
     }
 
     // ==================== 赛程单元构建 ====================
