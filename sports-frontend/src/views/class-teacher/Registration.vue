@@ -268,14 +268,36 @@
             </el-table-column>
           </el-table>
         </el-card>
+
+        <!-- ===== 方块视图：尚未报名学生 → 主区下方全宽 ===== -->
+        <el-card v-if="viewMode === 'grid' && unregisteredAthletes.length" shadow="never"
+          class="panel-card list-card unreg-grid-card">
+          <template #header>
+            <div class="card-head">
+              <span>⚠️ 尚未报名的学生（{{ unregisteredAthletes.length }} 人）</span>
+              <el-tag type="warning" effect="plain" round>点击卡片为该生多选报名</el-tag>
+            </div>
+          </template>
+          <div class="pick-zone side-zone gridwide">
+            <div v-for="a in unregisteredAthletes" :key="a.id" class="pk unreg" @click="openPicker(a)">
+              <span class="pk-ava" :class="a.gender === 'M' ? 'male' : 'female'">
+                {{ (a.name || '?').slice(0, 1) }}
+              </span>
+              <div class="pk-body">
+                <div class="pk-name">{{ a.name }}</div>
+                <div class="pk-sub">学号 {{ a.studentNo || a.studentId || '' }}</div>
+              </div>
+              <div class="pk-state"><span class="go">去报名</span></div>
+            </div>
+          </div>
+        </el-card>
       </section>
 
-      <!-- 右侧：快捷信息 -->
+      <!-- 右侧：快捷信息（列表视图才在此放未报名学生；方块视图它移入主区下方全宽） -->
       <aside class="ws-side">
-        <el-card shadow="never" class="panel-card side-card">
+        <el-card v-if="viewMode === 'list'" shadow="never" class="panel-card side-card">
           <template #header><div class="card-head">⚠️ 尚未报名的学生</div></template>
-          <div v-if="unregisteredAthletes.length"
-            class="pick-zone side-zone" :class="viewMode === 'list' ? 'row' : ''">
+          <div v-if="unregisteredAthletes.length" class="pick-zone side-zone row">
             <div v-for="a in unregisteredAthletes" :key="a.id" class="pk unreg" @click="openPicker(a)">
               <span class="pk-ava" :class="a.gender === 'M' ? 'male' : 'female'">
                 {{ (a.name || '?').slice(0, 1) }}
@@ -846,6 +868,7 @@ onMounted(fetchAll)
 }
 .pick-zone.evt-zone { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); max-height: 250px; }
 .pick-zone.side-zone { max-height: 320px; }
+.pick-zone.gridwide { max-height: 440px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .pick-zone.row { display: flex; flex-direction: column; gap: 6px; max-height: 380px; }
 
 /* 卡片：默认竖向方块 */
