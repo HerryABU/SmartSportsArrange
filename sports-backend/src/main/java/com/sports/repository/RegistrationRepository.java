@@ -35,9 +35,12 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
     @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.status = 'approved'")
     List<Registration> findApprovedByEventId(@Param("eventId") Long eventId);
 
-    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.athlete.grade = :grade AND r.athlete.gender = :gender AND r.status = 'approved'")
+    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId "
+            + "AND (r.athlete.grade = :grade OR r.athlete.grade = :gradeShort) "
+            + "AND r.athlete.gender = :gender AND r.status = 'approved'")
     List<Registration> findApprovedByEventGradeGender(@Param("eventId") Long eventId,
                                                        @Param("grade") String grade,
+                                                       @Param("gradeShort") String gradeShort,
                                                        @Param("gender") String gender);
 
     boolean existsByAthleteIdAndEventId(Long athleteId, Long eventId);

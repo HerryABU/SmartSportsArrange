@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.common.Grades;
 import com.sports.entity.Event;
 import com.sports.entity.EventSchedule;
 import com.sports.entity.Registration;
@@ -178,7 +179,7 @@ public class ScheduleService {
         for (String grade : gradeOrder) {
             for (Event e : events) {
                 String gg = e.getGradeGroup();
-                if (gg != null && !gg.isBlank() && !gg.equals(grade)) continue;
+                if (gg != null && !gg.isBlank() && !Grades.same(gg, grade)) continue;
                 units.add(new Unit(e, grade, resolveMode(e, trackMode, fieldMode)));
             }
         }
@@ -227,8 +228,7 @@ public class ScheduleService {
             if (grade == null || grade.isBlank()) return regs.size();
             return (int) regs.stream()
                     .filter(r -> r.getAthlete() != null
-                            && r.getAthlete().getGrade() != null
-                            && grade.equals(r.getAthlete().getGrade()))
+                            && Grades.same(grade, r.getAthlete().getGrade()))
                     .count();
         } catch (Exception ex) {
             return 0;

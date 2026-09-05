@@ -52,7 +52,7 @@ class ArrangementServiceTest {
     /** 编排 Mock 基线（auto 直接决赛路径） */
     private void stubDirectArrange(Event event, List<Registration> regs) {
         when(eventRepository.findById(event.getId())).thenReturn(Optional.of(event));
-        when(registrationRepository.findApprovedByEventGradeGender(eq(event.getId()), anyString(), anyString()))
+        when(registrationRepository.findApprovedByEventGradeGender(eq(event.getId()), anyString(), anyString(), anyString()))
                 .thenReturn(regs);
         when(arrangementRepository.countPreliminaryByEventId(event.getId())).thenReturn(0L);
         when(arrangementRepository.findMaxVersionByEventId(event.getId())).thenReturn(null);
@@ -137,7 +137,7 @@ class ArrangementServiceTest {
     void arrange_emptyRegistrations_throws() {
         Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
         when(eventRepository.findById(100L)).thenReturn(Optional.of(event));
-        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一", "男"))
+        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一", "高一", "男"))
                 .thenReturn(List.of());
 
         RuntimeException ex = assertThrows(RuntimeException.class,
@@ -151,7 +151,7 @@ class ArrangementServiceTest {
         List<Registration> regs = new ArrayList<>();
         for (int i = 1; i <= 6; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
 
-        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一年级", "男")).thenReturn(regs);
+        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一年级", "高一", "男")).thenReturn(regs);
         when(eventRepository.findById(100L)).thenReturn(Optional.of(event));
 
         Map<String, Object> preview = arrangementService.preview(100L, "高一年级", "男", 4);
@@ -170,7 +170,7 @@ class ArrangementServiceTest {
         for (int i = 1; i <= 5; i++) regs.add(reg(athlete((long) i, "A" + i,
                 i % 2 == 1 ? 1L : 2L, i % 2 == 1 ? "高一1班" : "高一2班")));
         when(eventRepository.findById(100L)).thenReturn(Optional.of(event));
-        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一年级", "男"))
+        when(registrationRepository.findApprovedByEventGradeGender(100L, "高一年级", "高一", "男"))
                 .thenReturn(regs);
         when(arrangementRepository.findMaxVersionByEventId(100L)).thenReturn(null);
         when(arrangementRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));

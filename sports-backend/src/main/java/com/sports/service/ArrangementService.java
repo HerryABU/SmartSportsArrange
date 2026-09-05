@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.common.Grades;
 import com.sports.entity.Arrangement;
 import com.sports.entity.Athlete;
 import com.sports.entity.Event;
@@ -347,7 +348,7 @@ public class ArrangementService {
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
         List<Registration> registrations = registrationRepository
-                .findApprovedByEventGradeGender(eventId, grade, gender);
+                .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
         if (registrations.isEmpty()) {
             throw new RuntimeException("没有符合条件的已审核报名记录");
         }
@@ -506,7 +507,7 @@ public class ArrangementService {
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
         List<Registration> registrations = registrationRepository
-                .findApprovedByEventGradeGender(eventId, grade, gender);
+                .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
         if (registrations.isEmpty()) {
             throw new RuntimeException("没有符合条件的已审核报名记录");
         }
