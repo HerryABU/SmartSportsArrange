@@ -96,8 +96,13 @@
           <div class="card-header">
             <span>报名列表</span>
             <div>
+              <el-button type="success" plain
+                :disabled="['approved', 'rejected', 'withdrawn'].includes(filterForm.status)"
+                @click="handleApproveAll">
+                <el-icon><CircleCheck /></el-icon> 一键全部通过
+              </el-button>
               <el-button type="success" @click="handleBatchApprove" :disabled="selectedIds.length === 0">
-                批量通过
+                批量通过({{ selectedIds.length }})
               </el-button>
               <el-button type="danger" @click="handleBatchReject" :disabled="selectedIds.length === 0">
                 批量拒绝
@@ -156,8 +161,8 @@
             :page-sizes="[10, 20, 50, 100]"
             :total="pagination.total"
             layout="total, sizes, prev, pager, next, jumper"
-            @size-change="handleSearch"
-            @current-change="handleSearch"
+            @size-change="handleSizeChange"
+            @current-change="handlePageChange"
           />
         </div>
       </el-card>
@@ -224,7 +229,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DocumentCopy, Upload, Document } from '@element-plus/icons-vue'
+import { DocumentCopy, Upload, Document, CircleCheck } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -331,6 +336,18 @@ function handleReset() {
   handleSearch()
 }
 
+// 分页换页/改页大小（不再重置回第 1 页，修复“无法换页”）
+function handlePageChange(page) {
+  pagination.page = page
+  fetchData()
+}
+
+function handleSizeChange(size) {
+  pagination.size = size
+  pagination.page = 1
+  fetchData()
+}
+
 function handleSelectionChange(selection) {
   selectedIds.value = selection.map(s => s.id)
 }
@@ -361,6 +378,37 @@ async function handleBatchApprove() {
     fetchData()
     fetchAllRegistrations()
   } catch (e) { if (e !== 'cancel') console.error(e) }
+}
+
+// 一键全部通过：当前筛选（项目/班级）范围内全部"待审核"一次通过（跨页）
+async function handleApproveAll() {
+  const parts = []
+  if (filterForm.eventId) {
+    const e = eventList.value.find(x => x.id === filterForm.eventId)
+    if (e) parts.push(`项目「${e.name}」`)
+  }
+  if (filterForm.classId) {
+    const c = classList.value.find(x => x.id === filterForm.classId)
+    if (c) parts.push(`班级「${c.name}」`)
+  }
+  if (filterForm.status === 'pending') parts.push('仅待审核')
+  const scopeText = parts.length ? `范围：${parts.join('、')}` : '全部待审核报名'
+  try {
+    await ElMessageBox.confirm(
+      `确定要“一键全部通过”吗？将把${scopeText}中全部“待审核”的报名直接置为已通过（跨页、不可撤销）。`,
+      '一键全部通过',
+      { confirmButtonText: '全部通过', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+  try {
+    const res = await request.put('/registrations/approve-all', {
+      eventId: filterForm.eventId || null,
+      classId: filterForm.classId || null
+    })
+    ElMessage.success(`一键全部通过：共通过 ${res?.approved ?? 0} 条待审核报名`)
+    fetchData()
+    fetchAllRegistrations()
+  } catch (e) { console.error(e) }
 }
 
 async function handleBatchReject() {

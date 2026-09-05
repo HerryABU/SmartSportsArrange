@@ -98,6 +98,23 @@ public class RegistrationController {
         return ApiResponse.success("批量通过成功", null);
     }
 
+    /** 一键全部通过（当前筛选范围：eventId/classId 可空，仅处理 pending） */
+    @PutMapping("/approve-all")
+    public ApiResponse<?> approveAll(@RequestBody(required = false) Map<String, Object> body) {
+        Long eventId = numOf(body, "eventId");
+        Long classId = numOf(body, "classId");
+        log.info("一键全部通过: eventId={}, classId={}", eventId, classId);
+        int approved = registrationService.approveAll(eventId, classId);
+        return ApiResponse.success("全部通过成功", Map.of("approved", approved));
+    }
+
+    private Long numOf(Map<String, Object> body, String key) {
+        if (body == null || body.get(key) == null) return null;
+        Object v = body.get(key);
+        if (v instanceof Number n) return n.longValue();
+        try { return Long.parseLong(v.toString()); } catch (NumberFormatException e) { return null; }
+    }
+
     @PutMapping("/batch-reject")
     public ApiResponse<?> batchReject(@RequestBody Map<String, List<Long>> request) {
         List<Long> ids = request.get("ids");

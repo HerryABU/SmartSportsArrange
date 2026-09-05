@@ -536,6 +536,37 @@ public class RegistrationService {
         return saved;
     }
 
+    /**
+     * 一键全部通过：把「当前筛选范围」内全部 pending 一次性置为 approved（仅体育老师/管理员）。
+     * eventId/classId 为空表示不限该项；班主任账号会直接拒绝（无审核权）。
+     */
+    @Transactional
+    public int approveAll(Long eventId, Long classId) {
+        assertNotRestricted("班主任无审核权限，请由体育老师一键全部通过");
+        UserScope scope = currentUserScope();
+        Specification<Registration> spec = (root, query, cb) -> {
+            List<Predicate> ps = new ArrayList<>();
+            ps.add(cb.equal(root.get("status"), "pending"));
+            if (eventId != null)
+                ps.add(cb.equal(root.get("event").get("id"), eventId));
+            if (classId != null && (!scope.restricted || scope.classIds.contains(classId)))
+                ps.add(cb.equal(root.get("athlete").get("classInfo").get("id"), classId));
+            if (scope.restricted)
+                ps.add(root.get("athlete").get("classInfo").get("id").in(scope.classIds));
+            return cb.and(ps.toArray(new Predicate[0]));
+        };
+        List<Registration> pendingList = registrationRepository.findAll(spec);
+        LocalDateTime now = LocalDateTime.now();
+        pendingList.forEach(r -> {
+            r.setStatus("approved");
+            r.setAuditTime(now);
+            r.setUpdatedAt(now);
+        });
+        registrationRepository.saveAll(pendingList);
+        log.info("一键全部通过: eventId={}, classId={}, approved={}", eventId, classId, pendingList.size());
+        return pendingList.size();
+    }
+
     /** 班主任无审核权限时抛错 */
     private void assertNotRestricted(String message) {
         UserScope scope = currentUserScope();
