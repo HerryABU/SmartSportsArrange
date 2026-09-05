@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * 统计报表控制器
@@ -51,9 +52,10 @@ public class StatisticsController {
     }
 
     @PostMapping("/order-book")
-    public ApiResponse<?> generateOrderBook() {
-        log.info("生成秩序册");
-        return ApiResponse.success("秩序册生成成功", statisticsService.generateOrderBook());
+    public ApiResponse<?> generateOrderBook(@RequestBody(required = false) Map<String, Object> body) {
+        String grade = body != null && body.get("grade") != null ? body.get("grade").toString() : null;
+        log.info("生成秩序册: grade={}", grade);
+        return ApiResponse.success("秩序册生成成功", statisticsService.generateOrderBook(grade));
     }
 
     @PostMapping("/result-book")

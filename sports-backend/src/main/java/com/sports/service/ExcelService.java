@@ -35,6 +35,7 @@ public class ExcelService {
     private final EventRepository eventRepository;
     private final ClassInfoRepository classInfoRepository;
     private final ArrangementRepository arrangementRepository;
+    private final EventScheduleRepository scheduleRepository;
 
     // ==================== 列别名映射表 ====================
 
@@ -616,16 +617,53 @@ public class ExcelService {
         }
     }
 
-    /** 导出秩序册Excel */
+    /** 导出秩序册Excel：竞赛日程 / 分组道次名单 / 项目列表 / 参赛班级 */
+    @Transactional(readOnly = true)
     public void exportOrderBook(HttpServletResponse response) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
         setExcelResponse(response, "秩序册_" + dateStr() + ".xlsx");
 
         try (OutputStream out = response.getOutputStream()) {
-            // Sheet1: 项目列表
+            // Sheet1: 竞赛日程
+            List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
+            List<List<String>> schedData = new ArrayList<>();
+            schedData.add(List.of("天次", "日期", "时段", "时间", "项目", "性别", "年级", "场地"));
+            for (EventSchedule s : scheds) {
+                Event se = s.getEvent();
+                schedData.add(List.of(safe(s.getDay()), safe(s.getScheduleDate()), safe(s.getTimeSlot()),
+                        safe(s.getStartTime()) + "~" + safe(s.getEndTime()),
+                        se != null ? safe(se.getName()) : "-",
+                        se != null ? safe(se.getGenderLimit()) : "-",
+                        safe(s.getGrade()), safe(s.getVenue())));
+            }
+
+            // Sheet2: 分组道次名单（决赛优先，无决赛用预赛）
+            List<List<String>> laneData = new ArrayList<>();
+            laneData.add(List.of("项目", "性别", "年级", "组次", "道次", "号码", "姓名", "班级"));
+            for (Event e : events) {
+                List<Arrangement> all = arrangementRepository.findByEventId(e.getId());
+                if (all.isEmpty()) continue;
+                boolean hasFinal = all.stream().anyMatch(a -> "final".equals(a.getRound()));
+                List<Arrangement> pool = hasFinal
+                        ? all.stream().filter(a -> "final".equals(a.getRound())).collect(Collectors.toList())
+                        : all;
+                pool.sort(Comparator
+                        .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
+                        .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
+                for (Arrangement a : pool) {
+                    Athlete at = a.getAthlete();
+                    if (at == null) continue;
+                    laneData.add(List.of(safe(e.getName()), safe(e.getGenderLimit()), safe(a.getGrade()),
+                            safe(a.getHeat()), safe(a.getLane()),
+                            safe(at.getNumber()), safe(at.getName()),
+                            at.getClassInfo() != null ? safe(at.getClassInfo().getName()) : "-"));
+                }
+            }
+
+            // Sheet3: 项目列表
             List<List<String>> eventData = new ArrayList<>();
-            eventData.add(List.of("序号","项目编码","项目名称","类别","性别限制","跑道数","校纪录"));
+            eventData.add(List.of("序号", "项目编码", "项目名称", "类别", "性别限制", "跑道数", "校纪录"));
             int idx = 1;
             for (Event e : events) {
                 eventData.add(List.of(String.valueOf(idx++), n(e.getCode()), n(e.getName()),
@@ -634,28 +672,30 @@ public class ExcelService {
                         n(e.getRecord())));
             }
 
-            // Sheet2: 参赛班级
+            // Sheet4: 参赛班级
             List<List<String>> classData = new ArrayList<>();
-            classData.add(List.of("序号","班级名称","年级","班主任","学生人数"));
+            classData.add(List.of("序号", "班级名称", "年级", "班主任", "学生人数"));
             idx = 1;
             for (ClassInfo c : classes) {
                 classData.add(List.of(String.valueOf(idx++), n(c.getName()), n(c.getGrade()),
                         n(c.getTeacherName()), String.valueOf(c.getStudentCount() != null ? c.getStudentCount() : 0)));
             }
 
-            // 写入Excel（多Sheet）
             com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build();
-            com.alibaba.excel.write.metadata.WriteSheet sheet1 = EasyExcel.writerSheet(0, "项目列表")
-                    .head(eventData.get(0).stream().map(List::of).collect(Collectors.toList())).build();
-            com.alibaba.excel.write.metadata.WriteSheet sheet2 = EasyExcel.writerSheet(1, "参赛班级")
-                    .head(classData.get(0).stream().map(List::of).collect(Collectors.toList())).build();
-            writer.write(eventData.subList(1, eventData.size()), sheet1);
-            writer.write(classData.subList(1, classData.size()), sheet2);
+            writer.write(schedData.subList(1, schedData.size()),
+                    EasyExcel.writerSheet(0, "竞赛日程").head(schedData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(laneData.subList(1, laneData.size()),
+                    EasyExcel.writerSheet(1, "分组道次名单").head(laneData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(eventData.subList(1, eventData.size()),
+                    EasyExcel.writerSheet(2, "项目列表").head(eventData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(classData.subList(1, classData.size()),
+                    EasyExcel.writerSheet(3, "参赛班级").head(classData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
             writer.finish();
+            log.info("导出秩序册: {}个项目, {}个班级, 日程{}条, 道次{}行",
+                    events.size(), classes.size(), scheds.size(), laneData.size() - 1);
         } catch (IOException e) {
             throw new RuntimeException("导出秩序册失败: " + e.getMessage());
         }
-        log.info("导出秩序册: {} 个项目, {} 个班级", events.size(), classes.size());
     }
 
     /** 导出成绩册Excel */
@@ -738,6 +778,8 @@ public class ExcelService {
     }
 
     private static String n(String s) { return s != null ? s : ""; }
+
+    private static String safe(Object o) { return o == null ? "" : String.valueOf(o); }
 
     private static String toStringSafe(Object v) {
         return v != null ? v.toString() : "";

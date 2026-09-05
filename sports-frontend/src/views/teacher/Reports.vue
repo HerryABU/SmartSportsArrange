@@ -194,32 +194,35 @@ const eventStats = ref([])
 async function generateOrderBook() {
   loading.value = true
   try {
-    const params = {}
-    if (obFilter.grade) params.grade = obFilter.grade
-    const res = await request.post('/statistics/order-book', params)
-    // response format: { eventResults, classes, totalEvents } or similar
+    const res = await request.post('/statistics/order-book', { grade: obFilter.grade || null })
     const data = res || {}
-    orderBookContent.value = [
-      { title: '径赛项目', columns: [
-        { prop: 'name', label: '项目名称' },
-        { prop: 'code', label: '编码' },
-        { prop: 'genderLimit', label: '性别' },
-        { prop: 'arrangedCount', label: '已编排人数' }
-      ], items: (data.events?.径赛 || []) },
-      { title: '田赛项目', columns: [
-        { prop: 'name', label: '项目名称' },
-        { prop: 'code', label: '编码' },
-        { prop: 'genderLimit', label: '性别' },
-        { prop: 'arrangedCount', label: '已编排人数' }
-      ], items: (data.events?.田赛 || []) },
-      { title: '参赛班级', columns: [
-        { prop: 'name', label: '班级名称' },
-        { prop: 'grade', label: '年级' },
-        { prop: 'teacherName', label: '班主任' },
-        { prop: 'studentCount', label: '人数' }
-      ], items: (data.classes || []) }
-    ]
-    ElMessage.success('秩序册生成成功')
+    // 后端返回统一 sections（竞赛日程 / 径赛·田赛项目 / 参赛班级 / 各项目道次名单），直接渲染
+    if (data.sections && data.sections.length) {
+      orderBookContent.value = data.sections
+    } else {
+      // 兼容兜底
+      orderBookContent.value = [
+        { title: '径赛项目', columns: [
+          { prop: 'name', label: '项目名称' },
+          { prop: 'code', label: '编码' },
+          { prop: 'genderLimit', label: '性别' },
+          { prop: 'arrangedCount', label: '已编排人数' }
+        ], items: (data.events?.径赛 || []) },
+        { title: '田赛项目', columns: [
+          { prop: 'name', label: '项目名称' },
+          { prop: 'code', label: '编码' },
+          { prop: 'genderLimit', label: '性别' },
+          { prop: 'arrangedCount', label: '已编排人数' }
+        ], items: (data.events?.田赛 || []) },
+        { title: '参赛班级', columns: [
+          { prop: 'name', label: '班级名称' },
+          { prop: 'grade', label: '年级' },
+          { prop: 'teacherName', label: '班主任' },
+          { prop: 'studentCount', label: '人数' }
+        ], items: (data.classes || []) }
+      ]
+    }
+    ElMessage.success('秩序册生成成功' + (orderBookContent.value.length ? `（${orderBookContent.value.length} 个分册）` : ''))
   } catch (e) {
     console.error('生成秩序册失败', e)
   } finally {

@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.common.Grades;
 import com.sports.entity.*;
 import com.sports.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,7 @@ public class StatisticsService {
     private final EventRepository eventRepository;
     private final ClassInfoRepository classInfoRepository;
     private final AthleteRepository athleteRepository;
+    private final EventScheduleRepository scheduleRepository;
 
     /**
      * 获取报名统计
@@ -150,7 +152,7 @@ public class StatisticsService {
     /**
      * 生成秩序册数据
      */
-    public Map<String, Object> generateOrderBook() {
+    public Map<String, Object> generateOrderBook(String grade) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
 
@@ -167,6 +169,7 @@ public class StatisticsService {
             eventInfo.put("code", event.getCode());
             eventInfo.put("genderLimit", event.getGenderLimit());
             eventInfo.put("distanceType", event.getDistanceType());
+            eventInfo.put("gradeGroup", event.getGradeGroup());
             eventInfo.put("registrationStart", event.getRegistrationStart());
             eventInfo.put("registrationEnd", event.getRegistrationEnd());
             eventInfo.put("record", event.getRecord());
@@ -196,14 +199,115 @@ public class StatisticsService {
             classList.add(classInfo);
         }
 
+        // ============ 统一预览 sections（前端逐 section 渲染表格） ============
+        List<Map<String, Object>> sections = new ArrayList<>();
+
+        // 1) 竞赛日程：来自一键编排生成的 event_schedule
+        List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
+        List<Map<String, Object>> scheduleRows = new ArrayList<>();
+        for (EventSchedule s : scheds) {
+            if (grade != null && !grade.isBlank()) {
+                Event e0 = s.getEvent();
+                boolean evMatch = e0 != null && Grades.same(grade, e0.getGradeGroup());
+                boolean schMatch = Grades.same(grade, s.getGrade());
+                if (!evMatch && !schMatch) continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("day", s.getDay());
+            m.put("date", s.getScheduleDate());
+            m.put("slot", s.getTimeSlot());
+            m.put("time", (s.getStartTime() == null ? "" : s.getStartTime()) + "~" + (s.getEndTime() == null ? "" : s.getEndTime()));
+            m.put("eventName", s.getEvent() != null ? s.getEvent().getName() : "-");
+            m.put("gender", s.getEvent() != null ? s.getEvent().getGenderLimit() : "");
+            m.put("grade", s.getGrade());
+            m.put("venue", s.getVenue());
+            scheduleRows.add(m);
+        }
+        if (!scheduleRows.isEmpty()) {
+            sections.add(Map.of(
+                    "title", "竞赛日程（" + (grade == null || grade.isBlank() ? "全部年级" : grade) + "）",
+                    "columns", List.of(
+                            Map.of("prop", "day", "label", "天次", "width", 60),
+                            Map.of("prop", "date", "label", "日期", "width", 110),
+                            Map.of("prop", "slot", "label", "时段", "width", 80),
+                            Map.of("prop", "time", "label", "时间", "width", 130),
+                            Map.of("prop", "eventName", "label", "项目", "minWidth", 130),
+                            Map.of("prop", "gender", "label", "性别", "width", 80),
+                            Map.of("prop", "grade", "label", "年级", "width", 90),
+                            Map.of("prop", "venue", "label", "场地", "width", 100)),
+                    "items", scheduleRows));
+        }
+
+        // 2) 项目分册（径赛 / 田赛 / 其他）
+        List<String> catOrder = List.of("径赛", "田赛", "其他");
+        List<Map<String, Object>> projectColumns = List.of(
+                Map.of("prop", "name", "label", "项目名称"),
+                Map.of("prop", "code", "label", "编码", "width", 100),
+                Map.of("prop", "genderLimit", "label", "性别", "width", 90),
+                Map.of("prop", "arrangedCount", "label", "已编排人数", "width", 100),
+                Map.of("prop", "heatCount", "label", "组数", "width", 70));
+        for (String cat : catOrder) {
+            List<Map<String, Object>> items = byCategory.get(cat);
+            if (items == null || items.isEmpty()) continue;
+            sections.add(Map.of("title", cat + "项目", "columns", projectColumns, "items", items));
+        }
+
+        // 3) 参赛班级
+        sections.add(Map.of(
+                "title", "参赛班级（" + classes.size() + " 个）",
+                "columns", List.of(
+                        Map.of("prop", "name", "label", "班级名称"),
+                        Map.of("prop", "grade", "label", "年级", "width", 90),
+                        Map.of("prop", "teacherName", "label", "班主任", "width", 100),
+                        Map.of("prop", "studentCount", "label", "人数", "width", 70)),
+                "items", classList));
+
+        // 4) 各编排项目：分组道次名单（决赛优先，无决赛则用预赛）
+        List<Map<String, Object>> laneColumns = List.of(
+                Map.of("prop", "heat", "label", "组次", "width", 60),
+                Map.of("prop", "lane", "label", "道次", "width", 60),
+                Map.of("prop", "number", "label", "号码", "width", 90),
+                Map.of("prop", "name", "label", "姓名", "width", 100),
+                Map.of("prop", "className", "label", "班级", "width", 120),
+                Map.of("prop", "grade", "label", "年级", "width", 90));
+        for (Event event : events) {
+            List<Arrangement> all = arrangementRepository.findByEventId(event.getId());
+            if (all.isEmpty()) continue;
+            boolean hasFinal = all.stream().anyMatch(a -> "final".equals(a.getRound()));
+            List<Arrangement> pool = hasFinal
+                    ? all.stream().filter(a -> "final".equals(a.getRound())).collect(Collectors.toList())
+                    : all;
+            pool.sort(Comparator
+                    .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
+                    .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Arrangement a : pool) {
+                Athlete at = a.getAthlete();
+                if (at == null) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("heat", a.getHeat());
+                row.put("lane", a.getLane());
+                row.put("number", at.getNumber());
+                row.put("name", at.getName());
+                row.put("className", at.getClassInfo() != null ? at.getClassInfo().getName() : "-");
+                row.put("grade", at.getGrade());
+                rows.add(row);
+            }
+            if (rows.isEmpty()) continue;
+            sections.add(Map.of(
+                    "title", event.getName() + (event.getGenderLimit() == null ? "" : "（" + event.getGenderLimit() + "）"),
+                    "columns", laneColumns,
+                    "items", rows));
+        }
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("title", "运动会秩序册");
         result.put("generatedAt", java.time.LocalDateTime.now().toString());
         result.put("events", byCategory);
         result.put("classes", classList);
+        result.put("sections", sections);
         result.put("totalEvents", events.size());
         result.put("totalClasses", classes.size());
-
         return result;
     }
 
