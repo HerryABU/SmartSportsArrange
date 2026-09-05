@@ -29,7 +29,7 @@ public class RegistrationController {
     private final RegistrationService registrationService;
 
     @GetMapping
-    public ApiResponse<ApiResponse.PageData<Registration>> list(
+    public ApiResponse<ApiResponse.PageData<Map<String, Object>>> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) Long eventId,
@@ -38,7 +38,7 @@ public class RegistrationController {
         log.info("查询报名列表: page={}, size={}, eventId={}, classId={}, status={}",
                 page, size, eventId, classId, status);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<Registration> result = registrationService.list(pageable, eventId, classId, status);
+        Page<Map<String, Object>> result = registrationService.list(pageable, eventId, classId, status);
         return ApiResponse.page(result);
     }
 

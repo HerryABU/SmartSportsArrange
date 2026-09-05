@@ -41,9 +41,9 @@ public class RegistrationService {
     private final SystemConfigRepository systemConfigRepository;
     private final NumberRuleService numberRuleService;
 
-    /** 分页查询报名（班主任自动限本人绑定班级，无法越班查询） */
+    /** 分页查询报名（班主任自动限本人绑定班级，无法越班查询）——返回扁平 VO，含 运动员/班级/年级/项目/类型 等审核列表所需字段 */
     @Transactional(readOnly = true)
-    public Page<Registration> list(Pageable pageable, Long eventId, Long classId, String status) {
+    public Page<Map<String, Object>> list(Pageable pageable, Long eventId, Long classId, String status) {
         UserScope scope = currentUserScope();
         Specification<Registration> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
@@ -57,7 +57,42 @@ public class RegistrationService {
                 predicates.add(root.get("athlete").get("classInfo").get("id").in(scope.classIds));
             return cb.and(predicates.toArray(new Predicate[0]));
         };
-        return registrationRepository.findAll(spec, pageable);
+        Page<Registration> page = registrationRepository.findAll(spec, pageable);
+        List<Map<String, Object>> rows = page.getContent().stream().map(RegistrationService::toVo)
+                .collect(Collectors.toList());
+        return new org.springframework.data.domain.PageImpl<>(rows, pageable, page.getTotalElements());
+    }
+
+    /** 报名记录 → 审核列表扁平 VO（EAGER athlete/event 已随查询加载；classInfo 为 LAZY，需在本事务内访问） */
+    static Map<String, Object> toVo(Registration reg) {
+        Athlete a = reg.getAthlete();
+        Event e = reg.getEvent();
+        ClassInfo ci = a != null ? a.getClassInfo() : null;
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", reg.getId());
+        m.put("athleteId", a != null ? a.getId() : null);
+        m.put("athleteName", a != null ? a.getName() : null);
+        m.put("studentNo", a != null ? a.getStudentId() : null);
+        m.put("gender", a != null ? a.getGender() : null);
+        m.put("grade", ci != null && ci.getGrade() != null ? ci.getGrade() : (a != null ? a.getGrade() : null));
+        m.put("className", ci != null ? ci.getName() : null);
+        m.put("classId", ci != null ? ci.getId() : null);
+        m.put("eventId", e != null ? e.getId() : null);
+        m.put("eventName", e != null ? e.getName() : null);
+        m.put("eventType", e != null ? e.getCategory() : null);
+        m.put("code", e != null ? e.getCode() : null);
+        m.put("status", reg.getStatus());
+        m.put("source", reg.getSource());
+        m.put("isTeam", reg.getTeam());
+        m.put("teamNo", reg.getTeamNo());
+        m.put("teamName", reg.getTeamName());
+        m.put("registrationTime", reg.getRegistrationTime());
+        m.put("createdAt", reg.getCreatedAt());
+        m.put("updatedAt", reg.getUpdatedAt());
+        m.put("auditTime", reg.getAuditTime());
+        m.put("auditRemark", reg.getAuditRemark());
+        m.put("remark", reg.getRemark());
+        return m;
     }
 
     @Transactional(readOnly = true)
