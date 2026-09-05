@@ -695,7 +695,20 @@ const exportSheet = async () => {
   gap: 8px;
   font-weight: 600;
   color: #409eff;
+  flex-wrap: wrap;
 }
+
+.grid-header .el-tag { vertical-align: middle; }
+.grid-header .el-radio-group { margin-left: auto; }
+@media (max-width: 900px) {
+  .grid-header .el-radio-group { margin-left: 0; }
+  .heat-grid-card :deep(.el-card__header), .prelim-card :deep(.el-card__header) { padding: 12px; }
+}
+
+/* 长项目名在工具条中不挤压按钮区 */
+.toolbar-left .el-tag--large { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heat-grid { padding: 8px 2px; }
+.lane-athlete .athlete-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .heat-grid {
   padding: 8px 0;
