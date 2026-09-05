@@ -32,6 +32,10 @@
                   <el-icon><Download /></el-icon>
                   导出Excel
                 </el-button>
+                <el-button type="warning" :disabled="!orderBookContent" @click="exportOrderBookDocx">
+                  <el-icon><Document /></el-icon>
+                  下载Word(.docx)
+                </el-button>
               </div>
             </div>
           </template>
@@ -233,6 +237,11 @@ async function generateOrderBook() {
 async function exportOrderBook() {
   try { await downloadApi('/excel/export/order-book', '秩序册.xlsx'); ElMessage.success('导出成功') }
   catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
+}
+
+async function exportOrderBookDocx() {
+  try { await downloadApi('/excel/export/order-book-docx', '运动会秩序册.docx'); ElMessage.success('Word秩序册下载成功') }
+  catch (e) { ElMessage.error(e?.message || '下载失败，请重新登录后再试') }
 }
 
 async function generateResultBook() {

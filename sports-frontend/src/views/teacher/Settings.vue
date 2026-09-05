@@ -198,7 +198,10 @@
               <el-button type="warning" :loading="reassigning" @click="doReassignNumberBook">
                 生成 / 重排号码簿
               </el-button>
-              <span class="form-tip" style="margin-left:10px">重排会覆盖现有号码，请先保存上方模板</span>
+              <el-button type="primary" :loading="generating" @click="doGenerateNumberBook">
+                按名单顺序生成（补全空缺）
+              </el-button>
+              <span class="form-tip" style="margin-left:10px">「生成」仅给尚无号码的运动员按名单顺序补号（不覆盖已有）；「重排」则会整体按名单顺序覆盖重编</span>
             </el-form-item>
           </el-form>
         </el-card>
@@ -1145,6 +1148,7 @@ async function saveNumberRule() {
 // ---- 号码簿 · 按名单顺序重排 ----
 const reassignGrade = ref('')
 const reassigning = ref(false)
+const generating = ref(false)
 const reassignGradeOptions = computed(() => {
   const s = new Set()
   ;(numberRuleForm.gradeMapping || []).forEach(g => { if (g && g.name && g.name.trim()) s.add(g.name.trim()) })
@@ -1165,6 +1169,21 @@ async function doReassignNumberBook() {
     }
   } catch (e) { console.error(e) }
   finally { reassigning.value = false }
+}
+
+// ---- 号码簿 · 按名单顺序生成（仅补全空缺，不覆盖已有） ----
+async function doGenerateNumberBook() {
+  generating.value = true
+  try {
+    const res = await request.post('/system/number-rule/generate', { grade: reassignGrade.value || '' })
+    const skipped = res?.skipped ?? 0
+    ElMessage.success(`号码簿生成完成：${res?.totalClasses ?? 0} 个班级、新增 ${res?.generated ?? 0} 人（原有 ${res?.already ?? 0} 人保留）`
+      + (skipped > 0 ? `，${skipped} 人因号码被占用而跳过` : ''))
+    if (res?.sample && res.sample.length) {
+      console.info('号码簿生成样例', res.sample)
+    }
+  } catch (e) { console.error(e); ElMessage.error('号码簿生成失败: ' + (e.response?.data?.message || e.message || '')) }
+  finally { generating.value = false }
 }
 
 // ---- 编排规则 ----

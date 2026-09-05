@@ -141,6 +141,11 @@
               <el-icon><Timer /></el-icon>
               <span>预赛淘汰（径赛 · 需要预赛时走此流程）</span>
               <el-tag type="warning" size="small">① 生成预赛 → ② 录入预赛成绩 → ③ 立即计算晋级并排决赛</el-tag>
+              <span class="auto-ob-switch">
+                <el-switch v-model="autoOrderBook" size="small" inline-prompt active-text="自动生成秩序册" inactive-text="不自动"
+                  @change="saveAutoOrderBook" />
+                <span class="hint" style="font-size:12px">自动编排设置：开启后「生成预赛」自动生成 Word 秩序册</span>
+              </span>
             </div>
           </template>
           <div class="prelim-body">
@@ -281,6 +286,7 @@ const activeRound = ref('final')
 const prelimGrade = ref('')
 const prelimGender = ref('M')
 const prelimWorking = ref(false)
+const autoOrderBook = ref(false)
 const prelimAdvance = ref(8)
 const qualifiers = ref([])
 const prelimTimeMap = reactive({})
@@ -349,6 +355,7 @@ watch(searchKeyword, (val) => {
 
 onMounted(async () => {
   // 年级列表：来自系统设置·年级管理（不硬编码），默认选第一个
+  await loadAutoOrderBook()
   try {
     const gs = await request.get('/system/grades')
     const list = Array.isArray(gs) ? gs : (gs?.records || [])
@@ -491,6 +498,23 @@ const rollbackArrange = async () => {
     await refreshArrangement()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('回滚失败: ' + (e.response?.data?.message || e.message || '未知错误'))
+  }
+}
+
+// ==================== 秩序册自动生成开关（自动编排设置） ====================
+const loadAutoOrderBook = async () => {
+  try {
+    const r = await request.get('/excel/order-book/auto')
+    autoOrderBook.value = !!(r && r.enabled)
+  } catch (e) { /* 忽略：默认关闭 */ }
+}
+const saveAutoOrderBook = async (val) => {
+  try {
+    await request.post('/excel/order-book/auto', { enabled: !!val })
+    ElMessage.success('已' + (val ? '开启' : '关闭') + '「生成预赛后自动生成秩序册」')
+  } catch (e) {
+    ElMessage.error('保存开关失败: ' + (e.response?.data?.message || e.message || ''))
+    autoOrderBook.value = !val
   }
 }
 

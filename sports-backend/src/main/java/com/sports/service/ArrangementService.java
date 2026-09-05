@@ -43,6 +43,7 @@ public class ArrangementService {
     private final RegistrationRepository registrationRepository;
     private final EventRepository eventRepository;
     private final SystemService systemService;
+    private final WordOrderBookService wordOrderBookService;
 
     // 默认算法参数（可被 arrange_rule.algorithm_params 覆盖）
     private static final int OPTIMIZATION_ROUNDS = 3;
@@ -185,7 +186,18 @@ public class ArrangementService {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
         int lanes = resolveLanes(event);
-        return arrange(eventId, grade, gender, lanes, null, ROUND_PRELIM);
+        Map<String, Object> result = arrange(eventId, grade, gender, lanes, null, ROUND_PRELIM);
+        // 若开启「自动生成秩序册」：预赛编排完成后自动生成 Word 秩序册并落盘
+        try {
+            if (systemService.isOrderBookAutoGenerate()) {
+                wordOrderBookService.generateToDisk();
+                log.info("预赛编排后已自动生成秩序册(Word): eventId={}, grade={}", eventId, grade);
+            }
+        } catch (Exception ex) {
+            // 自动生成失败不影响预赛编排主流程
+            log.warn("预赛后自动生成秩序册失败（已忽略）: {}", ex.getMessage());
+        }
+        return result;
     }
 
     /**

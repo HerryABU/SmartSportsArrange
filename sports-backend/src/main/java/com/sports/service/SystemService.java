@@ -66,6 +66,30 @@ public class SystemService {
         return systemConfigRepository.save(config);
     }
 
+    // ==================== 秩序册自动生成开关 ====================
+
+    private static final String ORDER_BOOK_AUTO_KEY = "order_book.auto_generate";
+
+    /** 是否启用「生成预赛/编排后自动生成秩序册(Word)」 */
+    @Transactional(readOnly = true)
+    public boolean isOrderBookAutoGenerate() {
+        return systemConfigRepository.findByConfigKey(ORDER_BOOK_AUTO_KEY)
+                .map(c -> "true".equalsIgnoreCase(String.valueOf(c.getConfigValue()).trim()))
+                .orElse(false);
+    }
+
+    /** 设置「生成预赛/编排后自动生成秩序册(Word)」开关 */
+    public void setOrderBookAutoGenerate(boolean enabled) {
+        SystemConfig config = systemConfigRepository.findByConfigKey(ORDER_BOOK_AUTO_KEY)
+                .orElse(SystemConfig.builder().configKey(ORDER_BOOK_AUTO_KEY).build());
+        config.setConfigValue(String.valueOf(enabled));
+        config.setConfigType("bool");
+        config.setDescription("生成预赛/编排后自动生成秩序册(Word)");
+        config.setUpdatedAt(LocalDateTime.now());
+        systemConfigRepository.save(config);
+        log.info("秩序册自动生成开关已更新: {}", enabled);
+    }
+
     /** 保存基本设置 */
     public void saveBasic(Map<String, Object> body) {
         for (Map.Entry<String, Object> entry : body.entrySet()) {

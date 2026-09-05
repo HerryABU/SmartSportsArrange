@@ -87,6 +87,16 @@ public class SystemController {
                 numberRuleService.reassignNumbers(grade.isBlank() ? null : grade));
     }
 
+    /** 号码簿 · 按名单顺序生成（仅补全尚无号码的运动员，不覆盖已有号码） */
+    @PostMapping("/number-rule/generate")
+    public ApiResponse<?> generateNumbers(@RequestBody(required = false) Map<String, Object> body) {
+        String grade = body != null && body.get("grade") != null
+                ? body.get("grade").toString().trim() : "";
+        log.info("号码簿按名单顺序生成(补全): grade={}", grade);
+        return ApiResponse.success("号码簿生成完成",
+                numberRuleService.generateNumbers(grade.isBlank() ? null : grade));
+    }
+
     // ---- 编排规则（完全自定义） ----
 
     @GetMapping("/arrange-rule")

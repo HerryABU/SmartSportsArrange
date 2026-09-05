@@ -20,7 +20,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -178,6 +180,98 @@ public class NumberRuleService {
         return 999;
     }
 
+    // ==================== 号码簿 · 按名单顺序生成（仅补全空缺） ====================
+
+    /**
+     * 按「年级（系统设置顺序）→ 班级（班级序号）→ 名单（导入顺序）」为<b>尚无号码</b>的运动员
+     * 生成号码簿：沿用当前模板，班级内序号从「已有号码人数 + 1」起递增，避免覆盖现有号码、也尽量不与现有号码冲突。
+     * 适用于初次生成 / 补全新导入运动员的号码；若需整体按名单重排（覆盖全部），请使用 {@link #reassignNumbers}。
+     *
+     * @param gradeScope null/空 = 全部；否则仅该年级（容忍 高一/高一年级 写法）
+     * @return 汇总（班级数 / 新增人数 / 已有人数 / 样例）
+     */
+    @Transactional
+    public Map<String, Object> generateNumbers(String gradeScope) {
+        Map<String, Object> rule = getNumberRule();
+
+        List<String> order = new ArrayList<>();
+        for (Map<String, Object> g : systemService.getGrades()) {
+            Object nm = g.get("name");
+            if (nm != null && !nm.toString().isBlank()) order.add(nm.toString());
+        }
+
+        List<ClassInfo> classes = new ArrayList<>();
+        for (ClassInfo ci : classInfoRepository.findAll()) {
+            if (ci.getDeletedAt() != null) continue;
+            if (gradeScope != null && !gradeScope.isBlank()
+                    && !Grades.same(gradeScope, ci.getGrade())) continue;
+            classes.add(ci);
+        }
+        classes.sort(Comparator
+                .comparingInt((ClassInfo c) -> gradeIdx(order, c.getGrade()))
+                .thenComparingInt(c -> c.getClassOrder() == null ? 0 : c.getClassOrder())
+                .thenComparingLong(ClassInfo::getId));
+
+        // 全库已占用的号码集合：历史数据可能沿用其它编号规则（如纯流水号），
+        // 与模板生成值相撞时会触发号码唯一约束并导致整批回退，故生成前先登记、遇撞顺延。
+        Set<String> used = new HashSet<>();
+        for (Athlete x : athleteRepository.findAll()) {
+            if (x.getDeletedAt() == null && x.getNumber() != null && !x.getNumber().isBlank()) {
+                used.add(x.getNumber().trim());
+            }
+        }
+
+        int generated = 0, classesDone = 0, already = 0, skipped = 0;
+        List<String> sample = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        for (ClassInfo ci : classes) {
+            List<Athlete> list = athleteRepository.findByClassInfoId(ci.getId());
+            list.removeIf(a -> a.getDeletedAt() != null);
+            list.sort(Comparator.comparingLong(Athlete::getId));
+            if (list.isEmpty()) continue;
+            classesDone++;
+            // 已有人数 → 新号码起始序号
+            long existing = list.stream().filter(a -> a.getNumber() != null && !a.getNumber().isBlank()).count();
+            int seq = (int) existing + 1;
+            for (Athlete a : list) {
+                if (a.getNumber() != null && !a.getNumber().isBlank()) {
+                    already++;
+                    continue;
+                }
+                String no = generateNumber(rule, a, ci, seq);
+                // 撞号则顺延序号，直至取到未被占用的号码（带上限，防死循环）
+                int guard = 0;
+                while (no != null && !no.isBlank() && used.contains(no) && guard++ < 999) {
+                    no = generateNumber(rule, a, ci, ++seq);
+                }
+                if (no != null && !no.isBlank() && !used.contains(no)) {
+                    used.add(no);
+                    a.setNumber(no);
+                    a.setUpdatedAt(now);
+                    athleteRepository.save(a);
+                    generated++;
+                    if (sample.size() < 5) sample.add(a.getName() + " → " + no);
+                } else {
+                    skipped++;
+                    log.warn("号码生成跳过（无法取得空闲号码）: athleteId={}, grade={}, class={}",
+                            a.getId(), a.getGrade(), ci.getName());
+                }
+                seq++;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalClasses", classesDone);
+        result.put("generated", generated);
+        result.put("already", already);
+        result.put("skipped", skipped);
+        result.put("sample", sample);
+        result.put("gradeScope", gradeScope == null || gradeScope.isBlank() ? null : gradeScope);
+        log.info("号码簿生成(补全)完成: grade={}, classes={}, generated={}, already={}",
+                result.get("gradeScope"), classesDone, generated, already);
+        return result;
+    }
+
     // ==================== 号码生成 ====================
 
     /** 根据规则为指定运动员生成号码（不落地，仅计算） */
@@ -271,6 +365,17 @@ public class NumberRuleService {
         if (gradeName != null) {
             Object v = mapping.get(gradeName);
             if (v != null) return String.valueOf(v);
+            // 容忍写法差异：Athlete/ClassInfo.grade 常存短称（"高一"），而映射键为全称（"高一年级"）。
+            // 此处若不做归一，短称永远查不到映射，会静默退化成 "00"，导致各年级号码前缀全部相同。
+            for (Map.Entry<String, Object> en : mapping.entrySet()) {
+                if (en.getValue() != null && Grades.same(en.getKey(), gradeName)) {
+                    return String.valueOf(en.getValue());
+                }
+            }
+            // 再退一步：补「年级」后缀后精确匹配
+            String withSuffix = gradeName.endsWith("年级") ? gradeName : gradeName + "年级";
+            v = mapping.get(withSuffix);
+            if (v != null) return String.valueOf(v);
         }
         return "00";
     }
@@ -281,10 +386,11 @@ public class NumberRuleService {
         if (classInfo.getClassOrder() != null && classInfo.getClassOrder() > 0) {
             return classInfo.getClassOrder();
         }
-        // 2. 从班级编码提取数字
+        // 2. 从班级编码提取数字：编码形如 "G10-01"，前半是年级、末尾才是班号，
+        //    故必须取末位数字段（"G10-01" → 1）；取首段会误拿到年级号 10，使所有班级同号。
         if (classInfo.getCode() != null) {
-            Integer n = extractLeadingNumber(classInfo.getCode());
-            if (n != null) return n;
+            Integer n = extractTrailingNumber(classInfo.getCode());
+            if (n != null && n > 0) return n;
         }
         // 3. 从班级名称提取末尾数字（如 "高一3班" → 3）
         if (autoExtract && classInfo.getName() != null) {
@@ -305,14 +411,6 @@ public class NumberRuleService {
             last = Integer.parseInt(m.group(1));
         }
         return last;
-    }
-
-    private Integer extractLeadingNumber(String s) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(s);
-        if (m.find()) {
-            try { return Integer.parseInt(m.group(1)); } catch (NumberFormatException ignored) {}
-        }
-        return null;
     }
 
     private Long parseLongSafe(String s) {
