@@ -595,7 +595,7 @@ const exportSheet = async () => {
 .arrange-page {
   display: flex;
   gap: 16px;
-  height: calc(100vh - 140px);
+  height: calc(100vh - 96px);
   padding: 4px;
 }
 
@@ -627,6 +627,15 @@ const exportSheet = async () => {
   flex-direction: column;
   gap: 18px;
   padding-bottom: 24px;
+}
+/* 关键修复：卡片禁止被父 flex 压缩（高内容卡会挤压工具栏卡，按钮被裁掉）；
+   el-card 新版为 flex column 结构，__body flex:1+overflow 会吞高度 → 强制 natural 布局 */
+.right-panel > .el-card {
+  flex-shrink: 0;
+}
+.right-panel :deep(.el-card__body) {
+  overflow: visible;
+  flex: none;
 }
 
 .empty-card {
@@ -791,7 +800,7 @@ const exportSheet = async () => {
   .arrange-page {
     flex-direction: column;
     height: auto;
-    min-height: calc(100vh - 140px);
+    min-height: calc(100vh - 96px);
   }
   .left-panel { display: none !important; }
   .mobile-project-btn { display: inline-flex !important; }
