@@ -275,15 +275,46 @@ public class ResultService {
 
     // ============ Controller 兼容方法 ============
 
-    /** Controller: list */
+    /** Controller: list —— 返回安全扁平 VO（避免 open-in-view=false 下懒加载序列化异常） */
     @Transactional(readOnly = true)
-    public List<Result> list(Long eventId, Integer heat) {
+    public List<Map<String, Object>> list(Long eventId, Integer heat) {
+        List<Result> base;
         if (eventId != null && heat != null) {
-            return resultRepository.findByEventIdAndHeat(eventId, heat);
+            base = resultRepository.findByEventIdAndHeat(eventId, heat);
         } else if (eventId != null) {
-            return resultRepository.findByEventId(eventId);
+            base = resultRepository.findByEventId(eventId);
+        } else {
+            base = resultRepository.findAll();
         }
-        return resultRepository.findAll();
+        return base.stream().map(ResultService::toVo).collect(Collectors.toList());
+    }
+
+    /** 成绩 → 扁平 VO */
+    static Map<String, Object> toVo(Result r) {
+        Athlete a = r.getAthlete();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", r.getId());
+        m.put("eventId", r.getEvent() != null ? r.getEvent().getId() : null);
+        m.put("athleteId", a != null ? a.getId() : null);
+        m.put("athleteName", a != null ? a.getName() : null);
+        m.put("number", a != null ? a.getNumber() : null);
+        m.put("className", a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : null);
+        m.put("grade", a != null ? a.getGrade() : null);
+        m.put("round", r.getRound());
+        m.put("heat", r.getHeat());
+        m.put("lane", r.getLane());
+        m.put("laneNumber", r.getLane());
+        m.put("rawTime", r.getRawTime());
+        m.put("timeSeconds", r.getTimeSeconds());
+        m.put("heatRank", r.getHeatRank());
+        m.put("rank", r.getTotalRank());
+        m.put("totalRank", r.getTotalRank());
+        m.put("score", r.getScore());
+        m.put("points", r.getScore());
+        m.put("status", r.getStatus());
+        m.put("remark", r.getRemark());
+        m.put("enteredAt", r.getEnteredAt());
+        return m;
     }
 
     /** Controller: enterScore (单条) */

@@ -58,24 +58,28 @@
       </el-row>
     </el-card>
 
+    <!-- 未编排提示 -->
+    <el-alert v-if="selectedEventId && !eventHeats.length" type="warning" show-icon :closable="false"
+      title="该项目暂无编排道次：请先到「📅 赛程编排」点“一键生成赛程”（会自动排道次），或到「道次编排」为该项目执行编排后回来录入成绩。" />
+
     <!-- Score Entry Table -->
     <el-card class="table-card" shadow="never" v-if="scoreData.length">
       <template #header>
         <div class="card-header">
-          <span>{{ currentEventName }} · 第 {{ selectedHeat }} 组</span>
-          <span class="header-tip">💡 按 Tab 键快速跳转到下一个成绩输入框</span>
+          <span>{{ currentEventName }} · 第 {{ selectedHeat }} 组（{{ scoreData.length }} 人）</span>
+          <span class="header-tip">💡 按 Tab 键快速跳转到下一个成绩输入框 · 点击成绩行尾 DNS/DNF/DSQ 标记弃权/未完赛/取消资格</span>
         </div>
       </template>
       <el-table :data="scoreData" border stripe>
         <el-table-column prop="laneNumber" label="道次" width="60" align="center" />
-        <el-table-column prop="athleteNumber" label="号码" width="70" align="center">
+        <el-table-column label="号码" width="80" align="center">
           <template #default="{ row }">
             <span style="font-weight:600;color:#409EFF">{{ row.athleteNumber || row.number || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="athleteName" label="运动员" min-width="90" />
-        <el-table-column prop="className" label="班级" min-width="100" />
-        <el-table-column label="成绩" min-width="200">
+        <el-table-column prop="className" label="班级" min-width="110" />
+        <el-table-column label="成绩" min-width="220">
           <template #default="{ row, $index }">
             <div class="score-cell">
               <el-input
@@ -85,21 +89,21 @@
                 size="small"
                 @keydown.tab.prevent="focusNextScore($index)"
                 :disabled="row._status !== 'normal'"
-                style="flex:1"
+                style="flex:1; max-width:220px"
               >
                 <template #append v-if="unitLabel">{{ unitLabel }}</template>
               </el-input>
-              <el-button-group size="small" class="status-btns" v-if="row._status === 'normal' || !row._status">
-                <el-button @click="setStatus($index, 'DNS')" :type="row._status === 'DNS' ? 'warning' : ''"
+              <el-button-group size="small" class="status-btns">
+                <el-button :type="row._status === 'DNS' ? 'warning' : 'default'" @click="setStatus($index, 'DNS')"
                   title="DNS - 未出发">DNS</el-button>
-                <el-button @click="setStatus($index, 'DNF')" :type="row._status === 'DNF' ? 'warning' : ''"
+                <el-button :type="row._status === 'DNF' ? 'warning' : 'default'" @click="setStatus($index, 'DNF')"
                   title="DNF - 未完赛">DNF</el-button>
-                <el-button @click="setStatus($index, 'DSQ')" :type="row._status === 'DSQ' ? 'danger' : ''"
+                <el-button :type="row._status === 'DSQ' ? 'danger' : 'default'" @click="setStatus($index, 'DSQ')"
                   title="DSQ - 取消资格">DSQ</el-button>
-                <el-button v-if="row._status && row._status !== 'normal'" @click="clearStatus($index)" type="info"
-                  title="恢复正常">取消</el-button>
+                <el-button v-if="row._status && row._status !== 'normal'" @click="setStatus($index, 'normal')" type="info"
+                  title="恢复正常">✓</el-button>
               </el-button-group>
-              <el-tag v-else :type="statusTagType(row._status)" size="small" effect="dark" class="status-tag">
+              <el-tag v-if="row._status && row._status !== 'normal'" :type="statusTagType(row._status)" size="small" effect="dark" class="status-tag">
                 {{ row._status }}
               </el-tag>
             </div>
@@ -126,7 +130,8 @@
       </el-table>
     </el-card>
 
-    <el-empty v-else description="请选择项目和组次后加载成绩表" :image-size="100" />
+    <el-empty v-else-if="!selectedEventId" description="请选择项目和组次后加载成绩表" :image-size="100" />
+    <el-empty v-else-if="!scoreData.length && eventHeats.length" description="当前组没有可录入的运动员（道次为空）" :image-size="80" />
   </div>
 </template>
 
@@ -140,7 +145,8 @@ const loading = ref(false)
 const eventList = ref([])
 const selectedEventId = ref('')
 const selectedHeat = ref(null)
-const heatOptions = ref([])
+const eventHeats = ref([])       // 当前项目编排 heats：[{ heat, lanes:[{lane,athleteId,...}] }]
+const heatOptions = computed(() => eventHeats.value.map(h => h.heat))
 const scoreData = ref([])
 const scoreRefs = ref({})
 
@@ -178,19 +184,20 @@ function setScoreRef(index, el) {
 function focusNextScore(currentIndex) {
   const nextIndex = currentIndex + 1
   if (scoreRefs.value[nextIndex]) {
-    nextTick(() => {
-      scoreRefs.value[nextIndex].focus()
-    })
+    nextTick(() => { scoreRefs.value[nextIndex].focus() })
   }
 }
 
+/** DNS/DNF/DSQ 状态按钮：normal 代表正常录入 */
 function setStatus(index, status) {
-  scoreData.value[index]._status = status
-  scoreData.value[index].score = ''
-}
-
-function clearStatus(index) {
-  scoreData.value[index]._status = 'normal'
+  const row = scoreData.value[index]
+  if (!row) return
+  if (status === 'normal') {
+    row._status = 'normal'
+    return
+  }
+  row._status = status
+  row.score = ''
 }
 
 async function fetchEvents() {
@@ -202,39 +209,99 @@ async function fetchEvents() {
   }
 }
 
+/** 项目切换：取编排 heats（决赛优先），自动选第一组并加载成绩表 */
 async function onEventChange(eventId) {
   selectedHeat.value = null
+  eventHeats.value = []
   scoreData.value = []
   if (!eventId) return
   try {
     const res = await request.get(`/arrange/events/${eventId}`)
-    const heats = res.heats || res || []
-    heatOptions.value = heats.map((_, i) => i + 1)
+    let heatsArr = []
+    if (Array.isArray(res?.rounds) && res.rounds.length) {
+      const fin = res.rounds.find(r => r.round === 'final') || res.rounds[res.rounds.length - 1]
+      heatsArr = (fin && fin.heats) || []
+    } else if (Array.isArray(res?.heats)) {
+      heatsArr = res.heats
+    } else if (Array.isArray(res)) {
+      heatsArr = res
+    }
+    eventHeats.value = heatsArr.filter(h => h && (h.lanes || []).length)
+    if (eventHeats.value.length) {
+      selectedHeat.value = eventHeats.value[0].heat ?? eventHeats.value[0].heatNo ?? 1
+      await fetchScores()
+    } else {
+      ElMessage.warning('该项目暂无编排道次，请先编排（赛程编排-一键生成 或 道次编排）')
+    }
   } catch (e) {
-    heatOptions.value = []
+    eventHeats.value = []
+    ElMessage.warning('读取编排信息失败：' + (e?.message || '请先为该项目生成道次'))
   }
 }
 
 function onHeatChange() {
-  scoreData.value = []
+  fetchScores()
 }
 
+/**
+ * 成绩表骨架 = 当前组次的编排道次名单；再用 /results 合并已保存的成绩/状态/名次。
+ * （即使尚无任何已存成绩，也保证列出全部运动员行，可直接录入。）
+ */
 async function fetchScores() {
   if (!selectedEventId.value || !selectedHeat.value) return
+  const heatObj = eventHeats.value.find(h => (h.heat ?? h.heatNo) === selectedHeat.value)
+  if (!heatObj) { scoreData.value = []; return }
   loading.value = true
   try {
-    const res = await request.get('/results', {
-      params: { eventId: selectedEventId.value, heat: selectedHeat.value }
-    })
-    const items = res.records || res.list || res || []
-    scoreData.value = items.map(item => ({
-      ...item,
-      score: item.score || item.rawTime || '',
-      remark: item.remark || '',
-      _status: item.dns ? 'DNS' : item.dnf ? 'DNF' : item.dsq ? 'DSQ' : 'normal'
+    const lanes = (heatObj.lanes || []).filter(l => l && l.athleteId)
+    scoreData.value = lanes.map(l => ({
+      athleteId: l.athleteId,
+      laneNumber: l.lane,
+      athleteNumber: l.number || '',
+      athleteName: l.athleteName || '',
+      className: l.className || '',
+      score: '',
+      rank: null,
+      points: null,
+      remark: '',
+      _status: 'normal'
     }))
+    // 合并已保存成绩（尽力而为：字段按 Result JSON 读取）
+    try {
+      const saved = await request.get('/results', {
+        params: { eventId: selectedEventId.value, heat: selectedHeat.value }
+      })
+      const list = Array.isArray(saved) ? saved : (saved?.records || saved?.list || [])
+      if (list.length) {
+        const byAthlete = new Map()
+        list.forEach(r => {
+          const aid = r.athleteId ?? (r.athlete && r.athlete.id)
+          if (aid != null) byAthlete.set(Number(aid), r)
+        })
+        scoreData.value.forEach(row => {
+          const r = byAthlete.get(row.athleteId)
+          if (!r) return
+          const st = String(r.status || 'valid').toUpperCase()
+          if (['DNS', 'DNF', 'DSQ'].includes(st)) {
+            row._status = st
+            row.score = ''
+          } else {
+            row._status = 'normal'
+            row.score = r.rawTime || r.scoreText || row.score || ''
+          }
+          const rk = r.rank ?? r.totalRank
+          if (rk != null) row.rank = rk
+          const pts = r.points ?? r.score
+          if (pts != null && (st === 'VALID' || st === 'NORMAL')) row.points = pts
+          if (r.remark) row.remark = r.remark
+        })
+      }
+    } catch (e) {
+      console.warn('合并已存成绩失败（不影响录入）', e)
+    }
   } catch (e) {
-    console.error('获取成绩失败', e)
+    console.error('加载成绩失败', e)
+    scoreData.value = []
   } finally {
     loading.value = false
   }
@@ -245,38 +312,32 @@ async function handleBulkSave() {
   let savedCount = 0
   try {
     for (const row of scoreData.value) {
-      if (row._status && row._status !== 'normal') {
-        await request.post('/results', {
-          eventId: selectedEventId.value,
-          athleteId: row.athleteId,
-          status: row._status,
-          heat: selectedHeat.value,
-          laneNumber: row.laneNumber,
-          remark: row.remark
-        })
-        savedCount++
-      } else if (row.score) {
-        const payload = {
-          eventId: selectedEventId.value,
-          athleteId: row.athleteId,
-          heat: selectedHeat.value,
-          laneNumber: row.laneNumber,
-          remark: row.remark,
-          rawTime: row.score
-        }
-        await request.post('/results', payload)
-        savedCount++
+      const payload = {
+        eventId: selectedEventId.value,
+        athleteId: row.athleteId,
+        heat: selectedHeat.value,
+        laneNumber: row.laneNumber,
+        remark: row.remark
       }
+      if (row._status && row._status !== 'normal') {
+        payload.status = row._status
+      } else if (row.score) {
+        payload.rawTime = row.score
+      } else {
+        continue
+      }
+      await request.post('/results', payload)
+      savedCount++
     }
 
     if (savedCount > 0) {
       try {
         await request.post(`/results/events/${selectedEventId.value}/calculate-ranking`)
-        await fetchScores()
         ElMessage.success(`已保存 ${savedCount} 条成绩并自动计算排名`)
       } catch {
         ElMessage.success(`已保存 ${savedCount} 条成绩`)
       }
+      await fetchScores()
     } else {
       ElMessage.warning('没有需要保存的成绩')
     }
@@ -288,7 +349,7 @@ async function handleBulkSave() {
   }
 }
 
-function onImportSuccess(response) {
+function onImportSuccess() {
   ElMessage.success('成绩导入成功')
   fetchScores()
 }
@@ -309,6 +370,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .header-tip {

@@ -26,7 +26,7 @@ public class ResultController {
     private final ResultService resultService;
 
     @GetMapping
-    public ApiResponse<List<Result>> list(
+    public ApiResponse<List<Map<String, Object>>> list(
             @RequestParam(required = false) Long eventId,
             @RequestParam(required = false) Integer heat) {
         log.info("查询成绩列表: eventId={}, heat={}", eventId, heat);
