@@ -551,6 +551,8 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | GET | `/api/system/number-rule` | — | SA | 获取号码簿规则 |
 | PUT | `/api/system/number-rule` | Body 规则 | SA | 保存号码簿规则 |
 | POST | `/api/system/number-rule/preview` | Body `{template, grade, className, seq, auto_pad_zero}` | SA | 预览号码生成效果 |
+| POST | `/api/system/number-rule/reassign` | Body `grade?` | SA | 号码簿按名单顺序重排（覆盖：年级序→班级序→名单序，班级内从 1 重编） |
+| POST | `/api/system/number-rule/generate` | Body `grade?` | SA | 号码簿按名单顺序生成（补全空缺，不覆盖已有；撞号自动顺延） |
 | GET | `/api/system/arrange-rule` | — | SA | 获取编排规则 |
 | PUT | `/api/system/arrange-rule` | Body 规则 | SA | 保存编排规则 |
 | GET | `/api/system/scoring-rule` | — | SA | 获取积分规则 |
@@ -598,8 +600,12 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | POST | `/api/excel/import/scores` | multipart `file` | T/SA | 导入成绩 |
 | POST | `/api/excel/import/registrations` | multipart `file` | T/SA | 导入报名 |
 | GET | `/api/excel/export/arrangement` | Query eventId(必填) | T/SA | 导出编排表 |
-| GET | `/api/excel/export/order-book` | — | T/SA | 导出秩序册 |
+| GET | `/api/excel/export/order-book` | — | T/SA | 导出秩序册（Excel） |
 | GET | `/api/excel/export/result-book` | — | T/SA | 导出成绩册 |
+| GET | `/api/excel/export/order-book-docx` | — | T/SA | 导出秩序册（真实 Word .docx，含多张表格） |
+| POST | `/api/excel/order-book/generate` | — | T/SA | 生成秩序册(Word)并落盘到 `data/order_book/` |
+| GET | `/api/excel/order-book/auto` | — | T/SA | 读取「生成预赛/编排后自动生成秩序册」开关 |
+| POST | `/api/excel/order-book/auto` | Body `enabled`(bool) | T/SA | 设置自动生成秩序册开关 |
 
 ---
 
