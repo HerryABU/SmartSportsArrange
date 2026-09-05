@@ -28,13 +28,14 @@ public class ClassController {
     private final ClassService classService;
 
     @GetMapping
-    public ApiResponse<ApiResponse.PageData<ClassInfo>> list(
+    public ApiResponse<ApiResponse.PageData<Map<String, Object>>> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) String grade) {
-        log.info("查询班级列表: page={}, size={}, grade={}", page, size, grade);
+            @RequestParam(required = false) String grade,
+            @RequestParam(required = false) String keyword) {
+        log.info("查询班级列表: page={}, size={}, grade={}, keyword={}", page, size, grade, keyword);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<ClassInfo> result = classService.list(pageable, grade);
+        Page<Map<String, Object>> result = classService.listDetail(pageable, grade, keyword);
         return ApiResponse.page(result);
     }
 

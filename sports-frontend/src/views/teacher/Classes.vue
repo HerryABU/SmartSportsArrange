@@ -92,15 +92,29 @@
         <el-table-column type="expand">
           <template #default="{ row }">
             <div v-loading="expandLoading === row.id" style="padding:8px 24px">
-              <h4 style="margin:0 0 8px">{{ row.name }} — 学生列表 ({{ getStudents(row).length }}人)</h4>
+              <h4 style="margin:0 0 8px">🏃 {{ row.name }} — 学生列表 ({{ getStudents(row).length }}人)</h4>
               <el-table :data="getStudents(row)" border size="small" v-if="getStudents(row).length">
-                <el-table-column prop="name" label="姓名" />
-                <el-table-column prop="studentId" label="学号" width="120" />
-                <el-table-column label="性别" width="60">
-                  <template #default="{ row: r }">{{ r.gender === 'M' ? '男' : r.gender === 'F' ? '女' : '—' }}</template>
+                <el-table-column label="姓名" min-width="110">
+                  <template #default="{ row: r }">
+                    <span class="stu-name">{{ r.name }}</span>
+                  </template>
                 </el-table-column>
-                <el-table-column prop="grade" label="年级" width="80" />
-                <el-table-column prop="number" label="号码" width="100" />
+                <el-table-column label="学号" width="130">
+                  <template #default="{ row: r }">{{ r.studentNo || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="性别" width="70" align="center">
+                  <template #default="{ row: r }">
+                    <el-tag size="small" :type="r.gender === 'M' ? 'primary' : r.gender === 'F' ? 'danger' : 'info'"
+                      effect="light">{{ r.gender === 'M' ? '男' : r.gender === 'F' ? '女' : '—' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="grade" label="年级" width="90" align="center" />
+                <el-table-column label="号码" width="110" align="center">
+                  <template #default="{ row: r }">
+                    <el-tag v-if="r.number" size="small" effect="plain">{{ r.number }}</el-tag>
+                    <span v-else>—</span>
+                  </template>
+                </el-table-column>
               </el-table>
               <el-empty v-else description="该班级暂无学生" :image-size="40" />
             </div>
@@ -113,16 +127,20 @@
           </template>
         </el-table-column>
         <el-table-column prop="code" label="班级编号" min-width="120" align="center" />
-        <el-table-column prop="classTeacher" label="班主任" width="110" align="center">
+        <el-table-column prop="teacherName" label="班主任" width="110" align="center">
           <template #default="{ row }">
-            {{ row.classTeacher || '—' }}
+            {{ row.teacherName || '—' }}
           </template>
         </el-table-column>
-        <el-table-column prop="studentCount" label="学生人数" width="100" align="center" />
-        <el-table-column label="参赛状态" width="100" align="center">
+        <el-table-column prop="studentCount" label="学生人数" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.registered ? 'success' : 'info'" effect="plain">
-              {{ row.registered ? '已报名' : '未报名' }}
+            <b style="color:#1e40af">{{ row.studentCount ?? 0 }}</b>
+          </template>
+        </el-table-column>
+        <el-table-column label="是否参赛" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.isParticipating === false ? 'info' : 'success'" effect="light">
+              {{ row.isParticipating === false ? '未参赛' : '参赛' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -188,8 +206,8 @@
         <el-form-item label="班级编号" prop="code">
           <el-input v-model="formData.code" placeholder="请输入班级编号" clearable />
         </el-form-item>
-        <el-form-item label="班主任" prop="classTeacher">
-          <el-input v-model="formData.classTeacher" placeholder="请输入班主任姓名（选填）" clearable />
+        <el-form-item label="班主任" prop="teacherName">
+          <el-input v-model="formData.teacherName" placeholder="请输入班主任姓名（选填）" clearable />
         </el-form-item>
         <el-form-item label="学生人数" prop="studentCount">
           <el-input-number
@@ -268,7 +286,7 @@ const formData = reactive({
   name: '',
   grade: '',
   code: '',
-  classTeacher: '',
+  teacherName: '',
   studentCount: 0
 })
 
@@ -362,7 +380,7 @@ function handleEdit(row) {
   formData.name = row.name
   formData.grade = row.grade
   formData.code = row.code
-  formData.classTeacher = row.classTeacher || ''
+  formData.teacherName = row.teacherName || ''
   formData.studentCount = row.studentCount
   dialogVisible.value = true
 }
@@ -371,7 +389,7 @@ function resetForm() {
   formData.name = ''
   formData.grade = ''
   formData.code = ''
-  formData.classTeacher = ''
+  formData.teacherName = ''
   formData.studentCount = 0
   formRef.value?.resetFields()
 }
