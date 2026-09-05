@@ -37,6 +37,20 @@
       </div>
     </div>
 
+    <!-- ===== 视图切换：默认方块 / 可切横排列表（作用于全页所有选择器） ===== -->
+    <div class="view-toolbar">
+      <span class="vt-label">选择器展示</span>
+      <div class="vt-switch">
+        <button type="button" class="vt-btn" :class="{ on: viewMode === 'grid' }" @click="viewMode = 'grid'">
+          <span class="vt-ico">▦</span>方块
+        </button>
+        <button type="button" class="vt-btn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">
+          <span class="vt-ico">☰</span>列表
+        </button>
+      </div>
+      <span class="vt-hint">默认小方块，适合现场快速点选；点击「列表」一键切换为横排列表</span>
+    </div>
+
     <!-- ===== 名单为空提醒（现场报名前先建花名册） ===== -->
     <el-alert v-if="!athletes.length" type="warning" show-icon :closable="false" class="empty-roster-alert">
       <template #title>
@@ -105,22 +119,24 @@
                 <span class="cat-hint">点击项目小方块 → 弹出报名框可继续多选其他项目</span>
               </div>
 
-              <!-- 可报项目（点击进弹窗多选） -->
-              <div v-if="foundAthlete && singleProjects.length" class="proj-grid">
-                <div v-for="evt in singleProjects" :key="evt.id"
-                  :class="['proj-card', { reg: isRegSingle(evt), off: !canSingle(evt) }]"
+              <!-- 可报项目：方块/列表双视图 -->
+              <div v-if="foundAthlete && singleProjects.length"
+                class="pick-zone proj-zone" :class="viewMode === 'list' ? 'row' : ''">
+                <div v-for="evt in singleProjects" :key="evt.id" class="pk"
+                  :class="{
+                    done: isRegSingle(evt),
+                    off: !isRegSingle(evt) && !canSingle(evt)
+                  }"
                   @click="isRegSingle(evt) ? ElMessage.info('该生已报「' + evt.name + '」') : openPicker(foundAthlete, evt)">
-                  <div class="proj-name">{{ evt.name }}</div>
-                  <div class="proj-meta">
-                    <el-tag size="small" :type="evtType(evt) === '径赛' ? 'danger' : 'warning'" effect="light">
-                      {{ evtType(evt) }}
-                    </el-tag>
-                    <el-tag size="small" effect="plain">{{ genderLabel(evt.gender) }}</el-tag>
+                  <div class="pk-name">{{ evt.name }}</div>
+                  <div class="pk-tags">
+                    <span class="pk-tag" :class="evtType(evt) === '径赛' ? 'run' : 'field'">{{ evtType(evt) }}</span>
+                    <span class="pk-tag plain">{{ genderLabel(evt.gender) }}</span>
                   </div>
-                  <div class="proj-state">
-                    <span v-if="isRegSingle(evt)" class="st done">✓ 已报</span>
-                    <span v-else-if="!canSingle(evt)" class="st limit">{{ whyOff(evt) }}</span>
-                    <span v-else class="st avail">点击多选报名</span>
+                  <div class="pk-state">
+                    <span v-if="isRegSingle(evt)" class="ok">✓ 已报</span>
+                    <span v-else-if="!canSingle(evt)" class="no">{{ whyOff(evt) }}</span>
+                    <span v-else class="go">点击报名</span>
                   </div>
                 </div>
               </div>
@@ -132,47 +148,78 @@
           <el-tab-pane name="batch">
             <template #label><span class="tab-ico">👥</span> 按项目批量报名</template>
             <div class="batch-box">
-              <div class="batch-event-pick">
-                <span class="batch-label">选择项目</span>
-                <el-select v-model="batchEventId" filterable placeholder="搜索并选择项目" size="large" style="width: 320px">
-                  <el-option v-for="evt in events" :key="evt.id" :label="evt.name" :value="evt.id">
-                    <span>{{ evt.name }}</span>
-                    <span style="float:right;color:#94a3b8;font-size:12px">
-                      {{ evtType(evt) }} · {{ genderLabel(evt.gender) }}
-                    </span>
-                  </el-option>
-                </el-select>
-                <template v-if="batchEvent">
-                  <el-tag size="large" effect="plain" style="margin-left:10px">{{ genderLabel(batchEvent.gender) }}</el-tag>
-                  <el-tag size="large" type="warning" effect="plain">剩余名额 {{ quotaLeft }} 人</el-tag>
-                  <el-tag size="large" type="success" effect="plain">本项目已报 {{ classEventRegs.length }} 人</el-tag>
-                </template>
-              </div>
-
-              <template v-if="batchEvent">
-                <el-input v-model="batchKw" placeholder="过滤姓名 / 学号" clearable style="width: 260px; margin: 8px 0 10px">
+              <!-- ① 选项目：方块/列表双视图（默认方块） -->
+              <div class="batch-step-title">① 选择项目</div>
+              <div class="batch-tools">
+                <el-input v-model="batchEvtKw" placeholder="搜索项目名" clearable size="small" style="width: 180px">
                   <template #prefix><el-icon><Search /></el-icon></template>
                 </el-input>
-                <div class="batch-quota-tip">
-                  仅列出未报且性别符合的学生（每项目限报 3 人/班，勾选上限 = 剩余名额），勾选后一键提交（→ 待审核）
+                <el-radio-group v-model="batchEvtCat" size="small">
+                  <el-radio-button value="">全部</el-radio-button>
+                  <el-radio-button value="径赛">径赛</el-radio-button>
+                  <el-radio-button value="田赛">田赛</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div class="pick-zone evt-zone" :class="viewMode === 'list' ? 'row' : ''">
+                <div v-for="evt in batchEventOptions" :key="evt.id" class="pk"
+                  :class="{ picked: batchEventId === evt.id }" @click="batchEventId = evt.id">
+                  <div class="pk-name">{{ evt.name }}</div>
+                  <div class="pk-tags">
+                    <span class="pk-tag" :class="evtType(evt) === '径赛' ? 'run' : 'field'">{{ evtType(evt) }}</span>
+                    <span class="pk-tag plain">{{ genderLabel(evt.gender) }}</span>
+                  </div>
+                  <div class="pk-state">
+                    <span class="go">已报 {{ batchRegCountOf(evt) }}/3</span>
+                  </div>
+                  <span v-if="batchEventId === evt.id" class="pk-mark">✓</span>
                 </div>
-                <div class="batch-check-wrap">
-                  <label v-for="a in batchCandidates" :key="a.id" class="check-item"
-                    :class="{ picked: checkedIds.includes(a.id) }">
-                    <el-checkbox v-model="checkedIds" :value="a.id" :disabled="checkedIds.length >= quotaLeft && !checkedIds.includes(a.id)">
-                      <div class="check-person">
-                        <span class="ck-name">{{ a.name }}</span>
-                        <span class="ck-sub">学号 {{ a.studentNo }} · {{ a.gender === 'M' ? '男' : '女' }} ·
-                          已报 {{ regOf(a).length }}/3</span>
+                <div v-if="!batchEventOptions.length" class="cat-empty">没有匹配的项目</div>
+              </div>
+
+              <!-- ② 勾选学生 -->
+              <template v-if="batchEvent">
+                <div class="batch-step-title">② 勾选学生（{{ genderLabel(batchEvent.gender) }} ·
+                  剩余名额 {{ quotaLeft }} 人 · 本项目已报 {{ classEventRegs.length }} 人）</div>
+                <div class="batch-tools">
+                  <el-input v-model="batchKw" placeholder="过滤姓名 / 学号" clearable size="small" style="width: 200px">
+                    <template #prefix><el-icon><Search /></el-icon></template>
+                  </el-input>
+                  <el-button size="small" :disabled="batchCandidates.length === 0 || quotaLeft <= 0"
+                    @click="checkAllBatch">全选可报名</el-button>
+                  <span class="batch-quota-tip">
+                    每项目限报 3 人/班（勾选上限 = 剩余名额），提交后待审核
+                  </span>
+                </div>
+
+                <div class="pick-zone people-zone" :class="viewMode === 'list' ? 'row' : ''">
+                  <div v-for="a in batchCandidates" :key="a.id" class="pk"
+                    :class="{
+                      picked: checkedIds.includes(a.id),
+                      off: !checkedIds.includes(a.id) && checkedIds.length >= quotaLeft
+                    }"
+                    @click="toggleBatchId(a.id)">
+                    <span class="pk-ava" :class="a.gender === 'M' ? 'male' : 'female'">
+                      {{ (a.name || '?').slice(0, 1) }}
+                    </span>
+                    <div class="pk-body">
+                      <div class="pk-name">
+                        {{ a.name }}
+                        <span class="pk-gender" :class="a.gender === 'M' ? 'male' : 'female'">
+                          {{ a.gender === 'M' ? '男' : '女' }}
+                        </span>
                       </div>
-                    </el-checkbox>
-                  </label>
+                      <div class="pk-sub">学号 {{ a.studentNo || a.studentId || '' }} · 已报 {{ regOf(a).length }}/3</div>
+                    </div>
+                    <div class="pk-state">
+                      <span v-if="checkedIds.includes(a.id)" class="ok">✓ 已勾选</span>
+                      <span v-else-if="checkedIds.length >= quotaLeft" class="no">名额已满</span>
+                      <span v-else class="go">可报</span>
+                    </div>
+                  </div>
                   <div v-if="!batchCandidates.length" class="batch-empty">没有可报该项目的学生（可能均已报或名额已满/性别不符）</div>
                 </div>
+
                 <div class="batch-actions">
-                  <el-button @click="checkAllBatch" :disabled="batchCandidates.length === 0 || quotaLeft <= 0">
-                    全选可报名
-                  </el-button>
                   <el-button type="primary" size="large" :loading="batchSubmitting" :disabled="!checkedIds.length"
                     @click="submitBatch">
                     <el-icon><Check /></el-icon> 为 {{ checkedIds.length }} 名同学提交报名
@@ -227,14 +274,20 @@
       <aside class="ws-side">
         <el-card shadow="never" class="panel-card side-card">
           <template #header><div class="card-head">⚠️ 尚未报名的学生</div></template>
-          <div class="unreg-list">
-            <button v-for="a in unregisteredAthletes" :key="a.id" class="unreg-item" @click="openPicker(a)">
-              <span class="ur-name">{{ a.name }}</span>
-              <span class="ur-sub">{{ a.studentNo }} · 点击报名</span>
-              <el-icon style="color:#2563eb"><ArrowRight /></el-icon>
-            </button>
-            <div v-if="!unregisteredAthletes.length" class="side-empty">太棒了，本班学生都已报名 🎉</div>
+          <div v-if="unregisteredAthletes.length"
+            class="pick-zone side-zone" :class="viewMode === 'list' ? 'row' : ''">
+            <div v-for="a in unregisteredAthletes" :key="a.id" class="pk unreg" @click="openPicker(a)">
+              <span class="pk-ava" :class="a.gender === 'M' ? 'male' : 'female'">
+                {{ (a.name || '?').slice(0, 1) }}
+              </span>
+              <div class="pk-body">
+                <div class="pk-name">{{ a.name }}</div>
+                <div class="pk-sub">学号 {{ a.studentNo || a.studentId || '' }}</div>
+              </div>
+              <div class="pk-state"><span class="go">去报名</span></div>
+            </div>
           </div>
+          <div v-else class="side-empty">太棒了，本班学生都已报名 🎉</div>
         </el-card>
         <el-card shadow="never" class="panel-card side-card">
           <template #header><div class="card-head">📌 报名说明</div></template>
@@ -273,9 +326,8 @@
       </div>
     </el-dialog>
 
-    <!-- ===== 学生多选报名弹窗（项目堆表，行列自适应） ===== -->
-    <el-dialog v-model="showPicker" width="820px" top="4vh" :close-on-click-modal="false"
-      class="picker-dialog">
+    <!-- ===== 学生多选报名弹窗（项目方块/列表双视图） ===== -->
+    <el-dialog v-model="showPicker" width="820px" top="4vh" :close-on-click-modal="false">
       <template #header>
         <div class="picker-head">
           <span class="picker-avatar">{{ (picker.athlete?.name || '?').slice(0, 1) }}</span>
@@ -298,29 +350,34 @@
           <el-radio-button value="田赛">田赛</el-radio-button>
         </el-radio-group>
         <el-input v-model="pickerKw" placeholder="搜索项目" clearable size="small" style="width:160px" />
+        <div class="vt-switch sm">
+          <button type="button" class="vt-btn" :class="{ on: viewMode === 'grid' }" @click="viewMode = 'grid'">▦</button>
+          <button type="button" class="vt-btn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">☰</button>
+        </div>
       </div>
 
-      <!-- 项目堆表：小方块、行列自适应、可多选 -->
-      <div class="picker-grid">
-        <div v-for="evt in pickerProjects" :key="evt.id" class="tile"
+      <!-- 项目堆表：小方块（默认）/ 横排列表，可多选 -->
+      <div class="pick-zone picker-zone" :class="viewMode === 'list' ? 'row' : ''">
+        <div v-for="evt in pickerProjects" :key="evt.id" class="pk"
           :class="{
             picked: picker.checked.includes(evt.id),
-            off: !pickerCanPick(evt),
+            off: !pickerCanPick(evt) && !picker.checked.includes(evt.id) && !isRegOf(picker.athlete, evt),
             done: isRegOf(picker.athlete, evt)
           }" @click="togglePick(evt)">
-          <div class="tile-check" v-if="picker.checked.includes(evt.id)">✓</div>
-          <div class="tile-name">{{ evt.name }}</div>
-          <div class="tile-tags">
-            <span class="tile-tag" :class="evtType(evt) === '径赛' ? 'run' : 'field'">{{ evtType(evt) }}</span>
-            <span class="tile-tag plain">{{ genderLabel(evt.gender) }}</span>
+          <div class="pk-name">{{ evt.name }}</div>
+          <div class="pk-tags">
+            <span class="pk-tag" :class="evtType(evt) === '径赛' ? 'run' : 'field'">{{ evtType(evt) }}</span>
+            <span class="pk-tag plain">{{ genderLabel(evt.gender) }}</span>
           </div>
-          <div class="tile-foot">
-            <span v-if="isRegOf(picker.athlete, evt)" class="tile-state ok">✓ 已报</span>
-            <span v-else-if="!genderMatch(evt.gender, picker.athlete?.gender)" class="tile-state no">性别不符</span>
-            <span v-else-if="classRegCount(evt) >= 3" class="tile-state no">班级已满(3)</span>
-            <span v-else-if="regOf(picker.athlete).length + picker.checked.length >= 3" class="tile-state no">已达3项上限</span>
-            <span v-else class="tile-state">{{ classRegCount(evt) }}/3 班名额</span>
+          <div class="pk-state">
+            <span v-if="isRegOf(picker.athlete, evt)" class="ok">✓ 已报</span>
+            <span v-else-if="picker.checked.includes(evt.id)" class="ok">已勾选</span>
+            <span v-else-if="!genderMatch(evt.gender, picker.athlete?.gender)" class="no">性别不符</span>
+            <span v-else-if="classRegCount(evt) >= 3" class="no">班级已满(3)</span>
+            <span v-else-if="regOf(picker.athlete).length + picker.checked.length >= 3" class="no">已达3项上限</span>
+            <span v-else class="go">{{ classRegCount(evt) }}/3 班名额</span>
           </div>
+          <span v-if="picker.checked.includes(evt.id)" class="pk-mark">✓</span>
         </div>
         <div v-if="!pickerProjects.length" class="picker-empty">
           {{ picker.athlete ? '没有更多可报项目（可能已报满 3 项，或所有项目性别/名额不符）' : '请先选择学生' }}
@@ -348,7 +405,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Download, Upload, Check, ArrowRight } from '@element-plus/icons-vue'
+import { Search, Download, Upload, Check } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 
@@ -356,6 +413,9 @@ const loading = ref(false)
 const athletes = ref([])
 const events = ref([])
 const registrations = ref([])
+
+// 全页选择器视图：grid(方块，默认) | list(横排列表)
+const viewMode = ref('grid')
 
 // ---------- 概览 ----------
 const regStats = computed(() => {
@@ -439,7 +499,8 @@ function whyOff(evt) {
   if (regOf(foundAthlete.value).length >= 3) return '已满3项'
   return '不可报'
 }
-// ---------- 学生多选报名（弹窗 + 项目堆表） ----------
+
+// ---------- 学生多选报名（弹窗 + 项目堆表/列表） ----------
 const showPicker = ref(false)
 const pickerCat = ref('')
 const pickerKw = ref('')
@@ -477,9 +538,6 @@ const pickerProjects = computed(() => {
     if (isRegOf(a, evt)) return true // 已报项目灰显占位（提示不可重复）
     if (kw && evt.name.indexOf(kw) < 0) return false
     if (pickerCat.value && evtType(evt) !== pickerCat.value) return false
-    if (!genderMatch(evt.gender, a.gender)) return true // 展示性别不符态
-    if (classRegCount(evt) >= 3) return true // 展示班级满态
-    if (regOf(a).length + picker.checked.length >= 3) return true
     return true
   })
 })
@@ -528,10 +586,21 @@ async function submitPicker() {
 
 // ---------- 按项目批量报名 ----------
 const batchEventId = ref('')
+const batchEvtKw = ref('')
+const batchEvtCat = ref('')
 const batchKw = ref('')
 const batchSubmitting = ref(false)
 const checkedIds = ref([])
 const batchEvent = computed(() => events.value.find(e => e.id === batchEventId.value) || null)
+const batchEventOptions = computed(() => {
+  const kw = batchEvtKw.value.trim()
+  const cat = batchEvtCat.value
+  return events.value.filter(evt => {
+    if (kw && evt.name.indexOf(kw) < 0) return false
+    if (cat && evtType(evt) !== cat) return false
+    return true
+  })
+})
 const classEventRegs = computed(() => batchEvent.value
   ? registrations.value.filter(r => r.eventName === batchEvent.value.name && r.status !== 'withdrawn')
   : [])
@@ -546,7 +615,21 @@ const batchCandidates = computed(() => {
     return true
   })
 })
+function batchRegCountOf(evt) {
+  return registrations.value.filter(r => r.eventName === evt.name && r.status !== 'withdrawn').length
+}
 watch(batchEventId, () => { checkedIds.value = []; batchKw.value = '' })
+function toggleBatchId(id) {
+  if (checkedIds.value.includes(id)) {
+    checkedIds.value = checkedIds.value.filter(x => x !== id)
+    return
+  }
+  if (checkedIds.value.length >= quotaLeft.value) {
+    ElMessage.warning(`该项目每班限报 3 人，剩余名额 ${quotaLeft.value} 人，请先取消已勾选`)
+    return
+  }
+  checkedIds.value = [...checkedIds.value, id]
+}
 function checkAllBatch() {
   if (batchCandidates.value.length <= quotaLeft.value) {
     checkedIds.value = batchCandidates.value.map(a => a.id)
@@ -706,6 +789,25 @@ onMounted(fetchAll)
 .pg-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .6s; }
 .ov-progress-num { font-size: 13px; font-weight: 700; color: #3b82f6; min-width: 42px; text-align: right; }
 
+/* 视图切换条 */
+.view-toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: linear-gradient(120deg, #fff7ed, #fffbeb);
+  border: 1px solid #fde68a; border-radius: 14px; padding: 8px 14px;
+}
+.vt-label { font-size: 13px; font-weight: 700; color: #78350f; }
+.vt-switch { display: inline-flex; background: #f1f5f9; border-radius: 10px; padding: 3px; gap: 2px; }
+.vt-btn {
+  border: none; cursor: pointer; font-size: 13px; color: #475569;
+  padding: 5px 14px; border-radius: 8px; background: transparent;
+  display: inline-flex; align-items: center; gap: 4px; transition: all .18s; line-height: 1;
+}
+.vt-btn .vt-ico { font-size: 14px; }
+.vt-btn:hover { color: #2563eb; }
+.vt-btn.on { background: #fff; color: #2563eb; font-weight: 700; box-shadow: 0 1px 4px rgba(15,23,42,.12); }
+.vt-switch.sm .vt-btn { padding: 4px 8px; font-size: 12px; }
+.vt-hint { font-size: 12px; color: #b45309; }
+
 .empty-roster-alert { border-radius: 12px; }
 .workspace { display: grid; grid-template-columns: 1fr 300px; gap: 14px; align-items: start; }
 
@@ -734,40 +836,73 @@ onMounted(fetchAll)
 
 .cat-filter { display: flex; align-items: center; gap: 14px; margin: 6px 0 10px; }
 .cat-hint { font-size: 12px; color: #94a3b8; }
-.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-.proj-card {
-  border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; cursor: pointer;
-  text-align: center; transition: all .2s; background: #fbfdff;
-}
-.proj-card:hover { border-color: #3b82f6; transform: translateY(-2px); box-shadow: 0 6px 16px rgba(59,130,246,.14); }
-.proj-card.reg { background: #f0fdf4; border-color: #86efac; }
-.proj-card.off { opacity: .55; cursor: not-allowed; }
-.proj-name { font-weight: 700; margin-bottom: 6px; color: #0f172a; }
-.proj-meta { display: flex; justify-content: center; gap: 4px; margin-bottom: 6px; }
-.proj-state { font-size: 11px; }
-.st { padding: 1px 8px; border-radius: 999px; }
-.st.done { color: #16a34a; background: #dcfce7; }
-.st.avail { color: #2563eb; background: #dbeafe; }
-.st.limit { color: #64748b; background: #f1f5f9; }
-.cat-empty { color: #94a3b8; text-align: center; padding: 20px 0; }
+.cat-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 20px 0; }
 
-/* 批量 */
-.batch-event-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.batch-label { font-size: 14px; font-weight: 700; margin-right: 6px; }
-.batch-quota-tip { font-size: 12px; color: #64748b; margin-bottom: 8px; }
-.batch-check-wrap {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 8px; max-height: 340px; overflow-y: auto; padding: 2px;
+/* ===== 统一选择器：方块（默认）/ 横排列表 ===== */
+.pick-zone {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 8px; max-height: 340px; overflow-y: auto; padding: 2px; align-content: start;
 }
-.check-item {
-  border: 1px solid #e2e8f0; border-radius: 12px; padding: 8px 10px;
-  display: flex; align-items: center; cursor: pointer; background: #fff; transition: all .15s;
+.pick-zone.evt-zone { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); max-height: 250px; }
+.pick-zone.side-zone { max-height: 320px; }
+.pick-zone.row { display: flex; flex-direction: column; gap: 6px; max-height: 380px; }
+
+/* 卡片：默认竖向方块 */
+.pk {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 8px 8px; border: 1.5px solid #dbe4f0; border-radius: 12px; cursor: pointer;
+  background: #fbfdff; text-align: center; transition: all .18s;
 }
-.check-item:hover { border-color: #93c5fd; }
-.check-item.picked { background: #eff6ff; border-color: #3b82f6; }
-.check-person { display: flex; flex-direction: column; line-height: 1.4; margin-left: 6px; }
-.ck-name { font-weight: 700; font-size: 14px; }
-.ck-sub { font-size: 11.5px; color: #64748b; }
+.pk:hover { border-color: #60a5fa; transform: translateY(-2px); box-shadow: 0 6px 14px rgba(59,130,246,.12); }
+.pk.picked { background: linear-gradient(160deg, #eff6ff, #e0edff); border-color: #2563eb; box-shadow: 0 4px 14px rgba(37,99,235,.18); }
+.pk.off { opacity: .45; cursor: not-allowed; }
+.pk.off:hover { transform: none; box-shadow: none; border-color: #dbe4f0; }
+.pk.done { background: #f0fdf4; border-color: #86efac; cursor: not-allowed; }
+.pk-name { font-size: 13px; font-weight: 700; color: #0f172a; line-height: 1.35; }
+.pk-sub { font-size: 11px; color: #64748b; line-height: 1.4; }
+.pk-body { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.pk-tags { display: flex; justify-content: center; gap: 4px; margin: 3px 0 2px; flex-wrap: wrap; }
+.pk-tag { font-size: 10px; border-radius: 6px; padding: 1px 5px; }
+.pk-tag.run { color: #dc2626; background: #fee2e2; }
+.pk-tag.field { color: #b45309; background: #fef3c7; }
+.pk-tag.plain { color: #475569; background: #f1f5f9; }
+.pk-state { font-size: 11px; line-height: 1.3; }
+.pk-state span { display: inline-block; padding: 1px 8px; border-radius: 999px; }
+.pk-state .ok { color: #16a34a; background: #dcfce7; font-weight: 700; }
+.pk-state .no { color: #dc2626; background: #fee2e2; font-weight: 700; }
+.pk-state .go { color: #2563eb; background: #dbeafe; font-weight: 700; }
+.pk-ava {
+  width: 38px; height: 38px; border-radius: 50%; font-size: 16px; font-weight: 800; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.pk-ava.male { background: linear-gradient(135deg, #3b82f6, #6366f1); }
+.pk-ava.female { background: linear-gradient(135deg, #ec4899, #f472b6); }
+.pk-gender { font-size: 10px; font-weight: 600; padding: 0 4px; border-radius: 4px; vertical-align: 1px; }
+.pk-gender.male { color: #2563eb; background: #dbeafe; }
+.pk-gender.female { color: #db2777; background: #fce7f3; }
+
+/* 选中角标 ✓（方块模式：右上角；列表模式：行内右端） */
+.pk-mark {
+  position: absolute; top: -7px; right: -7px; width: 22px; height: 22px;
+  border-radius: 50%; background: #2563eb; color: #fff; font-size: 13px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(37,99,235,.4);
+}
+
+/* 横排列表变体 */
+.pick-zone.row .pk { flex-direction: row; text-align: left; align-items: center; gap: 10px; padding: 8px 12px; }
+.pick-zone.row .pk-body { align-items: flex-start; flex: 1; min-width: 0; }
+.pick-zone.row .pk-name { font-size: 14px; }
+.pick-zone.row .pk-tags { margin: 0; flex: none; }
+.pick-zone.row .pk-state { flex: none; margin-left: auto; }
+.pick-zone.row .pk-mark { position: static; margin-left: auto; flex: none; }
+.pick-zone.row .pk.done .pk-mark, .pick-zone.row .pk.unreg .pk-mark { display: none; }
+
+/* 批量 tab */
+.batch-step-title { font-weight: 800; font-size: 14px; color: #0f172a; margin: 8px 0 6px; }
+.batch-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.batch-quota-tip { font-size: 12px; color: #64748b; }
 .batch-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 24px 0; }
 .batch-actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
 
@@ -779,15 +914,6 @@ onMounted(fetchAll)
 /* 右栏 */
 .ws-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 8px; }
 .side-card :deep(.el-card__body) { padding: 12px; }
-.unreg-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
-.unreg-item {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border: 1px solid #f1f5f9; border-radius: 10px; cursor: pointer; background: #fbfdff;
-  font-size: 13px; transition: all .15s;
-}
-.unreg-item:hover { background: #eff6ff; transform: translateX(2px); }
-.ur-name { font-weight: 700; }
-.ur-sub { flex: 1; color: #94a3b8; font-size: 12px; }
 .side-empty { color: #94a3b8; font-size: 13px; text-align: center; padding: 16px 0; }
 .side-tips { margin: 0; padding-left: 18px; color: #475569; font-size: 12.5px; line-height: 1.9; }
 .side-tips b { color: #0f172a; }
@@ -809,6 +935,7 @@ onMounted(fetchAll)
   .ov-item { min-width: 0; padding: 0 8px; }
   .ov-item b { font-size: 18px; }
   .ws-main { padding: 4px 8px 12px; }
+  .pick-zone { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }
 
 /* ===== 多选报名弹窗 ===== */
@@ -827,39 +954,7 @@ onMounted(fetchAll)
 }
 .picker-ok { font-size: 13px; color: #334155; }
 .picker-ok b { color: #2563eb; font-size: 16px; }
-
-/* 堆表：小方块 · 行列自适应 */
-.picker-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 8px; max-height: 380px; overflow-y: auto; padding: 2px;
-}
-.tile {
-  position: relative; border: 1.5px solid #dbe4f0; border-radius: 12px;
-  padding: 10px 8px 8px; cursor: pointer; text-align: center;
-  background: #fbfdff; transition: all .18s;
-}
-.tile:hover { border-color: #60a5fa; transform: translateY(-2px); box-shadow: 0 6px 14px rgba(59,130,246,.12); }
-.tile.picked { background: linear-gradient(160deg, #eff6ff, #e0edff); border-color: #2563eb; box-shadow: 0 4px 14px rgba(37,99,235,.18); }
-.tile.off { opacity: .45; cursor: not-allowed; }
-.tile.off:hover { transform: none; box-shadow: none; border-color: #dbe4f0; }
-.tile.done { background: #f0fdf4; border-color: #86efac; cursor: not-allowed; }
-.tile-check {
-  position: absolute; top: -7px; right: -7px; width: 22px; height: 22px;
-  border-radius: 50%; background: #2563eb; color: #fff; font-size: 13px; font-weight: 800;
-  display: inline-flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 8px rgba(37,99,235,.4);
-}
-.tile-name { font-size: 13px; font-weight: 700; color: #0f172a; line-height: 1.35; min-height: 34px; }
-.tile-tags { display: flex; justify-content: center; gap: 4px; margin: 5px 0 6px; }
-.tile-tag { font-size: 10px; border-radius: 6px; padding: 1px 5px; }
-.tile-tag.run { color: #dc2626; background: #fee2e2; }
-.tile-tag.field { color: #b45309; background: #fef3c7; }
-.tile-tag.plain { color: #475569; background: #f1f5f9; }
-.tile-state { font-size: 11px; color: #64748b; }
-.tile-state.ok { color: #16a34a; font-weight: 700; }
-.tile-state.no { color: #dc2626; font-weight: 700; }
-.tile-foot { min-height: 16px; }
+.picker-zone { grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); }
 .picker-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 26px 0; }
 .picker-selected { margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: #475569; }
 </style>
