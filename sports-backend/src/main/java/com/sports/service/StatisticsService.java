@@ -33,24 +33,36 @@ public class StatisticsService {
         List<Event> events = eventRepository.findAll();
         List<ClassInfo> classes = classInfoRepository.findAll();
 
-        // 按项目统计
+        // 按项目统计。
+        // 同名项目可能分布在多个年级组（如三个年级各有「100米」），若按 name 做 key 直接
+        // put 会后者覆盖前者 → 只显示最后一个年级的数字。此处改为同名聚合（数量相加、名额累加），
+        // 未配置名额上限(max_participants 为空/0)时 capacity 合计为 0，前端展示「不限」。
         Map<String, Map<String, Long>> byEvent = new LinkedHashMap<>();
         for (Event event : events) {
-            Map<String, Long> counts = new LinkedHashMap<>();
+            String key = event.getName() != null && !event.getName().isBlank() ? event.getName() : "未命名项目";
+            Map<String, Long> counts = byEvent.computeIfAbsent(key, k -> {
+                Map<String, Long> c = new LinkedHashMap<>();
+                c.put("total", 0L);
+                c.put("approved", 0L);
+                c.put("pending", 0L);
+                c.put("rejected", 0L);
+                c.put("cancelled", 0L);
+                c.put("capacity", 0L);
+                return c;
+            });
             long approved = registrationRepository.countApprovedByEventId(event.getId());
             List<Registration> eventRegs = registrationRepository.findByEventId(event.getId());
             long pending = eventRegs.stream().filter(r -> "pending".equals(r.getStatus())).count();
             long rejected = eventRegs.stream().filter(r -> "rejected".equals(r.getStatus())).count();
             long cancelled = eventRegs.stream().filter(r -> "cancelled".equals(r.getStatus())).count();
 
-            counts.put("total", (long) eventRegs.size());
-            counts.put("approved", approved);
-            counts.put("pending", pending);
-            counts.put("rejected", rejected);
-            counts.put("cancelled", cancelled);
-            counts.put("capacity", event.getMaxParticipants() != null
-                    ? event.getMaxParticipants().longValue() : 0L);
-            byEvent.put(event.getName(), counts);
+            counts.merge("total", (long) eventRegs.size(), Long::sum);
+            counts.merge("approved", approved, Long::sum);
+            counts.merge("pending", pending, Long::sum);
+            counts.merge("rejected", rejected, Long::sum);
+            counts.merge("cancelled", cancelled, Long::sum);
+            counts.merge("capacity", event.getMaxParticipants() != null
+                    ? event.getMaxParticipants().longValue() : 0L, Long::sum);
         }
 
         // 按班级统计
@@ -391,33 +403,41 @@ public class StatisticsService {
 
     /**
      * 获取报名进度（按年级，Dashboard用）
+     *
+     * <p>口径与「班级管理」一致：分母取该年级<b>花名册真实运动员人数</b>
+     * （不依赖手填/陈旧的 student_count 列，历史数据该列常为 0 导致进度恒 0%），
+     * 分子取该年级<b>已有审核通过报名</b>的去重运动员数。单位统一为「人」，
+     * 避免「报名人次 / 总人数」口径错配（人次会超过总人数）。
      */
     public List<Map<String, Object>> getRegistrationProgress() {
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
-        Map<String, int[]> byGrade = new LinkedHashMap<>();
 
+        // 该年级在册运动员总数（剔除软删）
+        Map<String, Integer> rosterByGrade = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
             String grade = ci.getGrade() != null ? ci.getGrade() : "未知";
-            byGrade.computeIfAbsent(grade, k -> new int[]{0, 0});
-            byGrade.get(grade)[0] += ci.getStudentCount() != null ? ci.getStudentCount() : 0;
+            long roster = athleteRepository.findByClassInfoId(ci.getId()).stream()
+                    .filter(a -> a.getDeletedAt() == null)
+                    .count();
+            rosterByGrade.merge(grade, (int) roster, Integer::sum);
         }
 
-        List<Registration> approved = registrationRepository.findByStatus("approved");
-        for (Registration reg : approved) {
-            if (reg.getAthlete() != null && reg.getAthlete().getClassInfo() != null) {
-                String grade = reg.getAthlete().getClassInfo().getGrade();
-                if (grade != null && byGrade.containsKey(grade)) {
-                    byGrade.get(grade)[1]++;
-                }
-            }
+        // 该年级已有审核通过报名的去重运动员数
+        Map<String, Set<Long>> approvedAthleteByGrade = new HashMap<>();
+        for (Registration reg : registrationRepository.findByStatus("approved")) {
+            Athlete a = reg.getAthlete();
+            if (a == null || a.getDeletedAt() != null) continue;
+            String grade = a.getGrade();
+            if (grade == null || !rosterByGrade.containsKey(grade)) continue;
+            approvedAthleteByGrade.computeIfAbsent(grade, k -> new HashSet<>()).add(a.getId());
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
-        byGrade.forEach((grade, counts) -> {
+        rosterByGrade.forEach((grade, total) -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", grade);
-            item.put("total", counts[0]);
-            item.put("registered", counts[1]);
+            item.put("total", total);
+            item.put("registered", approvedAthleteByGrade.getOrDefault(grade, Set.of()).size());
             result.add(item);
         });
         return result;

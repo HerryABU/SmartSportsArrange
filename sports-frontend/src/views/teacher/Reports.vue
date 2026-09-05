@@ -147,12 +147,15 @@
                   <el-table-column prop="count" label="报名人数" />
                   <el-table-column prop="capacity" label="满额率">
                     <template #default="{ row }">
-                      <el-progress
-                        :percentage="row.capacity"
-                        :stroke-width="16"
-                        :text-inside="true"
-                        :status="row.capacity >= 100 ? 'success' : undefined"
-                      />
+                      <template v-if="row.capacity !== null">
+                        <el-progress
+                          :percentage="row.capacity"
+                          :stroke-width="16"
+                          :text-inside="true"
+                          :status="row.capacity >= 100 ? 'success' : undefined"
+                        />
+                      </template>
+                      <el-tag v-else size="small" type="info" effect="plain">不限</el-tag>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -298,16 +301,19 @@ async function fetchStatistics() {
         percentage: sum > 0 ? Math.round(r.count / sum * 100) : 0
       }))
     }
-    // 按项目统计（含满额率）
+    // 按项目统计（含满额率）；同名项目(多个年级组)后端已聚合
     if (regStats?.byEvent) {
       eventStats.value = Object.entries(regStats.byEvent).map(([name, counts]) => {
-        const total = Number(counts.total) || 0
+        const approved = Number(counts.approved) || 0
+        const pending = Number(counts.pending) || 0
         const cap = Number(counts.capacity) || 0
         return {
           eventName: name,
-          count: total,
-          approved: Number(counts.approved) || 0,
-          capacity: cap > 0 ? Math.min(100, Math.round(total / cap * 100)) : 0
+          count: approved + pending, // 有效报名（已审核 + 待审核）
+          approved,
+          pending,
+          // 未配置名额上限 → null，前端显示「不限」而非误导性的 0%
+          capacity: cap > 0 ? Math.min(100, Math.round((approved + pending) / cap * 100)) : null
         }
       })
     }
