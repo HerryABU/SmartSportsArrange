@@ -42,6 +42,8 @@ data/exports/*
 data/uploads/*
 data/backup/*
 data/avatars/*
+# Word 秩序册生成落盘目录（WordOrderBookService.generateToDisk 输出）
+data/order_book/*
 !data/**/.gitkeep
 *.log
 
@@ -65,9 +67,6 @@ data/installed.flag
 .DS_Store
 Thumbs.db
 ehthumbs.db
-
-# backend runtime logs from tests/boot
-sports-backend/data/
 
 # backend runtime logs from tests/boot
 sports-backend/data/
