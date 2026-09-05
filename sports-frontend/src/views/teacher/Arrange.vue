@@ -55,8 +55,15 @@
       </el-card>
 
       <template v-if="selectedEvent">
-        <!-- 操作栏 -->
+        <!-- 操作栏：专属头部 + 功能按钮（避免与下方"道次编排结果"header 视觉粘连） -->
         <el-card class="toolbar" shadow="hover">
+          <template #header>
+            <div class="toolbar-header">
+              <span class="th-ico">⚙️</span>
+              <span class="th-title">编排功能</span>
+              <span class="th-tip">先选「执行编排」生成最终道次，再在此处调整</span>
+            </div>
+          </template>
           <div class="toolbar-content">
             <div class="toolbar-left">
               <el-button class="mobile-project-btn" @click="mobileDrawer = true" :icon="Trophy" size="small">项目列表</el-button>
@@ -117,7 +124,7 @@
                 <el-radio-button value="preliminary">预赛</el-radio-button>
                 <el-radio-button value="final">决赛</el-radio-button>
               </el-radio-group>
-              <el-tag v-if="statistics" type="info" size="small">
+              <el-tag v-if="statistics && statistics.version != null" type="info" size="small">
                 版本 {{ statistics.version }}
               </el-tag>
             </div>
@@ -618,7 +625,8 @@ const exportSheet = async () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
+  padding-bottom: 24px;
 }
 
 .empty-card {
@@ -636,6 +644,32 @@ const exportSheet = async () => {
 
 .toolbar {
   border-radius: 12px;
+  border-top: 3px solid #409eff;
+  position: relative;
+  z-index: 5; /* 永远高于下方各卡片的 header 背景，避免视觉粘连 */
+}
+.toolbar :deep(.el-card__header) {
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+  border-radius: 12px 12px 0 0;
+  padding: 12px 18px;
+}
+.toolbar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #303133;
+}
+.toolbar-header .th-ico { font-size: 16px; }
+.toolbar-header .th-title { font-size: 14px; }
+.toolbar-header .th-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+  font-weight: 400;
+}
+@media (max-width: 760px) {
+  .toolbar-header .th-tip { display: none; }
 }
 
 .toolbar :deep(.el-card__body) {
@@ -682,11 +716,15 @@ const exportSheet = async () => {
 
 .heat-grid-card {
   border-radius: 12px;
+  position: relative;
+  z-index: 1;
 }
 
 .heat-grid-card :deep(.el-card__header) {
-  background: linear-gradient(135deg, #e8f4fd 0%, #d0e8f7 100%);
+  background: linear-gradient(135deg, #fafbfc 0%, #f1f4f8 100%);
+  border-bottom: 1px solid #e4e7ed;
   border-radius: 12px 12px 0 0;
+  padding: 12px 18px;
 }
 
 .grid-header {
