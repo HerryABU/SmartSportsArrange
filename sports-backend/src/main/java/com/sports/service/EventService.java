@@ -130,6 +130,104 @@ public class EventService {
         log.info("删除项目成功: {}", event.getName());
     }
 
+    // ==================== 批量操作（逐条独立，单条失败不影响其余） ====================
+
+    /** 批量新增：返回成功/失败明细 */
+    public Map<String, Object> batchCreate(List<Event> items) {
+        List<Map<String, Object>> errors = new ArrayList<>();
+        List<String> created = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            Event evt = items.get(i);
+            String label = evt.getName() != null ? evt.getName() : ("第" + (i + 1) + "条");
+            try {
+                Event saved = create(evt);
+                created.add(saved.getName());
+            } catch (Exception e) {
+                errors.add(Map.of("index", i + 1, "name", label,
+                        "message", e.getMessage() == null ? e.toString() : e.getMessage()));
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", items.size());
+        result.put("success", created.size());
+        result.put("failed", errors.size());
+        result.put("created", created);
+        result.put("errors", errors);
+        log.info("批量新增项目: total={}, success={}, failed={}", items.size(), created.size(), errors.size());
+        return result;
+    }
+
+    /** 批量部分更新（patch 中非空字段生效，与单条 update 语义一致） */
+    public Map<String, Object> batchUpdate(List<Long> ids, Event patch) {
+        List<Map<String, Object>> errors = new ArrayList<>();
+        List<String> updated = new ArrayList<>();
+        for (Long id : ids) {
+            try {
+                Event saved = update(id, patch);
+                updated.add(saved.getName());
+            } catch (Exception e) {
+                errors.add(Map.of("id", id, "message",
+                        e.getMessage() == null ? e.toString() : e.getMessage()));
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", ids.size());
+        result.put("success", updated.size());
+        result.put("failed", errors.size());
+        result.put("updated", updated);
+        result.put("errors", errors);
+        log.info("批量更新项目: total={}, success={}, failed={}", ids.size(), updated.size(), errors.size());
+        return result;
+    }
+
+    /** 批量启用/禁用 */
+    public Map<String, Object> batchStatus(List<Long> ids, Boolean enabled) {
+        List<Map<String, Object>> errors = new ArrayList<>();
+        List<String> ok = new ArrayList<>();
+        for (Long id : ids) {
+            try {
+                Event saved = updateStatus(id, enabled);
+                ok.add(saved.getName());
+            } catch (Exception e) {
+                errors.add(Map.of("id", id, "message",
+                        e.getMessage() == null ? e.toString() : e.getMessage()));
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", ids.size());
+        result.put("success", ok.size());
+        result.put("failed", errors.size());
+        result.put("errors", errors);
+        log.info("批量{}项目: total={}, success={}, failed={}", enabled ? "启用" : "禁用", ids.size(), ok.size(), errors.size());
+        return result;
+    }
+
+    /** 批量删除（软删除） */
+    public Map<String, Object> batchDelete(List<Long> ids) {
+        List<Map<String, Object>> errors = new ArrayList<>();
+        List<String> deleted = new ArrayList<>();
+        for (Long id : ids) {
+            try {
+                Event evt = eventRepository.findById(id).orElseThrow(
+                        () -> new IllegalArgumentException("项目不存在: " + id));
+                evt.setDeletedAt(LocalDateTime.now());
+                eventRepository.save(evt);
+                deleted.add(evt.getName());
+            } catch (Exception e) {
+                errors.add(Map.of("id", id, "message",
+                        e.getMessage() == null ? e.toString() : e.getMessage()));
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", ids.size());
+        result.put("success", deleted.size());
+        result.put("failed", errors.size());
+        result.put("deleted", deleted);
+        result.put("errors", errors);
+        log.info("批量删除项目: total={}, success={}, failed={}", ids.size(), deleted.size(), errors.size());
+        return result;
+    }
+
     /** 获取预设模板，支持分类过滤 */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> getPresets(Map<String, Object> categoryFilter) {
