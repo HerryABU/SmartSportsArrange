@@ -166,6 +166,7 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -226,8 +227,9 @@ async function generateOrderBook() {
   }
 }
 
-function exportOrderBook() {
-  window.open(apiBase() + '/excel/export/order-book', '_blank')
+async function exportOrderBook() {
+  try { await downloadApi('/excel/export/order-book', '秩序册.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function generateResultBook() {
@@ -252,8 +254,9 @@ async function generateResultBook() {
   }
 }
 
-function exportResultBook() {
-  window.open(apiBase() + '/excel/export/result-book', '_blank')
+async function exportResultBook() {
+  try { await downloadApi('/excel/export/result-book', '成绩册.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function fetchStatistics() {

@@ -227,6 +227,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy, Upload, Document } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const viewMode = ref('list')
@@ -377,13 +378,18 @@ function handleView(row) {
   detailVisible.value = true
 }
 
-function downloadTemplate() {
+async function downloadTemplate() {
   // 与导入向导同源：表格1 报名表模板（年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）
-  window.open(apiBase() + '/registrations/template', '_blank')
+  try {
+    await downloadApi('/registrations/template', '报名表模板.xlsx')
+  } catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
 }
 
-function handleExport() {
-  window.open(apiBase() + '/registrations/export', '_blank')
+async function handleExport() {
+  try {
+    await downloadApi('/registrations/export', '报名数据.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 // ==================== 报名表导入向导（三种模式） ====================
@@ -400,8 +406,10 @@ function openImportDialog() {
   importResult.value = null
 }
 
-function downloadSignupTemplate() {
-  window.open(apiBase() + '/registrations/template', '_blank')
+async function downloadSignupTemplate() {
+  try {
+    await downloadApi('/registrations/template', '报名表模板.xlsx')
+  } catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
 }
 
 function onFileChange(e) {

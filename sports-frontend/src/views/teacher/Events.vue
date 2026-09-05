@@ -493,6 +493,7 @@ import { DocumentCopy, Plus, CircleCheck, Upload, Download } from '@element-plus
 import type { FormInstance, FormRules } from 'element-plus'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 // ==================== 类型定义 ====================
 interface EventItem {
@@ -644,8 +645,13 @@ function downloadTemplate() {
   URL.revokeObjectURL(url)
 }
 
-function handleExport() {
-  window.open(apiBase() + '/events/export', '_blank')
+async function handleExport() {
+  try {
+    await downloadApi('/events/export', '比赛项目导出.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
 }
 
 // ==================== 方法 ====================

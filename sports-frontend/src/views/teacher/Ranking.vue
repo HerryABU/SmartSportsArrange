@@ -333,6 +333,7 @@ import { ElMessage } from 'element-plus'
 import { Download, Trophy, Refresh } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const activeTab = ref('individual')
@@ -549,14 +550,17 @@ async function onParadeFile(e) {
   }
 }
 
-function exportIndividual() {
-  window.open(apiBase() + '/ranking/individual-score/export', '_blank')
+async function exportIndividual() {
+  try { await downloadApi('/ranking/individual-score/export', '个人排名导出.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
-function exportTeam() {
-  window.open(apiBase() + '/ranking/team-score/export', '_blank')
+async function exportTeam() {
+  try { await downloadApi('/ranking/team-score/export', '团体排名导出.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
-function exportRecords() {
-  window.open(apiBase() + '/ranking/records/export', '_blank')
+async function exportRecords() {
+  try { await downloadApi('/ranking/records/export', '纪录列表导出.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function loadGrades() {

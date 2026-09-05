@@ -255,6 +255,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const arranging = ref(false)
@@ -492,8 +493,9 @@ async function saveEdit() {
   }
 }
 
-function exportSheet() {
-  window.open(apiBase() + '/schedule/export', '_blank')
+async function exportSheet() {
+  try { await downloadApi('/schedule/export', '赛程总表.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function clearAll() {

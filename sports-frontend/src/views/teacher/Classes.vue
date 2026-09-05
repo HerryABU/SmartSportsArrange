@@ -235,6 +235,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, DocumentCopy } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 // ---------- grade options ----------
 const gradeOptions = [
@@ -465,8 +466,9 @@ function handleImportError(error, uploadFile) {
   ElMessage.error('导入失败，请检查文件格式')
 }
 
-function downloadTemplate() {
-  window.open(apiBase() + '/classes/template', '_blank')
+async function downloadTemplate() {
+  try { await downloadApi('/classes/template', '班级导入模板.xlsx') }
+  catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
 }
 
 async function handleExport() {

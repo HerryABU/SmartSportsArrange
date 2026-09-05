@@ -627,6 +627,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, DocumentCopy, Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -807,8 +808,11 @@ async function deleteBackup(row) {
   } catch (e) { if (e !== 'cancel') console.error(e) }
 }
 
-function downloadBackup(row) {
-  window.open(apiBase() + '/backup/download/' + encodeURIComponent(row.fileName), '_blank')
+async function downloadBackup(row) {
+  try {
+    await downloadApi('/backup/download/' + encodeURIComponent(row.fileName), row.fileName || 'backup.zip')
+    ElMessage.success('备份下载中')
+  } catch (e) { ElMessage.error(e?.message || '备份下载失败，请重新登录后再试') }
 }
 
 // ============ 健康检查 ============

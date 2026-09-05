@@ -250,6 +250,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft, Timer } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import HeatGrid from './components/HeatGrid.vue'
 
 // 年级列表：动态来自 系统设置·年级管理（严禁硬编码）
@@ -574,8 +575,12 @@ const loadQualifiers = async (silent) => {
   }
 }
 
-const exportSheet = () => {
-  window.open(apiBase() + '/arrange/events/' + selectedEvent.value.id + '/export', '_blank')
+const exportSheet = async () => {
+  if (!selectedEvent.value) { ElMessage.warning('请先选择项目'); return }
+  try {
+    await downloadApi('/arrange/events/' + selectedEvent.value.id + '/export', '编排道次.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 </script>
 

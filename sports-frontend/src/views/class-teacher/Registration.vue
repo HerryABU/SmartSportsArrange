@@ -430,6 +430,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Download, Upload, Check } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const athletes = ref([])
@@ -743,7 +744,10 @@ function openImportDialog() {
   ctFile.value = null
   ctResult.value = null
 }
-function downloadSignupTemplate() { window.open(apiBase() + '/registrations/template', '_blank') }
+async function downloadSignupTemplate() {
+  try { await downloadApi('/registrations/template', '报名表模板.xlsx') }
+  catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
+}
 function onCtFile(e) { ctFile.value = e.target.files?.[0] || null; ctResult.value = null }
 async function doCtImport() {
   if (!ctFile.value) return
