@@ -89,13 +89,22 @@ public class Event {
     private Integer intervalMinutes;
 
     /**
-     * 赛程调度模式：serial=串行（独占场地依次进行）；parallel=并行（可与其他项目同时进行）。
-     * 径赛通常串行、田赛通常并行；为空时按项目类别自动推断。
+     * 项目内并发人数（1~n）：同一时刻该项目可同时进行的人数（田赛=工位数/试跳位，径赛=每组人数）。
+     * <p>径赛留空时按道次数（{@link #laneCount}）计算；田赛留空按 1（逐个进行）。</p>
+     * <p>时长估算公式：轮次 = ceil(参赛人数 / concurrency)，径赛每轮 heatMinutes、田赛每轮 fieldPerAthleteMinutes。</p>
      */
+    @Column
+    @JsonProperty("concurrency")
+    private Integer concurrency;
+
+    /**
+     * @deprecated 已由「并发位数」模型取代（见 {@link #concurrency} 与全局 trackSlots/fieldSlots）。
+     *             该字段仅为兼容历史数据保留，不再参与任何编排计算。
+     */
+    @Deprecated
     @Column(length = 20)
-    @Builder.Default
     @JsonProperty("scheduleMode")
-    private String scheduleMode = "serial";
+    private String scheduleMode;
 
     /** 默认比赛场地 */
     @Column(length = 50)

@@ -46,10 +46,11 @@ public class EventController {
         return ApiResponse.success("创建成功", eventService.create(event));
     }
 
+    /** 部分更新：仅覆盖请求中出现的字段（批量修改单个字段不会误伤其它字段） */
     @PutMapping("/{id}")
-    public ApiResponse<Event> update(@PathVariable Long id, @RequestBody @Valid Event event) {
-        log.info("更新比赛项目: id={}", id);
-        return ApiResponse.success("更新成功", eventService.update(id, event));
+    public ApiResponse<Event> update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        log.info("更新比赛项目: id={}, 字段={}", id, body.keySet());
+        return ApiResponse.success("更新成功", eventService.update(id, body));
     }
 
     @PutMapping("/{id}/status")
@@ -78,15 +79,13 @@ public class EventController {
         return ApiResponse.success("批量创建完成", eventService.batchCreate(events == null ? List.of() : events));
     }
 
-    /** 批量部分更新：body = { ids: Long[], patch: {...} }（patch 非空字段生效） */
+    /** 批量部分更新：body = { ids: Long[], patch: {...} }（仅 patch 中出现的字段生效） */
     @PutMapping("/batch")
     public ApiResponse<Map<String, Object>> batchUpdate(@RequestBody Map<String, Object> body) {
         List<Long> ids = castIds(body.get("ids"));
         Map<String, Object> patchMap = castPatch(body.get("patch"));
-        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-        Event patch = om.convertValue(patchMap, Event.class);
-        log.info("批量更新比赛项目: count={}", ids.size());
-        return ApiResponse.success("批量更新完成", eventService.batchUpdate(ids, patch));
+        log.info("批量更新比赛项目: count={}, 字段={}", ids.size(), patchMap.keySet());
+        return ApiResponse.success("批量更新完成", eventService.batchUpdate(ids, patchMap));
     }
 
     /** 批量启用/禁用：body = { ids: Long[], enabled: boolean } */

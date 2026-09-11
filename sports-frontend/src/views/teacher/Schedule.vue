@@ -163,22 +163,64 @@
           </div>
         </el-form-item>
 
-        <el-form-item label="并行/串行">
-          <div style="display:flex;gap:24px;width:100%">
+        <el-form-item label="并发位数">
+          <div style="display:flex;gap:32px;align-items:flex-start;width:100%;flex-wrap:wrap">
             <div>
-              <div class="hint" style="margin-bottom:4px">径赛</div>
-              <el-radio-group v-model="meetForm.trackMode" size="small">
-                <el-radio-button value="serial">串行（推荐）</el-radio-button>
-                <el-radio-button value="parallel">并行</el-radio-button>
-              </el-radio-group>
+              <div class="hint" style="margin-bottom:4px">径赛（同时进行的项目数）</div>
+              <el-input-number v-model="meetForm.trackSlots" :min="1" :max="10" size="small" />
             </div>
             <div>
-              <div class="hint" style="margin-bottom:4px">田赛</div>
-              <el-radio-group v-model="meetForm.fieldMode" size="small">
-                <el-radio-button value="parallel">并行（推荐）</el-radio-button>
-                <el-radio-button value="serial">串行</el-radio-button>
-              </el-radio-group>
+              <div class="hint" style="margin-bottom:4px">田赛（同时进行的项目数）</div>
+              <el-input-number v-model="meetForm.fieldSlots" :min="1" :max="10" size="small" />
             </div>
+            <div class="hint" style="margin-top:20px;flex:1;min-width:260px">
+              1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目。<br />
+              田赛的 n 个并行项目各占一个场地，场地不足时自动复用并提示。
+            </div>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="项目编排顺序">
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              自定义项目的编排先后顺序（田赛 + 径赛混排，各自在所属并发池内生效）；未列入的项目按项目排序号排在后面。
+            </div>
+            <div class="order-list">
+              <div v-for="(item, idx) in eventOrderList" :key="item.id" class="order-row">
+                <el-tag size="small" :type="item.isTrack ? 'primary' : 'warning'" effect="plain">
+                  {{ item.isTrack ? '径' : '田' }}
+                </el-tag>
+                <span class="order-name">{{ item.name }}</span>
+                <span class="hint">{{ item.gradeGroup || '不分年级' }}</span>
+                <span style="flex:1"></span>
+                <el-button link size="small" :disabled="idx === 0" @click="moveEvent(idx, 0)">置顶</el-button>
+                <el-button link size="small" :disabled="idx === 0" @click="moveEvent(idx, -1)">上移</el-button>
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1"
+                  @click="moveEvent(idx, 1)">下移</el-button>
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1"
+                  @click="moveEvent(idx, 999)">置底</el-button>
+              </div>
+              <el-empty v-if="!eventOrderList.length" description="暂无启用项目" :image-size="48" />
+            </div>
+            <el-button size="small" plain @click="resetEventOrder">按项目排序号重置</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="田赛分组">
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              同一组的田赛项目会安排在同一时段并行进行（组内项目数受「田赛并发位数」约束，超出时自动分波）。
+            </div>
+            <div v-for="(g, gi) in meetForm.fieldGroups" :key="gi" class="group-row">
+              <el-input v-model="g.name" size="small" placeholder="组名（如 田赛A组）" style="width:150px" />
+              <el-select v-model="g.eventIds" multiple collapse-tags size="small" placeholder="选择田赛项目"
+                style="flex:1;min-width:220px">
+                <el-option v-for="e in fieldEvents" :key="e.id"
+                  :label="e.name + '（' + (e.gradeGroup || '不分年级') + '）'" :value="e.id" />
+              </el-select>
+              <el-button link type="danger" size="small" @click="meetForm.fieldGroups.splice(gi, 1)">删除</el-button>
+            </div>
+            <el-button size="small" type="primary" plain :icon="Plus" @click="addFieldGroup">添加分组</el-button>
           </div>
         </el-form-item>
 
@@ -197,10 +239,10 @@
 
         <el-form-item label="场地">
           <el-select v-model="meetForm.venues" multiple allow-create default-first-option style="width:100%"
-            placeholder="第 1 个为主场地（径赛串行用），其余供田赛并行">
+            placeholder="第 1 个为主场地（径赛用），其余供田赛并行">
             <el-option v-for="v in defaultVenues" :key="v" :label="v" :value="v" />
           </el-select>
-          <div class="hint" style="width:100%">第一个场地默认留给径赛串行；田赛并行会在其余场地间并行开赛。</div>
+          <div class="hint" style="width:100%">第一个场地用于径赛；田赛的 n 个并发位依次占用其余场地，不足时复用并提示。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -280,14 +322,67 @@ const meetForm = reactive({
     { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
     { day: 2, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] }
   ],
-  trackMode: 'serial',
-  fieldMode: 'parallel',
+  trackSlots: 1,
+  fieldSlots: 2,
+  eventOrder: [],
+  fieldGroups: [],
   defaultDurationMinutes: 30,
   defaultIntervalMinutes: 5,
   heatMinutes: 6,
   fieldPerAthleteMinutes: 3,
   venues: [...defaultVenues]
 })
+
+// ==================== 项目编排顺序 / 田赛分组 ====================
+const allEvents = ref([])
+const eventOrderList = ref([])
+const fieldEvents = computed(() => allEvents.value.filter(e => !e.isTrack))
+
+/** 按 meetForm.eventOrder 排出可编辑列表；未列入的项目按 sortOrder 追加在后 */
+function buildEventOrder() {
+  const pos = new Map((meetForm.eventOrder || []).map((id, i) => [id, i]))
+  eventOrderList.value = [...allEvents.value].sort((a, b) => {
+    const pa = pos.has(a.id) ? pos.get(a.id) : Number.MAX_SAFE_INTEGER
+    const pb = pos.has(b.id) ? pos.get(b.id) : Number.MAX_SAFE_INTEGER
+    if (pa !== pb) return pa - pb
+    return (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+  })
+}
+
+/** dir: -1 上移 / 1 下移 / 0 置顶 / 999 置底 */
+function moveEvent(index, dir) {
+  const arr = [...eventOrderList.value]
+  if (dir === 0) {
+    const [it] = arr.splice(index, 1)
+    arr.unshift(it)
+  } else if (dir === 999) {
+    const [it] = arr.splice(index, 1)
+    arr.push(it)
+  } else {
+    const target = index + dir
+    if (target < 0 || target >= arr.length) return
+    ;[arr[index], arr[target]] = [arr[target], arr[index]]
+  }
+  eventOrderList.value = arr
+}
+
+function resetEventOrder() {
+  eventOrderList.value = [...allEvents.value].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+}
+
+function addFieldGroup() {
+  meetForm.fieldGroups.push({ name: '田赛组' + (meetForm.fieldGroups.length + 1), eventIds: [] })
+}
+
+async function fetchEvents() {
+  try {
+    const res = await request.get('/events')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    allEvents.value = list.filter(e => e.isEnabled !== false && e.enabled !== false)
+  } catch (e) {
+    allEvents.value = []
+  }
+}
 
 const editForm = reactive({
   id: null, eventId: null, eventName: '', day: 1, scheduleDate: '', grade: '',
@@ -357,6 +452,14 @@ async function openMeetConfig() {
       }))
     }))
     meetForm.venues = res.venues && res.venues.length ? res.venues : [...defaultVenues]
+    // 并发位数（旧串行/并行配置由后端平滑换算为 1~n）
+    meetForm.trackSlots = Number(res.trackSlots) > 0 ? Number(res.trackSlots) : 1
+    meetForm.fieldSlots = Number(res.fieldSlots) > 0 ? Number(res.fieldSlots) : 2
+    // 自定义项目顺序与田赛分组
+    meetForm.eventOrder = Array.isArray(res.eventOrder) ? [...res.eventOrder] : []
+    meetForm.fieldGroups = (Array.isArray(res.fieldGroups) ? res.fieldGroups : [])
+      .map(g => ({ name: g?.name || '', eventIds: Array.isArray(g?.eventIds) ? [...g.eventIds] : [] }))
+    buildEventOrder()
     // 服务端已自动填充 gradeOrder（跟随年级设置或已显式定制）
     useCustomOrder.value = !!res.gradeOrderCustom
     meetForm.gradeOrder = (res.gradeOrder && res.gradeOrder.length) ? [...res.gradeOrder] : []
@@ -435,8 +538,14 @@ async function saveMeetConfig() {
       // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
       gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
       venues: meetForm.venues,
-      trackMode: meetForm.trackMode,
-      fieldMode: meetForm.fieldMode,
+      trackSlots: meetForm.trackSlots,
+      fieldSlots: meetForm.fieldSlots,
+      // 自定义项目顺序（仅提交当前列表顺序，未列入的项目由后端按排序号追加）
+      eventOrder: eventOrderList.value.map(e => e.id),
+      // 只提交非空分组（组内项目必须同期的田赛）
+      fieldGroups: meetForm.fieldGroups
+        .filter(g => g.eventIds && g.eventIds.length)
+        .map(g => ({ name: g.name, eventIds: [...g.eventIds] })),
       defaultDurationMinutes: meetForm.defaultDurationMinutes,
       defaultIntervalMinutes: meetForm.defaultIntervalMinutes,
       heatMinutes: meetForm.heatMinutes,
@@ -515,7 +624,7 @@ async function clearAll() {
   }
 }
 
-onMounted(fetchList)
+onMounted(() => { fetchList(); fetchEvents() })
 </script>
 
 <style scoped>
@@ -560,6 +669,19 @@ onMounted(fetchList)
 .grade-order-row .go-name { flex: 1; font-size: 14px; color: #303133; }
 .day-config-title { font-weight: 600; margin-bottom: 8px; color: #303133; }
 .slot-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.order-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 260px; overflow-y: auto; padding: 6px; margin-bottom: 8px;
+  border: 1px solid #e4e7ed; border-radius: 8px; background: #fafbfc;
+}
+.order-row {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
+}
+.order-row .order-name { font-size: 14px; color: #303133; font-weight: 500; }
+.group-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
+}
 @media (max-width: 768px) {
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-right { width: 100%; }

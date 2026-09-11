@@ -31,10 +31,14 @@ import java.util.stream.Collectors;
  *   <li><b>日期</b>：startDate + days 推出 xD-yD，每天的时段（AM/PM）起止可各不相同；</li>
  *   <li><b>年级顺序</b>：取自 gradeOrder（缺省按 grades 的 sortOrder 升序），
  *       默认高一→高二→高三仅是可修改的默认值，不写死在代码里；</li>
- *   <li><b>串行 / 并行</b>：径赛默认串行（独占跑道依次进行），田赛默认并行（多场地同时开赛），
- *       可按项目或全局切换；</li>
- *   <li><b>时长</b>：径赛按「组数 × 单组用时」、田赛按「人数 × 每人次用时」估算，
- *       并受 maxDurationMinutes 封顶；项目之间插入 intervalMinutes 间隔。</li>
+ *   <li><b>并发位数（取代串行/并行开关）</b>：trackSlots / fieldSlots —— 1 = 串行，
+ *       n = 同一时刻可同时进行 n 个项目。槽位与场地一一对应（场地不足时复用并告警）；</li>
+ *   <li><b>自定义项目顺序</b>：eventOrder（eventId 有序列表，田赛+径赛混排）优先，
+ *       未列入的项目按 sortOrder 追加；</li>
+ *   <li><b>田赛分组</b>：fieldGroups 中同一组的田赛项目安排在同一时段并行进行；</li>
+ *   <li><b>项目内并发</b>：event.concurrency（径赛默认取道次数；田赛默认 1），
+ *       时长 = ceil(人数 / 并发) × 单轮用时，并受 maxDurationMinutes 封顶；
+ *       项目之间插入 intervalMinutes 间隔。</li>
  * </ul>
  */
 @Slf4j
@@ -59,19 +63,23 @@ public class ScheduleService {
      * 自动编排赛程。
      *
      * @param override 临时覆盖参数（不落库），可含 startDate / days / gradeOrder /
-     *                 trackMode / fieldMode / defaultDurationMinutes / defaultIntervalMinutes / venues
+     *                 trackSlots / fieldSlots / eventOrder / fieldGroups /
+     *                 defaultDurationMinutes / defaultIntervalMinutes / venues
      */
     public Map<String, Object> autoSchedule(Map<String, Object> override) {
         Map<String, Object> cfg = mergeConfig(override);
 
         List<String> gradeOrder = strList(cfg.get("gradeOrder"));
-        String trackMode = str(cfg.get("trackMode"), "serial");
-        String fieldMode = str(cfg.get("fieldMode"), "parallel");
+        // 并发位数：1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目
+        int trackSlots = Math.max(1, intVal(cfg.get("trackSlots"), 1));
+        int fieldSlots = Math.max(1, intVal(cfg.get("fieldSlots"), 2));
         int defaultDuration = intVal(cfg.get("defaultDurationMinutes"), 30);
         int defaultInterval = intVal(cfg.get("defaultIntervalMinutes"), 5);
         int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
         int fieldPerAthlete = intVal(cfg.get("fieldPerAthleteMinutes"), 3);
         List<String> venues = strList(cfg.get("venues"));
+        List<Long> eventOrder = longList(cfg.get("eventOrder"));
+        Map<Long, String> event2Group = parseFieldGroups(cfg.get("fieldGroups"));
 
         // 时间窗：按 (天, 时段) 顺序铺开
         List<Window> windows = buildWindows(cfg);
@@ -79,97 +87,170 @@ public class ScheduleService {
             throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
         }
 
-        List<Unit> units = buildUnits(gradeOrder, trackMode, fieldMode);
+        List<Unit> units = buildUnits(gradeOrder, eventOrder);
         estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
 
-        // 场地：串行项目用主场地，并行项目在其余场地间并行铺开
+        // 资源池：按类别分配并发位。径赛用主场地；田赛优先用其余场地（不足则复用并告警）
         String mainVenue = venues.isEmpty() ? "田径场" : venues.get(0);
-        List<String> parallelVenues = venues.size() > 1
+        List<String> fieldVenues = venues.size() > 1
                 ? new ArrayList<>(venues.subList(1, venues.size()))
                 : new ArrayList<>(List.of(mainVenue));
-
-        Map<String, Cursor> cursors = new LinkedHashMap<>();
-        cursors.put("__serial__", new Cursor());
-        for (String v : parallelVenues) cursors.put(v, new Cursor());
-
-        scheduleRepository.deleteAllSchedules();
+        Pool trackPool = new Pool("径赛", trackSlots, new ArrayList<>(List.of(mainVenue)));
+        Pool fieldPool = new Pool("田赛", fieldSlots, fieldVenues);
 
         List<EventSchedule> saved = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        if (trackPool.venueShortage) {
+            warnings.add(String.format("径赛并发位数 %d 超过可用场地数，部分槽位将复用同一场地", trackSlots));
+        }
+        if (fieldPool.venueShortage) {
+            warnings.add(String.format("田赛并发位数 %d 超过可用田赛场地数，部分槽位将复用同一场地", fieldSlots));
+        }
+
+        scheduleRepository.deleteAllSchedules();
+
         int autoArrangeOk = 0;
         List<String> autoArrangeFails = new ArrayList<>();
-        int order = 1;
+        int[] orderCounter = {1};
+        Set<Integer> done = new HashSet<>();
 
-        for (Unit u : units) {
-            boolean serial = "serial".equalsIgnoreCase(u.mode);
-            String venue;
-            Cursor cursor;
-
-            if (serial) {
-                venue = mainVenue;
-                cursor = cursors.get("__serial__");
-            } else {
-                // 并行：挑当前推进最靠前（最空闲）的场地，让田赛尽量同时开赛
-                venue = parallelVenues.get(0);
-                Cursor best = cursors.get(venue);
-                for (String v : parallelVenues) {
-                    Cursor c = cursors.computeIfAbsent(v, k -> new Cursor());
-                    if (best == null || c.aheadOf(best)) {
-                        venue = v;
-                        best = c;
-                    }
-                }
-                cursor = best;
-            }
-
-            int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
-
-            // 该单元没有任何有效(已审核)报名 → 不生成空项目，避免赛程被占位刷满
+        for (int i = 0; i < units.size(); i++) {
+            if (done.contains(i)) continue;
+            Unit u = units.get(i);
             if (u.participants <= 0) {
                 warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
                         u.event.getName(), u.grade == null ? "不分年级" : u.grade));
+                done.add(i);
                 continue;
             }
 
-            Slot placed = cursor.place(windows, u.duration, interval);
-            if (placed == null) {
-                warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
-                        u.grade == null ? "不分年级" : u.grade));
-                continue;
-            }
+            Pool pool = u.track ? trackPool : fieldPool;
+            String group = u.track ? null : event2Group.get(u.event.getId());
 
-            EventSchedule s = EventSchedule.builder()
-                    .event(u.event)
-                    .day(placed.window.day)
-                    .scheduleDate(placed.window.date)
-                    .grade(u.grade)
-                    .timeSlot(placed.window.slotName)
-                    .startTime(fmt(placed.startMinute))
-                    .endTime(fmt(placed.startMinute + u.duration))
-                    .venue(venue)
-                    .sortOrder(order++)
-                    .durationMinutes(u.duration)
-                    .remark(u.duration >= u.rawDuration ? null
-                            : String.format("预计%d分钟，已按上限%d分钟压缩", u.rawDuration, u.duration))
-                    .createdAt(LocalDateTime.now())
-                    .updatedAt(LocalDateTime.now())
-                    .build();
-            saved.add(scheduleRepository.save(s));
-
-            // 自动道次编排：径赛项目排入时间表后，立即按 年级×性别 生成决赛道次（复用编排引擎）
-            if (!Boolean.FALSE.equals(u.event.getTrack()) && u.participants > 0) {
-                autoArrangeOk += autoArrangeFor(u, autoArrangeFails);
+            if (group == null) {
+                // 普通单元：占用并发池中最空闲的一个槽位
+                placeOne(u, pool, windows, defaultInterval, saved, warnings, orderCounter, autoArrangeFails);
+                autoArrangeOk += u.arranged;
+                done.add(i);
+            } else {
+                // 田赛分组：同组 + 同年级 的单元安排在同一时段并行进行
+                List<Integer> batch = new ArrayList<>();
+                for (int j = i; j < units.size(); j++) {
+                    if (done.contains(j)) continue;
+                    Unit v = units.get(j);
+                    if (v.track || !sameGrade(v.grade, u.grade)) continue;
+                    if (!group.equals(event2Group.get(v.event.getId()))) continue;
+                    if (v.participants <= 0) {
+                        warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                                v.event.getName(), v.grade == null ? "不分年级" : v.grade));
+                        done.add(j);
+                        continue;
+                    }
+                    batch.add(j);
+                }
+                if (batch.isEmpty()) { done.add(i); continue; }
+                placeBatch(batch, units, fieldPool, windows, defaultInterval, group,
+                        saved, warnings, orderCounter, autoArrangeFails);
+                for (Integer idx : batch) {
+                    autoArrangeOk += units.get(idx).arranged;
+                    done.add(idx);
+                }
             }
         }
 
-        log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}, 田赛{}",
-                saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0), trackMode, fieldMode);
+        log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}位并发, 田赛{}位并发, 田赛分组{}组",
+                saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
+                trackSlots, fieldSlots, event2Group.values().stream().distinct().count());
 
         Map<String, Object> result = buildResult();
         result.put("warnings", warnings);
         result.put("configUsed", cfg);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         return result;
+    }
+
+    // ==================== 放置（并发池） ====================
+
+    /** 普通单元：占用池中最空闲的槽位，并登记赛程行（径赛顺带自动道次编排） */
+    private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval,
+                          List<EventSchedule> saved, List<String> warnings,
+                          int[] orderCounter, List<String> autoArrangeFails) {
+        int slot = pool.pickSlot();
+        int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
+        Slot placed = pool.cursors.get(slot).place(windows, u.duration, interval);
+        if (placed == null) {
+            warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
+                    u.grade == null ? "不分年级" : u.grade));
+            return;
+        }
+        saveSchedule(u, placed, pool.venueOf.get(slot), saved, orderCounter, autoArrangeFails);
+    }
+
+    /**
+     * 田赛分组批量放置：同组单元尽量落在<b>同一时段</b>并行进行。
+     *
+     * <p>按并发位数分批：每批最多 fieldSlots 个单元，各占一个槽位；为保证同时段，
+     * 本批槽位从「各槽位当前窗口的最大值」开始放置。若个别槽位该时段放不下而顺延，
+     * 记 warning 说明未完全同期。</p>
+     */
+    private void placeBatch(List<Integer> batch, List<Unit> units, Pool pool, List<Window> windows,
+                            int defaultInterval, String group, List<EventSchedule> saved,
+                            List<String> warnings, int[] orderCounter, List<String> autoArrangeFails) {
+        int slots = pool.slots;
+        for (int from = 0; from < batch.size(); from += slots) {
+            List<Integer> wave = batch.subList(from, Math.min(batch.size(), from + slots));
+
+            // 本批共同起始窗口：取各参与槽位当前窗口的最大值，确保“同一时段”
+            int minWindow = 0;
+            for (int k = 0; k < wave.size(); k++) {
+                minWindow = Math.max(minWindow, pool.cursors.get(k).windowIdx);
+            }
+
+            Window commonWindow = minWindow < windows.size() ? windows.get(minWindow) : null;
+            boolean sameTimeSlot = true;
+            for (int k = 0; k < wave.size(); k++) {
+                Unit u = units.get(wave.get(k));
+                int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
+                Cursor cursor = pool.cursors.get(k);
+                Slot placed = cursor.place(windows, u.duration, interval, minWindow);
+                if (placed == null) {
+                    warnings.add(String.format("田赛分组「%s」中项目「%s」因时段已排满未能安排", group, u.event.getName()));
+                    sameTimeSlot = false;
+                    continue;
+                }
+                if (commonWindow != null && placed.window != commonWindow) sameTimeSlot = false;
+                saveSchedule(u, placed, pool.venueOf.get(k), saved, orderCounter, autoArrangeFails);
+            }
+            if (!sameTimeSlot) {
+                warnings.add(String.format("田赛分组「%s」部分项目未能安排在同一时段（并发位或时段容量不足），已顺延", group));
+            }
+        }
+    }
+
+    /** 登记一条赛程：径赛排入后立即复用编排引擎生成决赛道次 */
+    private void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
+                              int[] orderCounter, List<String> autoArrangeFails) {
+        EventSchedule s = EventSchedule.builder()
+                .event(u.event)
+                .day(placed.window.day)
+                .scheduleDate(placed.window.date)
+                .grade(u.grade)
+                .timeSlot(placed.window.slotName)
+                .startTime(fmt(placed.startMinute))
+                .endTime(fmt(placed.startMinute + u.duration))
+                .venue(venue)
+                .sortOrder(orderCounter[0]++)
+                .durationMinutes(u.duration)
+                .remark(u.duration >= u.rawDuration ? null
+                        : String.format("预计%d分钟，已按上限%d分钟压缩", u.rawDuration, u.duration))
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+        saved.add(scheduleRepository.save(s));
+
+        if (u.track && u.participants > 0) {
+            u.arranged = autoArrangeFor(u, autoArrangeFails);
+        }
     }
 
     /**
@@ -179,9 +260,7 @@ public class ScheduleService {
      */
     private int autoArrangeFor(Unit u, List<String> arrFails) {
         Event e = u.event;
-        int lanes = e.getLaneCount() != null && e.getLaneCount() > 0
-                ? e.getLaneCount()
-                : (e.getDefaultLanes() != null ? e.getDefaultLanes() : 8);
+        int lanes = concurrencyOf(e);
         List<String> genders = new ArrayList<>();
         String gl = e.getGenderLimit();
         if ("女子组".equals(gl)) {
@@ -214,14 +293,17 @@ public class ScheduleService {
 
     /**
      * 按「年级顺序 → 项目顺序」展开赛程单元。
+     *
+     * <p>项目顺序：自定义 eventOrder（eventId 有序列表，田赛+径赛混排）优先；
+     * 未列入的项目保持项目排序号（sortOrder）相对顺序追加在后（稳定排序）。</p>
      * 年级顺序来自配置；event.gradeGroup 非空时该项目只属于对应年级。
      */
-    private List<Unit> buildUnits(List<String> gradeOrder, String trackMode, String fieldMode) {
-        List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
+    private List<Unit> buildUnits(List<String> gradeOrder, List<Long> eventOrder) {
+        List<Event> events = orderedEvents(eventOrder);
 
         List<Unit> units = new ArrayList<>();
         if (gradeOrder.isEmpty()) {
-            for (Event e : events) units.add(new Unit(e, null, resolveMode(e, trackMode, fieldMode)));
+            for (Event e : events) units.add(new Unit(e, null));
             return units;
         }
 
@@ -229,42 +311,55 @@ public class ScheduleService {
             for (Event e : events) {
                 String gg = e.getGradeGroup();
                 if (gg != null && !gg.isBlank() && !Grades.same(gg, grade)) continue;
-                units.add(new Unit(e, grade, resolveMode(e, trackMode, fieldMode)));
+                units.add(new Unit(e, grade));
             }
         }
         return units;
     }
 
-    /** 项目显式 scheduleMode 优先，否则按 径赛/田赛 取全局模式 */
-    private String resolveMode(Event e, String trackMode, String fieldMode) {
-        String m = e.getScheduleMode();
-        if (m != null && !m.isBlank()) return m;
-        return Boolean.FALSE.equals(e.getTrack()) ? fieldMode : trackMode;
+    /** 按自定义顺序（eventOrder）重排项目；未列入者按原 sortOrder 保持相对顺序（稳定排序） */
+    private List<Event> orderedEvents(List<Long> eventOrder) {
+        List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
+        if (eventOrder == null || eventOrder.isEmpty()) return events;
+        Map<Long, Integer> pos = new HashMap<>();
+        for (int i = 0; i < eventOrder.size(); i++) pos.put(eventOrder.get(i), i);
+        List<Event> list = new ArrayList<>(events);
+        list.sort(Comparator.comparingInt(e -> pos.getOrDefault(e.getId(), Integer.MAX_VALUE)));
+        return list;
     }
 
-    /** 估算每个单元用时：径赛看组数，田赛看人次，并受最大时间封顶 */
+    /** 项目内并发人数：项目显式 concurrency 优先；径赛回退道次数，田赛回退 1 */
+    private int concurrencyOf(Event e) {
+        Integer c = e.getConcurrency();
+        if (c != null && c > 0) return c;
+        if (Boolean.FALSE.equals(e.getTrack())) return 1;
+        Integer lc = e.getLaneCount();
+        if (lc != null && lc > 0) return lc;
+        return e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
+    }
+
+    /** 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算），并受最大时间封顶 */
     private void estimateDurations(List<Unit> units, int defaultDuration,
                                    int heatMinutes, int fieldPerAthlete) {
         for (Unit u : units) {
             Event e = u.event;
             boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
             int count = countParticipants(e.getId(), u.grade);
+            int concurrency = concurrencyOf(e);
 
-            if (isTrack) {
-                int lanes = e.getLaneCount() != null && e.getLaneCount() > 0 ? e.getLaneCount() : 8;
-                int entrants = count;
-                if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
-                    entrants = (int) Math.ceil((double) count / e.getTeamMembers());
-                }
-                int heats = Math.max(1, (int) Math.ceil((double) entrants / lanes));
-                u.rawDuration = Math.max(MIN_DURATION, heats * heatMinutes);
-                u.participants = count;
-                u.heats = heats;
-            } else {
-                u.rawDuration = Math.max(MIN_DURATION, count * fieldPerAthlete);
-                u.participants = count;
-                u.heats = 0;
+            int entrants = count;
+            if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
+                entrants = (int) Math.ceil((double) count / e.getTeamMembers());
             }
+            // 轮次 = ceil(参赛单元 / 项目内并发人数)
+            int rounds = Math.max(1, (int) Math.ceil((double) entrants / Math.max(1, concurrency)));
+
+            u.track = isTrack;
+            u.concurrency = concurrency;
+            u.participants = count;
+            u.heats = isTrack ? rounds : 0;
+            u.rounds = rounds;
+            u.rawDuration = Math.max(MIN_DURATION, rounds * (isTrack ? heatMinutes : fieldPerAthlete));
 
             int cap = e.getMaxDurationMinutes() != null ? e.getMaxDurationMinutes() : defaultDuration;
             u.duration = cap > 0 ? Math.min(u.rawDuration, cap) : u.rawDuration;
@@ -372,7 +467,7 @@ public class ScheduleService {
         try (OutputStream out = response.getOutputStream()) {
             List<List<String>> data = new ArrayList<>();
             data.add(List.of("第几天", "日期", "时段", "开始", "结束", "场地", "年级", "项目名称", "项目编码",
-                    "类别", "是否田径", "道次", "调度", "预计用时(分)"));
+                    "类别", "是否田径", "道次", "项目内并发", "预计用时(分)"));
             for (EventSchedule s : schedules) {
                 Event e = s.getEvent();
                 boolean isTrack = e == null || !Boolean.FALSE.equals(e.getTrack());
@@ -386,7 +481,7 @@ public class ScheduleService {
                         e != null ? n(e.getCategory()) : "",
                         isTrack ? "是" : "否",
                         e != null && e.getLaneCount() != null ? String.valueOf(e.getLaneCount()) : "0",
-                        e != null ? n(e.getScheduleMode()) : "",
+                        e != null ? String.valueOf(concurrencyOf(e)) : "",
                         s.getDurationMinutes() != null ? String.valueOf(s.getDurationMinutes()) : ""));
             }
             List<List<String>> head = data.get(0).stream().map(List::of).collect(Collectors.toList());
@@ -414,6 +509,7 @@ public class ScheduleService {
             m.put("genderLimit", e != null ? e.getGenderLimit() : "");
             m.put("isTrack", e == null || !Boolean.FALSE.equals(e.getTrack()));
             m.put("laneCount", e != null ? e.getLaneCount() : 0);
+            m.put("concurrency", e != null ? concurrencyOf(e) : 0);
             m.put("isTeam", e != null && Boolean.TRUE.equals(e.getTeam()));
             m.put("teamSize", e != null ? e.getTeamMembers() : 0);
             m.put("day", s.getDay());
@@ -472,16 +568,48 @@ public class ScheduleService {
     private static class Unit {
         Event event;
         String grade;
-        String mode;
+        boolean track;        // 是否径赛
+        int concurrency = 1;  // 项目内并发人数（径赛=道次/每组人数；田赛=工位数）
         int duration;
         int rawDuration;
         int participants;
-        int heats;
+        int heats;            // 径赛组数
+        int rounds;           // 总轮次（径赛=组数、田赛=批次数）
+        int arranged;         // 径赛自动道次编排成功的性别组数
 
-        Unit(Event event, String grade, String mode) {
+        Unit(Event event, String grade) {
             this.event = event;
             this.grade = grade;
-            this.mode = mode;
+        }
+    }
+
+    /** 并发位池：slots 个并发槽位，槽位与场地一一对应（场地不足则复用） */
+    private static class Pool {
+        final String label;
+        final int slots;
+        final List<Cursor> cursors = new ArrayList<>();
+        final List<String> venueOf = new ArrayList<>();
+        final boolean venueShortage;
+
+        Pool(String label, int slots, List<String> venueNames) {
+            this.label = label;
+            this.slots = Math.max(1, slots);
+            this.venueShortage = venueNames.size() < this.slots;
+            for (int i = 0; i < this.slots; i++) {
+                cursors.add(new Cursor());
+                venueOf.add(venueNames.isEmpty()
+                        ? "田径场"
+                        : venueNames.get(i % venueNames.size()));
+            }
+        }
+
+        /** 选当前推进最靠前（最空闲）的槽位 */
+        int pickSlot() {
+            int best = 0;
+            for (int i = 1; i < cursors.size(); i++) {
+                if (cursors.get(i).aheadOf(cursors.get(best))) best = i;
+            }
+            return best;
         }
     }
 
@@ -520,6 +648,18 @@ public class ScheduleService {
 
         /** 把一段时长放进当前游标位置；放不下就顺延到下一时段 */
         Slot place(List<Window> windows, int duration, int interval) {
+            return place(windows, duration, interval, 0);
+        }
+
+        /**
+         * 同上，但起点不早于 minWindowIdx 号窗口 —— 用于田赛分组：让同组项目落在同一时段。
+         * 若当前已推进到更靠后的窗口，则以当前窗口为准（不会回退）。
+         */
+        Slot place(List<Window> windows, int duration, int interval, int minWindowIdx) {
+            if (windowIdx < minWindowIdx) {
+                windowIdx = minWindowIdx;
+                used = 0;
+            }
             while (windowIdx < windows.size()) {
                 Window w = windows.get(windowIdx);
                 // 段前间隔：除窗口起点外，项目之间留出间隔
@@ -580,6 +720,54 @@ public class ScheduleService {
     }
 
     private static String n(String s) { return s != null ? s : ""; }
+
+    /** 两个年级是否同一（空 = 不分年级，视为相同） */
+    private static boolean sameGrade(String a, String b) {
+        boolean ea = a == null || a.isBlank();
+        boolean eb = b == null || b.isBlank();
+        if (ea && eb) return true;
+        if (ea || eb) return false;
+        return Grades.same(a, b);
+    }
+
+    /** 解析自定义项目顺序（eventId 列表） */
+    private static List<Long> longList(Object v) {
+        List<Long> out = new ArrayList<>();
+        if (!(v instanceof List<?> list)) return out;
+        for (Object o : list) {
+            Long id = asLong(o);
+            if (id != null) out.add(id);
+        }
+        return out;
+    }
+
+    /** 解析田赛分组 [{name, eventIds:[...]}] → eventId → 组名（同名视为同组） */
+    @SuppressWarnings("unchecked")
+    private static Map<Long, String> parseFieldGroups(Object v) {
+        Map<Long, String> map = new LinkedHashMap<>();
+        if (!(v instanceof List<?> list)) return map;
+        int idx = 0;
+        for (Object o : list) {
+            if (!(o instanceof Map)) continue;
+            Map<String, Object> g = (Map<String, Object>) o;
+            String name = str(g.get("name"), null);
+            if (name == null || name.isBlank()) name = "田赛组" + (++idx);
+            if (!(g.get("eventIds") instanceof List<?> ids)) continue;
+            for (Object idObj : ids) {
+                Long id = asLong(idObj);
+                if (id != null) map.put(id, name);
+            }
+        }
+        return map;
+    }
+
+    private static Long asLong(Object o) {
+        if (o instanceof Number n) return n.longValue();
+        if (o != null) {
+            try { return Long.parseLong(String.valueOf(o).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return null;
+    }
 
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> castList(Object v) {

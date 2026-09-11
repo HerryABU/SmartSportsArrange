@@ -884,7 +884,10 @@ public class ArrangementService {
     // ==================== 辅助方法 ====================
 
     private int resolveLanes(Event e) {
-        if (Boolean.FALSE.equals(e.getTrack())) return 1; // 田赛按单人分
+        // 项目内并发人数优先：田赛 = 同时进行的工位数（X 人一批）；径赛 = 每组道次数
+        Integer c = e.getConcurrency();
+        if (c != null && c > 0) return c;
+        if (Boolean.FALSE.equals(e.getTrack())) return 1;
         Integer lc = e.getLaneCount();
         if (lc != null && lc > 0) return lc;
         return e.getDefaultLanes() != null ? e.getDefaultLanes() : 8;

@@ -311,7 +311,9 @@ public class SystemService {
     // 全部可配置，严禁硬编码：
     //   startDate / days / dayConfigs[]  —— 运动会日期与每天的时段（每天可不同）
     //   gradeOrder                       —— 年级出场顺序（缺省取 grades 配置按 sortOrder 排序）
-    //   trackMode / fieldMode            —— 径赛串行、田赛并行（或串行）
+    //   trackSlots / fieldSlots          —— 并发位数：1=串行，n=同时进行 n 个项目（取代原 trackMode/fieldMode）
+    //   eventOrder                       —— 自定义项目编排顺序（eventId 有序列表，田赛+径赛混排）
+    //   fieldGroups                      —— 田赛分组：同组项目安排在同一时段并行
     //   defaultDurationMinutes           —— 每个项目最大时间
     //   defaultIntervalMinutes           —— 项目间隔时间
 
@@ -319,6 +321,9 @@ public class SystemService {
     @Transactional(readOnly = true)
     public Map<String, Object> getMeetSchedule() {
         Map<String, Object> def = defaultMeetSchedule();
+        // 旧「串行/并行」→ 并发位数 平滑迁移（serial→1、parallel→2）。
+        // 必须在 deepMerge 之前基于“库里真实存过的键”判断，否则默认值会掩盖旧键。
+        applyLegacyModeMigration(def);
         Map<String, Object> saved = readJsonConfig("meet_schedule", def);
         // 缺省字段回退到默认值，避免旧配置缺键
         for (Map.Entry<String, Object> e : def.entrySet()) {
@@ -335,6 +340,31 @@ public class SystemService {
         }
         saved.put("gradeOrderCustom", !storedEmpty);
         return saved;
+    }
+
+    /**
+     * 旧「串行 / 并行」→ 新「并发位数」平滑迁移。
+     *
+     * <p>仅当库中<b>存在旧键且未保存过新键</b>时才换算，避免默认值覆盖用户已配置的位数：
+     * 径赛 trackMode（serial→1、parallel→2）写入 trackSlots；
+     * 田赛 fieldMode（serial→1、parallel→2）写入 fieldSlots。</p>
+     */
+    private void applyLegacyModeMigration(Map<String, Object> def) {
+        SystemConfig config = systemConfigRepository.findByConfigKey("meet_schedule").orElse(null);
+        if (config == null || config.getConfigValue() == null || config.getConfigValue().isBlank()) return;
+        try {
+            Map<String, Object> raw = objectMapper.readValue(config.getConfigValue(),
+                    new TypeReference<Map<String, Object>>() {});
+            if (raw == null) return;
+            if (raw.get("trackSlots") == null && raw.get("trackMode") != null) {
+                def.put("trackSlots", "parallel".equalsIgnoreCase(String.valueOf(raw.get("trackMode")).trim()) ? 2 : 1);
+            }
+            if (raw.get("fieldSlots") == null && raw.get("fieldMode") != null) {
+                def.put("fieldSlots", "serial".equalsIgnoreCase(String.valueOf(raw.get("fieldMode")).trim()) ? 1 : 2);
+            }
+        } catch (Exception e) {
+            log.warn("解析 meet_schedule 旧串并行配置失败，按默认并发位数处理: {}", e.getMessage());
+        }
     }
 
     /** 保存运动会日程配置 */
@@ -406,9 +436,13 @@ public class SystemService {
         dayConfigs.add(defaultDayConfig(2));
         def.put("dayConfigs", dayConfigs);
         def.put("gradeOrder", new ArrayList<>());
-        // 径赛默认串行（独占跑道依次进行），田赛默认并行（多个场地同时开赛）
-        def.put("trackMode", "serial");
-        def.put("fieldMode", "parallel");
+        // 并发位数（取代原 串行/并行 开关）：1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目
+        def.put("trackSlots", 1);
+        def.put("fieldSlots", 2);
+        // 自定义项目编排顺序：eventId 有序列表（田赛 + 径赛混排）；空 = 按项目排序号
+        def.put("eventOrder", new ArrayList<>());
+        // 田赛分组：同组田赛安排在「同一时段」并行进行，形如 [{name, eventIds:[...]}]
+        def.put("fieldGroups", new ArrayList<>());
         def.put("defaultDurationMinutes", 30);
         def.put("defaultIntervalMinutes", 5);
         // 单组用时 / 田赛每人次用时，用于估算项目时长

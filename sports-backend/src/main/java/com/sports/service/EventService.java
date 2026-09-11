@@ -1,5 +1,7 @@
 package com.sports.service;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.entity.Event;
 import com.sports.repository.EventRepository;
 import com.sports.service.ExcelService;
@@ -26,6 +28,10 @@ public class EventService {
 
     private final EventRepository eventRepository;
     private final ExcelService excelService;
+
+    /** 仅用于「部分更新」的字段合并；忽略未知属性，避免前端多传键导致 400 */
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     /** 查询所有启用的项目 */
     @Transactional(readOnly = true)
@@ -71,40 +77,39 @@ public class EventService {
     }
 
     /** 更新项目 */
-    public Event update(Long id, Event updated) {
+    /**
+     * 部分更新（PATCH 语义）：<b>仅覆盖请求中显式出现的字段</b>。
+     *
+     * <p>注意：不能按「非空即覆盖」实现 —— Event 的多数字段带 Java 初始化默认值
+     * （track=true、laneCount=8、defaultLanes=8 …），Jackson 把请求反序列化成实体时，
+     * 未提交的字段同样会拿到默认值而非 null，导致"只改一个字段"的批量修改误伤其它字段
+     * （典型：批量改并发把田赛改成径赛）。故此处用 readerForUpdating 只合并请求中出现的键。</p>
+     */
+    public Event update(Long id, Map<String, Object> body) {
         Event existing = getById(id);
-        if (updated.getName() != null) existing.setName(updated.getName());
-        if (updated.getCode() != null && !updated.getCode().equals(existing.getCode())) {
-            if (eventRepository.existsByCode(updated.getCode()))
-                throw new IllegalArgumentException("项目编码已存在: " + updated.getCode());
-            existing.setCode(updated.getCode());
+
+        // 编码唯一性校验（仅当请求确实改了编码）
+        Object codeObj = body.get("code");
+        if (codeObj != null) {
+            String newCode = String.valueOf(codeObj).trim();
+            if (!newCode.isEmpty() && !newCode.equals(existing.getCode())) {
+                if (eventRepository.existsByCode(newCode)) {
+                    throw new IllegalArgumentException("项目编码已存在: " + newCode);
+                }
+            }
         }
-        if (updated.getCategory() != null) existing.setCategory(updated.getCategory());
-        if (updated.getDistanceType() != null) existing.setDistanceType(updated.getDistanceType());
-        if (updated.getGenderLimit() != null) existing.setGenderLimit(updated.getGenderLimit());
-        if (updated.getDefaultLanes() != null) existing.setDefaultLanes(updated.getDefaultLanes());
-        if (updated.getNeedHeats() != null) existing.setNeedHeats(updated.getNeedHeats());
-        if (updated.getMaxPerHeat() != null) existing.setMaxPerHeat(updated.getMaxPerHeat());
-        if (updated.getAdvanceCount() != null) existing.setAdvanceCount(updated.getAdvanceCount());
-        if (updated.getScoringType() != null) existing.setScoringType(updated.getScoringType());
-        if (updated.getScoringRules() != null) existing.setScoringRules(updated.getScoringRules());
-        if (updated.getSortOrder() != null) existing.setSortOrder(updated.getSortOrder());
-        if (updated.getIsEnabled() != null) existing.setIsEnabled(updated.getIsEnabled());
-        if (updated.getRegistrationStart() != null) existing.setRegistrationStart(updated.getRegistrationStart());
-        if (updated.getRegistrationEnd() != null) existing.setRegistrationEnd(updated.getRegistrationEnd());
-        if (updated.getRecord() != null) existing.setRecord(updated.getRecord());
-        if (updated.getRemark() != null) existing.setRemark(updated.getRemark());
-        if (updated.getGradeGroup() != null) existing.setGradeGroup(updated.getGradeGroup());
-        if (updated.getMaxParticipants() != null) existing.setMaxParticipants(updated.getMaxParticipants());
-        // 表格2 / 调度参数（允许显式置空以外的赋值）
-        if (updated.getTrack() != null) existing.setTrack(updated.getTrack());
-        if (updated.getLaneCount() != null) existing.setLaneCount(updated.getLaneCount());
-        if (updated.getTeam() != null) existing.setTeam(updated.getTeam());
-        if (updated.getTeamMembers() != null) existing.setTeamMembers(updated.getTeamMembers());
-        if (updated.getMaxDurationMinutes() != null) existing.setMaxDurationMinutes(updated.getMaxDurationMinutes());
-        if (updated.getIntervalMinutes() != null) existing.setIntervalMinutes(updated.getIntervalMinutes());
-        if (updated.getScheduleMode() != null) existing.setScheduleMode(updated.getScheduleMode());
-        if (updated.getDefaultVenue() != null) existing.setDefaultVenue(updated.getDefaultVenue());
+
+        Map<String, Object> patch = new LinkedHashMap<>(body);
+        patch.remove("id");
+        patch.remove("createdAt");
+        patch.remove("updatedAt");
+        patch.remove("deletedAt");
+        try {
+            objectMapper.updateValue(existing, patch);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("更新参数解析失败: " + e.getMessage(), e);
+        }
+
         syncDerivedFields(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Event saved = eventRepository.save(existing);
@@ -157,8 +162,8 @@ public class EventService {
         return result;
     }
 
-    /** 批量部分更新（patch 中非空字段生效，与单条 update 语义一致） */
-    public Map<String, Object> batchUpdate(List<Long> ids, Event patch) {
+    /** 批量部分更新（patch 中出现的字段生效，与单条 update 语义一致） */
+    public Map<String, Object> batchUpdate(List<Long> ids, Map<String, Object> patch) {
         List<Map<String, Object>> errors = new ArrayList<>();
         List<String> updated = new ArrayList<>();
         for (Long id : ids) {
@@ -264,7 +269,7 @@ public class EventService {
                 .defaultLanes(isTrack ? Math.max(lanes, 1) : 1)
                 .team(teamMembers > 0)
                 .teamMembers(teamMembers)
-                .scheduleMode(isTrack ? "serial" : "parallel")
+                .concurrency(isTrack ? Math.max(lanes, 1) : 1)
                 .needHeats(isTrack)
                 .maxPerHeat(isTrack ? Math.max(lanes, 1) : 1)
                 .advanceCount(8).scoringType("global").isEnabled(true)
@@ -364,7 +369,7 @@ public class EventService {
                 .teamMembers(isTeam ? Math.max(teamMembers, isTrack ? 4 : 1) : 0)
                 .genderLimit(emptyToNull(val(row, 4)))
                 .gradeGroup(emptyToNull(val(row, 5)))
-                .scheduleMode(emptyToNull(val(row, 8)))
+                .concurrency(nullIfBlankInt(val(row, 8)))
                 .defaultVenue(emptyToNull(val(row, 9)))
                 .maxDurationMinutes(nullIfBlankInt(val(row, 10)))
                 .intervalMinutes(nullIfBlankInt(val(row, 11)))
@@ -420,7 +425,7 @@ public class EventService {
         if (src.getCategory() != null) target.setCategory(src.getCategory());
         if (src.getGenderLimit() != null) target.setGenderLimit(src.getGenderLimit());
         if (src.getGradeGroup() != null) target.setGradeGroup(src.getGradeGroup());
-        if (src.getScheduleMode() != null) target.setScheduleMode(src.getScheduleMode());
+        if (src.getConcurrency() != null) target.setConcurrency(src.getConcurrency());
         if (src.getDefaultVenue() != null) target.setDefaultVenue(src.getDefaultVenue());
         if (src.getMaxDurationMinutes() != null) target.setMaxDurationMinutes(src.getMaxDurationMinutes());
         if (src.getIntervalMinutes() != null) target.setIntervalMinutes(src.getIntervalMinutes());
@@ -505,10 +510,6 @@ public class EventService {
             e.setDefaultLanes(1);
             e.setMaxPerHeat(1);
         }
-
-        if (e.getScheduleMode() == null || e.getScheduleMode().isBlank()) {
-            e.setScheduleMode(isTrack ? "serial" : "parallel");
-        }
     }
 
     /** 新建项目时补齐默认值 */
@@ -541,10 +542,13 @@ public class EventService {
                 "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
         try (java.io.OutputStream out = response.getOutputStream()) {
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
-            // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛0）
-            data.add(java.util.List.of("代码","项目","是否田径","道次","性别","年级组","是否团体","团体人数","调度模式","场地","最大用时(分)","间隔(分)"));
+            // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛0）/ … / I项目内并发
+            data.add(java.util.List.of("代码","项目","是否田径","道次","性别","年级组","是否团体","团体人数","项目内并发","场地","最大用时(分)","间隔(分)"));
             for (Event e : events) {
                 boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
+                int concurrency = e.getConcurrency() != null && e.getConcurrency() > 0
+                        ? e.getConcurrency()
+                        : (isTrack ? (e.getLaneCount() != null && e.getLaneCount() > 0 ? e.getLaneCount() : 8) : 1);
                 data.add(java.util.List.of(
                     nz(e.getCode()), nz(e.getName()),
                     isTrack ? "是" : "否",
@@ -552,7 +556,7 @@ public class EventService {
                     nz(e.getGenderLimit()), nz(e.getGradeGroup()),
                     Boolean.TRUE.equals(e.getTeam()) ? "是" : "否",
                     String.valueOf(e.getTeamMembers() != null ? e.getTeamMembers() : 0),
-                    nz(e.getScheduleMode()), nz(e.getDefaultVenue()),
+                    String.valueOf(concurrency), nz(e.getDefaultVenue()),
                     e.getMaxDurationMinutes() != null ? String.valueOf(e.getMaxDurationMinutes()) : "",
                     e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : ""));
             }
