@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { appBase, apiBase } from '@/utils/base'
 
@@ -200,7 +200,13 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(appBase()),
+  // 使用 hash 模式：URL 形如 /#/login、/sportmg/#/login。
+  // 反向代理（cpolar/ngrok/nginx 子路径等）下服务器永远只收到「/」或「/sportmg/」，
+  // 不会把前端路由路径（如 /teacher/dashboard）发往后端，从而彻底规避：
+  //   1) 历史模式深链刷新时 ./assets 相对到 /sportmg/teacher/assets 被误判为 SPA 路由而回退成 index.html（白屏）；
+  //   2) 路由基准与反代帽子前缀不一致导致的整页空白。
+  // 同时兼容「子域(无帽子)」与「子路径(有帽子)」两种反代形态（帽子由 base.js 实时推断）。
+  history: createWebHashHistory(appBase() || '/'),
   routes
 })
 

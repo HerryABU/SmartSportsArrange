@@ -182,10 +182,11 @@ async function doInstall() {
 }
 
 function goLogin() {
-  window.location.href = appBase() + '/login'
+  // hash 模式下跳转登录页（appBase 已含反代帽子前缀，如 /sportmg）
+  window.location.href = appBase() + '/#/login'
 }
 function reloadPage() {
-  window.location.href = appBase() + '/'
+  window.location.href = appBase() + '/#/'
 }
 </script>
 
