@@ -98,6 +98,14 @@ public class Event {
     private Integer concurrency;
 
     /**
+     * 田赛并行捆绑组：填同一个字母（如 A、B、C…）的项目视为一组，编排时**安排在同一时段并行进行**；
+     * 留空表示不受限制、由编排算法自动安排。对应表格2 的「并行捆绑组」列。
+     */
+    @Column(length = 10)
+    @JsonProperty("bundleGroup")
+    private String bundleGroup;
+
+    /**
      * @deprecated 已由「并发位数」模型取代（见 {@link #concurrency} 与全局 trackSlots/fieldSlots）。
      *             该字段仅为兼容历史数据保留，不再参与任何编排计算。
      */

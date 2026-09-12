@@ -299,6 +299,10 @@
             placeholder="同时进行人数" />
           <div class="form-tip">同一时刻该项目可同时进行的人数（田赛=工位数，径赛=每组人数）；留空按道次数（径赛）或 1 人（田赛）</div>
         </el-form-item>
+        <el-form-item label="并行捆绑组" prop="bundleGroup">
+          <el-input v-model="formData.bundleGroup" placeholder="如 A / B / C" maxlength="10" />
+          <div class="form-tip">田赛并行捆绑：填<b>相同字母</b>的项目会安排在同一时段并行进行；留空则由编排自动安排</div>
+        </el-form-item>
         <el-form-item label="默认场地" prop="defaultVenue">
           <el-input v-model="formData.defaultVenue" placeholder="如 田径场 / 田赛A区" maxlength="50" />
         </el-form-item>
@@ -463,6 +467,9 @@
           <el-input-number v-model="batchPatch.concurrency" :min="1" :max="60" value-on-clear="null"
             placeholder="不修改" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="并行捆绑组">
+          <el-input v-model="batchPatch.bundleGroup" placeholder="不修改（如 A/B/C，同字母同批并行）" maxlength="10" style="width:100%" />
+        </el-form-item>
         <el-form-item label="默认场地">
           <el-input v-model="batchPatch.defaultVenue" placeholder="不修改（留空）" maxlength="50" style="width:100%" />
         </el-form-item>
@@ -512,6 +519,8 @@ interface EventItem {
   scheduleMode?: string
   /** 项目内并发人数（田赛工位数 / 径赛每组人数）；空 = 径赛按道次、田赛 1 人 */
   concurrency?: number
+  /** 田赛并行捆绑组（同字母同批并行）；空=自动编排 */
+  bundleGroup?: string
   defaultVenue?: string
   maxDurationMinutes?: number
   intervalMinutes?: number
@@ -602,6 +611,7 @@ const formData = reactive<EventItem>({
   isTeam: false,
   teamSize: 0,
   concurrency: undefined,
+  bundleGroup: '',
   defaultVenue: '',
   maxDurationMinutes: undefined,
   intervalMinutes: undefined,
@@ -630,13 +640,14 @@ function onImportSuccess(res: any) {
 function onImportError() { ElMessage.error('导入失败，请检查文件格式') }
 
 function downloadTemplate() {
-  // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛=0）→ 与「导出」及 /events/import 解析一致
+  // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛=0）/ … / I项目内并发 /
+  //            J场地 / K最大用时 / L间隔 / M顺序号 / N并行捆绑组（同字母的田赛同批并行）
   const csv =
-    '代码,项目,是否田径(是/否),道次(田赛写0),性别,年级组,是否团体(是/否),团体人数,项目内并发(人数),场地,最大用时(分),间隔(分)\n' +
-    '100M,100米,是,8,男子组,高一年级,否,0,8,田径场,20,10\n' +
-    '100F,100米(女子),是,8,女子组,高一年级,否,0,8,田径场,20,10\n' +
-    '4X100M,4×100米接力,是,8,男子组,高一年级,是,4,8,田径场,30,15\n' +
-    'TY_F,跳远(女子),否,0,女子组,高一年级,否,0,4,田赛A区,90,10\n'
+    '代码,项目,是否田径(是/否),道次(田赛写0),性别,年级组,是否团体(是/否),团体人数,项目内并发(人数),场地,最大用时(分),间隔(分),顺序号,并行捆绑组(同字母同批并行)\n' +
+    '100M,100米,是,8,男子组,高一年级,否,0,8,田径场,20,10,1,\n' +
+    '100F,100米(女子),是,8,女子组,高一年级,否,0,8,田径场,20,10,2,\n' +
+    '4X100M,4×100米接力,是,8,男子组,高一年级,是,4,8,田径场,30,15,3,\n' +
+    'TY_F,跳远(女子),否,0,女子组,高一年级,否,0,4,田赛A区,90,10,4,A\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -766,6 +777,7 @@ function resetFormData() {
   formData.isTeam = false
   formData.teamSize = 0
   formData.concurrency = undefined
+  formData.bundleGroup = ''
   formData.defaultVenue = ''
   formData.maxDurationMinutes = undefined
   formData.intervalMinutes = undefined
@@ -806,6 +818,7 @@ function fillFormFromRow(row: EventItem) {
   formData.teamSize = row.teamSize ?? 0
   // 项目内并发：服务端值优先；缺省时展示实际口径（径赛=道次数、田赛=1 人）
   formData.concurrency = row.concurrency ?? (isTrack ? (row.laneCount ?? 8) : 1)
+  formData.bundleGroup = row.bundleGroup ?? ''
   formData.defaultVenue = row.defaultVenue ?? ''
   formData.maxDurationMinutes = row.maxDurationMinutes ?? undefined
   formData.intervalMinutes = row.intervalMinutes ?? undefined
@@ -939,6 +952,7 @@ const batchPatch = reactive<Record<string, any>>({
   laneCount: null,
   teamSize: null,
   concurrency: undefined,
+  bundleGroup: undefined,
   defaultVenue: undefined,
   enabled: undefined,
 })
@@ -1026,7 +1040,7 @@ async function submitBatchAdd() {
 function openBatchEdit() {
   Object.assign(batchPatch, {
     eventType: undefined, gender: undefined, gradeGroup: undefined,
-    laneCount: null, teamSize: null, concurrency: undefined,
+    laneCount: null, teamSize: null, concurrency: undefined, bundleGroup: undefined,
     defaultVenue: undefined, enabled: undefined,
   })
   batchEditVisible.value = true
@@ -1049,6 +1063,10 @@ function buildPatchPayload(): Record<string, any> {
   }
   if (batchPatch.concurrency !== undefined && batchPatch.concurrency !== null) {
     p.concurrency = batchPatch.concurrency
+  }
+  if (batchPatch.bundleGroup !== undefined && batchPatch.bundleGroup !== null
+      && String(batchPatch.bundleGroup).trim() !== '') {
+    p.bundleGroup = String(batchPatch.bundleGroup).trim().toUpperCase()
   }
   if (batchPatch.defaultVenue && String(batchPatch.defaultVenue).trim()) {
     p.defaultVenue = String(batchPatch.defaultVenue).trim()

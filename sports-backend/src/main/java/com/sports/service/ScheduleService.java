@@ -77,7 +77,7 @@ public class ScheduleService {
         int defaultInterval = intVal(cfg.get("defaultIntervalMinutes"), 5);
         int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
         int fieldPerAthlete = intVal(cfg.get("fieldPerAthleteMinutes"), 3);
-        List<String> venues = strList(cfg.get("venues"));
+        List<String> venues = venueNames(cfg.get("venues"));
         List<Long> eventOrder = longList(cfg.get("eventOrder"));
         Map<Long, String> event2Group = parseFieldGroups(cfg.get("fieldGroups"));
 
@@ -90,6 +90,15 @@ public class ScheduleService {
         List<Unit> units = buildUnits(gradeOrder, eventOrder);
         estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
 
+        // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
+        // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
+        for (Unit u : units) {
+            String bg = u.event.getBundleGroup();
+            if (bg != null && !bg.isBlank()) {
+                event2Group.put(u.event.getId(), "捆绑组" + bg.trim().toUpperCase());
+            }
+        }
+
         // 资源池：按类别分配并发位。径赛用主场地；田赛优先用其余场地（不足则复用并告警）
         String mainVenue = venues.isEmpty() ? "田径场" : venues.get(0);
         List<String> fieldVenues = venues.size() > 1
@@ -101,10 +110,12 @@ public class ScheduleService {
         List<EventSchedule> saved = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         if (trackPool.venueShortage) {
-            warnings.add(String.format("径赛并发位数 %d 超过可用场地数，部分槽位将复用同一场地", trackSlots));
+            warnings.add(String.format("径赛并数 %d 超过可用场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
+                    trackSlots, venues.size()));
         }
         if (fieldPool.venueShortage) {
-            warnings.add(String.format("田赛并发位数 %d 超过可用田赛场地数，部分槽位将复用同一场地", fieldSlots));
+            warnings.add(String.format("田赛并数 %d 超过可用田赛场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
+                    fieldSlots, fieldVenues.size()));
         }
 
         scheduleRepository.deleteAllSchedules();
@@ -187,11 +198,11 @@ public class ScheduleService {
     }
 
     /**
-     * 田赛分组批量放置：同组单元尽量落在<b>同一时段</b>并行进行。
+     * 田赛分组 / 并行捆绑组批量放置：同组单元安排在同一时段、**同一时刻同时开始**。
      *
-     * <p>按并发位数分批：每批最多 fieldSlots 个单元，各占一个槽位；为保证同时段，
-     * 本批槽位从「各槽位当前窗口的最大值」开始放置。若个别槽位该时段放不下而顺延，
-     * 记 warning 说明未完全同期。</p>
+     * <p>实现：先探测各槽位的最早可用位置（不改状态），取其中「最晚的窗口 + 该窗口内最晚的起点」
+     * 作为本批共同起点，再把各项目都放到该起点（各占一个并发位）；若个别槽位在该起点放不下
+     * （时段容量不足），退化为各自最早位置并记 warning。</p>
      */
     private void placeBatch(List<Integer> batch, List<Unit> units, Pool pool, List<Window> windows,
                             int defaultInterval, String group, List<EventSchedule> saved,
@@ -200,31 +211,62 @@ public class ScheduleService {
         for (int from = 0; from < batch.size(); from += slots) {
             List<Integer> wave = batch.subList(from, Math.min(batch.size(), from + slots));
 
-            // 本批共同起始窗口：取各参与槽位当前窗口的最大值，确保“同一时段”
+            // 起始窗口下界：各参与槽位当前窗口的最大值（不倒退到已用尽的时段之前）
             int minWindow = 0;
             for (int k = 0; k < wave.size(); k++) {
                 minWindow = Math.max(minWindow, pool.cursors.get(k).windowIdx);
             }
 
-            Window commonWindow = minWindow < windows.size() ? windows.get(minWindow) : null;
-            boolean sameTimeSlot = true;
+            // ① 各槽位最早可用位置（只探测，不推进游标）
+            List<Probe> earliest = new ArrayList<>();
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
-                int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
+                earliest.add(pool.cursors.get(k).probe(windows, u.duration, intervalOf(u, defaultInterval), minWindow));
+            }
+
+            // ② 共同起点 = 最晚的可用窗口 + 该窗口内最晚的可用起点
+            int targetWindow = minWindow;
+            for (Probe p : earliest) {
+                if (p != null) targetWindow = Math.max(targetWindow, p.windowIdx);
+            }
+            boolean sameStart = true;
+            if (targetWindow >= windows.size()) {
+                warnings.add(String.format("田赛分组「%s」因时段已排满未能安排", group));
+                continue;
+            }
+            int commonStart = windows.get(targetWindow).startMinute;
+            for (Probe p : earliest) {
+                if (p != null && p.windowIdx == targetWindow) {
+                    commonStart = Math.max(commonStart, p.slot.startMinute);
+                }
+            }
+
+            // ③ 各项目放到共同起点；放不下则该项退化为各自最早位置（仍推进游标，避免重叠）
+            for (int k = 0; k < wave.size(); k++) {
+                Unit u = units.get(wave.get(k));
                 Cursor cursor = pool.cursors.get(k);
-                Slot placed = cursor.place(windows, u.duration, interval, minWindow);
-                if (placed == null) {
+                Probe p = cursor.placeAt(windows, targetWindow, commonStart, u.duration);
+                if (p == null) {
+                    sameStart = false;
+                    Probe fb = earliest.get(k);   // 退化为该槽位各自最早可用位置
+                    if (fb != null) {
+                        p = cursor.placeAt(windows, fb.windowIdx, fb.slot.startMinute, u.duration);
+                    }
+                }
+                if (p == null) {
                     warnings.add(String.format("田赛分组「%s」中项目「%s」因时段已排满未能安排", group, u.event.getName()));
-                    sameTimeSlot = false;
                     continue;
                 }
-                if (commonWindow != null && placed.window != commonWindow) sameTimeSlot = false;
-                saveSchedule(u, placed, pool.venueOf.get(k), saved, orderCounter, autoArrangeFails);
+                saveSchedule(u, p.slot, pool.venueOf.get(k), saved, orderCounter, autoArrangeFails);
             }
-            if (!sameTimeSlot) {
-                warnings.add(String.format("田赛分组「%s」部分项目未能安排在同一时段（并发位或时段容量不足），已顺延", group));
+            if (!sameStart) {
+                warnings.add(String.format("田赛分组「%s」部分项目未能同时开始（并发位或时段容量不足），已按各自最早时段顺延", group));
             }
         }
+    }
+
+    private static int intervalOf(Unit u, int defaultInterval) {
+        return u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
     }
 
     /** 登记一条赛程：径赛排入后立即复用编排引擎生成决赛道次 */
@@ -641,6 +683,17 @@ public class ScheduleService {
         }
     }
 
+    /** 探测结果（只读，不修改游标状态）：给出某槽位最早可放位置 */
+    private static class Probe {
+        final int windowIdx;
+        final Slot slot;
+
+        Probe(int windowIdx, Slot slot) {
+            this.windowIdx = windowIdx;
+            this.slot = slot;
+        }
+    }
+
     /** 场地时间游标：在窗口序列上顺序推进 */
     private static class Cursor {
         int windowIdx = 0;
@@ -673,6 +726,44 @@ public class ScheduleService {
                 used = 0;
             }
             return null;
+        }
+
+        /**
+         * 探测最早可放位置（只读，不推进游标）。
+         * 起点不早于 max(当前窗口, minWindowIdx)；返回该位置所在的窗口号与具体 Slot。
+         */
+        Probe probe(List<Window> windows, int duration, int interval, int minWindowIdx) {
+            int wi = Math.max(windowIdx, minWindowIdx);
+            int u = (wi == windowIdx) ? used : 0;
+            while (wi < windows.size()) {
+                Window w = windows.get(wi);
+                int gap = u == 0 ? 0 : interval;
+                if (u + gap + duration <= w.capacity) {
+                    return new Probe(wi, new Slot(w, w.startMinute + u + gap));
+                }
+                wi++;
+                u = 0;
+            }
+            return null;
+        }
+
+        /**
+         * 在指定窗口、指定起点放置（推进游标）；放不下（超出窗口容量）返回 null。
+         * 用于田赛分组/捆绑组：把同组项目强制落到同一 (窗口, 起点) 以实现同时开赛。
+         */
+        Probe placeAt(List<Window> windows, int windowIdx, int startMinute, int duration) {
+            if (windowIdx < 0 || windowIdx >= windows.size()) return null;
+            Window w = windows.get(windowIdx);
+            int rel = startMinute - w.startMinute;     // 相对窗口起点的偏移
+            if (rel < 0) return null;
+            if (rel + duration > w.capacity) return null;
+            if (windowIdx != this.windowIdx) {          // 跳到新的（更靠后）窗口，从头计量
+                this.windowIdx = windowIdx;
+                this.used = 0;
+            }
+            int end = rel + duration;
+            if (end > used) used = end;                 // 维持窗口内已用前沿，避免后续重叠
+            return new Probe(windowIdx, new Slot(w, startMinute));
         }
 
         /** 比较推进程度：窗口更靠前、或同窗口已用时间更短的更"空闲" */
@@ -759,6 +850,24 @@ public class ScheduleService {
             }
         }
         return map;
+    }
+
+    /** 解析场地列表：兼容旧字符串数组 ["田径场", …] 与新对象数组 [{name, code}, …] */
+    @SuppressWarnings("unchecked")
+    private static List<String> venueNames(Object v) {
+        List<String> out = new ArrayList<>();
+        if (!(v instanceof List<?> list)) return out;
+        for (Object o : list) {
+            if (o == null) continue;
+            if (o instanceof Map<?, ?> m) {
+                Object name = ((Map<String, Object>) m).get("name");
+                if (name != null && !String.valueOf(name).isBlank()) out.add(String.valueOf(name).trim());
+            } else {
+                String s = String.valueOf(o).trim();
+                if (!s.isEmpty()) out.add(s);
+            }
+        }
+        return out;
     }
 
     private static Long asLong(Object o) {

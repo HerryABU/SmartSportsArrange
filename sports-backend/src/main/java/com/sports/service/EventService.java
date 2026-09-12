@@ -373,11 +373,13 @@ public class EventService {
                 .defaultVenue(emptyToNull(val(row, 9)))
                 .maxDurationMinutes(nullIfBlankInt(val(row, 10)))
                 .intervalMinutes(nullIfBlankInt(val(row, 11)))
+                // M 列：顺序号（编排默认顺序）；N 列：并行捆绑组（同字母的田赛同批并行，空=自动编排）
+                .sortOrder(parseIntSafe(val(row, 12), 0))
+                .bundleGroup(emptyToNull(val(row, 13)))
                 .needHeats(true)
                 .maxPerHeat(isTrack ? lanes : 1)
                 .scoringType("global")
                 .isEnabled(true)
-                .sortOrder(0)
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
@@ -426,6 +428,7 @@ public class EventService {
         if (src.getGenderLimit() != null) target.setGenderLimit(src.getGenderLimit());
         if (src.getGradeGroup() != null) target.setGradeGroup(src.getGradeGroup());
         if (src.getConcurrency() != null) target.setConcurrency(src.getConcurrency());
+        if (src.getBundleGroup() != null) target.setBundleGroup(src.getBundleGroup());
         if (src.getDefaultVenue() != null) target.setDefaultVenue(src.getDefaultVenue());
         if (src.getMaxDurationMinutes() != null) target.setMaxDurationMinutes(src.getMaxDurationMinutes());
         if (src.getIntervalMinutes() != null) target.setIntervalMinutes(src.getIntervalMinutes());
@@ -542,8 +545,9 @@ public class EventService {
                 "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
         try (java.io.OutputStream out = response.getOutputStream()) {
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
-            // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛0）/ … / I项目内并发
-            data.add(java.util.List.of("代码","项目","是否田径","道次","性别","年级组","是否团体","团体人数","项目内并发","场地","最大用时(分)","间隔(分)"));
+            // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛0）/ … / I项目内并发 /
+            //            J场地 / K最大用时 / L间隔 / M顺序号 / N并行捆绑组
+            data.add(java.util.List.of("代码","项目","是否田径","道次","性别","年级组","是否团体","团体人数","项目内并发","场地","最大用时(分)","间隔(分)","顺序号","并行捆绑组"));
             for (Event e : events) {
                 boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
                 int concurrency = e.getConcurrency() != null && e.getConcurrency() > 0
@@ -558,7 +562,9 @@ public class EventService {
                     String.valueOf(e.getTeamMembers() != null ? e.getTeamMembers() : 0),
                     String.valueOf(concurrency), nz(e.getDefaultVenue()),
                     e.getMaxDurationMinutes() != null ? String.valueOf(e.getMaxDurationMinutes()) : "",
-                    e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : ""));
+                    e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : "",
+                    e.getSortOrder() != null ? String.valueOf(e.getSortOrder()) : "",
+                    nz(e.getBundleGroup())));
             }
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());

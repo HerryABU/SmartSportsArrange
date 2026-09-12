@@ -163,19 +163,19 @@
           </div>
         </el-form-item>
 
-        <el-form-item label="并发位数">
+        <el-form-item label="并数">
           <div style="display:flex;gap:32px;align-items:flex-start;width:100%;flex-wrap:wrap">
             <div>
               <div class="hint" style="margin-bottom:4px">径赛（同时进行的项目数）</div>
-              <el-input-number v-model="meetForm.trackSlots" :min="1" :max="10" size="small" />
+              <el-input-number v-model="meetForm.trackSlots" :min="1" :max="venueCount" size="small" />
             </div>
             <div>
               <div class="hint" style="margin-bottom:4px">田赛（同时进行的项目数）</div>
-              <el-input-number v-model="meetForm.fieldSlots" :min="1" :max="10" size="small" />
+              <el-input-number v-model="meetForm.fieldSlots" :min="1" :max="venueCount" size="small" />
             </div>
-            <div class="hint" style="margin-top:20px;flex:1;min-width:260px">
-              1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目。<br />
-              田赛的 n 个并行项目各占一个场地，场地不足时自动复用并提示。
+            <div class="hint" style="margin-top:20px;flex:1;min-width:280px">
+              <b>并数</b>：1 = 该位次同一时刻只进行 1 个项目（串行）；n = 最多 n 个项目同时进行（并行）。<br />
+              <b>上限取决于场地数量</b>（当前 {{ venueCount }} 个场地），场地不足时编排会自动复用并提示。
             </div>
           </div>
         </el-form-item>
@@ -238,11 +238,20 @@
         </el-form-item>
 
         <el-form-item label="场地">
-          <el-select v-model="meetForm.venues" multiple allow-create default-first-option style="width:100%"
-            placeholder="第 1 个为主场地（径赛用），其余供田赛并行">
-            <el-option v-for="v in defaultVenues" :key="v" :label="v" :value="v" />
-          </el-select>
-          <div class="hint" style="width:100%">第一个场地用于径赛；田赛的 n 个并发位依次占用其余场地，不足时复用并提示。</div>
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              第 1 个场地为径赛主场地，其余供田赛并行使用；<b>并数上限取决于场地数量</b>，请先录全场地（名称 + 编码）。
+            </div>
+            <div v-for="(v, vi) in meetForm.venues" :key="vi" class="venue-row">
+              <el-input v-model="v.name" size="small" placeholder="场地名称（如 田赛A区）" style="width:190px" />
+              <el-input v-model="v.code" size="small" placeholder="编码（如 FIELD_A）" style="width:150px" />
+              <el-tag v-if="vi === 0" size="small" type="primary" effect="plain">径赛主场地</el-tag>
+              <span style="flex:1"></span>
+              <el-button link type="danger" size="small" :disabled="meetForm.venues.length <= 1"
+                @click="removeVenue(vi)">删除</el-button>
+            </div>
+            <el-button size="small" type="primary" plain :icon="Plus" @click="addVenue">添加场地</el-button>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -309,7 +318,12 @@ const editingId = ref(null)
 // 年级出场顺序是否自定义（false=跟随系统设置·年级管理的 sortOrder，保存时回传空数组避免冻结）
 const useCustomOrder = ref(false)
 
-const defaultVenues = ['田径场', '田赛A区', '田赛B区']
+// 场地：名称 + 编码（并数上限取决于场地数量）
+const defaultVenueList = () => ([
+  { name: '田径场', code: 'TRACK' },
+  { name: '田赛A区', code: 'FIELD_A' },
+  { name: '田赛B区', code: 'FIELD_B' }
+])
 
 const emptySlot = { key: 'AM', name: '上午', start: '08:00', end: '11:30' }
 
@@ -330,8 +344,21 @@ const meetForm = reactive({
   defaultIntervalMinutes: 5,
   heatMinutes: 6,
   fieldPerAthleteMinutes: 3,
-  venues: [...defaultVenues]
+  venues: defaultVenueList()
 })
+
+/** 有效场地数（名称为空的不计），至少 1 —— 并数上限取决于它 */
+const venueCount = computed(() =>
+  Math.max(1, meetForm.venues.filter(v => v && String(v.name || '').trim()).length))
+
+function addVenue() {
+  meetForm.venues.push({ name: '', code: '' })
+}
+
+function removeVenue(index) {
+  if (meetForm.venues.length <= 1) return
+  meetForm.venues.splice(index, 1)
+}
 
 // ==================== 项目编排顺序 / 田赛分组 ====================
 const allEvents = ref([])
@@ -451,7 +478,13 @@ async function openMeetConfig() {
         key: s.key || s.name, name: s.name || '上午', start: s.start || '08:00', end: s.end || '11:30'
       }))
     }))
-    meetForm.venues = res.venues && res.venues.length ? res.venues : [...defaultVenues]
+    // 场地：兼容旧的字符串数组 ["田径场", …] 与新的对象数组 [{name, code}, …]
+    const rawVenues = Array.isArray(res.venues) ? res.venues : []
+    meetForm.venues = rawVenues.length
+      ? rawVenues.map(v => typeof v === 'string'
+        ? { name: v, code: '' }
+        : { name: v?.name || '', code: v?.code || '' })
+      : defaultVenueList()
     // 并发位数（旧串行/并行配置由后端平滑换算为 1~n）
     meetForm.trackSlots = Number(res.trackSlots) > 0 ? Number(res.trackSlots) : 1
     meetForm.fieldSlots = Number(res.fieldSlots) > 0 ? Number(res.fieldSlots) : 2
@@ -524,7 +557,15 @@ function removeSlot(dc, si) {
 
 async function saveMeetConfig() {
   if (!meetForm.startDate) { ElMessage.warning('请选择运动会开始日期'); return }
-  if (!meetForm.venues.length) { ElMessage.warning('请至少配置一个场地'); return }
+  const cleanVenues = meetForm.venues
+    .filter(v => v && String(v.name || '').trim())
+    .map(v => ({ name: String(v.name).trim(), code: String(v.code || '').trim() }))
+  if (!cleanVenues.length) { ElMessage.warning('请至少配置一个场地（需填写场地名称）'); return }
+  const maxSlots = Math.max(1, cleanVenues.length)
+  if (meetForm.trackSlots > maxSlots || meetForm.fieldSlots > maxSlots) {
+    ElMessage.warning(`并数不能超过场地数量（当前 ${maxSlots} 个场地）`)
+    return
+  }
   for (const dc of meetForm.dayConfigs) {
     if (!dc.slots.length) { ElMessage.warning(`第 ${dc.day} 天至少需要一个时段`); return }
   }
@@ -537,7 +578,7 @@ async function saveMeetConfig() {
       dayConfigs: meetForm.dayConfigs,
       // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
       gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
-      venues: meetForm.venues,
+      venues: cleanVenues,
       trackSlots: meetForm.trackSlots,
       fieldSlots: meetForm.fieldSlots,
       // 自定义项目顺序（仅提交当前列表顺序，未列入的项目由后端按排序号追加）
@@ -679,7 +720,7 @@ onMounted(() => { fetchList(); fetchEvents() })
   background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
 }
 .order-row .order-name { font-size: 14px; color: #303133; font-weight: 500; }
-.group-row {
+.group-row, .venue-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
 }
 @media (max-width: 768px) {

@@ -448,8 +448,20 @@ public class SystemService {
         // 单组用时 / 田赛每人次用时，用于估算项目时长
         def.put("heatMinutes", 6);
         def.put("fieldPerAthleteMinutes", 3);
-        def.put("venues", new ArrayList<>(List.of("田径场", "田赛A区", "田赛B区")));
+        // 场地：名称 + 编码（编码用于标识/展示；并数上限取决于场地数量，故场地需先录全）
+        List<Map<String, Object>> venues = new ArrayList<>();
+        venues.add(defaultVenue("田径场", "TRACK"));
+        venues.add(defaultVenue("田赛A区", "FIELD_A"));
+        venues.add(defaultVenue("田赛B区", "FIELD_B"));
+        def.put("venues", venues);
         return def;
+    }
+
+    private Map<String, Object> defaultVenue(String name, String code) {
+        Map<String, Object> v = new LinkedHashMap<>();
+        v.put("name", name);
+        v.put("code", code);
+        return v;
     }
 
     private Map<String, Object> defaultDayConfig(int day) {

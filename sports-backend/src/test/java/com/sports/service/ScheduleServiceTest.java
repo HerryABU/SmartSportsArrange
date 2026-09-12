@@ -191,4 +191,54 @@ class ScheduleServiceTest {
         assertEquals("08:00", saved.get(1).getStartTime(), "同组田赛应在同一时段并行");
         assertEquals(saved.get(0).getTimeSlot(), saved.get(1).getTimeSlot());
     }
+
+    /** 项目自带的「并行捆绑组」字母：同字母的田赛安排在同一时段并行 */
+    @Test
+    void bundleGroupSchedulesInSameSlot() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        Event a = field(11L, "跳远", 1);
+        a.setBundleGroup("A");
+        Event b = field(12L, "铅球", 1);
+        b.setBundleGroup("A");
+        Event c = field(13L, "实心球", 1);   // 未填捆绑 → 由算法自动安排
+        events(a, b, c);
+        regs(11L, 2);
+        regs(12L, 2);
+        regs(13L, 2);
+
+        scheduleService.autoSchedule(null);
+
+        assertEquals(3, saved.size());
+        EventSchedule sa = find(11L);
+        EventSchedule sb = find(12L);
+        assertEquals(sa.getStartTime(), sb.getStartTime(), "同字母捆绑组应在同一时间开赛");
+        assertEquals(sa.getTimeSlot(), sb.getTimeSlot(), "同字母捆绑组应在同一时段");
+    }
+
+    /** 场地支持 [{name, code}] 对象数组（新格式），编排应使用其中的场地名称 */
+    @Test
+    void venueObjectArraySupported() {
+        Map<String, Object> c = cfg(1, 2);
+        c.put("venues", List.of(
+                Map.of("name", "主田径场", "code", "TRACK"),
+                Map.of("name", "田赛1区", "code", "F1"),
+                Map.of("name", "田赛2区", "code", "F2")));
+        when(systemService.getMeetSchedule()).thenReturn(c);
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1));
+        regs(11L, 2);
+        regs(12L, 2);
+
+        scheduleService.autoSchedule(null);
+
+        List<String> used = saved.stream().map(EventSchedule::getVenue).toList();
+        assertTrue(used.contains("田赛1区"), "应使用对象数组里的场地名称，实际: " + used);
+        assertTrue(used.contains("田赛2区"), "应使用对象数组里的场地名称，实际: " + used);
+    }
+
+    private EventSchedule find(Long eventId) {
+        return saved.stream()
+                .filter(s -> s.getEvent() != null && eventId.equals(s.getEvent().getId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("未找到 eventId=" + eventId + " 的赛程行"));
+    }
 }
