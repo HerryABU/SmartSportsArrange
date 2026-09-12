@@ -97,6 +97,11 @@ public class Event {
     @JsonProperty("concurrency")
     private Integer concurrency;
 
+    /** 每组次人数（每组/每批同时上场人数）：径赛=道次、田赛=1、游泳=泳道数；用于折算轮次 */
+    @Column
+    @JsonProperty("groupSize")
+    private Integer groupSize;
+
     /**
      * 田赛并行捆绑组：填同一个字母（如 A、B、C…）的项目视为一组，编排时**安排在同一时段并行进行**；
      * 留空表示不受限制、由编排算法自动安排。对应表格2 的「并行捆绑组」列。

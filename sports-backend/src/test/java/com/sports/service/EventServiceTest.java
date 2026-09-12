@@ -86,16 +86,18 @@ class EventServiceTest {
     }
 
     /**
-     * Excel 表格2 导入：O 列（场地编码）应落入 defaultVenueCode。
+     * Excel 表格2 导入：I 列（场地编码，折中布局第 9 列）应落入 defaultVenueCode。
      * 直接覆盖「Excel 案例也要有」的核对项——游泳指定独立场馆编码 SWIM。
      */
     @Test
     void importTable2RowPopulatesDefaultVenueCode() {
-        List<String> header = List.of("代码", "项目", "是否田径", "道次", "性别", "年级组",
-                "是否团体", "团体人数", "并数/项目内并发", "场地", "最大用时(分)", "间隔(分)",
-                "顺序号", "并行捆绑组", "场地编码");
+        // 折中布局 16 列：A代码/B项目/C是否田径/D道次/E顺序号/F每组次几人/G捆绑字母/
+        // H并行数/I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时/P间隔
+        List<String> header = List.of("代码", "项目", "是否田径", "道次", "顺序号", "每组次几人",
+                "捆绑字母", "并行数", "场地编码", "性别", "年级组", "是否团体", "团体人数",
+                "场地", "最大用时(分)", "间隔(分)");
         List<String> data = List.of("SWIM_M", "50米蛙泳(男子)", "否", "0",
-                "", "", "", "", "", "", "", "", "", "", "SWIM");
+                "1", "4", "", "4", "SWIM", "男子组", "高一年级", "否", "0", "游泳馆", "25", "10");
         String csv = String.join(",", header) + "\n" + String.join(",", data);
 
         MultipartFile file = new CsvMultipartFile("events.csv", csv);
@@ -112,11 +114,11 @@ class EventServiceTest {
         assertEquals(1, result.get("success"), "应成功导入 1 行");
         assertEquals("table2", result.get("layout"));
         assertEquals(1, captured.size());
-        assertEquals("SWIM", captured.get(0).getDefaultVenueCode(), "O 列场地编码应写入 defaultVenueCode");
+        assertEquals("SWIM", captured.get(0).getDefaultVenueCode(), "I 列场地编码应写入 defaultVenueCode");
     }
 
     /**
-     * Excel 导出：项目的 defaultVenueCode 应出现在第 O 列（索引 14）。
+     * Excel 导出：项目的 defaultVenueCode 应出现在第 I 列（索引 8，折中布局场地编码列）。
      * 覆盖「Excel 案例也要有」的反向核对——导出文件含场地编码。
      */
     @Test
@@ -142,7 +144,7 @@ class EventServiceTest {
                 .sheet().headRowNumber(0).doReadSync();
         Map<Integer, String> dataRow = rows.stream()
                 .filter(r -> "SWIM_M".equals(r.get(0))).findFirst().orElseThrow();
-        assertEquals("SWIM", dataRow.get(14), "导出的第 O 列应为场地编码 SWIM");
+        assertEquals("SWIM", dataRow.get(8), "导出的第 I 列（场地编码）应为 SWIM");
     }
 
     /** 最小 MultipartFile 桩，仅支撑 CSV 导入路径（getBytes / getOriginalFilename） */
