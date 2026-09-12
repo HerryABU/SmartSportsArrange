@@ -4,9 +4,11 @@ import com.sports.common.Grades;
 import com.sports.entity.Arrangement;
 import com.sports.entity.Athlete;
 import com.sports.entity.Event;
+import com.sports.entity.EventSchedule;
 import com.sports.entity.Registration;
 import com.sports.repository.ArrangementRepository;
 import com.sports.repository.EventRepository;
+import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +44,7 @@ public class ArrangementService {
     private final ArrangementRepository arrangementRepository;
     private final RegistrationRepository registrationRepository;
     private final EventRepository eventRepository;
+    private final EventScheduleRepository eventScheduleRepository;
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
 
@@ -313,6 +316,9 @@ public class ArrangementService {
         Map<String, Object> finalResult = arrangePool(event, finalPool, grade, gender,
                 resolveLanes(event), null, ROUND_FINAL, qualifiers);
 
+        // 正式赛二次编排：把决赛作为独立赛程条目排入赛程表（预赛条目之后顺延），秩序册时间表随之体现
+        EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size());
+
         log.info("预赛淘汰计算完成: eventId={}, grade={}, gender={}, 报名{}人, 晋级{}人 (取前{})",
                 eventId, grade, gender, prelims.size(), qualifiers.size(), quota);
 
@@ -326,7 +332,113 @@ public class ArrangementService {
         result.put("qualifierCount", qualifiers.size());
         result.put("qualifiers", qualifierView(qualifiers));
         result.put("final", finalResult);
+        if (finalRow != null) {
+            Map<String, Object> fs = new LinkedHashMap<>();
+            fs.put("day", finalRow.getDay());
+            fs.put("timeSlot", finalRow.getTimeSlot());
+            fs.put("startTime", finalRow.getStartTime());
+            fs.put("endTime", finalRow.getEndTime());
+            fs.put("venue", finalRow.getVenue());
+            result.put("finalSchedule", fs);
+        }
         return result;
+    }
+
+    /**
+     * 正式赛二次编排：为 事件×年级×性别 追加一条独立的决赛赛程条目（round=final）。
+     *
+     * <p>排槽规则：day/timeSlot/venue 沿用该项目×年级的预赛条目，起点 = 预赛结束时刻
+     * （或同事件同年级已有其他性别决赛条目的结束时刻）+ 默认间隔；时长按晋级人数折算
+     * 组次（ceil(晋级人数/道次) × heatMinutes）并受 maxDurationMinutes 封顶。</p>
+     *
+     * <p>幂等：重算同一性别时先删该性别旧的决赛条目再重建；不同性别顺延不重叠。
+     * 找不到预赛赛程条目（未跑第一次编排）时跳过并返回 null。</p>
+     */
+    private EventSchedule appendFinalScheduleRow(Event event, String grade, String gender, int qualifierCount) {
+        try {
+            List<EventSchedule> rows = eventScheduleRepository.findByEventIdAndGrade(event.getId(), grade);
+            EventSchedule prelim = rows.stream()
+                    .filter(r -> ROUND_PRELIM.equals(r.getRound()))
+                    .findFirst().orElse(null);
+            if (prelim == null) {
+                log.warn("追加决赛赛程条目跳过（无预赛条目）: eventId={}, grade={}", event.getId(), grade);
+                return null;
+            }
+            String genderLabel = "F".equals(gender) ? "女子" : "男子";
+            String marker = "二次编排决赛·" + genderLabel;
+            // 幂等：删掉本性别旧的决赛条目（其余性别的决赛条目保留，用于顺延起点）
+            rows.stream()
+                    .filter(r -> ROUND_FINAL.equals(r.getRound()))
+                    .filter(r -> r.getRemark() != null && r.getRemark().contains(marker))
+                    .forEach(eventScheduleRepository::delete);
+
+            Map<String, Object> cfg = systemService.getMeetSchedule();
+            int interval = intVal(cfg.get("defaultIntervalMinutes"), 5);
+            int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
+            int lanes = Math.max(1, resolveLanes(event));
+            int rounds = Math.max(1, (int) Math.ceil((double) qualifierCount / lanes));
+            int duration = Math.max(10, rounds * heatMinutes);
+            int cap = event.getMaxDurationMinutes() != null && event.getMaxDurationMinutes() > 0
+                    ? event.getMaxDurationMinutes()
+                    : intVal(cfg.get("defaultDurationMinutes"), 30);
+            if (cap > 0) duration = Math.min(duration, cap);
+
+            // 起点 = 预赛结束 与 其他性别决赛结束 二者的最大值 + 间隔
+            int startMin = parseHhMm(prelim.getEndTime()) + interval;
+            for (EventSchedule r : rows) {
+                if (r == prelim || !ROUND_FINAL.equals(r.getRound())) continue;
+                startMin = Math.max(startMin, parseHhMm(r.getEndTime()) + interval);
+            }
+
+            EventSchedule fin = EventSchedule.builder()
+                    .event(event)
+                    .day(prelim.getDay())
+                    .scheduleDate(prelim.getScheduleDate())
+                    .grade(grade)
+                    .timeSlot(prelim.getTimeSlot())
+                    .startTime(fmtHhMm(startMin))
+                    .endTime(fmtHhMm(startMin + duration))
+                    .venue(prelim.getVenue())
+                    .sortOrder((prelim.getSortOrder() != null ? prelim.getSortOrder() : 0) + 1000)
+                    .durationMinutes(duration)
+                    .round(ROUND_FINAL)
+                    .remark(String.format("%s：晋级%d人，预赛结束后顺延", marker, qualifierCount))
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build();
+            EventSchedule saved = eventScheduleRepository.save(fin);
+            log.info("决赛赛程条目已排入: event={}, grade={}, gender={}, {} {}-{} @{}",
+                    event.getName(), grade, genderLabel, prelim.getScheduleDate(),
+                    saved.getStartTime(), saved.getEndTime(), saved.getVenue());
+            return saved;
+        } catch (Exception ex) {
+            log.warn("追加决赛赛程条目失败: eventId={}, grade={}, gender={} - {}",
+                    event.getId(), grade, gender, ex.getMessage());
+            return null;
+        }
+    }
+
+    private static int intVal(Object v, int def) {
+        if (v instanceof Number n) return n.intValue();
+        if (v != null) {
+            try { return Integer.parseInt(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return def;
+    }
+
+    private static int parseHhMm(String hhmm) {
+        if (hhmm == null || !hhmm.contains(":")) return 0;
+        try {
+            String[] p = hhmm.trim().split(":");
+            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static String fmtHhMm(int minuteOfDay) {
+        int m = ((minuteOfDay % 1440) + 1440) % 1440;
+        return String.format("%02d:%02d", m / 60, m % 60);
     }
 
     /** 查看晋级名单 */
