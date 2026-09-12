@@ -59,3 +59,4 @@ ehthumbs.db
 
 # backend runtime logs from tests/boot
 sports-backend/data/
+smoke_e2e/
