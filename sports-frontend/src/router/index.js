@@ -97,6 +97,12 @@ const routes = [
         name: 'TeacherSettings',
         component: () => import('@/views/teacher/Settings.vue'),
         meta: { title: '系统设置' }
+      },
+      {
+        path: 'help',
+        name: 'TeacherHelp',
+        component: () => import('@/views/teacher/Help.vue'),
+        meta: { title: '说明书' }
       }
     ]
   },
