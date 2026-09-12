@@ -633,12 +633,14 @@ public class ExcelService {
             // Sheet1: 竞赛日程
             List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
             List<List<String>> schedData = new ArrayList<>();
-            schedData.add(List.of("天次", "日期", "时段", "时间", "项目", "性别", "年级", "场地"));
+            schedData.add(List.of("天次", "日期", "时段", "时间", "项目", "轮次", "性别", "年级", "场地"));
             for (EventSchedule s : scheds) {
                 Event se = s.getEvent();
+                String roundLabel = "preliminary".equals(s.getRound()) ? "预赛" : "决赛";
                 schedData.add(List.of(safe(s.getDay()), safe(s.getScheduleDate()), safe(s.getTimeSlot()),
                         safe(s.getStartTime()) + "~" + safe(s.getEndTime()),
                         se != null ? safe(se.getName()) : "-",
+                        roundLabel,
                         se != null ? safe(se.getGenderLimit()) : "-",
                         safe(s.getGrade()), safe(s.getVenue())));
             }

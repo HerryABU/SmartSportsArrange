@@ -152,19 +152,22 @@ public class WordOrderBookService {
                 if (!evMatch && !schMatch) continue;
             }
             Event e0 = s.getEvent();
+            // 轮次：preliminary=预赛（needHeats 项目第一次编排条目）；final/旧数据(null)=决赛
+            String roundLabel = "preliminary".equals(s.getRound()) ? "预赛" : "决赛";
             schedRows.add(List.of(
                     "第" + s.getDay() + "天",
                     n(s.getScheduleDate()), n(s.getTimeSlot()),
                     (n(s.getStartTime())) + "~" + (n(s.getEndTime())),
                     e0 != null ? n(e0.getName()) : "-",
+                    roundLabel,
                     e0 != null ? n(e0.getGenderLimit()) : "-",
                     n(s.getGrade()), n(s.getVenue())));
         }
         if (schedRows.isEmpty()) {
             body.append(para("（运动会日程尚未编排，请先在「赛程编排」中一键生成。）", false, 20, "808080", null));
         } else {
-            body.append(table(List.of("天次", "日期", "时段", "时间", "项目", "性别", "年级", "场地"),
-                    schedRows, equalWidths(8)));
+            body.append(table(List.of("天次", "日期", "时段", "时间", "项目", "轮次", "性别", "年级", "场地"),
+                    schedRows, equalWidths(9)));
         }
         body.append(pageBreak());
 
