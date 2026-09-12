@@ -57,6 +57,12 @@ const routes = [
         meta: { title: '比赛项目' }
       },
       {
+        path: 'venues',
+        name: 'TeacherVenues',
+        component: () => import('@/views/teacher/VenueManage.vue'),
+        meta: { title: '场地管理' }
+      },
+      {
         path: 'registrations',
         name: 'TeacherRegistrations',
         component: () => import('@/views/teacher/Registration.vue'),

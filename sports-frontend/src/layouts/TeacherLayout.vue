@@ -14,6 +14,7 @@
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
           <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="② 编排比赛">
@@ -52,6 +53,7 @@
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
           <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="② 编排比赛">
@@ -127,7 +129,7 @@ import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Guide } from '@element-plus/icons-vue'
+import { Expand, Guide, Location } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 
