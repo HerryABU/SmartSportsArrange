@@ -13,6 +13,7 @@
 - 📊 **全流程 Excel 化**：名单 / 项目 / 报名 / 成绩 全部支持模板导入导出，秩序册 / 成绩册 / 报表一键生成
 - 📄 **真实 Word 秩序册**：原生 OOXML（手写 ZIP 包组装，**零 Apache POI 依赖、离线可构建**）生成含封面 / 目录 / 多章表格的 `.docx`，支持一键下载与按开关自动落盘
 - 🔢 **号码簿双模式**：模板 / 正则自定义之外，支持**按名单顺序**「补全生成（不覆盖）/ 覆盖重排」两种操作，撞号自动顺延不中断
+- ⏱ **1~n 并发位编排**：径赛 / 田赛各自可设「同时进行几个项目」（**1 = 串行，n = 并行**），项目内可设并发人数（田赛 X 人同时试跳/试掷），并支持**自定义项目顺序**与**田赛分组同期**
 
 ---
 
@@ -127,7 +128,7 @@ java -jar sports-2.0.0.jar
 | 项目管理 | 预设模板、Excel/CSV 导入、启用/禁用、道数/预赛/计分配置 |
 | 报名管理 | 报名列表、单个/批量审核（通过/拒绝）、报名统计、导出 |
 | 智能编排 | 自动分组分道（贪心+优化）、预览、批量编排、手动调整、回滚、道次表导出 |
-| 项目编排 | 赛程自动调度（天×时段×场地）、手动调整、赛程导出 |
+| 项目编排 | 赛程自动调度（天×时段×场地，1~n 并发位）、自定义项目顺序、田赛分组同期、手动调整、赛程导出 |
 | 成绩管理 | 录入/修改/删除、Excel 导入、自动排名计算 |
 | 排名积分 | 单项目排名、个人积分、团体总分、破纪录榜，三类均可导出 |
 | 统计报表 | 秩序册（**Excel / Word 双形态**）/ 成绩册 / 统计报表（报名统计、道次表、成绩汇总、团体总分榜） |
@@ -233,7 +234,7 @@ JAR 启动时自动检测终端编码（Windows GBK / Linux UTF-8 / Mac UTF-8）
 
 ```
 Step 1: 获取已审核报名运动员 → 按班级分组
-Step 2: 计算组数 = ceil(总人数 / 跑道数)
+Step 2: 计算组数 = ceil(总人数 / 项目内并发人数)
 Step 3: 按班级人数降序（大班优先）
 Step 4: 贪心分配 → 每人分配到同班最少组的最早空位
 Step 5: 局部优化 (5轮×500次随机交换)
@@ -245,13 +246,26 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 | 硬约束 | 同年级不混编、性别分离 |
 | 软约束 | 同班不同道、同班不同组（可在编排规则中开关） |
 
+**项目内并发人数**（项目表单「项目内并发」/ `event.concurrency`）：同一时刻该项目可同时进行的人数——径赛＝每组道次数（留空按道次数）、**田赛＝工位数（X 人同时试跳/试掷）**。田赛同样按此值分批（`ceil(人数 / 并发)` 批），不再是一人一组。
+
 支持：预览（不落库）、批量编排多个项目、手动调整、回滚、道次表导出。
 
 ### 9. 项目编排（赛程编排）
 
-- 将比赛项目自动调度到「天 × 时段 × 场地」时间表（贪心负载均衡）
-- 支持配置天数、时段、场地、每时段时长、默认项目用时
+将比赛项目自动调度到「天 × 时段 × 场地」时间表，**模型为「1~n 并发位」**（已废弃早期「串行/并行」开关）：
+
+| 概念 | 配置项 | 说明 |
+|------|--------|------|
+| 并发位数 | `trackSlots` / `fieldSlots` | 同一时刻可同时进行几个项目。**1 = 串行**（独占，同一时刻只进行 1 个项目）；**n = 并行**（n 个项目同时开赛）。径赛通常 1、田赛按可用场地设 2~3 |
+| 项目内并发 | `event.concurrency` | 单个项目内同时进行的人数（田赛工位数 / 径赛每组人数），决定时长 = `ceil(参赛数 / 并发) × 单轮用时`（径赛 `heatMinutes`/轮、田赛 `fieldPerAthleteMinutes`/轮），并受 `maxDurationMinutes` 封顶 |
+| 自定义项目顺序 | `eventOrder` | eventId 有序列表（**田赛 + 径赛混排**）：编排按该顺序进行，未列入的项目按 `sortOrder` 稳定追加。UI 支持置顶/上移/下移/置底与「按排序号重置」 |
+| 田赛分组 | `fieldGroups` | `[{name, eventIds[]}]`：**同一组的田赛项目安排在同一时段并行进行**（组内项目数受 `fieldSlots` 约束，超出自动分波并提示） |
+
+- 并发位与场地对应：径赛用第 1 个场地；田赛的 n 个并发位依次占用其余场地，场地不足时复用同一场地并给出 warning
+- 旧配置平滑迁移：原 `trackMode`/`fieldMode`（serial/parallel）按 **serial→1、parallel→2** 自动换算为并发位数，历史配置不丢失
 - 手动调整单项安排、导出赛程 Excel
+
+> 💡 若编排结果出现「未能在同一时段并行」告警，通常是该时段容量或并发位数不足——提高「田赛并发位数」或增加场地即可。
 
 ### 10. 成绩 & 排名
 
@@ -473,19 +487,26 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 4. 项目 Events
 
-前缀 `/api/events`，9 个端点。
+前缀 `/api/events`，11 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | GET | `/api/events` | Query grade?, gender?, eventType? | S/CT/T/SA | 项目列表（不分页） |
 | GET | `/api/events/{id}` | Path id | S/CT/T/SA | 项目详情 |
 | POST | `/api/events` | Body Event | T/SA | 创建项目 |
-| PUT | `/api/events/{id}` | Path id, Body Event | T/SA | 更新项目 |
+| PUT | `/api/events/{id}` | Path id, Body 待更新字段 | T/SA | **部分更新（PATCH）**：只覆盖请求中出现的字段 |
+| PUT | `/api/events/batch` | Body `{ids:[], patch:{...}}` | T/SA | 批量部分更新（patch 中出现的字段生效） |
+| POST | `/api/events/batch-status` | Body `{ids:[], enabled}` | T/SA | 批量启用/禁用 |
 | PUT | `/api/events/{id}/status` | Path id, Body `{enabled}` | T/SA | 启用/禁用项目 |
 | DELETE | `/api/events/{id}` | Path id | T/SA | 删除项目 |
 | POST | `/api/events/presets` | Body categoryFilter | T/SA | 获取预设项目模板 |
 | POST | `/api/events/import` | multipart `file` | T/SA | Excel 导入项目 |
 | GET | `/api/events/export` | — | S/CT/T/SA | 导出项目数据 |
+
+> ⚠️ `PUT /api/events/{id}` 与 `/api/events/batch` 为**部分更新（PATCH）**：仅请求体中显式出现的字段会被写入，
+> 其余字段（含 `isTrack`、`laneCount`、`category`、`concurrency`）保持原值——因此「批量修改项目内并发」不会误伤田赛标记。
+
+**项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号）。
 
 ---
 
@@ -554,10 +575,12 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | GET | `/api/schedule` | — | 已认证 | 查看当前赛程 |
-| POST | `/api/schedule/auto` | Body config? | 已认证 | 自动编排赛程 |
+| POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库） | 已认证 | 按「并发位」模型自动编排赛程（详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)） |
 | POST | `/api/schedule/save` | Body items[] | 已认证 | 手动保存赛程（整体替换） |
 | DELETE | `/api/schedule` | — | 已认证 | 清空赛程 |
-| GET | `/api/schedule/export` | — | 已认证 | 导出赛程（Excel） |
+| GET | `/api/schedule/export` | — | 已认证 | 导出赛程（Excel，含「项目内并发」列） |
+
+> 💡 自动编排返回 `warnings[]`（如「田赛分组部分项目未能安排在同一时段」）与 `autoArrange`（径赛自动生成决赛道次的结果统计），前端会提示。
 
 ---
 
@@ -629,7 +652,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 13. 系统设置 System
 
-前缀 `/api/system`，23 个端点。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
+前缀 `/api/system`，26 个端点。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -638,6 +661,9 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | PUT | `/api/system/config/{key}` | Path key, Body | T/SA | 更新单个配置 |
 | PUT | `/api/system/config/basic` | Body 基本设置 | T/SA | 保存基本设置 |
 | PUT | `/api/system/config/scoring` | Body 积分规则 | T/SA | 保存积分规则（旧接口） |
+| GET | `/api/system/meet-schedule` | — | T/SA | 读取运动会日程配置（含并发位数/项目顺序/田赛分组；旧 trackMode/fieldMode 自动换算为 1~n） |
+| PUT | `/api/system/meet-schedule` | Body 日程配置 | T/SA | 保存运动会日程配置 |
+| GET | `/api/system/grade-order` | — | T/SA | 年级出场顺序（按 sortOrder 升序） |
 | GET | `/api/system/number-rule` | — | SA | 获取号码簿规则 |
 | PUT | `/api/system/number-rule` | Body 规则 | SA | 保存号码簿规则 |
 | POST | `/api/system/number-rule/preview` | Body `{template, grade, className, seq, auto_pad_zero}` | SA | 预览号码生成效果 |
@@ -981,6 +1007,10 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 **Q9：号码簿「生成（补全空缺）」和「重排（覆盖）」有何区别？**
 「生成」只给尚无号码的运动员按 年级→班级→名单 顺序补号、**不覆盖已有号码**（班级内从已有号码数 +1 起编，撞号自动顺延）；「重排」则**整体覆盖**、班级内从 1 连续重编。首次发号 / 补新导入名单建议用「生成」，想彻底统一号码序列用「重排」。
 
+**Q10：「并发位数」怎么设？和田赛分组是什么关系？**
+「并发位数」= 同一时刻能同时进行几个项目：**径赛设 1（串行，跑道独占）**，田赛按可用场地设 2~3（并行）。它决定"能同时开几个项目"；「田赛分组」则指定**哪几个田赛必须安排在同一时段并行**（同组项目占相同数量的并发位，组内超出位数会自动分波）。
+「项目内并发」是另一层概念——**单个项目内同时进行的人数**（田赛工位数 / 径赛每组人数），影响该项目时长（`ceil(人数 / 并发) × 单轮用时`）。编排结果里的「未能在同一时段并行」告警，通常是时节段容量或田赛并发位数不足，先把位数调大或增加场地。
+
 ---
 
 ## 📄 开源协议
@@ -991,4 +1021,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.0.0 | **API 端点**: 19 Controller / 174 个 | **构建日期**: 2026-09-05
+> **版本**: v2.0.0 | **API 端点**: 19 Controller / 174 个 | **构建日期**: 2026-09-12
