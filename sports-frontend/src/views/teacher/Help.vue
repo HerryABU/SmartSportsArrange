@@ -4,7 +4,7 @@
       <div class="pg-titles">
         <div class="pg-ico"><el-icon size="22"><Reading /></el-icon></div>
         <div>
-          <h2 class="pg-title">系统使用说明书</h2>
+          <h2 class="pg-title">系统使用说明书 <el-tag size="small" effect="dark" round>v{{ appVersion }}</el-tag></h2>
           <p class="pg-desc">从首次部署到成绩出榜，全流程操作指引（管理员 / 体育老师版）</p>
         </div>
       </div>
@@ -66,6 +66,10 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { Reading, Top, Guide } from '@element-plus/icons-vue'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
+import pkg from '../../../package.json'
+
+/** 版本号与 package.json / pom.xml 保持一致（构建时随前端一起嵌入 jar） */
+const appVersion = pkg.version
 
 const guideVisible = ref(false)
 const activeId = ref('start')
