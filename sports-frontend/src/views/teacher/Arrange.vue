@@ -586,7 +586,9 @@ const computeQualify = async () => {
     qualifiers.value = res.qualifiers || []
     activeRound.value = 'final'
     applyActiveRound()
-    ElMessage.success(`晋级计算完成：${res.participants || 0} 人参赛，前 ${res.qualifierCount || 0} 名晋级，决赛已自动排好`)
+    const fs = res.finalSchedule
+    const slotInfo = fs ? `，决赛已排入赛程表（第${fs.day}天 ${fs.timeSlot || ''} ${fs.startTime || ''}-${fs.endTime || ''} @${fs.venue || '-'}）` : ''
+    ElMessage.success(`晋级计算完成：${res.participants || 0} 人参赛，前 ${res.qualifierCount || 0} 名晋级，决赛已自动排好${slotInfo}`, { duration: 6000 })
   } catch (e) {
     ElMessage.error('晋级计算失败: ' + (e.response?.data?.message || e.message || ''))
   } finally {

@@ -58,6 +58,13 @@
                 {{ row.eventName }}
               </template>
             </el-table-column>
+            <el-table-column label="轮次" width="76" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.round === 'preliminary' ? 'warning' : 'primary'" effect="plain">
+                  {{ row.round === 'preliminary' ? '预赛' : '决赛' }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="startTime" label="开始" width="90" align="center" />
             <el-table-column prop="endTime" label="结束" width="90" align="center" />
             <el-table-column prop="venue" label="场地" width="110" align="center">
