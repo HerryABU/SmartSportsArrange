@@ -95,6 +95,24 @@ class ResultServiceTest {
         assertEquals(7.0, ranked.get(2).getScore());
     }
 
+    @Test
+    void calculateRanking_fieldEvent_higherBetter() {
+        // 回归：田赛（track=false）按距离/高度降序排名（大者优），不得沿用径赛升序
+        Event fieldEvent = Event.builder().id(200L).name("男子跳远").category("田赛").track(false).build();
+        List<Result> results = List.of(result(1L, 5.10, "5.10"), result(2L, 4.80, "4.80"), result(3L, 6.00, "6.00"));
+        when(resultRepository.findValidByEventId(200L)).thenReturn(results);
+        when(eventRepository.findById(200L)).thenReturn(Optional.of(fieldEvent));
+        when(systemService.getScoringRule()).thenReturn(defaultScoringRule());
+        when(resultRepository.save(any(Result.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        List<Result> ranked = resultService.calculateRanking(200L);
+
+        assertEquals(1, ranked.get(0).getTotalRank());
+        assertEquals(6.0, ranked.get(0).getTimeSeconds());
+        assertEquals(5.1, ranked.get(1).getTimeSeconds());
+        assertEquals(4.8, ranked.get(2).getTimeSeconds());
+    }
+
     private Map<String, Object> defaultScoringRule() {
         Map<String, Object> rule = new LinkedHashMap<>();
         Map<String, Object> rankScores = new LinkedHashMap<>();

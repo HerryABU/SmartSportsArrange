@@ -97,10 +97,14 @@ public class ResultService {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
-        // 获取所有有效成绩，按时间升序排列
+        // 获取所有有效成绩排序：径赛按时间升序（小者优）；田赛（track=false）按距离/高度降序（大者优）
+        boolean higherBetter = Boolean.FALSE.equals(event.getTrack());
+        Comparator<Result> byResult = higherBetter
+                ? Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Comparator.reverseOrder()))
+                : Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo));
         List<Result> validResults = resultRepository.findValidByEventId(eventId).stream()
                 .filter(r -> r.getTimeSeconds() != null)
-                .sorted(Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo)))
+                .sorted(byResult)
                 .collect(Collectors.toList());
 
         if (validResults.isEmpty()) {
@@ -175,8 +179,8 @@ public class ResultService {
                 .collect(Collectors.groupingBy(Result::getHeat));
 
         for (Map.Entry<Integer, List<Result>> entry : byHeat.entrySet()) {
-            List<Result> heatResults = entry.getValue().stream()
-                    .sorted(Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo)))
+            final List<Result> heatResults = entry.getValue().stream()
+                    .sorted(byResult)
                     .collect(Collectors.toList());
 
             int heatRank = 1;
