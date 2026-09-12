@@ -21,6 +21,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -123,6 +125,37 @@ class ScheduleServiceTest {
         assertEquals(1, saved.size());
         assertEquals(15, saved.get(0).getDurationMinutes());
         assertEquals("08:00", saved.get(0).getStartTime());
+    }
+
+    /**
+     * A6：游泳属特殊径赛（track=true），指定独立场地编码(SWIM)后建立独立并发池，
+     * 与主径赛池（田径场）并行 —— 即「同排」，而非独占主径赛场地。
+     */
+    @Test
+    void swimOnNewVenueRunsInParallelWithTrackPool() {
+        Map<String, Object> c = cfg(2, 2);
+        c.put("venues", List.of(
+                Map.of("name", "田径场", "code", "TRACK"),
+                Map.of("name", "田赛A区", "code", "FIELD_A"),
+                Map.of("name", "田赛B区", "code", "FIELD_B")));
+        when(systemService.getMeetSchedule()).thenReturn(c);
+
+        Event t = track(1L, "100米");
+        Event swim = Event.builder().id(2L).name("50米蛙泳").code("SWIM_M").track(true).laneCount(8)
+                .category("径赛").genderLimit("男子组").gradeGroup("高一年级").isEnabled(true)
+                .sortOrder(2).defaultVenueCode("SWIM").build();
+        events(t, swim);
+        regs(1L, 8);
+        regs(2L, 8);
+
+        scheduleService.autoSchedule(null);
+
+        assertEquals(2, saved.size());
+        Set<String> venues = saved.stream().map(EventSchedule::getVenue).collect(Collectors.toSet());
+        assertTrue(venues.contains("田径场"), "普通径赛应在主场地 田径场");
+        assertTrue(venues.contains("SWIM"), "游泳应在独立场地（编码即名称）与主池并行");
+        // 不同池互不影响，均从 08:00 起 → 同排
+        assertEquals(saved.get(0).getStartTime(), saved.get(1).getStartTime());
     }
 
     /** 田赛并发位数 2：两个田赛项目同时段开赛（并行） */

@@ -78,6 +78,16 @@ public class ScheduleService {
         int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
         int fieldPerAthlete = intVal(cfg.get("fieldPerAthleteMinutes"), 3);
         List<String> venues = venueNames(cfg.get("venues"));
+        List<Map<String, Object>> venueList = venueListOf(cfg.get("venues"));
+        Map<String, String> codeToName = new LinkedHashMap<>();
+        for (Map<String, Object> v : venueList) {
+            Object code = v.get("code");
+            Object name = v.get("name");
+            if (code != null && !String.valueOf(code).isBlank()) {
+                codeToName.put(String.valueOf(code).trim(),
+                        name != null ? String.valueOf(name).trim() : String.valueOf(code).trim());
+            }
+        }
         List<Long> eventOrder = longList(cfg.get("eventOrder"));
         Map<Long, String> event2Group = parseFieldGroups(cfg.get("fieldGroups"));
 
@@ -99,13 +109,25 @@ public class ScheduleService {
             }
         }
 
-        // 资源池：按类别分配并发位。径赛用主场地；田赛优先用其余场地（不足则复用并告警）
+        // 资源池：按类别分配并发位。径赛用主场地；田赛优先用其余场地（不足则复用并告警）。
+        // 此外，项目可显式指定「场地编码」(defaultVenueCode) 以绑定独立并发池，从而与其他场地并行
+        // （例如游泳作为特殊径赛，指定独立场馆编码后即可在主径赛之外「同排」）。
         String mainVenue = venues.isEmpty() ? "田径场" : venues.get(0);
+        String mainVenueCode = venueList.isEmpty() ? null : codeOf(venueList.get(0));
         List<String> fieldVenues = venues.size() > 1
                 ? new ArrayList<>(venues.subList(1, venues.size()))
                 : new ArrayList<>(List.of(mainVenue));
+        Set<String> fieldVenueCodes = new HashSet<>();
+        if (venueList.size() > 1) {
+            for (int i = 1; i < venueList.size(); i++) {
+                String c = codeOf(venueList.get(i));
+                if (c != null) fieldVenueCodes.add(c);
+            }
+        }
         Pool trackPool = new Pool("径赛", trackSlots, new ArrayList<>(List.of(mainVenue)));
         Pool fieldPool = new Pool("田赛", fieldSlots, fieldVenues);
+        // 项目级指定场地时按需创建的独立并发池（key=场地编码），与主/田赛池并行
+        Map<String, Pool> dedicatedPools = new LinkedHashMap<>();
 
         List<EventSchedule> saved = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
@@ -135,7 +157,8 @@ public class ScheduleService {
                 continue;
             }
 
-            Pool pool = u.track ? trackPool : fieldPool;
+            Pool pool = resolvePool(u, trackPool, fieldPool, mainVenueCode,
+                    fieldVenueCodes, codeToName, dedicatedPools, trackSlots, fieldSlots);
             String group = u.track ? null : event2Group.get(u.event.getId());
 
             if (group == null) {
@@ -868,6 +891,55 @@ public class ScheduleService {
             }
         }
         return out;
+    }
+
+    /** 解析场地列表为完整 {name, code} 对象列表（保留编码，用于按项目级场地编码绑定并发池） */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> venueListOf(Object v) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (!(v instanceof List<?> list)) return out;
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) continue;
+            Map<String, Object> mm = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> en : m.entrySet()) mm.put(String.valueOf(en.getKey()), en.getValue());
+            boolean hasName = mm.get("name") != null && !String.valueOf(mm.get("name")).isBlank();
+            boolean hasCode = mm.get("code") != null && !String.valueOf(mm.get("code")).isBlank();
+            if (hasName || hasCode) out.add(mm);
+        }
+        return out;
+    }
+
+    /** 取场地对象的编码（trim 后）；无编码返回 null */
+    private static String codeOf(Map<String, Object> v) {
+        if (v == null) return null;
+        Object code = v.get("code");
+        return code != null && !String.valueOf(code).isBlank() ? String.valueOf(code).trim() : null;
+    }
+
+    /**
+     * 解析单元应使用哪个并发池：
+     * <ul>
+     *   <li>未指定场地编码 → 按类别回退默认池（径赛主池 / 田赛池）；</li>
+     *   <li>指定了编码且与主径赛场地相同 → 主径赛池；</li>
+     *   <li>指定了田赛场地编码 → 该田赛场地的独立池（并发位数=fieldSlots）；</li>
+     *   <li>指定了其它新场地编码（如游泳馆）→ 建立独立 1 位并发池，与主/田赛池并行（即「同排」）。</li>
+     * </ul>
+     * 同一编码的专用池只创建一次（缓存于 dedicatedPools）。
+     */
+    private Pool resolvePool(Unit u, Pool trackPool, Pool fieldPool,
+                            String mainVenueCode, Set<String> fieldVenueCodes,
+                            Map<String, String> codeToName, Map<String, Pool> dedicatedPools,
+                            int trackSlots, int fieldSlots) {
+        String code = u.event.getDefaultVenueCode();
+        if (code == null || code.isBlank()) return u.track ? trackPool : fieldPool;
+        code = code.trim();
+        if (dedicatedPools.containsKey(code)) return dedicatedPools.get(code);
+        if (code.equals(mainVenueCode)) return trackPool;
+        String name = codeToName.getOrDefault(code, code);
+        int slots = fieldVenueCodes.contains(code) ? fieldSlots : 1;
+        Pool p = new Pool("场地-" + code, slots, java.util.List.of(name));
+        dedicatedPools.put(code, p);
+        return p;
     }
 
     private static Long asLong(Object o) {

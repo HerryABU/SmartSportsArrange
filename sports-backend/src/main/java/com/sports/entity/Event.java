@@ -114,10 +114,20 @@ public class Event {
     @JsonProperty("scheduleMode")
     private String scheduleMode;
 
-    /** 默认比赛场地 */
+    /** 默认比赛场地名称 */
     @Column(length = 50)
     @JsonProperty("defaultVenue")
     private String defaultVenue;
+
+    /**
+     * 默认比赛场地编码（与全局 venues 的 code 对应）。
+     * 指定后，该项目编排时固定使用对应场地（建立独立并发池），可与其他场地并行；
+     * 例如游泳（属特殊径赛）指定独立场馆编码后，即可在主径赛场地之外「同排」。
+     * 留空则按类别（径赛/田赛）使用默认并发池。对应表格2 的「场地编码」列。
+     */
+    @Column(length = 20)
+    @JsonProperty("defaultVenueCode")
+    private String defaultVenueCode;
 
     @Column(length = 10)
     @JsonProperty("gender")

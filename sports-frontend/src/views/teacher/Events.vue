@@ -306,6 +306,10 @@
         <el-form-item label="默认场地" prop="defaultVenue">
           <el-input v-model="formData.defaultVenue" placeholder="如 田径场 / 田赛A区" maxlength="50" />
         </el-form-item>
+        <el-form-item label="场地编码" prop="defaultVenueCode">
+          <el-input v-model="formData.defaultVenueCode" placeholder="如 TRACK / FIELD_A / SWIM" maxlength="20" />
+          <div class="form-tip">与全局场地编码一致时，该项目固定使用对应场地（独立并发池），可与其他场地并行（如游泳指定独立场馆即与主径赛同排）</div>
+        </el-form-item>
         <el-form-item label="最大用时/间隔">
           <div style="display:flex;gap:8px;width:100%">
             <el-input-number v-model="formData.maxDurationMinutes" :min="1" :max="600" placeholder="最大用时(分)" style="flex:1" />
@@ -473,6 +477,9 @@
         <el-form-item label="默认场地">
           <el-input v-model="batchPatch.defaultVenue" placeholder="不修改（留空）" maxlength="50" style="width:100%" />
         </el-form-item>
+        <el-form-item label="场地编码">
+          <el-input v-model="batchPatch.defaultVenueCode" placeholder="不修改（留空，如 TRACK/FIELD_A/SWIM）" maxlength="20" style="width:100%" />
+        </el-form-item>
         <el-form-item label="启用状态">
           <el-select v-model="batchPatch.enabled" placeholder="不修改" clearable style="width: 100%">
             <el-option label="启用" :value="true" />
@@ -522,6 +529,7 @@ interface EventItem {
   /** 田赛并行捆绑组（同字母同批并行）；空=自动编排 */
   bundleGroup?: string
   defaultVenue?: string
+  defaultVenueCode?: string
   maxDurationMinutes?: number
   intervalMinutes?: number
   // 预赛淘汰字段（径赛 needHeats=true 时先预赛后晋级决赛）
@@ -613,6 +621,7 @@ const formData = reactive<EventItem>({
   concurrency: undefined,
   bundleGroup: '',
   defaultVenue: '',
+  defaultVenueCode: '',
   maxDurationMinutes: undefined,
   intervalMinutes: undefined,
   needHeats: true,
@@ -643,11 +652,11 @@ function downloadTemplate() {
   // 表格2 布局：A代码 / B项目 / C是否田径 / D道次（田赛=0）/ … / I项目内并发 /
   //            J场地 / K最大用时 / L间隔 / M顺序号 / N并行捆绑组（同字母的田赛同批并行）
   const csv =
-    '代码,项目,是否田径(是/否),道次(田赛写0),性别,年级组,是否团体(是/否),团体人数,项目内并发(人数),场地,最大用时(分),间隔(分),顺序号,并行捆绑组(同字母同批并行)\n' +
-    '100M,100米,是,8,男子组,高一年级,否,0,8,田径场,20,10,1,\n' +
-    '100F,100米(女子),是,8,女子组,高一年级,否,0,8,田径场,20,10,2,\n' +
-    '4X100M,4×100米接力,是,8,男子组,高一年级,是,4,8,田径场,30,15,3,\n' +
-    'TY_F,跳远(女子),否,0,女子组,高一年级,否,0,4,田赛A区,90,10,4,A\n'
+    '代码,项目,是否田径(是/否),道次(田赛写0),性别,年级组,是否团体(是/否),团体人数,并数/项目内并发(人),场地,最大用时(分),间隔(分),顺序号,并行捆绑组(同字母同批并行),场地编码\n' +
+    '100M,100米,是,8,男子组,高一年级,否,0,8,田径场,20,10,1,,TRACK\n' +
+    '100F,100米(女子),是,8,女子组,高一年级,否,0,8,田径场,20,10,2,,TRACK\n' +
+    '4X100M,4×100米接力,是,8,男子组,高一年级,是,4,8,田径场,30,15,3,,TRACK\n' +
+    'TY_F,跳远(女子),否,0,女子组,高一年级,否,0,4,田赛A区,90,10,4,A,FIELD_A\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -820,6 +829,7 @@ function fillFormFromRow(row: EventItem) {
   formData.concurrency = row.concurrency ?? (isTrack ? (row.laneCount ?? 8) : 1)
   formData.bundleGroup = row.bundleGroup ?? ''
   formData.defaultVenue = row.defaultVenue ?? ''
+  formData.defaultVenueCode = row.defaultVenueCode ?? ''
   formData.maxDurationMinutes = row.maxDurationMinutes ?? undefined
   formData.intervalMinutes = row.intervalMinutes ?? undefined
   formData.needHeats = row.needHeats ?? true
@@ -943,6 +953,7 @@ const batchAddForm = reactive({
   advanceCount: 8,
   maxParticipants: 1,
   defaultVenue: '',
+  defaultVenueCode: '',
 })
 
 const batchPatch = reactive<Record<string, any>>({
@@ -985,7 +996,7 @@ function removePreviewItem(i: number) {
 function openBatchAdd() {
   Object.assign(batchAddForm, {
     eventType: '径赛', gender: '男子组', gradeGroup: '', teamSize: 0,
-    needHeats: true, advanceCount: 8, maxParticipants: 1, defaultVenue: '',
+    needHeats: true, advanceCount: 8, maxParticipants: 1, defaultVenue: '', defaultVenueCode: '',
   })
   batchAddNames.value = ''
   batchAddVisible.value = true
@@ -1008,6 +1019,7 @@ function buildBatchItem(it: { name: string; code?: string }, idx: number) {
     maxPerHeat: isTrack ? 8 : 1,
     concurrency: isTrack ? 8 : 1,
     defaultVenue: batchAddForm.defaultVenue.trim() || undefined,
+    defaultVenueCode: batchAddForm.defaultVenueCode.trim() || undefined,
     enabled: true,
     sortOrder: pagination.total + idx,
   }
@@ -1070,6 +1082,9 @@ function buildPatchPayload(): Record<string, any> {
   }
   if (batchPatch.defaultVenue && String(batchPatch.defaultVenue).trim()) {
     p.defaultVenue = String(batchPatch.defaultVenue).trim()
+  }
+  if (batchPatch.defaultVenueCode && String(batchPatch.defaultVenueCode).trim()) {
+    p.defaultVenueCode = String(batchPatch.defaultVenueCode).trim().toUpperCase()
   }
   if (batchPatch.enabled !== undefined && batchPatch.enabled !== null) p.enabled = batchPatch.enabled
   return p
