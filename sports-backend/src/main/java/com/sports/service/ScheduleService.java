@@ -116,11 +116,18 @@ public class ScheduleService {
             }
         }
         // DB 场地表存在时，主场地/首个田赛场地的 parallelMax 即其池并发上限
-        if (useDbVenues && !venueList.isEmpty()) {
-            Integer mainPm = codeToParallelMax.get(codeOf(venueList.get(0)));
-            if (mainPm != null) trackSlots = Math.max(1, mainPm);
-            if (venueList.size() > 1) {
-                Integer fPm = codeToParallelMax.get(codeOf(venueList.get(1)));
+        // Bug1 修复：按场地类型定位——主场地=首个 type=track；田赛池=type=field；
+        // pool/other 类型（如游泳馆）不进田赛轮询池，只能被项目 defaultVenueCode 显式绑定
+        List<Map<String, Object>> trackTypeVenues = venuesOfType(venueList, "track");
+        List<Map<String, Object>> fieldTypeVenues = venuesOfType(venueList, "field");
+        boolean hasType = !trackTypeVenues.isEmpty() || !fieldTypeVenues.isEmpty();
+        if (useDbVenues && hasType) {
+            if (!trackTypeVenues.isEmpty()) {
+                Integer mainPm = codeToParallelMax.get(codeOf(trackTypeVenues.get(0)));
+                if (mainPm != null) trackSlots = Math.max(1, mainPm);
+            }
+            if (!fieldTypeVenues.isEmpty()) {
+                Integer fPm = codeToParallelMax.get(codeOf(fieldTypeVenues.get(0)));
                 if (fPm != null) fieldSlots = Math.max(1, fPm);
             }
         }
@@ -155,20 +162,32 @@ public class ScheduleService {
             }
         }
 
-        // 资源池：按类别分配并发位。径赛用主场地；田赛优先用其余场地（不足则复用并告警）。
-        // 此外，项目可显式指定「场地编码」(defaultVenueCode) 以绑定独立并发池，从而与其他场地并行
-        // （例如游泳作为特殊径赛，指定独立场馆编码后即可在主径赛之外「同排」）。
-        String mainVenue = venues.isEmpty() ? "田径场" : venues.get(0);
-        String mainVenueCode = venueList.isEmpty() ? null : codeOf(venueList.get(0));
-        List<String> fieldVenues = venues.size() > 1
-                ? new ArrayList<>(venues.subList(1, venues.size()))
-                : new ArrayList<>(List.of(mainVenue));
+        // 资源池：按类别分配并发位。径赛用主场地；田赛只用 type=field 的场地（不足则复用并告警）；
+        // pool/other 类型（游泳馆等）不参与田赛轮询，只能被项目 defaultVenueCode 显式绑定。
+        // 兼容旧配置：场地表/配置 JSON 均无类型信息时，回退「首个=主场地、其余=田赛」的旧规则。
+        String mainVenue;
+        String mainVenueCode;
+        List<String> fieldVenues;
+        if (hasType) {
+            mainVenue = trackTypeVenues.isEmpty()
+                    ? (venues.isEmpty() ? "田径场" : venues.get(0))
+                    : nameOf(trackTypeVenues.get(0));
+            mainVenueCode = trackTypeVenues.isEmpty()
+                    ? (venueList.isEmpty() ? null : codeOf(venueList.get(0)))
+                    : codeOf(trackTypeVenues.get(0));
+            fieldVenues = new ArrayList<>();
+            for (Map<String, Object> v : fieldTypeVenues) fieldVenues.add(nameOf(v));
+        } else {
+            mainVenue = venues.isEmpty() ? "田径场" : venues.get(0);
+            mainVenueCode = venueList.isEmpty() ? null : codeOf(venueList.get(0));
+            fieldVenues = venues.size() > 1
+                    ? new ArrayList<>(venues.subList(1, venues.size()))
+                    : new ArrayList<>(List.of(mainVenue));
+        }
         Set<String> fieldVenueCodes = new HashSet<>();
-        if (venueList.size() > 1) {
-            for (int i = 1; i < venueList.size(); i++) {
-                String c = codeOf(venueList.get(i));
-                if (c != null) fieldVenueCodes.add(c);
-            }
+        for (Map<String, Object> v : fieldTypeVenues) {
+            String c = codeOf(v);
+            if (c != null) fieldVenueCodes.add(c);
         }
         Pool trackPool = new Pool("径赛", trackSlots, new ArrayList<>(List.of(mainVenue)));
         Pool fieldPool = new Pool("田赛", fieldSlots, fieldVenues);
@@ -229,7 +248,14 @@ public class ScheduleService {
                     batch.add(j);
                 }
                 if (batch.isEmpty()) { done.add(i); continue; }
-                placeBatch(batch, units, fieldPool, windows, defaultInterval, group,
+                // Bug1 修复：组内各单元先各自解析场地池（含 defaultVenueCode 绑定的专用池），
+                // 场地输出取各自池的场地名；时间协调跨池进行（同一时刻同时开赛）。
+                List<Pool> unitPools = new ArrayList<>();
+                for (Integer idx : batch) {
+                    unitPools.add(resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
+                            fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
+                }
+                placeBatch(batch, units, unitPools, windows, defaultInterval, group,
                         saved, warnings, orderCounter, autoArrangeFails);
                 for (Integer idx : batch) {
                     autoArrangeOk += units.get(idx).arranged;
@@ -269,28 +295,31 @@ public class ScheduleService {
     /**
      * 田赛分组 / 并行捆绑组批量放置：同组单元安排在同一时段、**同一时刻同时开始**。
      *
-     * <p>实现：先探测各槽位的最早可用位置（不改状态），取其中「最晚的窗口 + 该窗口内最晚的起点」
-     * 作为本批共同起点，再把各项目都放到该起点（各占一个并发位）；若个别槽位在该起点放不下
+     * <p>实现：先探测各单元（各自场地池）的最早可用位置（不改状态），取其中「最晚的窗口 + 该窗口内最晚的起点」
+     * 作为本批共同起点，再把各项目都放到该起点（各占所属池的一个并发位）；若个别槽位在该起点放不下
      * （时段容量不足），退化为各自最早位置并记 warning。</p>
      */
-    private void placeBatch(List<Integer> batch, List<Unit> units, Pool pool, List<Window> windows,
+    private void placeBatch(List<Integer> batch, List<Unit> units, List<Pool> unitPools, List<Window> windows,
                             int defaultInterval, String group, List<EventSchedule> saved,
                             List<String> warnings, int[] orderCounter, List<String> autoArrangeFails) {
-        int slots = pool.slots;
-        for (int from = 0; from < batch.size(); from += slots) {
-            List<Integer> wave = batch.subList(from, Math.min(batch.size(), from + slots));
+        int maxSlots = 1;
+        for (Pool p : unitPools) maxSlots = Math.max(maxSlots, p.slots);
+        for (int from = 0; from < batch.size(); from += maxSlots) {
+            List<Integer> wave = batch.subList(from, Math.min(batch.size(), from + maxSlots));
 
             // 起始窗口下界：各参与槽位当前窗口的最大值（不倒退到已用尽的时段之前）
             int minWindow = 0;
             for (int k = 0; k < wave.size(); k++) {
-                minWindow = Math.max(minWindow, pool.cursors.get(k).windowIdx);
+                Cursor c = cursorOf(unitPools.get(k), k);
+                minWindow = Math.max(minWindow, c.windowIdx);
             }
 
-            // ① 各槽位最早可用位置（只探测，不推进游标）
+            // ① 各单元最早可用位置（只探测，不推进游标）
             List<Probe> earliest = new ArrayList<>();
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
-                earliest.add(pool.cursors.get(k).probe(windows, u.duration, intervalOf(u, defaultInterval), minWindow));
+                Pool p = unitPools.get(k);
+                earliest.add(cursorOf(p, k).probe(windows, u.duration, intervalOf(u, defaultInterval), minWindow));
             }
 
             // ② 共同起点 = 最晚的可用窗口 + 该窗口内最晚的可用起点
@@ -313,25 +342,32 @@ public class ScheduleService {
             // ③ 各项目放到共同起点；放不下则该项退化为各自最早位置（仍推进游标，避免重叠）
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
-                Cursor cursor = pool.cursors.get(k);
-                Probe p = cursor.placeAt(windows, targetWindow, commonStart, u.duration);
-                if (p == null) {
+                Pool p = unitPools.get(k);
+                Cursor cursor = cursorOf(p, k);
+                Probe probe = cursor.placeAt(windows, targetWindow, commonStart, u.duration);
+                if (probe == null) {
                     sameStart = false;
                     Probe fb = earliest.get(k);   // 退化为该槽位各自最早可用位置
                     if (fb != null) {
-                        p = cursor.placeAt(windows, fb.windowIdx, fb.slot.startMinute, u.duration);
+                        probe = cursor.placeAt(windows, fb.windowIdx, fb.slot.startMinute, u.duration);
                     }
                 }
-                if (p == null) {
+                if (probe == null) {
                     warnings.add(String.format("田赛分组「%s」中项目「%s」因时段已排满未能安排", group, u.event.getName()));
                     continue;
                 }
-                saveSchedule(u, p.slot, pool.venueOf.get(k), saved, orderCounter, autoArrangeFails);
+                saveSchedule(u, probe.slot, p.venueOf.get(Math.min(k, p.venueOf.size() - 1)),
+                        saved, orderCounter, autoArrangeFails);
             }
             if (!sameStart) {
                 warnings.add(String.format("田赛分组「%s」部分项目未能同时开始（并发位或时段容量不足），已按各自最早时段顺延", group));
             }
         }
+    }
+
+    /** 单元在所属池内的游标：多单元共用同池时依次占用不同槽位 */
+    private static Cursor cursorOf(Pool pool, int unitIdx) {
+        return pool.cursors.get(unitIdx % pool.cursors.size());
     }
 
     private static int intervalOf(Unit u, int defaultInterval) {
@@ -1020,11 +1056,29 @@ public class ScheduleService {
         code = code.trim();
         if (dedicatedPools.containsKey(code)) return dedicatedPools.get(code);
         if (code.equals(mainVenueCode)) return trackPool;
-        String name = codeToName.getOrDefault(code, code);
+        // 场地名优先级：Event.defaultVenue（表格2「场地」列）> 场地表按编码反查 > 编码本身
+        String name = (u.event.getDefaultVenue() != null && !u.event.getDefaultVenue().isBlank())
+                ? u.event.getDefaultVenue().trim()
+                : codeToName.getOrDefault(code, code);
         int slots = fieldVenueCodes.contains(code) ? fieldSlots : codeToParallelMax.getOrDefault(code, 1);
         Pool p = new Pool("场地-" + code, slots, java.util.List.of(name));
         dedicatedPools.put(code, p);
         return p;
+    }
+
+    /** 取某类型的场地子集（type 精确匹配） */
+    private static List<Map<String, Object>> venuesOfType(List<Map<String, Object>> venueList, String type) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> v : venueList) {
+            Object t = v.get("type");
+            if (t != null && type.equalsIgnoreCase(String.valueOf(t).trim())) out.add(v);
+        }
+        return out;
+    }
+
+    private static String nameOf(Map<String, Object> v) {
+        Object n = v.get("name");
+        return n != null && !String.valueOf(n).isBlank() ? String.valueOf(n).trim() : codeOf(v);
     }
 
     private static Long asLong(Object o) {

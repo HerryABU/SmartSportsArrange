@@ -238,25 +238,53 @@ public class WordOrderBookService {
                 String round = rEntry.getKey();
                 String roundLabel = "preliminary".equals(round) ? "预赛" : "final".equals(round) ? "决赛" : "编排";
                 List<Arrangement> pool = rEntry.getValue();
-                pool.sort(Comparator
-                        .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
-                        .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
-                body.append(heading(e.getName() + "（" + n(e.getGenderLimit()) + "）· " + roundLabel, 2));
-                List<List<String>> rows = new ArrayList<>();
+                // Bug2/3 修复：编排按 年级 独立生成，组号各自从 1 开始——
+                // 秩序册必须按 年级 → 组次 分级成表，杜绝跨年级同组同道混排
+                Map<String, List<Arrangement>> byGrade = new LinkedHashMap<>();
                 for (Arrangement a : pool) {
-                    Athlete at = a.getAthlete();
-                    if (at == null) continue;
-                    rows.add(List.of(
-                            String.valueOf(a.getHeat()),
-                            String.valueOf(a.getLane()),
-                            n(at.getNumber()),
-                            n(at.getName()),
-                            at.getClassInfo() != null ? n(at.getClassInfo().getName()) : "-",
-                            n(at.getGrade()),
-                            "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-"));
+                    String g = a.getGrade() == null || a.getGrade().isBlank() ? "不分年级" : a.getGrade();
+                    byGrade.computeIfAbsent(g, k -> new ArrayList<>()).add(a);
                 }
-                body.append(table(List.of("组次", "道次", "号码", "姓名", "班级", "年级", "性别"),
-                        rows, equalWidths(7)));
+                boolean isField = Boolean.FALSE.equals(e.getTrack());
+                for (Map.Entry<String, List<Arrangement>> gEntry : byGrade.entrySet()) {
+                    List<Arrangement> gradePool = gEntry.getValue();
+                    gradePool.sort(Comparator
+                            .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
+                            .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
+                    body.append(heading(e.getName() + "（" + n(e.getGenderLimit()) + "）· "
+                            + roundLabel + " · " + gEntry.getKey(), 2));
+                    List<List<String>> rows = new ArrayList<>();
+                    if (isField) {
+                        // Bug4 修复：田赛无道次概念，输出「出场顺序」（1..n 连续）
+                        int seq = 1;
+                        for (Arrangement a : gradePool) {
+                            Athlete at = a.getAthlete();
+                            if (at == null) continue;
+                            rows.add(List.of(
+                                    String.valueOf(seq++),
+                                    n(at.getNumber()),
+                                    n(at.getName()),
+                                    at.getClassInfo() != null ? n(at.getClassInfo().getName()) : "-",
+                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-"));
+                        }
+                        body.append(table(List.of("出场顺序", "号码", "姓名", "班级", "性别"),
+                                rows, equalWidths(5)));
+                    } else {
+                        for (Arrangement a : gradePool) {
+                            Athlete at = a.getAthlete();
+                            if (at == null) continue;
+                            rows.add(List.of(
+                                    String.valueOf(a.getHeat()),
+                                    String.valueOf(a.getLane()),
+                                    n(at.getNumber()),
+                                    n(at.getName()),
+                                    at.getClassInfo() != null ? n(at.getClassInfo().getName()) : "-",
+                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-"));
+                        }
+                        body.append(table(List.of("组次", "道次", "号码", "姓名", "班级", "性别"),
+                                rows, equalWidths(6)));
+                    }
+                }
             }
         }
         if (!anyArranged) {

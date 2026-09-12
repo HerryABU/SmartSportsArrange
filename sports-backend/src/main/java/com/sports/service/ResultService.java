@@ -124,53 +124,62 @@ public class ResultService {
         boolean isRelay = "接力".equals(event.getCategory())
                 || (event.getName() != null && event.getName().contains("接力"));
 
-        // 分组处理并列排名：same_rank（同名次并列）/ sequential（顺延）
-        int rank = 1;
-        int i = 0;
-        int n = validResults.size();
-        while (i < n) {
-            int j = i;
-            while (j + 1 < n
-                    && Math.abs(validResults.get(j + 1).getTimeSeconds()
-                            - validResults.get(i).getTimeSeconds()) < 0.001) {
-                j++;
-            }
-            int groupSize = j - i + 1;
-            for (int k = i; k <= j; k++) {
-                Result result = validResults.get(k);
-                result.setTotalRank(rank);
+        // Bug6 修复：排名按「项目+年级」分组——各年级独立排序、独立名次、独立得分
+        Map<String, List<Result>> byGrade = new LinkedHashMap<>();
+        for (Result r : validResults) {
+            byGrade.computeIfAbsent(r.getAthlete().getGrade() == null ? "未知组别" : r.getAthlete().getGrade(),
+                    g -> new ArrayList<>()).add(r);
+        }
 
-                double score = scoringTable.getOrDefault(rank, 0.0);
-                result.setScore(score);
+        for (Map.Entry<String, List<Result>> gentry : byGrade.entrySet()) {
+            List<Result> gradeResults = gentry.getValue(); // 已按成绩排好序
+            int rank = 1;
+            int i = 0;
+            int n = gradeResults.size();
+            while (i < n) {
+                int j = i;
+                while (j + 1 < n
+                        && Math.abs(gradeResults.get(j + 1).getTimeSeconds()
+                                - gradeResults.get(i).getTimeSeconds()) < 0.001) {
+                    j++;
+                }
+                int groupSize = j - i + 1;
+                for (int k = i; k <= j; k++) {
+                    Result result = gradeResults.get(k);
+                    result.setTotalRank(rank);
 
-                // 破纪录加分
-                if (recordBonusEnabled && event.getRecord() != null) {
-                    try {
-                        double recordTime = parseTimeToSeconds(event.getRecord());
-                        if (result.getTimeSeconds() < recordTime) {
-                            result.setIsRecord(true);
-                            result.setScore(result.getScore() + recordBonus);
+                    double score = scoringTable.getOrDefault(rank, 0.0);
+                    result.setScore(score);
+
+                    // 破纪录加分
+                    if (recordBonusEnabled && event.getRecord() != null) {
+                        try {
+                            double recordTime = parseTimeToSeconds(event.getRecord());
+                            if (result.getTimeSeconds() < recordTime) {
+                                result.setIsRecord(true);
+                                result.setScore(result.getScore() + recordBonus);
+                            }
+                        } catch (NumberFormatException ignored) {
+                            // 记录格式无法解析，跳过
                         }
-                    } catch (NumberFormatException ignored) {
-                        // 记录格式无法解析，跳过
                     }
-                }
 
-                // 参与分（未进入积分名次者给基础分）
-                if (participationEnabled && result.getScore() <= 0) {
-                    result.setScore(result.getScore() + participationScore);
-                }
+                    // 参与分（未进入积分名次者给基础分）
+                    if (participationEnabled && result.getScore() <= 0) {
+                        result.setScore(result.getScore() + participationScore);
+                    }
 
-                // 接力项目积分加倍
-                if (isRelay) {
-                    result.setScore(result.getScore() * relayMultiplier);
-                }
+                    // 接力项目积分加倍
+                    if (isRelay) {
+                        result.setScore(result.getScore() * relayMultiplier);
+                    }
 
-                result.setUpdatedAt(LocalDateTime.now());
-                resultRepository.save(result);
+                    result.setUpdatedAt(LocalDateTime.now());
+                    resultRepository.save(result);
+                }
+                rank += sequential ? groupSize : 1;
+                i = j + 1;
             }
-            rank += sequential ? groupSize : 1;
-            i = j + 1;
         }
 
         // 计算热次排名

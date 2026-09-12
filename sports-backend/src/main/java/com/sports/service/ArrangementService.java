@@ -373,7 +373,10 @@ public class ArrangementService {
                     .forEach(eventScheduleRepository::delete);
 
             Map<String, Object> cfg = systemService.getMeetSchedule();
-            int interval = intVal(cfg.get("defaultIntervalMinutes"), 5);
+            // Bug5 修复：预赛→决赛最小间隔（finalMinGapMinutes，默认 30 分钟）——现场需完成
+            // 成绩确认、晋级公布、决赛检录；取 max(默认间隔, 最小间隔)
+            int minGap = Math.max(1, intVal(cfg.get("finalMinGapMinutes"), 30));
+            int interval = Math.max(intVal(cfg.get("defaultIntervalMinutes"), 5), minGap);
             int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
             int lanes = Math.max(1, resolveLanes(event));
             int rounds = Math.max(1, (int) Math.ceil((double) qualifierCount / lanes));
@@ -402,7 +405,7 @@ public class ArrangementService {
                     .sortOrder((prelim.getSortOrder() != null ? prelim.getSortOrder() : 0) + 1000)
                     .durationMinutes(duration)
                     .round(ROUND_FINAL)
-                    .remark(String.format("%s：晋级%d人，预赛结束后顺延", marker, qualifierCount))
+                    .remark(String.format("%s：晋级%d人，预赛结束后间隔%d分钟顺延", marker, qualifierCount, interval))
                     .createdAt(LocalDateTime.now())
                     .updatedAt(LocalDateTime.now())
                     .build();
@@ -594,7 +597,7 @@ public class ArrangementService {
             for (Arrangement saved : sortedInHeat) {
                 lanesInHeat.add(laneInfo(saved));
             }
-            heatDetails.add(laneBrief(e.getKey(), lanesInHeat));
+            heatDetails.add(laneBrief(e.getKey(), grade, lanesInHeat));
         }
 
         log.info("编排保存完成: eventId={}, round={}, 共{}组{}名, version={}",
@@ -659,7 +662,7 @@ public class ArrangementService {
                         ? ath.getClassInfo().getName() : "未知");
                 lanesInHeat.add(laneInfo);
             }
-            heatDetails.add(laneBrief(h + 1, lanesInHeat));
+            heatDetails.add(laneBrief(h + 1, grade, lanesInHeat));
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -700,19 +703,27 @@ public class ArrangementService {
         List<Map<String, Object>> rounds = new ArrayList<>();
 
         for (Map.Entry<String, List<Arrangement>> entry : byRound.entrySet()) {
-            Map<Integer, List<Arrangement>> byHeat = entry.getValue().stream()
+            // Bug2/3 修复：分组键 = 赛次 → 年级 → 组次。编排数据本身按 年级×性别 独立生成，
+            // 各年级的组号各自从 1 开始，若只按 heat 合并会导致跨年级同组同道混排。
+            Map<String, List<Arrangement>> byGrade = entry.getValue().stream()
                     .sorted(Comparator.comparing(Arrangement::getHeat).thenComparing(Arrangement::getLane))
-                    .collect(Collectors.groupingBy(Arrangement::getHeat, TreeMap::new, Collectors.toList()));
+                    .collect(Collectors.groupingBy(
+                            a -> a.getGrade() == null || a.getGrade().isBlank() ? "不分年级" : a.getGrade(),
+                            LinkedHashMap::new, Collectors.toList()));
 
             List<Map<String, Object>> heatDetails = new ArrayList<>();
             int total = 0;
-            for (Map.Entry<Integer, List<Arrangement>> he : byHeat.entrySet()) {
-                List<Map<String, Object>> lanesInHeat = new ArrayList<>();
-                for (Arrangement arr : he.getValue()) {
-                    lanesInHeat.add(laneInfo(arr));
-                    total++;
+            for (Map.Entry<String, List<Arrangement>> gentry : byGrade.entrySet()) {
+                Map<Integer, List<Arrangement>> byHeat = gentry.getValue().stream()
+                        .collect(Collectors.groupingBy(Arrangement::getHeat, TreeMap::new, Collectors.toList()));
+                for (Map.Entry<Integer, List<Arrangement>> he : byHeat.entrySet()) {
+                    List<Map<String, Object>> lanesInHeat = new ArrayList<>();
+                    for (Arrangement arr : he.getValue()) {
+                        lanesInHeat.add(laneInfo(arr));
+                        total++;
+                    }
+                    heatDetails.add(laneBrief(he.getKey(), gentry.getKey(), lanesInHeat));
                 }
-                heatDetails.add(laneBrief(he.getKey(), lanesInHeat));
             }
 
             Integer version = entry.getValue().stream()
@@ -725,7 +736,7 @@ public class ArrangementService {
             roundResult.put("round", entry.getKey());
             roundResult.put("heats", heatDetails);
             roundResult.put("version", version);
-            roundResult.put("statistics", Map.of("totalAthletes", total, "totalHeats", byHeat.size()));
+            roundResult.put("statistics", Map.of("totalAthletes", total, "totalHeats", heatDetails.size()));
             rounds.add(roundResult);
         }
 
@@ -842,18 +853,50 @@ public class ArrangementService {
 
         try (OutputStream out = response.getOutputStream()) {
             java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
-            rows.add(java.util.List.of("赛次", "组号", "道次", "运动员", "号码簿", "班级", "预赛成绩", "晋级"));
-            for (Arrangement a : arrangements) {
+            boolean isField = event != null && Boolean.FALSE.equals(event.getTrack());
+            // Bug2/3 修复：加「年级」列并按 赛次→年级→组次→道次 排序（各年级组号独立，杜绝混排）
+            // Bug4 修复：田赛输出「出场顺序」连续序号，不再出现 组号+道次
+            rows.add(isField
+                    ? java.util.List.of("赛次", "年级", "出场顺序", "运动员", "号码簿", "班级", "预赛成绩", "晋级")
+                    : java.util.List.of("赛次", "年级", "组号", "道次", "运动员", "号码簿", "班级", "预赛成绩", "晋级"));
+            List<Arrangement> sorted = arrangements.stream()
+                    .sorted(Comparator
+                            .comparingInt((Arrangement a) ->
+                                    ROUND_PRELIM.equals(a.getRound() == null || a.getRound().isBlank() ? ROUND_FINAL : a.getRound()) ? 0 : 1)
+                            .thenComparing(a -> a.getGrade() == null ? "" : a.getGrade())
+                            .thenComparing(a -> a.getHeat() == null ? 0 : a.getHeat())
+                            .thenComparing(a -> a.getLane() == null ? 0 : a.getLane()))
+                    .collect(Collectors.toList());
+            int fieldSeq = 1;
+            String lastKey = null;
+            for (Arrangement a : sorted) {
                 Athlete ath = a.getAthlete();
-                rows.add(java.util.List.of(
-                        roundLabel(a.getRound()),
-                        String.valueOf(a.getHeat()),
-                        String.valueOf(a.getLane()),
-                        ath.getName(),
-                        ath.getNumber() != null ? ath.getNumber() : "",
-                        ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
-                        a.getPrelimTime() != null ? a.getPrelimTime() : "",
-                        Boolean.TRUE.equals(a.getQualified()) ? "✓" : ""));
+                String round = roundLabel(a.getRound());
+                String grade = a.getGrade() == null ? "" : a.getGrade();
+                if (isField) {
+                    String key = round + "|" + grade;
+                    if (!key.equals(lastKey)) { fieldSeq = 1; lastKey = key; }
+                    rows.add(java.util.List.of(
+                            round,
+                            grade,
+                            String.valueOf(fieldSeq++),
+                            ath.getName(),
+                            ath.getNumber() != null ? ath.getNumber() : "",
+                            ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
+                            a.getPrelimTime() != null ? a.getPrelimTime() : "",
+                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : ""));
+                } else {
+                    rows.add(java.util.List.of(
+                            round,
+                            grade,
+                            String.valueOf(a.getHeat()),
+                            String.valueOf(a.getLane()),
+                            ath.getName(),
+                            ath.getNumber() != null ? ath.getNumber() : "",
+                            ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
+                            a.getPrelimTime() != null ? a.getPrelimTime() : "",
+                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : ""));
+                }
             }
             java.util.List<java.util.List<String>> headCols = rows.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
@@ -1043,9 +1086,10 @@ public class ArrangementService {
         return laneInfo;
     }
 
-    private Map<String, Object> laneBrief(int heat, List<Map<String, Object>> lanesInHeat) {
+    private Map<String, Object> laneBrief(int heat, String grade, List<Map<String, Object>> lanesInHeat) {
         Map<String, Object> heatInfo = new LinkedHashMap<>();
         heatInfo.put("heat", heat);
+        heatInfo.put("grade", grade);
         heatInfo.put("lanes", lanesInHeat);
         return heatInfo;
     }

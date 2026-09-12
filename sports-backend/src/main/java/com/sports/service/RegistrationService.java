@@ -563,6 +563,14 @@ public class RegistrationService {
             r.setUpdatedAt(now);
         });
         registrationRepository.saveAll(pendingList);
+        // Bug9 修复：审核通过后自动补全号码布编号（幂等：已有号码的跳过），
+        // 保证报名表/道次表/成绩表/秩序册的号码列非空可检索；失败不影响审核主流程
+        try {
+            Map<String, Object> numberResult = numberRuleService.generateNumbers(null);
+            log.info("审核后自动补全号码布: {}", numberResult);
+        } catch (Exception ex) {
+            log.warn("审核后自动生成号码布失败（已忽略）: {}", ex.getMessage());
+        }
         log.info("一键全部通过: eventId={}, classId={}, approved={}", eventId, classId, pendingList.size());
         return pendingList.size();
     }
