@@ -15,7 +15,7 @@
  *   A. 保留帽子转发（后端收到 /sportmg/...）：由后端智能剥离前缀；
  *   B. 剥掉帽子转发（后端收到 /login）：前端资源相对路径天然适配。
  */
-const KNOWN_TOP_LEVEL = [
+export const KNOWN_TOP_LEVEL = [
   'loading',
   'login',
   'setup',
@@ -47,4 +47,38 @@ export function apiBase() {
   return API_BASE
 }
 
-export default { APP_BASE, API_BASE, appBase, apiBase, detectAppBase }
+/**
+ * 入口归一化 —— hash 模式下 SPA 必须始终运行在「根路径」(/ 或 /帽子/)，路由全部写在 hash 里。
+ *
+ * 但反向代理 / 书签可能直接命中 /login、/teacher/xxx 等子路径，服务器 SPA 回退会把
+ * index.html 落到该子路径，使文档 pathname 被钉死在 /login。此后 router.push 用
+ * history.pushState('#/xxx', …) 会被浏览器解析到当前 pathname 之下，最终 URL 变成
+ * /login#/teacher/dashboard，且之后永远保留错误的 /login 文档路径。
+ *
+ * 这里在应用启动最早期做一次纠正：把子路径整段搬进 hash 并重定向到根路径。
+ *   /login#/teacher/dashboard  →  /#/teacher/dashboard
+ *   /login                     →  /#/login
+ *   /sportmg/login             →  /sportmg/#/login
+ * 返回 true 表示已触发重定向（当前页面将重新加载）。
+ */
+export function normalizeHashEntry() {
+  if (typeof window === 'undefined') return false
+  const path = window.location.pathname // /sportmg/login | /login | /teacher/dashboard
+  const seg = (path.split('/')[1] || '').trim()
+  // 第一段若是已知顶层路由 → 无帽子；否则第一段就是反向代理帽子前缀
+  let hat = ''
+  if (seg && !KNOWN_TOP_LEVEL.includes(seg)) hat = '/' + seg
+  const afterHat = hat ? path.slice(hat.length) : path // /login | /teacher/dashboard
+  const routeSeg = (afterHat.split('/')[1] || '').trim()
+  // 仅当子路径本身是已知顶层路由时才纠正，避免误伤 /assets、/api 等
+  if (routeSeg && KNOWN_TOP_LEVEL.includes(routeSeg)) {
+    let hash = window.location.hash
+    if (!hash || hash === '#') hash = '#' + afterHat // 把整段子路径搬进 hash
+    const target = window.location.origin + hat + '/' + hash + window.location.search
+    window.location.replace(target)
+    return true
+  }
+  return false
+}
+
+export default { APP_BASE, API_BASE, appBase, apiBase, detectAppBase, normalizeHashEntry }

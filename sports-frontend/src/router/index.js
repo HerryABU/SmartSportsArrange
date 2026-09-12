@@ -206,7 +206,8 @@ const router = createRouter({
   //   1) 历史模式深链刷新时 ./assets 相对到 /sportmg/teacher/assets 被误判为 SPA 路由而回退成 index.html（白屏）；
   //   2) 路由基准与反代帽子前缀不一致导致的整页空白。
   // 同时兼容「子域(无帽子)」与「子路径(有帽子)」两种反代形态（帽子由 base.js 实时推断）。
-  history: createWebHashHistory(appBase() || '/'),
+  // 注意：带帽子时 base 必须是 "/sportmg/"（带尾斜杠），否则 pushState('#/xxx') 会丢失帽子前缀。
+  history: createWebHashHistory(appBase() ? appBase() + '/' : '/'),
   routes
 })
 
