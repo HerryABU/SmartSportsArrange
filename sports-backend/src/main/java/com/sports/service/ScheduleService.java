@@ -448,7 +448,7 @@ public class ScheduleService {
         return list;
     }
 
-    /** 项目内并发人数：项目显式 concurrency 优先；径赛回退道次数，田赛回退 1（不施加场地并行上限） */
+    /** 项目内并发人数：项目显式 concurrency 优先；回退 groupSize（每组次几人）；径赛再回退道次数，田赛回退 1（不施加场地并行上限） */
     private int concurrencyOf(Event e) {
         return concurrencyOf(e, null);
     }
@@ -460,7 +460,21 @@ public class ScheduleService {
             if (venueParallelMax != null && c > venueParallelMax) c = venueParallelMax;
             return c;
         }
-        if (Boolean.FALSE.equals(e.getTrack())) return 1;
+        if (Boolean.FALSE.equals(e.getTrack())) {
+            // 田赛回退链：显式 groupSize（每组次几人，如田赛工位数）> 1
+            Integer gs = e.getGroupSize();
+            if (gs != null && gs > 0) {
+                if (venueParallelMax != null && gs > venueParallelMax) gs = venueParallelMax;
+                return gs;
+            }
+            return 1;
+        }
+        // 径赛回退链：groupSize（每组次几人/泳道数，如游泳）> 道次数 > 默认道次
+        Integer gs = e.getGroupSize();
+        if (gs != null && gs > 0) {
+            if (venueParallelMax != null && gs > venueParallelMax) gs = venueParallelMax;
+            return gs;
+        }
         Integer lc = e.getLaneCount();
         if (lc != null && lc > 0) {
             int r = lc;
