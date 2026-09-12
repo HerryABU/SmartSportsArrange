@@ -5,6 +5,7 @@ import com.sports.entity.Event;
 import com.sports.entity.EventSchedule;
 import com.sports.entity.Registration;
 import com.sports.repository.ArrangementRepository;
+import com.sports.repository.VenueRepository;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
@@ -43,6 +44,7 @@ class ScheduleServiceTest {
     @Mock private ArrangementRepository arrangementRepository;
     @Mock private ArrangementService arrangementService;
     @Mock private SystemService systemService;
+    @Mock private VenueRepository venueRepository;
 
     @InjectMocks private ScheduleService scheduleService;
 

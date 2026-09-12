@@ -4,10 +4,12 @@ import com.sports.common.Grades;
 import com.sports.entity.Event;
 import com.sports.entity.EventSchedule;
 import com.sports.entity.Registration;
+import com.sports.entity.Venue;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.repository.ArrangementRepository;
+import com.sports.repository.VenueRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +35,9 @@ import java.util.stream.Collectors;
  *       默认高一→高二→高三仅是可修改的默认值，不写死在代码里；</li>
  *   <li><b>并发位数（取代串行/并行开关）</b>：trackSlots / fieldSlots —— 1 = 串行，
  *       n = 同一时刻可同时进行 n 个项目。槽位与场地一一对应（场地不足时复用并告警）；</li>
+ *   <li><b>场地表（并行上限）</b>：当数据库存在启用的场地（venue 表）时，其 {@code parallelMax}
+ *       即该场地并发上限，主场地/首个田赛场地的 parallelMax 分别作为径赛池/田赛池的槽位数；
+ *       项目通过 defaultVenueCode 绑定场地后，其并发数受该场地 parallelMax 约束（1=串行，n=并行）。</li>
  *   <li><b>自定义项目顺序</b>：eventOrder（eventId 有序列表，田赛+径赛混排）优先，
  *       未列入的项目按 sortOrder 追加；</li>
  *   <li><b>田赛分组</b>：fieldGroups 中同一组的田赛项目安排在同一时段并行进行；</li>
@@ -53,6 +58,7 @@ public class ScheduleService {
     private final ArrangementRepository arrangementRepository;
     private final ArrangementService arrangementService;
     private final SystemService systemService;
+    private final VenueRepository venueRepository;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
     private static final int MIN_DURATION = 10;
@@ -77,15 +83,45 @@ public class ScheduleService {
         int defaultInterval = intVal(cfg.get("defaultIntervalMinutes"), 5);
         int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
         int fieldPerAthlete = intVal(cfg.get("fieldPerAthleteMinutes"), 3);
-        List<String> venues = venueNames(cfg.get("venues"));
-        List<Map<String, Object>> venueList = venueListOf(cfg.get("venues"));
+        // 场地来源：优先使用数据库「场地表」(含 parallelMax 并行上限)；为空则回退配置 JSON 的 venues
+        List<Venue> dbVenues = (venueRepository != null)
+                ? venueRepository.findByEnabledTrueOrderBySortOrderAsc() : List.of();
+        boolean useDbVenues = !dbVenues.isEmpty();
+        List<Map<String, Object>> venueList;
+        if (useDbVenues) {
+            venueList = new ArrayList<>();
+            for (Venue v : dbVenues) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("name", v.getName());
+                m.put("code", v.getCode());
+                m.put("type", v.getType());
+                m.put("parallelMax", v.getParallelMax());
+                venueList.add(m);
+            }
+        } else {
+            venueList = venueListOf(cfg.get("venues"));
+        }
+        List<String> venues = venueNames(venueList);
         Map<String, String> codeToName = new LinkedHashMap<>();
+        Map<String, Integer> codeToParallelMax = new LinkedHashMap<>();
         for (Map<String, Object> v : venueList) {
             Object code = v.get("code");
             Object name = v.get("name");
+            Object pm = v.get("parallelMax");
             if (code != null && !String.valueOf(code).isBlank()) {
-                codeToName.put(String.valueOf(code).trim(),
-                        name != null ? String.valueOf(name).trim() : String.valueOf(code).trim());
+                String c = String.valueOf(code).trim();
+                codeToName.put(c, name != null ? String.valueOf(name).trim() : c);
+                int max = (pm instanceof Number n) ? n.intValue() : 1;
+                codeToParallelMax.put(c, Math.max(1, max));
+            }
+        }
+        // DB 场地表存在时，主场地/首个田赛场地的 parallelMax 即其池并发上限
+        if (useDbVenues && !venueList.isEmpty()) {
+            Integer mainPm = codeToParallelMax.get(codeOf(venueList.get(0)));
+            if (mainPm != null) trackSlots = Math.max(1, mainPm);
+            if (venueList.size() > 1) {
+                Integer fPm = codeToParallelMax.get(codeOf(venueList.get(1)));
+                if (fPm != null) fieldSlots = Math.max(1, fPm);
             }
         }
         List<Long> eventOrder = longList(cfg.get("eventOrder"));
@@ -98,7 +134,17 @@ public class ScheduleService {
         }
 
         List<Unit> units = buildUnits(gradeOrder, eventOrder);
-        estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
+        // 并行上限：仅当使用 DB 场地表时，绑定了场地编码的项目其并发数受该场地 parallelMax 约束
+        Map<Long, Integer> eventParallelCap = useDbVenues ? new LinkedHashMap<>() : Map.of();
+        if (useDbVenues) {
+            for (Unit u : units) {
+                String vc = u.event.getDefaultVenueCode();
+                if (vc != null && codeToParallelMax.containsKey(vc.trim())) {
+                    eventParallelCap.put(u.event.getId(), codeToParallelMax.get(vc.trim()));
+                }
+            }
+        }
+        estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete, eventParallelCap);
 
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
@@ -158,7 +204,7 @@ public class ScheduleService {
             }
 
             Pool pool = resolvePool(u, trackPool, fieldPool, mainVenueCode,
-                    fieldVenueCodes, codeToName, dedicatedPools, trackSlots, fieldSlots);
+                    fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots);
             String group = u.track ? null : event2Group.get(u.event.getId());
 
             if (group == null) {
@@ -393,24 +439,39 @@ public class ScheduleService {
         return list;
     }
 
-    /** 项目内并发人数：项目显式 concurrency 优先；径赛回退道次数，田赛回退 1 */
+    /** 项目内并发人数：项目显式 concurrency 优先；径赛回退道次数，田赛回退 1（不施加场地并行上限） */
     private int concurrencyOf(Event e) {
+        return concurrencyOf(e, null);
+    }
+
+    /** 项目内并发人数（含场地并行上限）：若绑定了场地编码且场地并行上限更小，则并发数受其约束 */
+    private int concurrencyOf(Event e, Integer venueParallelMax) {
         Integer c = e.getConcurrency();
-        if (c != null && c > 0) return c;
+        if (c != null && c > 0) {
+            if (venueParallelMax != null && c > venueParallelMax) c = venueParallelMax;
+            return c;
+        }
         if (Boolean.FALSE.equals(e.getTrack())) return 1;
         Integer lc = e.getLaneCount();
-        if (lc != null && lc > 0) return lc;
-        return e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
+        if (lc != null && lc > 0) {
+            int r = lc;
+            if (venueParallelMax != null && r > venueParallelMax) r = venueParallelMax;
+            return r;
+        }
+        int d = e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
+        if (venueParallelMax != null && d > venueParallelMax) d = venueParallelMax;
+        return d;
     }
 
     /** 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算），并受最大时间封顶 */
     private void estimateDurations(List<Unit> units, int defaultDuration,
-                                   int heatMinutes, int fieldPerAthlete) {
+                                   int heatMinutes, int fieldPerAthlete,
+                                   Map<Long, Integer> eventParallelCap) {
         for (Unit u : units) {
             Event e = u.event;
             boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
             int count = countParticipants(e.getId(), u.grade);
-            int concurrency = concurrencyOf(e);
+            int concurrency = concurrencyOf(e, eventParallelCap.get(u.event.getId()));
 
             int entrants = count;
             if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
@@ -928,7 +989,8 @@ public class ScheduleService {
      */
     private Pool resolvePool(Unit u, Pool trackPool, Pool fieldPool,
                             String mainVenueCode, Set<String> fieldVenueCodes,
-                            Map<String, String> codeToName, Map<String, Pool> dedicatedPools,
+                            Map<String, String> codeToName, Map<String, Integer> codeToParallelMax,
+                            Map<String, Pool> dedicatedPools,
                             int trackSlots, int fieldSlots) {
         String code = u.event.getDefaultVenueCode();
         if (code == null || code.isBlank()) return u.track ? trackPool : fieldPool;
@@ -936,7 +998,7 @@ public class ScheduleService {
         if (dedicatedPools.containsKey(code)) return dedicatedPools.get(code);
         if (code.equals(mainVenueCode)) return trackPool;
         String name = codeToName.getOrDefault(code, code);
-        int slots = fieldVenueCodes.contains(code) ? fieldSlots : 1;
+        int slots = fieldVenueCodes.contains(code) ? fieldSlots : codeToParallelMax.getOrDefault(code, 1);
         Pool p = new Pool("场地-" + code, slots, java.util.List.of(name));
         dedicatedPools.put(code, p);
         return p;
