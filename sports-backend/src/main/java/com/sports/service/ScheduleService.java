@@ -338,9 +338,10 @@ public class ScheduleService {
         return u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
     }
 
-    /** 登记一条赛程：径赛排入后立即复用编排引擎生成决赛道次 */
+    /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
     private void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails) {
+        boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
         EventSchedule s = EventSchedule.builder()
                 .event(u.event)
                 .day(placed.window.day)
@@ -352,6 +353,7 @@ public class ScheduleService {
                 .venue(venue)
                 .sortOrder(orderCounter[0]++)
                 .durationMinutes(u.duration)
+                .round(needPrelim ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL)
                 .remark(u.duration >= u.rawDuration ? null
                         : String.format("预计%d分钟，已按上限%d分钟压缩", u.rawDuration, u.duration))
                 .createdAt(LocalDateTime.now())
@@ -365,13 +367,20 @@ public class ScheduleService {
     }
 
     /**
-     * 为单个径赛单元自动生成决赛道次（先清理该 事件×年级×性别 的旧决赛记录，保留预赛晋级流）。
+     * 为单个径赛单元自动生成道次（先清理该 事件×年级×性别 的旧记录再重排）：
+     * <ul>
+     *   <li>needHeats（需预赛）项目 → 生成<b>预赛</b>道次（round=preliminary），
+     *       录入预赛成绩并计算晋级后由 {@code computeQualifiers} 追加决赛道次与独立决赛赛程条目；</li>
+     *   <li>其余项目 → 直接生成<b>决赛</b>道次（round=final）。</li>
+     * </ul>
      *
      * @return 成功生成的 性别组 数量（男/女各计 1）
      */
     private int autoArrangeFor(Unit u, List<String> arrFails) {
         Event e = u.event;
         int lanes = concurrencyOf(e);
+        String round = Boolean.TRUE.equals(e.getNeedHeats())
+                ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
         List<String> genders = new ArrayList<>();
         String gl = e.getGenderLimit();
         if ("女子组".equals(gl)) {
@@ -385,8 +394,8 @@ public class ScheduleService {
         int ok = 0;
         for (String g : genders) {
             try {
-                arrangementRepository.deleteByEventRoundGradeGender(e.getId(), ArrangementService.ROUND_FINAL, u.grade, g);
-                arrangementService.arrange(e.getId(), u.grade, g, lanes, null, ArrangementService.ROUND_FINAL);
+                arrangementRepository.deleteByEventRoundGradeGender(e.getId(), round, u.grade, g);
+                arrangementService.arrange(e.getId(), u.grade, g, lanes, null, round);
                 ok++;
             } catch (Exception ex) {
                 arrFails.add(String.format("%s（%s %s）：%s", e.getName(), u.grade,
@@ -395,7 +404,7 @@ public class ScheduleService {
             }
         }
         if (ok > 0) {
-            log.info("自动道次编排: event={}({}), grade={}, genders={}", e.getName(), e.getId(), u.grade, genders);
+            log.info("自动道次编排: event={}({}), grade={}, genders={}, round={}", e.getName(), e.getId(), u.grade, genders, round);
         }
         return ok;
     }
