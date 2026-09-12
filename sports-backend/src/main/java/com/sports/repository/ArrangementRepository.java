@@ -16,7 +16,23 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
 
     List<Arrangement> findByEventId(Long eventId);
 
-    Optional<Arrangement> findByEventIdAndAthleteId(Long eventId, Long athleteId);
+    /**
+     * 同一 事件×运动员 可能同时存在 预赛(preliminary) 与 决赛(final) 两条编排（二次编排后），
+     * 单条 Optional 语义会触发 NonUniqueResultException。
+     * 取数规则：优先决赛轮；无决赛时取最新一条（id 最大）。
+     */
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND a.athlete.id = :athleteId ORDER BY CASE WHEN COALESCE(a.round, 'final') = 'final' THEN 0 ELSE 1 END ASC, a.id DESC")
+    List<Arrangement> findByEventIdAndAthleteIdAllRounds(@Param("eventId") Long eventId, @Param("athleteId") Long athleteId);
+
+    default Optional<Arrangement> findByEventIdAndAthleteId(Long eventId, Long athleteId) {
+        List<Arrangement> rows = findByEventIdAndAthleteIdAllRounds(eventId, athleteId);
+        if (rows.isEmpty()) return Optional.empty();
+        // 优先决赛轮（round 为 null 视作 final，历史 NULL 行兼容），取该轮 id 最大的一条；否则取全轮 id 最大
+        return rows.stream()
+                .filter(a -> "final".equals(a.getRound() == null ? "final" : a.getRound()))
+                .max(java.util.Comparator.comparing(Arrangement::getId))
+                .or(() -> rows.stream().max(java.util.Comparator.comparing(Arrangement::getId)));
+    }
 
     /** 按赛次查询编排（历史 NULL 行视作 final） */
     @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round ORDER BY a.heat ASC, a.lane ASC")
