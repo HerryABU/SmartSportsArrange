@@ -3,6 +3,7 @@ package com.sports.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.ApiResponse;
 import com.sports.service.ArrangementService;
+import com.sports.service.ConflictService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,7 @@ import java.util.Map;
 public class ArrangementController {
 
     private final ArrangementService arrangementService;
+    private final ConflictService conflictService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/events/{eventId}")
@@ -143,5 +145,14 @@ public class ArrangementController {
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20")
                         + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20"));
         objectMapper.writeValue(response.getWriter(), data);
+    }
+
+    /**
+     * B06 / U05：兼项冲突检测。返回同一运动员在相近时间参加的不同项目冲突清单。
+     */
+    @GetMapping("/conflicts")
+    public ApiResponse<?> conflicts() {
+        log.info("查询兼项冲突");
+        return ApiResponse.success("兼项冲突检测完成", conflictService.detectConflicts());
     }
 }

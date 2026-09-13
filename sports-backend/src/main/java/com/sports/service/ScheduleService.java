@@ -58,6 +58,7 @@ public class ScheduleService {
     private final ArrangementRepository arrangementRepository;
     private final ArrangementService arrangementService;
     private final SystemService systemService;
+    private final ConflictService conflictService;
     private final VenueRepository venueRepository;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
@@ -267,6 +268,15 @@ public class ScheduleService {
         log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}位并发, 田赛{}位并发, 田赛分组{}组",
                 saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
                 trackSlots, fieldSlots, event2Group.values().stream().distinct().count());
+
+        // B06/U05：赛程生成后做兼项冲突检测，冲突写入 warnings（不再为空）与 conflicts 清单
+        List<Map<String, Object>> conflicts = conflictService.detectConflicts();
+        if (!conflicts.isEmpty()) {
+            for (Map<String, Object> c : conflicts) {
+                warnings.add("兼项冲突: 运动员「" + c.get("athleteName") + "」(" + c.get("athleteNumber")
+                        + ") 在 " + c.get("windowA") + " 与 " + c.get("windowB") + " 时间重叠");
+            }
+        }
 
         Map<String, Object> result = buildResult();
         result.put("warnings", warnings);
