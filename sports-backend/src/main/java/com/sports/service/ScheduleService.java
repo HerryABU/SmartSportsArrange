@@ -296,7 +296,7 @@ public class ScheduleService {
         List<Map<String, Object>> conflicts = conflictService.detectConflicts();
         int severeConflicts = 0;
         for (Map<String, Object> c : conflicts) {
-            if ("严重".equals(c.get("severity"))) severeConflicts++;
+            if (ConflictService.SEVERITY_BLOCKER.equals(c.get("severity"))) severeConflicts++;
         }
         if (!conflicts.isEmpty()) {
             Map<String, Object> worst = conflicts.get(0);

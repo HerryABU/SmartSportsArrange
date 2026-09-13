@@ -167,11 +167,25 @@ public class ArrangementController {
     }
 
     /**
-     * B06 / U05：兼项冲突检测。返回同一运动员在相近时间参加的不同项目冲突清单。
+     * B06 / U05：兼项冲突检测。返回同一运动员在相近时间参加的不同项目冲突清单，
+     * 附严重度分级、根因类型与可执行调整建议。
      */
     @GetMapping("/conflicts")
     public ApiResponse<?> conflicts() {
         log.info("查询兼项冲突");
-        return ApiResponse.success("兼项冲突检测完成", conflictService.detectConflicts());
+        List<Map<String, Object>> list = conflictService.detectConflicts();
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("summary", conflictService.summary(list));
+        data.put("list", list);
+        return ApiResponse.success("兼项冲突检测完成", data);
+    }
+
+    /**
+     * B06 / U05：兼项冲突清单导出（Excel），供现场按建议调表。
+     */
+    @GetMapping("/conflicts/export")
+    public void exportConflicts(HttpServletResponse response) throws IOException {
+        log.info("导出兼项冲突清单");
+        conflictService.exportConflicts(response);
     }
 }
