@@ -305,9 +305,11 @@ public class WordOrderBookService {
         body.append(pageBreak());
 
         // ---- 五、运动员号码对照表 ----
-        body.append(heading("五、运动员号码对照表", 1));
+        body.append(heading("五、运动员号码对照表（仅参赛运动员）", 1));
         List<Athlete> athletes = athleteRepository.findAll().stream()
                 .filter(a -> a.getDeletedAt() == null)
+                // B04/U04：仅输出本次参赛运动员（已审核报名），避免混入全校未报名学生
+                .filter(a -> participantIds.contains(a.getId()))
                 .sorted(Comparator
                         .comparingInt((Athlete a) -> gradeIdx(gradeOrder, a.getGrade()))
                         .thenComparing(a -> a.getClassInfo() != null ? n(a.getClassInfo().getName()) : "",
@@ -324,9 +326,11 @@ public class WordOrderBookService {
                     a.getClassInfo() != null ? n(a.getClassInfo().getName()) : "-"));
         }
         if (numRows.isEmpty()) {
-            body.append(para("（暂无运动员名单。）", false, 20, "808080", null));
+            body.append(para("（暂无参赛运动员名单。）", false, 20, "808080", null));
         } else {
             body.append(table(List.of("序号", "号码", "姓名", "性别", "年级", "班级"), numRows, equalWidths(6)));
+            body.append(para("注：仅含已报名审核通过的参赛运动员；全校完整号码库请从「运动员管理」导出。",
+                    false, 16, "808080", null));
         }
 
         return buildPackage(wrapDocument(body.toString()), meetName);
