@@ -106,8 +106,24 @@ public class RankingService {
             result.add(m);
         }
 
+        // B12/U18：输出并列（取名次）规则说明，避免“总分相同按金/银/铜排名”不透明
+        String tieRuleNote = goldFirst
+                ? "排名规则：先比金牌数，金牌相同比银牌数，再比铜牌数，最后比总分；"
+                  + "若仍相同则名次并列先后顺序保持，无额外加赛。"
+                : "排名规则：先比总分，总分相同比金牌数，再比银牌数，最后比铜牌数；"
+                  + "若仍相同则名次并列先后顺序保持，无额外加赛。";
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("records", result);
+        resp.put("totalCount", result.size());
+        resp.put("tieRuleNote", tieRuleNote);
+        resp.put("tieBreakOrder", goldFirst
+                ? List.of("goldCount", "silverCount", "bronzeCount", "totalPoints")
+                : List.of("totalPoints", "goldCount", "silverCount", "bronzeCount"));
+        resp.put("dimension", byGrade ? "grade" : "class");
+
         log.info("团体总分排名计算完成: 共{}个{}", result.size(), byGrade ? "年级" : "班级");
-        return result;
+        return resp;
     }
 
     /**
@@ -247,6 +263,10 @@ public class RankingService {
         result.put("includeParade", includeParade);
         result.put("totalClasses", rows.size());
         result.put("dimension", byGrade ? "grade" : "class");
+        // B12/U18：并列（取名次）规则说明
+        result.put("tieRuleNote", goldFirst
+                ? "排名规则：先比金牌数，金牌相同比银牌数，再比铜牌数，最后比总分；若全同则并列名次保持先后顺序。"
+                : "排名规则：先比总分，总分相同比金牌数，再比银牌数，最后比铜牌数；若全同则并列名次保持先后顺序。");
         result.put("filterGrade", grade);
         result.put("filterGender", gender == null || gender.isBlank() ? null
                 : ("M".equals(genderNorm) ? "男" : "F".equals(genderNorm) ? "女" : gender.trim()));

@@ -105,6 +105,9 @@ public class RankingController {
         List<Map<String, Object>> rows;
         if (data instanceof List) {
             rows = (List<Map<String, Object>>) data;
+        } else if (data instanceof Map && ((Map<?, ?>) data).get("records") instanceof List) {
+            // 兼容 {records:[...], tieRuleNote:...} 等分页/带说明的包装结构
+            rows = (List<Map<String, Object>>) ((Map<?, ?>) data).get("records");
         } else {
             rows = List.of();
         }
