@@ -523,6 +523,60 @@ public class ResultService {
         }
     }
 
+    /**
+     * U13：按项目分 Sheet 导出成绩——每个项目一个 Sheet，避免单 Sheet 混杂；
+     * 与 importScores（读全部 Sheet）配合，可直接再导入。
+     */
+    @Transactional(readOnly = true)
+    public void exportAllResultsByProject(HttpServletResponse response) throws IOException {
+        List<Result> results = resultRepository.findAll();
+        // 按项目编码排序、分组
+        Map<String, List<Result>> byEvent = new LinkedHashMap<>();
+        results.stream()
+                .filter(r -> r.getEvent() != null && r.getEvent().getCode() != null)
+                .sorted(Comparator.comparing(r -> r.getEvent().getCode()))
+                .forEach(r -> byEvent.computeIfAbsent(r.getEvent().getCode(), k -> new ArrayList<>()).add(r));
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "成绩导入_按项目分Sheet_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
+                        + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
+
+        java.util.List<java.util.List<String>> head = java.util.List.of(
+                "项目编码", "运动员号码", "运动员姓名", "成绩", "组别", "道次", "风速", "备注")
+                .stream().map(java.util.List::of).collect(java.util.stream.Collectors.toList());
+
+        try (OutputStream out = response.getOutputStream();
+             com.alibaba.excel.ExcelWriter writer = com.alibaba.excel.EasyExcel.write(out).build()) {
+            int si = 0;
+            for (Map.Entry<String, List<Result>> en : byEvent.entrySet()) {
+                java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+                for (Result r : en.getValue()) {
+                    Event e = r.getEvent();
+                    Athlete a = r.getAthlete();
+                    if (e == null || a == null) continue;
+                    rows.add(java.util.List.of(
+                            e.getCode() != null ? e.getCode() : "",
+                            a.getNumber() != null ? a.getNumber() : "",
+                            a.getName() != null ? a.getName() : "",
+                            r.getRawTime() != null ? r.getRawTime() : "",
+                            e.getGradeGroup() != null ? e.getGradeGroup() : "",
+                            r.getLane() != null ? String.valueOf(r.getLane()) : "",
+                            r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
+                            r.getRemark() != null ? r.getRemark() : ""));
+                }
+                com.alibaba.excel.write.metadata.WriteSheet ws = com.alibaba.excel.EasyExcel
+                        .writerSheet(si++, en.getKey().length() > 28 ? en.getKey().substring(0, 28) : en.getKey())
+                        .head(head).build();
+                writer.write(rows, ws);
+            }
+            log.info("按项目分Sheet导出成绩: {} 个项目", byEvent.size());
+        }
+    }
+
     // ============ 辅助方法 ============
 
     /**

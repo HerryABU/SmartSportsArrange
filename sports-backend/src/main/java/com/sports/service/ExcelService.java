@@ -564,7 +564,8 @@ public class ExcelService {
         try (InputStream in = file.getInputStream()) {
             ScoreDataListener listener = new ScoreDataListener(
                     resultRepository, eventRepository, athleteRepository, arrangementRepository);
-            EasyExcel.read(in, ScoreExcelModel.class, listener).sheet().doRead();
+            // U13：读取全部 Sheet——支持「每个项目一个 Sheet」的成绩表，同时兼容单 Sheet
+            EasyExcel.read(in, ScoreExcelModel.class, listener).doReadAll();
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("total", listener.getSuccessCount() + listener.getErrorCount());
             result.put("success", listener.getSuccessCount());

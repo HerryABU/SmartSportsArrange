@@ -35,6 +35,13 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     @Override
     public void invoke(ScoreExcelModel model, AnalysisContext context) {
         int rowNum = context.readRowHolder().getRowIndex() + 1;
+        // U13：多 Sheet（每项目一 Sheet）导入时，跳过「填写说明」等非数据行与空行
+        boolean blank = (model.getEventCode() == null || model.getEventCode().isBlank())
+                && (model.getAthleteNumber() == null || model.getAthleteNumber().isBlank())
+                && (model.getAthleteName() == null || model.getAthleteName().isBlank());
+        if (blank) {
+            return;
+        }
         try {
             // 查找项目
             Event event = null;

@@ -81,4 +81,10 @@ public class ResultController {
         log.info("全量导出成绩（可再导入，覆盖全部项目）");
         resultService.exportAllResults(response);
     }
+
+    @GetMapping("/export-all-by-project")
+    public void exportAllResultsByProject(HttpServletResponse response) throws IOException {
+        log.info("按项目分 Sheet 导出成绩（U13）");
+        resultService.exportAllResultsByProject(response);
+    }
 }
