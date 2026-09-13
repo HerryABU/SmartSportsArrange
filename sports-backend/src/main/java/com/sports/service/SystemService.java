@@ -314,8 +314,10 @@ public class SystemService {
     //   trackSlots / fieldSlots          —— 并发位数：1=串行，n=同时进行 n 个项目（取代原 trackMode/fieldMode）
     //   eventOrder                       —— 自定义项目编排顺序（eventId 有序列表，田赛+径赛混排）
     //   fieldGroups                      —— 田赛分组：同组项目安排在同一时段并行
-    //   defaultDurationMinutes           —— 每个项目最大时间
+    //   defaultDurationMinutes           —— 每个项目最大时间（同时作为压缩上限）
     //   defaultIntervalMinutes           —— 项目间隔时间
+    //   minIntervalMinutes               —— 项目间隔下限（不小于此值，避免项目紧贴导致现场不可行）
+    //   compressionWarnRatio             —— 压缩告警阈值（被压到预计用时的 1/ratio 以下时写 warnings 告警）
 
     /** 读取运动会日程配置（含默认值兜底） */
     @Transactional(readOnly = true)
@@ -448,6 +450,9 @@ public class SystemService {
         // 单组用时 / 田赛每人次用时，用于估算项目时长
         def.put("heatMinutes", 6);
         def.put("fieldPerAthleteMinutes", 3);
+        // B05/U07：项目间隔下限（避免紧贴）+ 压缩告警阈值（被压到预计用时的 1/ratio 以下即告警）
+        def.put("minIntervalMinutes", 5);
+        def.put("compressionWarnRatio", 1.5);
         // 场地：名称 + 编码（编码用于标识/展示；并数上限取决于场地数量，故场地需先录全）
         List<Map<String, Object>> venues = new ArrayList<>();
         venues.add(defaultVenue("田径场", "TRACK"));

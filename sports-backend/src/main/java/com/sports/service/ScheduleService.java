@@ -84,6 +84,10 @@ public class ScheduleService {
         int defaultInterval = intVal(cfg.get("defaultIntervalMinutes"), 5);
         int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
         int fieldPerAthlete = intVal(cfg.get("fieldPerAthleteMinutes"), 3);
+        // B05/U07：项目间隔下限（不小于此值，避免项目紧贴导致现场不可行）+ 压缩告警阈值。
+        // 当某项目被压缩到「预计用时的 1/ratio 以下」时视为严重压缩，写入 warnings 告警。
+        int minInterval = Math.max(1, intVal(cfg.get("minIntervalMinutes"), 5));
+        double compressionWarnRatio = dblVal(cfg.get("compressionWarnRatio"), 1.5);
         // 场地来源：优先使用数据库「场地表」(含 parallelMax 并行上限)；为空则回退配置 JSON 的 venues
         List<Venue> dbVenues = (venueRepository != null)
                 ? venueRepository.findByEnabledTrueOrderBySortOrderAsc() : List.of();
@@ -229,7 +233,8 @@ public class ScheduleService {
 
             if (group == null) {
                 // 普通单元：占用并发池中最空闲的一个槽位
-                placeOne(u, pool, windows, defaultInterval, saved, warnings, orderCounter, autoArrangeFails);
+                placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
+                        saved, warnings, orderCounter, autoArrangeFails);
                 autoArrangeOk += u.arranged;
                 done.add(i);
             } else {
@@ -256,8 +261,8 @@ public class ScheduleService {
                     unitPools.add(resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
                             fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
                 }
-                placeBatch(batch, units, unitPools, windows, defaultInterval, group,
-                        saved, warnings, orderCounter, autoArrangeFails);
+                placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
+                        group, saved, warnings, orderCounter, autoArrangeFails);
                 for (Integer idx : batch) {
                     autoArrangeOk += units.get(idx).arranged;
                     done.add(idx);
@@ -288,18 +293,19 @@ public class ScheduleService {
     // ==================== 放置（并发池） ====================
 
     /** 普通单元：占用池中最空闲的槽位，并登记赛程行（径赛顺带自动道次编排） */
-    private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval,
-                          List<EventSchedule> saved, List<String> warnings,
+    private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval, int minInterval,
+                          double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
                           int[] orderCounter, List<String> autoArrangeFails) {
         int slot = pool.pickSlot();
-        int interval = u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
+        int interval = Math.max(intervalOf(u, defaultInterval), minInterval);
         Slot placed = pool.cursors.get(slot).place(windows, u.duration, interval);
         if (placed == null) {
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
             return;
         }
-        saveSchedule(u, placed, pool.venueOf.get(slot), saved, orderCounter, autoArrangeFails);
+        saveSchedule(u, placed, pool.venueOf.get(slot), saved, orderCounter, autoArrangeFails,
+                warnings, compressionWarnRatio);
     }
 
     /**
@@ -310,8 +316,9 @@ public class ScheduleService {
      * （时段容量不足），退化为各自最早位置并记 warning。</p>
      */
     private void placeBatch(List<Integer> batch, List<Unit> units, List<Pool> unitPools, List<Window> windows,
-                            int defaultInterval, String group, List<EventSchedule> saved,
-                            List<String> warnings, int[] orderCounter, List<String> autoArrangeFails) {
+                            int defaultInterval, int minInterval, double compressionWarnRatio, String group,
+                            List<EventSchedule> saved, List<String> warnings,
+                            int[] orderCounter, List<String> autoArrangeFails) {
         int maxSlots = 1;
         for (Pool p : unitPools) maxSlots = Math.max(maxSlots, p.slots);
         for (int from = 0; from < batch.size(); from += maxSlots) {
@@ -329,7 +336,8 @@ public class ScheduleService {
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
                 Pool p = unitPools.get(k);
-                earliest.add(cursorOf(p, k).probe(windows, u.duration, intervalOf(u, defaultInterval), minWindow));
+                earliest.add(cursorOf(p, k).probe(windows, u.duration,
+                        Math.max(intervalOf(u, defaultInterval), minInterval), minWindow));
             }
 
             // ② 共同起点 = 最晚的可用窗口 + 该窗口内最晚的可用起点
@@ -367,7 +375,7 @@ public class ScheduleService {
                     continue;
                 }
                 saveSchedule(u, probe.slot, p.venueOf.get(Math.min(k, p.venueOf.size() - 1)),
-                        saved, orderCounter, autoArrangeFails);
+                        saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio);
             }
             if (!sameStart) {
                 warnings.add(String.format("田赛分组「%s」部分项目未能同时开始（并发位或时段容量不足），已按各自最早时段顺延", group));
@@ -386,7 +394,8 @@ public class ScheduleService {
 
     /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
     private void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
-                              int[] orderCounter, List<String> autoArrangeFails) {
+                              int[] orderCounter, List<String> autoArrangeFails,
+                              List<String> warnings, double compressionWarnRatio) {
         boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
         EventSchedule s = EventSchedule.builder()
                 .event(u.event)
@@ -405,6 +414,13 @@ public class ScheduleService {
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
+        // B05/U07：严重压缩告警——被压缩到预计用时的 1/ratio 以下时写入 warnings，避免静默压缩导致现场跑不完
+        if (u.duration < u.rawDuration && u.rawDuration >= u.duration * compressionWarnRatio) {
+            warnings.add(String.format("⚠️ 时间压缩告警：项目「%s」（%s）预计需 %d 分钟，被压缩上限限制为 %d 分钟"
+                            + "（约 %.0f%%），现场时间可能不足；建议增大并发位数/场地并行数或调小项目规模",
+                    u.event.getName(), u.grade == null ? "不分年级" : u.grade,
+                    u.rawDuration, u.duration, u.duration * 100.0 / u.rawDuration));
+        }
         saved.add(scheduleRepository.save(s));
 
         if (u.track && u.participants > 0) {
@@ -955,6 +971,15 @@ public class ScheduleService {
         if (v instanceof Number n) return n.intValue();
         if (v != null) {
             try { return Integer.parseInt(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return def;
+    }
+
+    /** 读取 double 配置项，解析失败返回默认值（B05/U07：压缩告警阈值） */
+    private static double dblVal(Object v, double def) {
+        if (v instanceof Number n) return n.doubleValue();
+        if (v != null) {
+            try { return Double.parseDouble(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
         }
         return def;
     }
