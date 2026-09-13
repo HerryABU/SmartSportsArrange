@@ -45,6 +45,7 @@ class ScheduleServiceTest {
     @Mock private ArrangementService arrangementService;
     @Mock private SystemService systemService;
     @Mock private VenueRepository venueRepository;
+    @Mock private ConflictService conflictService;
 
     @InjectMocks private ScheduleService scheduleService;
 
@@ -189,7 +190,12 @@ class ScheduleServiceTest {
         assertEquals("08:00", saved.get(0).getStartTime());
         // 8 人 / 8 道 = 1 组 × 6 分钟 → 不足最短 10 分钟，取 10 分钟
         assertEquals(10, saved.get(0).getDurationMinutes());
-        assertEquals("08:10", saved.get(1).getStartTime(), "串行位=1 时第二个径赛应顺延");
+        // B05/U07 起项目间隔取 max(defaultInterval, minInterval)：
+        // 本夹具 defaultIntervalMinutes=0，而 minIntervalMinutes 缺省为 5（下限，防项目紧贴），
+        // 故实际间隔 5 分钟 → 08:00 + 10 + 5 = 08:15。
+        // 旧断言写 08:10（隐式假设间隔 0），是 U07 引入最小间隔下限之前的契约，早已不成立。
+        assertEquals("08:15", saved.get(1).getStartTime(),
+                "串行位=1 时第二个径赛应在「前项用时 + 最小间隔」之后顺延");
     }
 
     /** 自定义项目顺序：eventOrder=[2,1] 时先排 2 号项目 */
