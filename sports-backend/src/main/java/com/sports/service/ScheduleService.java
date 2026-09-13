@@ -274,6 +274,17 @@ public class ScheduleService {
                 saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
                 trackSlots, fieldSlots, event2Group.values().stream().distinct().count());
 
+        // B01/U01/B17：自动编排重建了整张赛程表，需把「已二次编排」的决赛条目补回来。
+        // 否则在二次编排之后重跑自动编排，径赛决赛条目会被整体抹掉——
+        // 编排表/道次表/秩序册里仍有决赛、赛程表却没有，多出口数据不一致。
+        int restoredFinals = 0;
+        try {
+            restoredFinals = arrangementService.restoreFinalScheduleRows();
+        } catch (Exception ex) {
+            warnings.add("决赛赛程条目补回失败：" + ex.getMessage() + "（请检查赛程表与道次表是否一致）");
+            log.warn("补回决赛赛程条目异常", ex);
+        }
+
         // B06/U05：赛程生成后做兼项冲突检测，冲突写入 warnings（不再为空）与 conflicts 清单
         List<Map<String, Object>> conflicts = conflictService.detectConflicts();
         if (!conflicts.isEmpty()) {
@@ -287,6 +298,8 @@ public class ScheduleService {
         result.put("warnings", warnings);
         result.put("configUsed", cfg);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
+        // B01/U01/B17：本次自动编排补回的决赛赛程条目数（0 = 无需补，赛程表已与编排一致）
+        result.put("restoredFinalScheduleRows", restoredFinals);
         // B16/U20：业务级成功判定——不止看 failed:0，还要看业务告警
         // （兼项冲突、严重压缩、时间窗溢出等 warnings 任一非空即视为未完全成功）
         boolean businessOk = warnings.isEmpty() && autoArrangeFails.isEmpty();

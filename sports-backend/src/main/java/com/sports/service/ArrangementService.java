@@ -433,6 +433,55 @@ public class ArrangementService {
         }
     }
 
+    /**
+     * B01 / U01 / B17：把「已二次编排」的决赛口径补回赛程表，保证多出口一致。
+     *
+     * <p>自动编排会 {@code deleteAllSchedules()} 重建整张赛程表，而且只为「无预赛的项目」
+     * 直接落一条 round=final 的条目；「有预赛的项目」的决赛条目是二次编排
+     * （{@link #computeQualifiers}）时才追加的。因此**在二次编排之后重跑自动编排**，
+     * 径赛决赛条目会被整体抹掉——编排表/道次表/秩序册里仍有决赛，赛程表却没了，
+     * 出口之间对不上，现场无法统一（重跑自动编排曾导致 36 条决赛条目掉到 12 条）。</p>
+     *
+     * <p>本方法在自动编排收尾时调用：对「编排表里已有 final 行、且赛程表里存在预赛条目」
+     * 的项目×年级×性别，按同一排槽规则（预赛结束 + {@code finalMinGapMinutes}）补回决赛条目。
+     * {@link #appendFinalScheduleRow} 自身按性别幂等，重复调用不会产生重复条目。</p>
+     *
+     * @return 补回的决赛赛程条目数
+     */
+    @Transactional
+    public int restoreFinalScheduleRows() {
+        Set<Long> prelimEventIds = eventScheduleRepository.findAll().stream()
+                .filter(s -> ROUND_PRELIM.equals(s.getRound()))
+                .map(s -> s.getEvent() != null ? s.getEvent().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (prelimEventIds.isEmpty()) return 0;
+
+        // 项目×年级×性别 -> 决赛编排行
+        Map<String, List<Arrangement>> groups = new LinkedHashMap<>();
+        for (Arrangement a : arrangementRepository.findAll()) {
+            if (!ROUND_FINAL.equals(a.getRound())) continue;
+            if (a.getEvent() == null || a.getAthlete() == null) continue;
+            // 仅处理「有预赛的项目」：无预赛项目（田赛）的决赛条目由自动编排自己落，无需补
+            if (!prelimEventIds.contains(a.getEvent().getId())) continue;
+            String key = a.getEvent().getId() + "|" + (a.getGrade() == null ? "" : a.getGrade())
+                    + "|" + (a.getGender() == null ? "" : a.getGender());
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(a);
+        }
+
+        int restored = 0;
+        for (List<Arrangement> g : groups.values()) {
+            Arrangement head = g.get(0);
+            EventSchedule row = appendFinalScheduleRow(head.getEvent(), head.getGrade(),
+                    head.getGender(), g.size());
+            if (row != null) restored++;
+        }
+        if (restored > 0) {
+            log.info("自动编排后补回决赛赛程条目 {} 条（保持赛程表与编排/道次表/秩序册一致）", restored);
+        }
+        return restored;
+    }
+
     private static int intVal(Object v, int def) {
         if (v instanceof Number n) return n.intValue();
         if (v != null) {
