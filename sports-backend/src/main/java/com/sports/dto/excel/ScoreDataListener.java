@@ -126,7 +126,10 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             // 静默转 null 仍以 valid 落库，导致弃赛者被算作「有效成绩」且名次排到冠军前。
             // 现识别为独立状态（dnf/dns/dsq），自动退出计分（findAllValid 只取 valid）并排在项目末尾。
             String nonFinishStatus = ResultService.normalizeNonFinishStatus(model.getRawTime());
-            Double timeSeconds = nonFinishStatus == null ? parseTimeToSeconds(model.getRawTime()) : null;
+            // R-3 严密性：非完赛标记已归一为 dnf/dns/dsq（timeSeconds=null）；
+            // 否则走 resolveTimeSeconds——空白时间留空待补录，非空白但无法解析或越界一律抛异常，
+            // 由外层统一计入 errors，杜绝「畸形时间静默以 valid 落库」的旧问题。
+            Double timeSeconds = nonFinishStatus != null ? null : resolveTimeSeconds(model.getRawTime());
 
             // 查找编排信息
             Integer heat = model.getHeat();
@@ -213,5 +216,27 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * R-3 严密性：解析成绩时间并做边界校验。
+     * 返回 null 仅当原始时间为空——属合法情形（留待后续补录，仍以 valid 落库）。
+     * 非空白但无法解析为数值/时间（如 "12.5.3"），或超出合理区间（<=0 或 >100000 秒），
+     * 一律抛 RuntimeException，由 invoke 外层的 try/catch 统一计入 errors，
+     * 而非像旧实现那样被 parseTimeToSeconds 静默转 null 后以 valid 落库。
+     */
+    private Double resolveTimeSeconds(String rawTime) {
+        if (rawTime == null || rawTime.isBlank()) {
+            return null;
+        }
+        Double secs = parseTimeToSeconds(rawTime);
+        if (secs == null) {
+            throw new RuntimeException("成绩格式非法: '" + rawTime.trim()
+                    + "' 既不是合法时间（如 12.34 / 2:35.67），也不是 DNF/DNS/DSQ 标记");
+        }
+        if (secs <= 0.0 || secs > 100000.0) {
+            throw new RuntimeException("成绩超出合理范围: " + secs + " 秒（须 >0 且 <=100000）");
+        }
+        return secs;
     }
 }
