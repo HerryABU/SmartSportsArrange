@@ -682,12 +682,22 @@ public class ScheduleService {
                 "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
 
         try (OutputStream out = response.getOutputStream()) {
+            // B09/U09：赛程表补「轮次」列——此前仅有项目名称，预赛与决赛混在一起无法区分，
+            // 现场拿到赛程表看不出哪个是决赛。统一走 RoundLabelUtil（预赛/决赛/直接决赛）。
+            Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                    .filter(a -> ArrangementService.ROUND_PRELIM.equals(a.getRound()))
+                    .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
             List<List<String>> data = new ArrayList<>();
             data.add(List.of("第几天", "日期", "时段", "开始", "结束", "场地", "年级", "项目名称", "项目编码",
-                    "类别", "是否田径", "道次", "项目内并发", "预计用时(分)"));
+                    "轮次", "类别", "是否田径", "道次", "项目内并发", "预计用时(分)"));
             for (EventSchedule s : schedules) {
                 Event e = s.getEvent();
                 boolean isTrack = e == null || !Boolean.FALSE.equals(e.getTrack());
+                long seId = e != null && e.getId() != null ? e.getId() : -1L;
+                String roundLabel = com.sports.common.RoundLabelUtil.label(
+                        s.getRound(), prelimEventIds.contains(seId));
                 data.add(List.of(
                         "第" + s.getDay() + "天",
                         n(s.getScheduleDate()), n(s.getTimeSlot()),
@@ -695,6 +705,7 @@ public class ScheduleService {
                         n(s.getGrade()),
                         e != null ? n(e.getName()) : "",
                         e != null ? n(e.getCode()) : "",
+                        roundLabel,
                         e != null ? n(e.getCategory()) : "",
                         isTrack ? "是" : "否",
                         e != null && e.getLaneCount() != null ? String.valueOf(e.getLaneCount()) : "0",
