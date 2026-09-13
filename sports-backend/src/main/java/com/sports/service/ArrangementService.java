@@ -884,7 +884,11 @@ public class ArrangementService {
 
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
-        String fileName = eventName + "_编排表_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        // U11/B13：编排表文件名带「阶段 + 版本 + 生成时间」（含决赛=二次编排后）
+        boolean afterSecond = arrangements.stream().anyMatch(a -> ROUND_FINAL.equals(a.getRound()));
+        String fileName = eventName + "_编排表_" + com.sports.common.ExportNaming.stage(afterSecond)
+                + "_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
                 + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));

@@ -69,7 +69,8 @@ public class WordOrderBookService {
             byte[] data = buildOrderBook(null);
             response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
             response.setCharacterEncoding("utf-8");
-            String fileName = "运动会秩序册_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".docx";
+            String fileName = "运动会秩序册_v" + com.sports.common.ExportNaming.appVersion()
+                    + "_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".docx";
             String enc = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
             response.setHeader("Content-Disposition",
                     "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);

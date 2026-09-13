@@ -140,7 +140,11 @@ public class ArrangementController {
         Map<String, Object> data = arrangementService.exportAllArrangement();
         response.setContentType("application/json");
         response.setCharacterEncoding("utf-8");
-        String fileName = "arrange_result_" + LocalDateTime.now().toString().replace(":", "-") + ".json";
+        // U11/B13：文件名带「阶段 + 版本 + 生成时间」；含决赛即二次编排后
+        boolean afterSecond = data.get("finalRoundCount") instanceof Number n && n.intValue() > 0;
+        String fileName = "arrange_result_" + com.sports.common.ExportNaming.stage(afterSecond)
+                + "_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".json";
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20")
                         + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20"));

@@ -801,6 +801,8 @@ public class ExcelService {
     private void setExcelResponse(HttpServletResponse response, String fileName) {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
+        // U11/B13：导出文件名统一带版本号，便于区分多版本产物
+        fileName = com.sports.common.ExportNaming.withVersion(fileName);
         String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + encoded + ";filename*=UTF-8''" + encoded);

@@ -424,7 +424,8 @@ public class ResultService {
         String name = event != null ? event.getName() : "成绩";
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
-        String fileName = name + "_成绩表_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        String fileName = name + "_成绩表_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
                 + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
@@ -486,7 +487,8 @@ public class ResultService {
         });
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
-        String fileName = "成绩全量导入_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        String fileName = "成绩全量导入_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
                         + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
