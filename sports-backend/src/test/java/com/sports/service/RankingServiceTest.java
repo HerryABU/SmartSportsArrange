@@ -394,6 +394,44 @@ class RankingServiceTest {
         assertEquals("高一2班", rows.get(1).get("className"));
     }
 
+    /**
+     * R-2 严密性：非完赛者（DNF，status=dnf，totalRank=null）必须排到有效成绩之后，
+     * 且携带 statusLabel="DNF"——此前因 totalRank=null 会被 ORDER BY 排到冠军之前。
+     * 故意把 DNF 行放在最前，验证排序与返回顺序无关。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getEventRanking_putsNonFinishersLastWithLabel() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> all = List.of(
+                resultDnf(9L, ca),
+                result(1L, 9.0, 1, ca),
+                result(2L, 7.0, 2, ca),
+                result(3L, 6.0, 3, ca));
+        when(resultRepository.findByEventIdOrderByTotalRankAsc(1L)).thenReturn(all);
+
+        Map<String, Object> ranking = rankingService.getEventRanking(1L);
+        List<Map<String, Object>> list = (List<Map<String, Object>>) ranking.get("rankings");
+        assertEquals(4, list.size());
+        assertEquals(1, list.get(0).get("rank"));
+        assertEquals(2, list.get(1).get("rank"));
+        assertEquals(3, list.get(2).get("rank"));
+
+        // 末位必须是 DNF，且带标签、无名次、不误标并列
+        Map<String, Object> last = list.get(3);
+        assertEquals("DNF", last.get("statusLabel"));
+        assertNull(last.get("rank"));
+        assertEquals(Boolean.FALSE, last.get("tied"));
+    }
+
+    /** 构造一条非完赛成绩（status 非 valid，totalRank=null） */
+    private Result resultDnf(Long id, ClassInfo ci) {
+        Athlete a = Athlete.builder().id(id).name("DNF" + id).grade("高一")
+                .gender("男").classInfo(ci).build();
+        return Result.builder().id(id).athlete(a).event(Event.builder().id(1L).build())
+                .status("dnf").totalRank(null).rawTime("DNF").build();
+    }
+
     private Map<String, Object> defaultRule(String type, String sort) {
         Map<String, Object> rule = new LinkedHashMap<>();
         rule.put("team_score_type", type);

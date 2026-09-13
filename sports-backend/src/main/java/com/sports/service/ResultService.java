@@ -58,6 +58,8 @@ public class ResultService {
                     continue;
                 }
 
+                // R-2：DNF/DNS/DSQ 等非完赛标记——命中则标记为非 valid 状态而非静默当有效成绩。
+                String nonFinish = normalizeNonFinishStatus(input.getRawTime());
                 Double timeSeconds = parseTime(input.getRawTime());
 
                 Result result = Result.builder()
@@ -66,9 +68,9 @@ public class ResultService {
                         .heat(heat != null ? heat : arrangement.getHeat())
                         .lane(arrangement.getLane())
                         .rawTime(input.getRawTime())
-                        .timeSeconds(timeSeconds)
+                        .timeSeconds(nonFinish != null ? null : timeSeconds)
                         .windSpeed(input.getWindSpeed())
-                        .status("valid")
+                        .status(nonFinish != null ? nonFinish : "valid")
                         .remark(input.getRemark())
                         .enteredAt(LocalDateTime.now())
                         .createdAt(LocalDateTime.now())
@@ -316,7 +318,10 @@ public class ResultService {
 
         if (rawTime != null) {
             result.setRawTime(rawTime);
-            result.setTimeSeconds(parseTime(rawTime));
+            // R-2：若 rawTime 为非完赛标记且未显式指定状态，则标记为非 valid 状态
+            String nonFinish = normalizeNonFinishStatus(rawTime);
+            result.setTimeSeconds(nonFinish != null ? null : parseTime(rawTime));
+            if (nonFinish != null && status == null) result.setStatus(nonFinish);
         }
         if (status != null) result.setStatus(status);
         if (remark != null) result.setRemark(remark);
@@ -652,6 +657,22 @@ public class ResultService {
     private double parseTimeToSeconds(String time) {
         Double result = parseTime(time);
         return result != null ? result : Double.MAX_VALUE;
+    }
+
+    /**
+     * R-2 严密性：识别非完赛标记（DNF/DNS/DSQ，模板填写说明承诺支持）。
+     * 命中则返回对应的持久化状态（小写），供成绩落库时标记为非 valid，
+     * 从而自动退出团队/个人计分（findAllValid 只取 valid）并在项目排名中排到末尾。
+     * 未命中返回 null（视为正常成绩，继续数值解析）。集中在此处避免重复识别逻辑。
+     */
+    public static String normalizeNonFinishStatus(String rawTime) {
+        if (rawTime == null) return null;
+        switch (rawTime.trim().toUpperCase()) {
+            case "DNF": return "dnf";
+            case "DNS": return "dns";
+            case "DSQ": return "dsq";
+            default: return null;
+        }
     }
 
     /**

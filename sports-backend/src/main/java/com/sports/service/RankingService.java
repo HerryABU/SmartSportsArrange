@@ -499,6 +499,23 @@ public class RankingService {
     public Map<String, Object> getEventRanking(Long eventId) {
         List<Result> results = resultRepository.findByEventIdOrderByTotalRankAsc(eventId);
 
+        // R-2 严密性：非完赛者（status != valid，如 DNF/DNS/DSQ）totalRank 为 null，
+        // 若按仓库返回序可能排到有效成绩（冠军）之前；统一将有效成绩排前、非完赛者确定性排到末尾，
+        // 并按班级 id 排序，避免顺序随查询返回序漂移。
+        List<Result> valid = results.stream()
+                .filter(r -> "valid".equals(r.getStatus()) && r.getTotalRank() != null)
+                .sorted(Comparator.comparingInt(Result::getTotalRank))
+                .collect(Collectors.toList());
+        List<Result> nonValid = results.stream()
+                .filter(r -> !("valid".equals(r.getStatus()) && r.getTotalRank() != null))
+                .sorted(Comparator.comparing((Result r) -> r.getAthlete() != null
+                        && r.getAthlete().getClassInfo() != null
+                        && r.getAthlete().getClassInfo().getId() != null
+                        ? r.getAthlete().getClassInfo().getId() : Long.MAX_VALUE))
+                .collect(Collectors.toList());
+        List<Result> ordered = new ArrayList<>(valid);
+        ordered.addAll(nonValid);
+
         Map<String, Object> rule = systemService.getScoringRule();
         boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
         String tieRuleNote = sequential
@@ -507,13 +524,14 @@ public class RankingService {
         Set<String> tiedRanks = computeTiedRanks(results);
 
         List<Map<String, Object>> rankings = new ArrayList<>();
-        for (Result r : results) {
+        for (Result r : ordered) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
             map.put("tied", r.getTotalRank() != null
                     && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank())));
             map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
                     ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
+            map.put("statusLabel", statusLabelOf(r.getStatus()));
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
@@ -629,5 +647,18 @@ public class RankingService {
         String gender;
         double totalScore;
         int eventCount;
+    }
+
+    /** R-2：成绩状态标注——valid→完赛，dnf/dns/dsq 原样输出大写，deleted→已删除，其余原样 */
+    private static String statusLabelOf(String status) {
+        if (status == null) return "";
+        switch (status) {
+            case "valid": return "完赛";
+            case "dnf": return "DNF";
+            case "dns": return "DNS";
+            case "dsq": return "DSQ";
+            case "deleted": return "已删除";
+            default: return status;
+        }
     }
 }

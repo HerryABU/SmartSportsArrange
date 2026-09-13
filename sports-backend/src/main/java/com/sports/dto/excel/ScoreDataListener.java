@@ -4,6 +4,7 @@ import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
 import com.sports.entity.*;
 import com.sports.repository.*;
+import com.sports.service.ResultService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -121,8 +122,11 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                         + event.getName() + "' 已有成绩 " + exRaw + "，导入值 " + inRaw);
             }
 
-            // 解析成绩
-            Double timeSeconds = parseTimeToSeconds(model.getRawTime());
+            // R-2 严密性：DNF/DNS/DSQ 等非完赛标记——模板填写说明承诺支持，但此前被当成畸形时间
+            // 静默转 null 仍以 valid 落库，导致弃赛者被算作「有效成绩」且名次排到冠军前。
+            // 现识别为独立状态（dnf/dns/dsq），自动退出计分（findAllValid 只取 valid）并排在项目末尾。
+            String nonFinishStatus = ResultService.normalizeNonFinishStatus(model.getRawTime());
+            Double timeSeconds = nonFinishStatus == null ? parseTimeToSeconds(model.getRawTime()) : null;
 
             // 查找编排信息
             Integer heat = model.getHeat();
@@ -143,7 +147,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                     .lane(lane)
                     .rawTime(model.getRawTime())
                     .timeSeconds(timeSeconds)
-                    .status("valid")
+                    .status(nonFinishStatus != null ? nonFinishStatus : "valid")
                     .remark(model.getRemark())
                     .enteredAt(java.time.LocalDateTime.now())
                     .createdAt(java.time.LocalDateTime.now())
