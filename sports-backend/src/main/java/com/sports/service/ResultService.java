@@ -214,12 +214,13 @@ public class ResultService {
         String tieRuleNote = sequential
                 ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
                 : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
-        Set<Integer> tiedRanks = computeTiedRanks(results);
+        Set<String> tiedRanks = computeTiedRanks(results);
 
         List<Map<String, Object>> list = results.stream().map(r -> {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
-            map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
+            map.put("tied", r.getTotalRank() != null
+                    && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank())));
             map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
                     ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
             map.put("athleteId", r.getAthlete().getId());
@@ -245,23 +246,41 @@ public class ResultService {
         return result;
     }
 
-    /** 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计） */
-    private Set<Integer> computeTiedRanks(List<Result> results) {
+    /**
+     * 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计）。
+     *
+     * <p><b>B08/U08 修复</b>：名次是按年级独立排的（见 computeRanking 的 byGrade 分组），
+     * 因此并列判定必须落在「年级 × 名次」这一复合键上。旧实现把所有年级的并列名次
+     * 塞进同一个 {@code Set<Integer>}，再用 rank 单键去判断，于是
+     * 「高一第2名并列」会把高二、高三的第2名（各自其实唯一）也标成并列——
+     * 成绩表导出随之给它们打上「=」与「并列」列，对外发布凭空多出并列。
+     * 现改为 {@code Set<String>}，键 = {@code 年级|名次}。</p>
+     */
+    private Set<String> computeTiedRanks(List<Result> results) {
         Map<String, Map<Integer, Integer>> cnt = new LinkedHashMap<>();
         for (Result r : results) {
             if (r.getTotalRank() == null) continue;
-            String g = r.getAthlete() != null && r.getAthlete().getGrade() != null
-                    ? r.getAthlete().getGrade() : "未知";
-            cnt.computeIfAbsent(g, k -> new LinkedHashMap<>())
+            cnt.computeIfAbsent(gradeOf(r), k -> new LinkedHashMap<>())
                     .merge(r.getTotalRank(), 1, Integer::sum);
         }
-        Set<Integer> tied = new java.util.HashSet<>();
-        for (Map<Integer, Integer> m : cnt.values()) {
-            for (Map.Entry<Integer, Integer> e : m.entrySet()) {
-                if (e.getValue() > 1) tied.add(e.getKey());
+        Set<String> tied = new HashSet<>();
+        for (Map.Entry<String, Map<Integer, Integer>> g : cnt.entrySet()) {
+            for (Map.Entry<Integer, Integer> e : g.getValue().entrySet()) {
+                if (e.getValue() > 1) tied.add(tieKey(g.getKey(), e.getKey()));
             }
         }
         return tied;
+    }
+
+    /** 并列判定键：年级 × 名次（名次是年级内名次，跨年级同名次不构成并列） */
+    private static String tieKey(String grade, Integer rank) {
+        return (grade == null || grade.isBlank() ? "未知" : grade) + "|" + rank;
+    }
+
+    /** 成绩所属年级（缺失归为「未知」，与分组口径保持一致） */
+    private static String gradeOf(Result r) {
+        return r.getAthlete() != null && r.getAthlete().getGrade() != null
+                ? r.getAthlete().getGrade() : "未知";
     }
 
     /**
@@ -435,16 +454,18 @@ public class ResultService {
             String tieRuleNote = sequential
                     ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
                     : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
-            Set<Integer> tiedRanks = computeTiedRanks(results);
+            Set<String> tiedRanks = computeTiedRanks(results);
 
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
             data.add(java.util.List.of("排名", "年级组名次", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录", "并列"));
             for (Result r : results) {
                 Athlete a = r.getAthlete();
-                boolean tied = r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank());
+                String grade = a != null && a.getGrade() != null ? a.getGrade() : "";
+                // B08/U08：并列按「年级 × 名次」判定，避免跨年级同名次被误标
+                boolean tied = r.getTotalRank() != null
+                        && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank()));
                 String rankDisp = r.getTotalRank() != null
                         ? (tied ? r.getTotalRank() + "=" : String.valueOf(r.getTotalRank())) : "-";
-                String grade = a != null && a.getGrade() != null ? a.getGrade() : "";
                 // B11/U17：年级组名次（如「高一第1名」），避免各年级多个「第1名」被误读为总冠军
                 String gradeRank = r.getTotalRank() != null && !grade.isEmpty()
                         ? grade + "第" + r.getTotalRank() + "名" : "";

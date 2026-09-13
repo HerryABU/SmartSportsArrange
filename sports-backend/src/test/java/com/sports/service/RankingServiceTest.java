@@ -100,6 +100,39 @@ class RankingServiceTest {
         assertEquals(3, ranking.get("totalCount"));
     }
 
+    private Result resultInGrade(Long id, double score, Integer rank, ClassInfo ci, String grade) {
+        Athlete a = Athlete.builder().id(id).name("R" + id).grade(grade)
+                .gender("男").classInfo(ci).build();
+        return Result.builder().id(id).athlete(a).event(Event.builder().id(1L).build())
+                .score(score).totalRank(rank).status("valid").build();
+    }
+
+    /**
+     * B08/U08 回归：并列标记必须按「年级 × 名次」判定。
+     * 旧实现把各年级并列名次并进同一个 Set&lt;Integer&gt; 后用 rank 单键判断，
+     * 于是高一第2名并列会把高二第2名（唯一）也标成并列。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getEventRanking_tieFlagIsPerGradeNotGlobal() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        ClassInfo cb = ClassInfo.builder().id(2L).name("高二1班").grade("高二").build();
+        List<Result> all = List.of(
+                resultInGrade(1L, 7.0, 2, ca, "高一"),   // 高一第2名（并列）
+                resultInGrade(2L, 7.0, 2, ca, "高一"),   // 高一第2名（并列）
+                resultInGrade(3L, 7.0, 2, cb, "高二"));  // 高二第2名（本年级唯一）
+        when(resultRepository.findByEventIdOrderByTotalRankAsc(1L)).thenReturn(all);
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> ranking = rankingService.getEventRanking(1L);
+        List<Map<String, Object>> list = (List<Map<String, Object>>) ranking.get("rankings");
+
+        assertEquals(Boolean.TRUE, list.get(0).get("tied"));
+        assertEquals(Boolean.TRUE, list.get(1).get("tied"));
+        assertEquals(Boolean.FALSE, list.get(2).get("tied"),
+                "高一第2名并列不得把高二第2名（唯一）也标成并列");
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void getScoreBoard_aggregatesGenderAndParade() {

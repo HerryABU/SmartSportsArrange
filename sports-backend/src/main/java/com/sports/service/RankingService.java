@@ -432,13 +432,14 @@ public class RankingService {
         String tieRuleNote = sequential
                 ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
                 : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
-        Set<Integer> tiedRanks = computeTiedRanks(results);
+        Set<String> tiedRanks = computeTiedRanks(results);
 
         List<Map<String, Object>> rankings = new ArrayList<>();
         for (Result r : results) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
-            map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
+            map.put("tied", r.getTotalRank() != null
+                    && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank())));
             map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
                     ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
             map.put("athleteId", r.getAthlete().getId());
@@ -474,23 +475,38 @@ public class RankingService {
         return result;
     }
 
-    /** 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计） */
-    private Set<Integer> computeTiedRanks(List<Result> results) {
+    /**
+     * 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计）。
+     *
+     * <p><b>B08/U08 修复</b>：名次是按年级独立排的，并列判定必须落在「年级 × 名次」复合键上。
+     * 旧实现把各年级的并列名次合并进同一个 {@code Set<Integer>}，用 rank 单键判断，
+     * 导致某一年级出现并列时，其它年级同一名次的运动员被误标为并列。</p>
+     */
+    private Set<String> computeTiedRanks(List<Result> results) {
         Map<String, Map<Integer, Integer>> cnt = new LinkedHashMap<>();
         for (Result r : results) {
             if (r.getTotalRank() == null) continue;
-            String g = r.getAthlete() != null && r.getAthlete().getGrade() != null
-                    ? r.getAthlete().getGrade() : "未知";
-            cnt.computeIfAbsent(g, k -> new LinkedHashMap<>())
+            cnt.computeIfAbsent(gradeOf(r), k -> new LinkedHashMap<>())
                     .merge(r.getTotalRank(), 1, Integer::sum);
         }
-        Set<Integer> tied = new HashSet<>();
-        for (Map<Integer, Integer> m : cnt.values()) {
-            for (Map.Entry<Integer, Integer> e : m.entrySet()) {
-                if (e.getValue() > 1) tied.add(e.getKey());
+        Set<String> tied = new HashSet<>();
+        for (Map.Entry<String, Map<Integer, Integer>> g : cnt.entrySet()) {
+            for (Map.Entry<Integer, Integer> e : g.getValue().entrySet()) {
+                if (e.getValue() > 1) tied.add(tieKey(g.getKey(), e.getKey()));
             }
         }
         return tied;
+    }
+
+    /** 并列判定键：年级 × 名次（名次是年级内名次，跨年级同名次不构成并列） */
+    private static String tieKey(String grade, Integer rank) {
+        return (grade == null || grade.isBlank() ? "未知" : grade) + "|" + rank;
+    }
+
+    /** 成绩所属年级（缺失归为「未知」，与分组口径保持一致） */
+    private static String gradeOf(Result r) {
+        return r.getAthlete() != null && r.getAthlete().getGrade() != null
+                ? r.getAthlete().getGrade() : "未知";
     }
 
     /**
