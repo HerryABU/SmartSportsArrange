@@ -1,5 +1,6 @@
 package com.sports.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.ApiResponse;
 import com.sports.service.ArrangementService;
 import jakarta.servlet.http.HttpServletResponse;
@@ -8,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -21,6 +23,7 @@ import java.util.Map;
 public class ArrangementController {
 
     private final ArrangementService arrangementService;
+    private final ObjectMapper objectMapper;
 
     @PostMapping("/events/{eventId}")
     public ApiResponse<?> executeArrangement(
@@ -123,5 +126,22 @@ public class ArrangementController {
     public void exportLaneSheet(@PathVariable Long eventId, HttpServletResponse response) throws IOException {
         log.info("导出道次表: eventId={}", eventId);
         arrangementService.exportLaneSheet(eventId, response);
+    }
+
+    /**
+     * 全量编排导出（含预赛与决赛），作为 arrange_result.json 的程序化来源与统一数据源（B01/U01/B17）。
+     * 二次编排后调用本接口即可得到含决赛的完整编排 JSON。
+     */
+    @GetMapping("/export-all")
+    public void exportAllArrangement(HttpServletResponse response) throws IOException {
+        log.info("导出全量编排(JSON,含决赛)");
+        Map<String, Object> data = arrangementService.exportAllArrangement();
+        response.setContentType("application/json");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "arrange_result_" + LocalDateTime.now().toString().replace(":", "-") + ".json";
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20")
+                        + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, "UTF-8").replace("+", "%20"));
+        objectMapper.writeValue(response.getWriter(), data);
     }
 }

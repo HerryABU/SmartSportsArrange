@@ -839,6 +839,44 @@ public class ArrangementService {
     /**
      * 导出编排到Excel（按赛次导出，默认 final）
      */
+    /**
+     * 全量编排导出（含预赛与决赛），作为程序化消费（arrange_result.json）与
+     * 秩序册/赛程表/道次表的统一数据源。
+     *
+     * <p>二次编排（computeQualifiers）后调用本方法即可得到<b>含决赛</b>的完整编排 JSON，
+     * 解决 B01/U01/B17：以往快照只捕获第一次编排（预赛），导致决赛缺失、各出口不一致。</p>
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> exportAllArrangement() {
+        List<Event> events = eventRepository.findAll();
+        events.sort(Comparator.comparing(Event::getId));
+        List<Map<String, Object>> items = new ArrayList<>();
+        int finalRoundCount = 0;
+        for (Event e : events) {
+            Map<String, Object> one = getArrangement(e.getId());
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("eventId", e.getId());
+            entry.put("eventName", e.getName());
+            entry.put("track", e.getTrack());
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> rounds = (List<Map<String, Object>>) one.get("rounds");
+            entry.put("rounds", rounds != null ? rounds : List.of());
+            entry.put("statistics", one.get("statistics"));
+            items.add(entry);
+            if (rounds != null) {
+                for (Map<String, Object> r : rounds) {
+                    if (ROUND_FINAL.equals(r.get("round"))) finalRoundCount++;
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("generatedAt", LocalDateTime.now().toString());
+        result.put("eventCount", items.size());
+        result.put("finalRoundCount", finalRoundCount);
+        result.put("events", items);
+        return result;
+    }
+
     public void exportArrangement(Long eventId, HttpServletResponse response) {
         List<Arrangement> arrangements = arrangementRepository.findByEventId(eventId);
         Event event = eventRepository.findById(eventId).orElse(null);
