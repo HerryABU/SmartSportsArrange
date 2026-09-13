@@ -38,7 +38,11 @@ public class ResultController {
     @PostMapping
     public ApiResponse<Result> enterScore(@RequestBody @Valid Map<String, Object> resultInput) {
         log.info("录入成绩: {}", resultInput);
-        return ApiResponse.success("录入成功", resultService.enterScore(resultInput));
+        Result r = resultService.enterScore(resultInput);
+        // U16：成绩录入同样是成绩改动，此前只记「修改」不记「录入」，审计链是断的
+        auditService.record("SCORE_ENTER", "RESULT", r != null ? r.getId() : null,
+                "录入成绩: " + resultInput);
+        return ApiResponse.success("录入成功", r);
     }
 
     @PutMapping("/{id}")

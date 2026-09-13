@@ -56,7 +56,11 @@ public class ArrangementController {
             @PathVariable Long eventId,
             @RequestBody List<Map<String, Object>> adjustments) {
         log.info("手动调整编排: eventId={}, adjustments={}", eventId, adjustments);
-        return ApiResponse.success("调整成功", arrangementService.manualAdjust(eventId, adjustments));
+        Object r = arrangementService.manualAdjust(eventId, adjustments);
+        // U16：人工调整必须留痕——这是最容易被后续自动重排「冲掉」的操作，没有审计就无法追责
+        auditService.record("ARRANGE_MANUAL_ADJUST", "EVENT", eventId,
+                "手动调整编排 " + (adjustments != null ? adjustments.size() : 0) + " 条: " + adjustments);
+        return ApiResponse.success("调整成功", r);
     }
 
     /** U12/B18：锁定/解锁单条编排（锁定后自动重排不覆盖） */
@@ -74,19 +78,26 @@ public class ArrangementController {
     public ApiResponse<Void> clearArrangement(@PathVariable Long eventId) {
         log.info("清除编排: eventId={}", eventId);
         arrangementService.clearArrangement(eventId);
+        // U16：清空编排是破坏性操作（人事后最难复原），必须留痕
+        auditService.record("ARRANGE_CLEAR", "EVENT", eventId, "清空该项目的全部赛次编排");
         return ApiResponse.success("清除成功", null);
     }
 
     @PostMapping("/batch")
     public ApiResponse<?> batchArrange(@RequestBody List<Long> eventIds) {
         log.info("批量编排: eventIds={}", eventIds);
-        return ApiResponse.success("批量编排成功", arrangementService.batchArrange(eventIds));
+        Object r = arrangementService.batchArrange(eventIds);
+        auditService.record("ARRANGE_BATCH", "EVENT", null,
+                "批量编排 " + (eventIds != null ? eventIds.size() : 0) + " 个项目: " + eventIds + ", 结果=" + r);
+        return ApiResponse.success("批量编排成功", r);
     }
 
     @PostMapping("/events/{eventId}/rollback")
     public ApiResponse<?> rollback(@PathVariable Long eventId) {
         log.info("回滚编排: eventId={}", eventId);
-        return ApiResponse.success("回滚成功", arrangementService.rollback(eventId));
+        Object r = arrangementService.rollback(eventId);
+        auditService.record("ARRANGE_ROLLBACK", "EVENT", eventId, "回滚编排: " + r);
+        return ApiResponse.success("回滚成功", r);
     }
 
     // ==================== 预赛淘汰（径赛 needHeats） ====================
@@ -98,7 +109,10 @@ public class ArrangementController {
         String grade = (String) config.get("grade");
         String gender = (String) config.get("gender");
         log.info("生成预赛编排: eventId={}, grade={}, gender={}", eventId, grade, gender);
-        return ApiResponse.success("预赛编排成功", arrangementService.generatePreliminary(eventId, grade, gender));
+        Object r = arrangementService.generatePreliminary(eventId, grade, gender);
+        auditService.record("ARRANGE_PRELIMINARY", "EVENT", eventId,
+                "生成预赛编排: grade=" + grade + ", gender=" + gender);
+        return ApiResponse.success("预赛编排成功", r);
     }
 
     /** 录入预赛成绩 items: [{athleteId, time}] */
@@ -111,9 +125,12 @@ public class ArrangementController {
         List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
         log.info("录入预赛成绩: eventId={}, grade={}, gender={}, {}条", eventId, grade, gender,
                 items != null ? items.size() : 0);
-        return ApiResponse.success("预赛成绩已保存",
-                arrangementService.savePrelimResults(eventId, grade, gender,
-                        items != null ? items : List.of()));
+        Object r = arrangementService.savePrelimResults(eventId, grade, gender,
+                items != null ? items : List.of());
+        // U16：预赛成绩是晋级计算的输入，改动会连带改变决赛名单，必须留痕
+        auditService.record("PRELIM_RESULT_SAVE", "EVENT", eventId,
+                "录入预赛成绩 " + (items != null ? items.size() : 0) + " 条: grade=" + grade + ", gender=" + gender);
+        return ApiResponse.success("预赛成绩已保存", r);
     }
 
     /** 预赛淘汰「立刻计算」并生成决赛编排 */
@@ -126,8 +143,11 @@ public class ArrangementController {
                 ? n.intValue() : null;
         log.info("预赛淘汰计算: eventId={}, grade={}, gender={}, advanceCount={}",
                 eventId, grade, gender, advanceCount);
-        return ApiResponse.success("晋级计算完成",
-                arrangementService.computeQualifiers(eventId, grade, gender, advanceCount));
+        Object r = arrangementService.computeQualifiers(eventId, grade, gender, advanceCount);
+        auditService.record("ARRANGE_QUALIFY", "EVENT", eventId,
+                "二次编排/晋级计算: grade=" + grade + ", gender=" + gender + ", advanceCount=" + advanceCount
+                        + ", 结果=" + r);
+        return ApiResponse.success("晋级计算完成", r);
     }
 
     /** 查看晋级名单 */
