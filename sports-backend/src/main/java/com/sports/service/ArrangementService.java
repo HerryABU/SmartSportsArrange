@@ -322,11 +322,29 @@ public class ArrangementService {
                 .map(Arrangement::getAthlete)
                 .collect(Collectors.toList());
 
-        // 删掉旧的决赛编排（避免重复），保留预赛
-        arrangementRepository.deleteByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender);
+        // U12/B18：二次编排重建决赛时，必须保留人工锁定的决赛道次。
+        // 旧实现用 deleteByEventRoundGradeGender 无差别删掉该轮全部行——人工锁定的决赛道次
+        // 会被二次编排直接抹掉，锁定形同虚设。这里改为「只删非锁定行」，并把被锁定的运动员
+        // 从自动池剔除（其道次已由人工固定）。
+        List<Arrangement> lockedFinals = arrangementRepository
+                .findByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender).stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsManual()))
+                .collect(Collectors.toList());
+        arrangementRepository.deleteNonManualByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender);
+        if (!lockedFinals.isEmpty()) {
+            Set<Long> lockedIds = lockedFinals.stream()
+                    .map(a -> a.getAthlete() != null ? a.getAthlete().getId() : null)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            finalPool = finalPool.stream()
+                    .filter(a -> !lockedIds.contains(a.getId()))
+                    .collect(Collectors.toList());
+            log.info("二次编排保留人工锁定决赛道次 {} 条（不参与自动重排）: eventId={}, grade={}, gender={}",
+                    lockedFinals.size(), eventId, grade, gender);
+        }
 
         Map<String, Object> finalResult = arrangePool(event, finalPool, grade, gender,
-                resolveLanes(event), null, ROUND_FINAL, qualifiers);
+                resolveLanes(event), null, ROUND_FINAL, qualifiers, lockedFinals);
 
         // 正式赛二次编排：把决赛作为独立赛程条目排入赛程表（预赛条目之后顺延），秩序册时间表随之体现
         EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size());
@@ -596,28 +614,33 @@ public class ArrangementService {
         // 重新编排该切片前，仅清除「非锁定」的旧编排，避免版本堆积造成重复（保留人工项）
         arrangementRepository.deleteNonManualByEventRoundGradeGender(eventId, targetRound, grade, gender);
 
-        return arrangePool(event, pool, grade, gender, lanes, ruleConfig, targetRound, qualifierRefs);
+        // U12/B18：把人工锁定项作为「已占位」传入，自动编排必须在锁定项之外找位置
+        return arrangePool(event, pool, grade, gender, lanes, ruleConfig, targetRound, qualifierRefs, locked);
     }
 
     /**
      * 把运动员池排入 (round) 的组与道次，保存并返回视图结果。
      * 硬约束：同一组不能同班；组数 = max(按道次所需组数, 最大单班人数)。
+     *
+     * @param locked 人工锁定项（isManual=true）。它们作为「已占位」参与分配：
+     *               自动编排必须避开它们所在的组与道次，且组号不会回退重排（U12/B18）。
      */
     private Map<String, Object> arrangePool(Event event, List<Athlete> pool,
                                             String grade, String gender, int lanes,
                                             Map<String, Boolean> ruleConfig, String round,
-                                            List<Arrangement> qualifierRefs) {
-        log.info("编排: eventId={}, grade={}, gender={}, lanes={}, round={}, pool={}",
-                event.getId(), grade, gender, lanes, round, pool.size());
+                                            List<Arrangement> qualifierRefs, List<Arrangement> locked) {
+        List<Arrangement> lockedRows = locked == null ? List.of() : locked;
+        log.info("编排: eventId={}, grade={}, gender={}, lanes={}, round={}, pool={}, locked={}",
+                event.getId(), grade, gender, lanes, round, pool.size(), lockedRows.size());
 
-        int athleteCount = pool.size();
+        int athleteCount = pool.size() + lockedRows.size();
         if (athleteCount == 0) {
             return Map.of("eventId", event.getId(), "eventName", event.getName(),
                     "grade", grade, "gender", gender, "round", round,
                     "heats", List.of(), "statistics", Map.of("totalAthletes", 0, "totalHeats", 0));
         }
 
-        Placement placement = allocate(pool, lanes);
+        Placement placement = allocate(pool, lanes, lockedRows);
         int heats = placement.heats;
 
         // 版本号：取该赛次当前最大版本 + 1
@@ -632,11 +655,17 @@ public class ArrangementService {
         }
 
         List<Arrangement> arrangements = new ArrayList<>();
+        List<Arrangement> toSave = new ArrayList<>();
         for (int h = 0; h < heats; h++) {
             for (Arrangement arr : placement.heatsMatrix.get(h)) {
+                // 人工锁定项已在库中（有 id）：直接纳入结果视图，不重复插入，也不覆盖其组次/道次
+                if (arr.getId() != null) {
+                    arrangements.add(arr);
+                    continue;
+                }
                 Athlete athlete = arr.getAthlete();
                 Arrangement qualifier = qualifierByAthlete.get(athlete.getId());
-                arrangements.add(Arrangement.builder()
+                Arrangement row = Arrangement.builder()
                         .event(event)
                         .athlete(athlete)
                         .grade(grade)
@@ -652,13 +681,15 @@ public class ArrangementService {
                         .isManual(false)
                         .createdAt(LocalDateTime.now())
                         .updatedAt(LocalDateTime.now())
-                        .build());
+                        .build();
+                toSave.add(row);
+                arrangements.add(row);
             }
         }
 
-        arrangementRepository.saveAll(arrangements);
-        log.info("编排保存完成: eventId={}, round={}, 共{}组{}名, version={}",
-                event.getId(), round, heats, arrangements.size(), version);
+        arrangementRepository.saveAll(toSave);
+        log.info("编排保存完成: eventId={}, round={}, 共{}组{}名（含人工锁定{}名）, version={}",
+                event.getId(), round, heats, arrangements.size(), lockedRows.size(), version);
 
         // 保存后统一生成视图（带数据库回填的 id）
         List<Map<String, Object>> heatDetails = new ArrayList<>();
@@ -675,8 +706,7 @@ public class ArrangementService {
             heatDetails.add(laneBrief(e.getKey(), grade, lanesInHeat));
         }
 
-        log.info("编排保存完成: eventId={}, round={}, 共{}组{}名, version={}",
-                event.getId(), round, heats, arrangements.size(), version);
+        log.info("编排结果视图生成完成: eventId={}, round={}, {}组{}名", event.getId(), round, heats, arrangements.size());
 
         Map<String, Object> statistics = new LinkedHashMap<>();
         statistics.put("totalAthletes", athleteCount);
@@ -718,7 +748,7 @@ public class ArrangementService {
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
 
-        Placement placement = allocate(athletes, lanes);
+        Placement placement = allocate(athletes, lanes, null);
 
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
@@ -1029,23 +1059,50 @@ public class ArrangementService {
 
     /**
      * 核心分配：同一组不能同班。
-     * 组数 = max(ceil(人数/道数), 最大单班人数)，保证每个班的运动员可分到不同组；
-     * 贪心按「当前组人数最少」选择，命中同班已占用的组则跳过。
+     *
+     * <p>组数 = max(ceil((自动池 + 锁定项)/道数), 最大单班人数(含锁定项), 锁定项最大组号)，
+     * 保证每个班的运动员可分到不同组，且自动编排不会把组号回退到锁定项之前。
+     * 贪心按「当前组人数最少」选择，命中同班已占用的组则跳过。</p>
+     *
+     * <p><b>人工锁定项（U12/B18）</b>：先按人工指定的 (heat, lane) 预置进矩阵并占位——
+     * 该组占用数 +1、该班标记该组已用、该道次标记已占。此后自动分配只能落到剩余位置，
+     * 因此不会再出现「自动项与人工锁定项同组同道」的重复落位（旧实现只把锁定运动员
+     * 排除出池，却没占位，重排后组号从 1 重算，锁定道次可能被新项顶掉）。</p>
      */
-    private Placement allocate(List<Athlete> athletes, int lanes) {
+    private Placement allocate(List<Athlete> athletes, int lanes, List<Arrangement> locked) {
         int n = athletes.size();
         List<String> warnings = new ArrayList<>();
+        List<Arrangement> locks = locked == null ? List.of() : locked;
 
         // 按班级分组（班级缺失归为 0）
         Map<Long, List<Athlete>> byClass = athletes.stream()
                 .collect(Collectors.groupingBy(
-                        a -> a.getClassInfo() != null ? a.getClassInfo().getId() : 0L,
+                        a -> classIdOf(a),
                         LinkedHashMap::new,
                         Collectors.toList()));
 
-        int maxClassSize = byClass.values().stream().mapToInt(List::size).max().orElse(0);
-        int minHeats = (int) Math.ceil((double) n / Math.max(1, lanes));
-        int heats = Math.max(minHeats, maxClassSize);
+        // 锁定项按班级计数（决定组数下界与「同组不同班」是否可满足）
+        Map<Long, Integer> lockedPerClass = new HashMap<>();
+        int maxLockedHeat = 0;
+        for (Arrangement lock : locks) {
+            if (lock.getAthlete() != null) {
+                lockedPerClass.merge(classIdOf(lock.getAthlete()), 1, Integer::sum);
+            }
+            maxLockedHeat = Math.max(maxLockedHeat, lock.getHeat() == null ? 0 : lock.getHeat());
+        }
+
+        Set<Long> allClasses = new LinkedHashSet<>(byClass.keySet());
+        allClasses.addAll(lockedPerClass.keySet());
+
+        int maxClassSize = 0;
+        for (Long cid : allClasses) {
+            maxClassSize = Math.max(maxClassSize,
+                    byClass.getOrDefault(cid, List.of()).size() + lockedPerClass.getOrDefault(cid, 0));
+        }
+
+        int total = n + locks.size();
+        int minHeats = (int) Math.ceil((double) total / Math.max(1, lanes));
+        int heats = Math.max(Math.max(minHeats, maxClassSize), maxLockedHeat);
         // 组数上限保护：若道次很少而班级很大，组数可能过大，放宽「同组不同班」并警告
         if (heats > Math.max(12, minHeats * 2)) {
             warnings.add(String.format("班级人数差异过大（最大班%d人），为满足「同组不同班」需排%d组，建议减少该班报名人数",
@@ -1056,18 +1113,46 @@ public class ArrangementService {
         int[] occupancy = new int[heats];
         // 记录每个班已在哪些组出现
         Map<Long, boolean[]> classHeatFlags = new HashMap<>();
-        for (Long cid : byClass.keySet()) {
+        for (Long cid : allClasses) {
             classHeatFlags.put(cid, new boolean[heats]);
         }
         // 记录每个班在各道次的使用次数（preferDiffLane 软约束）
         Map<Long, int[]> classLaneUse = new HashMap<>();
-        for (Long cid : byClass.keySet()) {
+        for (Long cid : allClasses) {
             classLaneUse.put(cid, new int[lanes]);
         }
+        // 每条道是否已被占用（锁定项先占，自动项避开）
+        boolean[][] laneTaken = new boolean[heats][lanes];
 
         @SuppressWarnings("unchecked")
         List<Arrangement>[] matrix = new List[heats];
         for (int h = 0; h < heats; h++) matrix[h] = new ArrayList<>();
+
+        // 阶段零：预置人工锁定项 —— 占住其 (组, 道)，自动分配必须避开
+        for (Arrangement lock : locks) {
+            int hIdx = lock.getHeat() != null ? lock.getHeat() - 1 : 0;
+            if (hIdx < 0 || hIdx >= heats) {
+                warnings.add("人工锁定项组号越界（第" + lock.getHeat() + "组），已跳过占位");
+                continue;
+            }
+            int lane = lock.getLane() != null ? lock.getLane() : 0;
+            if (lane >= 1 && lane <= lanes && laneTaken[hIdx][lane - 1]) {
+                warnings.add(String.format("人工锁定项道次冲突：第%d组第%d道被两条锁定项同时占用",
+                        hIdx + 1, lane));
+            }
+            matrix[hIdx].add(lock);
+            occupancy[hIdx]++;
+            Long cid = lock.getAthlete() != null ? classIdOf(lock.getAthlete()) : 0L;
+            boolean[] flags = classHeatFlags.get(cid);
+            if (flags == null) { flags = new boolean[heats]; classHeatFlags.put(cid, flags); }
+            flags[hIdx] = true;
+            if (lane >= 1 && lane <= lanes) {
+                laneTaken[hIdx][lane - 1] = true;
+                int[] laneUse = classLaneUse.get(cid);
+                if (laneUse == null) { laneUse = new int[lanes]; classLaneUse.put(cid, laneUse); }
+                laneUse[lane - 1]++;
+            }
+        }
 
         List<Map.Entry<Long, List<Athlete>>> sortedClasses = byClass.entrySet().stream()
                 .sorted((e1, e2) -> Integer.compare(e2.getValue().size(), e1.getValue().size()))
@@ -1112,21 +1197,20 @@ public class ArrangementService {
             }
         }
 
-        // 阶段二：组内分道（软约束：同班在不同组的道次尽量错开）
+        // 阶段二：组内分道（软约束：同班在不同组的道次尽量错开；已被锁定项占用的道次跳过）
         for (int h = 0; h < heats; h++) {
             List<Arrangement> inHeat = matrix[h];
             if (inHeat.isEmpty()) continue;
 
             // 依道次顺序逐个挑选「当前班在该道次占用最少」的选手落位
-            int filled = inHeat.size();
-            for (int l = 0; l < lanes && filled > 0; l++) {
+            for (int l = 0; l < lanes; l++) {
+                if (laneTaken[h][l]) continue;      // 该道已被人工锁定项占用，自动项不得落位
                 // 为当前道次挑一个选手：优先选班-道占用最少的
                 Arrangement best = null;
                 int bestScore = Integer.MAX_VALUE;
                 for (Arrangement cand : inHeat) {
-                    if (cand.getLane() != null) continue;
-                    Long cid = cand.getAthlete().getClassInfo() != null
-                            ? cand.getAthlete().getClassInfo().getId() : 0L;
+                    if (cand.getLane() != null) continue;   // 锁定项已有道次，不参与
+                    Long cid = classIdOf(cand.getAthlete());
                     int[] laneUse = classLaneUse.computeIfAbsent(cid, k -> new int[lanes]);
                     if (laneUse[l] < bestScore) {
                         bestScore = laneUse[l];
@@ -1135,10 +1219,9 @@ public class ArrangementService {
                 }
                 if (best != null) {
                     best.setLane(l + 1);
-                    Long cid = best.getAthlete().getClassInfo() != null
-                            ? best.getAthlete().getClassInfo().getId() : 0L;
-                    classLaneUse.get(cid)[l]++;
-                    filled--;
+                    Long cid = classIdOf(best.getAthlete());
+                    classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[l]++;
+                    laneTaken[h][l] = true;
                 }
             }
         }
@@ -1154,6 +1237,11 @@ public class ArrangementService {
     }
 
     // ==================== 辅助方法 ====================
+
+    /** 班级 id（班级缺失归为 0，用于「同组不同班」分组与占位） */
+    private static Long classIdOf(Athlete a) {
+        return a != null && a.getClassInfo() != null ? a.getClassInfo().getId() : 0L;
+    }
 
     private int resolveLanes(Event e) {
         // 项目内并发人数优先：田赛 = 同时进行的工位数（X 人一批）；径赛 = 每组道次数
