@@ -644,9 +644,16 @@ public class ExcelService {
             List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
             List<List<String>> schedData = new ArrayList<>();
             schedData.add(List.of("天次", "日期", "时段", "时间", "项目", "轮次", "性别", "年级", "场地"));
+            // U09/B09/B10：预计算含预赛轮的项目，用于区分「决赛」与「直接决赛」
+            Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                    .filter(a -> "preliminary".equals(a.getRound()))
+                    .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toSet());
             for (EventSchedule s : scheds) {
                 Event se = s.getEvent();
-                String roundLabel = "preliminary".equals(s.getRound()) ? "预赛" : "决赛";
+                long seId = se != null && se.getId() != null ? se.getId() : -1L;
+                String roundLabel = com.sports.common.RoundLabelUtil.label(s.getRound(), prelimEventIds.contains(seId));
                 schedData.add(List.of(safe(s.getDay()), safe(s.getScheduleDate()), safe(s.getTimeSlot()),
                         safe(s.getStartTime()) + "~" + safe(s.getEndTime()),
                         se != null ? safe(se.getName()) : "-",
@@ -655,12 +662,13 @@ public class ExcelService {
                         safe(s.getGrade()), safe(s.getVenue())));
             }
 
-            // Sheet2: 分组道次名单（决赛优先，无决赛用预赛）
+            // Sheet2: 分组道次名单（决赛优先，无决赛用预赛）——U09/B10：新增「轮次」列
             List<List<String>> laneData = new ArrayList<>();
-            laneData.add(List.of("项目", "性别", "年级", "组次", "道次", "号码", "姓名", "班级"));
+            laneData.add(List.of("项目", "轮次", "性别", "年级", "组次", "道次", "号码", "姓名", "班级"));
             for (Event e : events) {
                 List<Arrangement> all = arrangementRepository.findByEventId(e.getId());
                 if (all.isEmpty()) continue;
+                boolean hasPrelim = all.stream().anyMatch(a -> "preliminary".equals(a.getRound()));
                 boolean hasFinal = all.stream().anyMatch(a -> "final".equals(a.getRound()));
                 List<Arrangement> pool = hasFinal
                         ? all.stream().filter(a -> "final".equals(a.getRound())).collect(Collectors.toList())
@@ -671,7 +679,8 @@ public class ExcelService {
                 for (Arrangement a : pool) {
                     Athlete at = a.getAthlete();
                     if (at == null) continue;
-                    laneData.add(List.of(safe(e.getName()), safe(e.getGenderLimit()), safe(a.getGrade()),
+                    String rl = com.sports.common.RoundLabelUtil.label(a.getRound(), hasPrelim);
+                    laneData.add(List.of(safe(e.getName()), rl, safe(e.getGenderLimit()), safe(a.getGrade()),
                             safe(a.getHeat()), safe(a.getLane()),
                             safe(at.getNumber()), safe(at.getName()),
                             at.getClassInfo() != null ? safe(at.getClassInfo().getName()) : "-"));

@@ -1,6 +1,7 @@
 package com.sports.service;
 
 import com.sports.common.Grades;
+import com.sports.common.RoundLabelUtil;
 import com.sports.entity.*;
 import com.sports.repository.*;
 import jakarta.servlet.http.HttpServletResponse;
@@ -155,6 +156,13 @@ public class WordOrderBookService {
         // ---- 一、竞赛日程 ----
         body.append(heading("一、竞赛日程", 1));
         List<List<String>> schedRows = new ArrayList<>();
+        // U09/B09/B10：预计算含预赛轮的项目集合，用于轮次标签区分「决赛」与「直接决赛」
+        Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                .filter(a -> "preliminary".equals(a.getRound()))
+                .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
         for (EventSchedule s : scheds) {
             if (gradeScope != null && !gradeScope.isBlank()) {
                 Event e0 = s.getEvent();
@@ -163,8 +171,9 @@ public class WordOrderBookService {
                 if (!evMatch && !schMatch) continue;
             }
             Event e0 = s.getEvent();
-            // 轮次：preliminary=预赛（needHeats 项目第一次编排条目）；final/旧数据(null)=决赛
-            String roundLabel = "preliminary".equals(s.getRound()) ? "预赛" : "决赛";
+            // 轮次：preliminary=预赛；final/无预赛(null)=直接决赛；有预赛的 null=final（经预赛晋级）
+            long evId = e0 != null && e0.getId() != null ? e0.getId() : -1L;
+            String roundLabel = RoundLabelUtil.label(s.getRound(), prelimEventIds.contains(evId));
             schedRows.add(List.of(
                     "第" + s.getDay() + "天",
                     n(s.getScheduleDate()), n(s.getTimeSlot()),
@@ -241,14 +250,15 @@ public class WordOrderBookService {
             if (all.isEmpty()) continue;
             anyArranged = true;
 
-            // 按赛次分组（preliminary / final / 其他）
+            // 按赛次分组（preliminary / final / 空=无预赛直接决赛，保留 null 以区分「直接决赛」）
             Map<String, List<Arrangement>> byRound = all.stream().collect(Collectors.groupingBy(
-                    a -> a.getRound() == null || a.getRound().isBlank() ? "final" : a.getRound(),
+                    a -> a.getRound() == null || a.getRound().isBlank() ? "" : a.getRound(),
                     LinkedHashMap::new, Collectors.toList()));
 
+            boolean eventHasPrelim = all.stream().anyMatch(a -> "preliminary".equals(a.getRound()));
             for (Map.Entry<String, List<Arrangement>> rEntry : byRound.entrySet()) {
                 String round = rEntry.getKey();
-                String roundLabel = "preliminary".equals(round) ? "预赛" : "final".equals(round) ? "决赛" : "编排";
+                String roundLabel = RoundLabelUtil.label(round, eventHasPrelim);
                 List<Arrangement> pool = rEntry.getValue();
                 // Bug2/3 修复：编排按 年级 独立生成，组号各自从 1 开始——
                 // 秩序册必须按 年级 → 组次 分级成表，杜绝跨年级同组同道混排
