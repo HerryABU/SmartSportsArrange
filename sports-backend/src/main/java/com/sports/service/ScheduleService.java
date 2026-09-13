@@ -287,6 +287,12 @@ public class ScheduleService {
         result.put("warnings", warnings);
         result.put("configUsed", cfg);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
+        // B16/U20：业务级成功判定——不止看 failed:0，还要看业务告警
+        // （兼项冲突、严重压缩、时间窗溢出等 warnings 任一非空即视为未完全成功）
+        boolean businessOk = warnings.isEmpty() && autoArrangeFails.isEmpty();
+        result.put("businessOk", businessOk);
+        result.put("success", businessOk);
+        result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
         return result;
     }
 
