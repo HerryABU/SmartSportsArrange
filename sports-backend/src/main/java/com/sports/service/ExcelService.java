@@ -189,10 +189,55 @@ public class ExcelService {
         setExcelResponse(response, fileName);
         try (OutputStream out = response.getOutputStream()) {
             List<List<String>> headCols = sheet.get(0).stream().map(List::of).collect(Collectors.toList());
-            EasyExcel.write(out).head(headCols).sheet("Sheet1").doWrite(sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of());
+            List<List<String>> dataRows = sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of();
+            // B14/U19：新增「填写说明」Sheet，说明字段规则（尤其号码布由系统生成，可留空）
+            List<List<String>> notes = templateNotes(t);
+            try (com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
+                com.alibaba.excel.write.metadata.WriteSheet s1 =
+                        EasyExcel.writerSheet(0, "数据").head(headCols).build();
+                writer.write(dataRows, s1);
+                if (!notes.isEmpty()) {
+                    com.alibaba.excel.write.metadata.WriteSheet s2 =
+                            EasyExcel.writerSheet(1, "填写说明")
+                                    .head(List.of(List.of("字段"), List.of("填写说明"))).build();
+                    writer.write(notes, s2);
+                }
+            }
         } catch (IOException e) {
             throw new RuntimeException("模板下载失败: " + e.getMessage());
         }
+    }
+
+    /** 各模板的「填写说明」（B14/U19）：解释字段取值与系统自动生成项 */
+    private List<List<String>> templateNotes(String type) {
+        List<List<String>> notes = new ArrayList<>();
+        switch (type == null ? "" : type.toLowerCase()) {
+            case "athlete" -> {
+                notes.add(List.of("号码布编号", "由系统按「号码簿规则」自动生成，导入时可留空；导出「运动员信息」时会自动回填。"));
+                notes.add(List.of("学号", "必填且唯一，用于区分同名运动员。"));
+                notes.add(List.of("班级", "须与系统中已创建的班级名称一致。"));
+                notes.add(List.of("性别", "填写「男」或「女」。"));
+            }
+            case "score" -> {
+                notes.add(List.of("项目编码", "须与系统中项目编码一致，可从「项目列表/项目表模板」获取。"));
+                notes.add(List.of("运动员号码", "填号码布编号；也可填学号（系统按号码/学号匹配运动员）。"));
+                notes.add(List.of("成绩", "径赛填秒数(如 12.34)、田赛填米/厘米数；支持 DNS/DNF/DSQ。"));
+            }
+            case "registration" -> {
+                notes.add(List.of("项目编码", "须与系统中项目编码一致。"));
+                notes.add(List.of("运动员号码", "填号码布编号或学号。"));
+            }
+            case "class" -> notes.add(List.of("班级编码", "唯一标识；班主任可填姓名，系统按规则匹配登录账号。"));
+            case "user" -> notes.add(List.of("角色", "取值：ADMIN/TEACHER/CLASS_TEACHER/STUDENT。"));
+            case "event" -> {
+                notes.add(List.of("道次", "田赛填 0；径赛填实际道次数。"));
+                notes.add(List.of("每组次几人", "径赛=每组人数即道次，田赛=工位数，游泳=泳道数。"));
+                notes.add(List.of("并行数", "项目内并发人数（1=串行，n=并行）；绑定场地后受该场地并行上限约束。"));
+                notes.add(List.of("捆绑字母", "同字母的田赛项目安排在同一时段并行。"));
+            }
+            default -> notes.add(List.of("说明", "请在下载链接中指定模板类型。"));
+        }
+        return notes;
     }
 
     // ==================== 导入预览（智能列映射 + 多Sheet + 详细预览） ====================
