@@ -146,17 +146,14 @@ public class ScheduleService {
         }
 
         List<Unit> units = buildUnits(gradeOrder, eventOrder);
-        // 并行上限：仅当使用 DB 场地表时，绑定了场地编码的项目其并发数受该场地 parallelMax 约束
-        Map<Long, Integer> eventParallelCap = useDbVenues ? new LinkedHashMap<>() : Map.of();
-        if (useDbVenues) {
-            for (Unit u : units) {
-                String vc = u.event.getDefaultVenueCode();
-                if (vc != null && codeToParallelMax.containsKey(vc.trim())) {
-                    eventParallelCap.put(u.event.getId(), codeToParallelMax.get(vc.trim()));
-                }
-            }
-        }
-        estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete, eventParallelCap);
+        // B05/U06 根因修复：venue.parallelMax 是「该场地同一时刻能并行几个**项目**」，
+        // 与「一个项目内同时下场几个**运动员**」是两个正交的量。
+        // 旧实现把 parallelMax 当成项目内并发人数传下去，主跑道 parallelMax=1 时
+        // 会把 8 条道的 100 米压成「每组 1 人」→ ceil(24/1)×6 分 = 144 分钟虚假需求，
+        // 再被 maxDurationMinutes 硬压到 20 分钟，现场时间估算彻底失真（B05 的 144→20）。
+        // 正确的约束路径：parallelMax → 并发池槽位数（trackSlots/fieldSlots/专用池，已在上面处理），
+        // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
+        estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
 
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
@@ -529,53 +526,39 @@ public class ScheduleService {
         return list;
     }
 
-    /** 项目内并发人数：项目显式 concurrency 优先；回退 groupSize（每组次几人）；径赛再回退道次数，田赛回退 1（不施加场地并行上限） */
+    /**
+     * 项目内并发人数（不含任何场地并行上限）：
+     * 显式 concurrency 优先；田赛回退 groupSize（每组工位）；径赛回退 groupSize（泳道）> laneCount > defaultLanes。
+     *
+     * <p>注意：此处<b>刻意不接受</b> venue.parallelMax。场地并行上限约束的是「并发池槽位数」
+     * （见 {@link #autoSchedule} 的 trackSlots/fieldSlots 与 {@link #resolvePool}），
+     * 属于项目之间的并行；把它混进项目内并发会把 8 条跑道压成 1 人/组（B05/U06）。</p>
+     */
     private int concurrencyOf(Event e) {
-        return concurrencyOf(e, null);
-    }
-
-    /** 项目内并发人数（含场地并行上限）：若绑定了场地编码且场地并行上限更小，则并发数受其约束 */
-    private int concurrencyOf(Event e, Integer venueParallelMax) {
         Integer c = e.getConcurrency();
-        if (c != null && c > 0) {
-            if (venueParallelMax != null && c > venueParallelMax) c = venueParallelMax;
-            return c;
-        }
+        if (c != null && c > 0) return c;
         if (Boolean.FALSE.equals(e.getTrack())) {
             // 田赛回退链：显式 groupSize（每组次几人，如田赛工位数）> 1
             Integer gs = e.getGroupSize();
-            if (gs != null && gs > 0) {
-                if (venueParallelMax != null && gs > venueParallelMax) gs = venueParallelMax;
-                return gs;
-            }
+            if (gs != null && gs > 0) return gs;
             return 1;
         }
         // 径赛回退链：groupSize（每组次几人/泳道数，如游泳）> 道次数 > 默认道次
         Integer gs = e.getGroupSize();
-        if (gs != null && gs > 0) {
-            if (venueParallelMax != null && gs > venueParallelMax) gs = venueParallelMax;
-            return gs;
-        }
+        if (gs != null && gs > 0) return gs;
         Integer lc = e.getLaneCount();
-        if (lc != null && lc > 0) {
-            int r = lc;
-            if (venueParallelMax != null && r > venueParallelMax) r = venueParallelMax;
-            return r;
-        }
-        int d = e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
-        if (venueParallelMax != null && d > venueParallelMax) d = venueParallelMax;
-        return d;
+        if (lc != null && lc > 0) return lc;
+        return e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
     }
 
     /** 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算），并受最大时间封顶 */
     private void estimateDurations(List<Unit> units, int defaultDuration,
-                                   int heatMinutes, int fieldPerAthlete,
-                                   Map<Long, Integer> eventParallelCap) {
+                                   int heatMinutes, int fieldPerAthlete) {
         for (Unit u : units) {
             Event e = u.event;
             boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
             int count = countParticipants(e.getId(), u.grade);
-            int concurrency = concurrencyOf(e, eventParallelCap.get(u.event.getId()));
+            int concurrency = concurrencyOf(e);
 
             int entrants = count;
             if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
