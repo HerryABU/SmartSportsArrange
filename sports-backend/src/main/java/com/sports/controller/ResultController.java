@@ -75,4 +75,10 @@ public class ResultController {
         log.info("导出成绩: eventId={}", eventId);
         resultService.exportResults(eventId, response);
     }
+
+    @GetMapping("/export-all")
+    public void exportAllResults(HttpServletResponse response) throws IOException {
+        log.info("全量导出成绩（可再导入，覆盖全部项目）");
+        resultService.exportAllResults(response);
+    }
 }

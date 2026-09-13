@@ -63,9 +63,21 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 throw new RuntimeException("项目或运动员信息不完整");
             }
 
-            // 检查重复
-            if (resultRepository.existsByEventIdAndAthleteId(event.getId(), athlete.getId())) {
-                throw new RuntimeException("运动员 '" + athlete.getName() + "' 在项目 '" + event.getName() + "' 中已有成绩");
+            // B02/U02：一致性校验式去重——已存在且成绩一致则跳过（幂等，可作一致性校验），
+            // 成绩不一致则明确报冲突，便于审计发现差异。
+            Optional<Result> existing = resultRepository
+                    .findByEventIdAndAthleteId(event.getId(), athlete.getId());
+            if (existing.isPresent()) {
+                Result ex = existing.get();
+                String exRaw = ex.getRawTime() != null ? ex.getRawTime().trim() : "";
+                String inRaw = model.getRawTime() != null ? model.getRawTime().trim() : "";
+                if (exRaw.equals(inRaw)) {
+                    successCount++;
+                    log.info("成绩已存在且一致，跳过（一致性校验幂等）: {} / {}", event.getCode(), athlete.getNumber());
+                    return;
+                }
+                throw new RuntimeException("成绩冲突: 运动员 '" + athlete.getName() + "' 在项目 '"
+                        + event.getName() + "' 已有成绩 " + exRaw + "，导入值 " + inRaw);
             }
 
             // 解析成绩

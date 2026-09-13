@@ -419,6 +419,55 @@ public class ResultService {
         }
     }
 
+    /**
+     * B02 / U02：全量导出已录成绩，格式与 /api/excel/import/scores 完全对齐（项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注），
+     * 覆盖全部项目（不限于单项目），可直接再次导入做一致性校验。
+     */
+    @Transactional(readOnly = true)
+    public void exportAllResults(HttpServletResponse response) throws IOException {
+        List<Result> results = resultRepository.findAll();
+        results.sort((a, b) -> {
+            String ca = a.getEvent() != null && a.getEvent().getCode() != null ? a.getEvent().getCode() : "";
+            String cb = b.getEvent() != null && b.getEvent().getCode() != null ? b.getEvent().getCode() : "";
+            return ca.compareTo(cb);
+        });
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "成绩全量导入_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
+                        + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
+        try (OutputStream out = response.getOutputStream()) {
+            java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
+            data.add(java.util.List.of("项目编码", "运动员号码", "运动员姓名", "成绩", "组别", "道次", "风速", "备注"));
+            int count = 0;
+            for (Result r : results) {
+                Event e = r.getEvent();
+                Athlete a = r.getAthlete();
+                if (e == null || a == null) continue;
+                data.add(java.util.List.of(
+                        e.getCode() != null ? e.getCode() : "",
+                        a.getNumber() != null ? a.getNumber() : "",
+                        a.getName() != null ? a.getName() : "",
+                        r.getRawTime() != null ? r.getRawTime() : "",
+                        e.getGradeGroup() != null ? e.getGradeGroup() : "",
+                        r.getLane() != null ? String.valueOf(r.getLane()) : "",
+                        r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
+                        r.getRemark() != null ? r.getRemark() : ""));
+                count++;
+            }
+            java.util.List<java.util.List<String>> headCols = data.get(0).stream()
+                    .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
+            com.alibaba.excel.EasyExcel.write(out)
+                    .head(headCols)
+                    .sheet("成绩全量").doWrite(data.subList(1, data.size()));
+            long projects = results.stream()
+                    .map(x -> x.getEvent() != null ? x.getEvent().getCode() : "")
+                    .filter(s -> !s.isEmpty()).distinct().count();
+            log.info("全量导出成绩: 共{}条, 覆盖项目数={}", count, projects);
+        }
+    }
+
     // ============ 辅助方法 ============
 
     /**
