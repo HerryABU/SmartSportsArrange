@@ -69,6 +69,15 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
     void deleteByEventRoundGradeGender(@Param("eventId") Long eventId, @Param("round") String round,
                                        @Param("grade") String grade, @Param("gender") String gender);
 
+    /**
+     * U12/B18：仅删除「非人工锁定」行——自动重排时保留 isManual=true 的人工调整项，避免覆盖。
+     */
+    @Modifying
+    @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round "
+            + "AND a.grade = :grade AND a.gender = :gender AND (a.isManual = false OR a.isManual IS NULL)")
+    void deleteNonManualByEventRoundGradeGender(@Param("eventId") Long eventId, @Param("round") String round,
+                                                @Param("grade") String grade, @Param("gender") String gender);
+
     @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.qualified = true ORDER BY a.prelimRank ASC")
     List<Arrangement> findQualifiedByEventIdAndRound(@Param("eventId") Long eventId, @Param("round") String round);
 

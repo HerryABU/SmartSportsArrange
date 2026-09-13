@@ -55,6 +55,14 @@ public class ArrangementController {
         return ApiResponse.success("调整成功", arrangementService.manualAdjust(eventId, adjustments));
     }
 
+    /** U12/B18：锁定/解锁单条编排（锁定后自动重排不覆盖） */
+    @PutMapping("/{arrangementId}/lock")
+    public ApiResponse<?> setLock(@PathVariable Long arrangementId,
+                                  @RequestParam(defaultValue = "true") boolean locked) {
+        log.info("锁定/解锁编排: id={}, locked={}", arrangementId, locked);
+        return ApiResponse.success(locked ? "已锁定" : "已解锁", arrangementService.setLock(arrangementId, locked));
+    }
+
     @DeleteMapping("/events/{eventId}")
     public ApiResponse<Void> clearArrangement(@PathVariable Long eventId) {
         log.info("清除编排: eventId={}", eventId);

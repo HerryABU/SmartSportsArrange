@@ -128,6 +128,18 @@ public class ArrangementService {
         return updateArrangement(eventId, arrangementList);
     }
 
+    /**
+     * U12/B18：锁定/解锁单条编排（锁定=人工项，自动重排跳过不覆盖）。
+     */
+    public Map<String, Object> setLock(Long arrangementId, boolean locked) {
+        Arrangement arr = arrangementRepository.findById(arrangementId)
+                .orElseThrow(() -> new RuntimeException("编排记录不存在: " + arrangementId));
+        arr.setIsManual(locked);
+        arr.setUpdatedAt(LocalDateTime.now());
+        arrangementRepository.save(arr);
+        return Map.of("id", arrangementId, "locked", locked);
+    }
+
     /** 批量编排 */
     public Map<String, Object> batchArrange(List<Long> eventIds) {
         List<Map<String, Object>> results = new ArrayList<>();
@@ -518,8 +530,22 @@ public class ArrangementService {
             }
         }
 
-        // 重新编排该切片前，先清除该赛次已存在的编排，避免版本堆积造成重复
-        arrangementRepository.deleteByEventRoundGradeGender(eventId, targetRound, grade, gender);
+        // U12/B18：保留人工锁定项（isManual=true）。自动重排不覆盖锁定项，并把其运动员排除出自动编排池。
+        List<Arrangement> locked = arrangementRepository
+                .findByEventRoundGradeGender(eventId, targetRound, grade, gender).stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsManual()))
+                .collect(Collectors.toList());
+        if (!locked.isEmpty()) {
+            Set<Long> lockedAthleteIds = locked.stream()
+                    .map(a -> a.getAthlete() != null ? a.getAthlete().getId() : null)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            pool = pool.stream().filter(a -> !lockedAthleteIds.contains(a.getId())).collect(Collectors.toList());
+            log.info("自动编排跳过人工锁定项: eventId={}, round={}, 锁定{}条", eventId, targetRound, locked.size());
+        }
+
+        // 重新编排该切片前，仅清除「非锁定」的旧编排，避免版本堆积造成重复（保留人工项）
+        arrangementRepository.deleteNonManualByEventRoundGradeGender(eventId, targetRound, grade, gender);
 
         return arrangePool(event, pool, grade, gender, lanes, ruleConfig, targetRound, qualifierRefs);
     }
@@ -1122,6 +1148,7 @@ public class ArrangementService {
         laneInfo.put("className", arr.getAthlete().getClassInfo() != null
                 ? arr.getAthlete().getClassInfo().getName() : "未知");
         laneInfo.put("arrangementId", arr.getId());
+        laneInfo.put("locked", Boolean.TRUE.equals(arr.getIsManual()));
         laneInfo.put("qualified", Boolean.TRUE.equals(arr.getQualified()));
         laneInfo.put("prelimRank", arr.getPrelimRank());
         laneInfo.put("prelimTime", arr.getPrelimTime());
