@@ -3,9 +3,11 @@ package com.sports.service;
 import com.sports.entity.*;
 import com.sports.repository.ArrangementRepository;
 import com.sports.repository.EventRepository;
+import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -27,6 +29,8 @@ class ArrangementServiceTest {
     @Mock private ArrangementRepository arrangementRepository;
     @Mock private RegistrationRepository registrationRepository;
     @Mock private EventRepository eventRepository;
+    @Mock private EventScheduleRepository eventScheduleRepository;
+    @Mock private WordOrderBookService wordOrderBookService;
     @Mock private SystemService systemService;
 
     @InjectMocks private ArrangementService arrangementService;
@@ -180,7 +184,11 @@ class ArrangementServiceTest {
         assertEquals("preliminary", result.get("round"));
         Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
         assertEquals(5, stats.get("totalAthletes"));
-        verify(arrangementRepository).deleteByEventRoundGradeGender(100L, "preliminary", "高一年级", "男");
+        // U12/B18：重新编排只清「非人工锁定」行，人工锁定项必须保留
+        verify(arrangementRepository)
+                .deleteNonManualByEventRoundGradeGender(100L, "preliminary", "高一年级", "男");
+        verify(arrangementRepository)
+                .findManualByEventRoundGradeGender(100L, "preliminary", "高一年级", "男");
     }
 
     @Test
@@ -213,6 +221,16 @@ class ArrangementServiceTest {
                 .thenReturn(prelims);
         when(arrangementRepository.findMaxVersionByEventId(100L)).thenReturn(null);
         when(arrangementRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+        // B01/U01：二次编排要把决赛作为独立赛程条目补进赛程表，需有预赛条目作为排槽基准
+        EventSchedule prelimRow = EventSchedule.builder()
+                .id(9L).event(event).day(1).scheduleDate("2026-09-20").grade("高一年级")
+                .timeSlot("上午").startTime("08:00").endTime("08:10").venue("田径场")
+                .round(ArrangementService.ROUND_PRELIM).build();
+        when(eventScheduleRepository.findByEventIdAndGrade(100L, "高一年级"))
+                .thenReturn(List.of(prelimRow));
+        when(eventScheduleRepository.save(any(EventSchedule.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(systemService.getMeetSchedule()).thenReturn(new LinkedHashMap<>());
 
         Map<String, Object> result = arrangementService.computeQualifiers(100L, "高一年级", "男", null);
 
@@ -230,7 +248,20 @@ class ArrangementServiceTest {
         Map<String, Object> finalStats = (Map<String, Object>) finals.get("statistics");
         assertEquals(3, finalStats.get("totalAthletes"));
         assertEquals("final", finals.get("round"));
-        verify(arrangementRepository).deleteByEventRoundGradeGender(100L, "final", "高一年级", "男");
+
+        // U12/B18 + P0：决赛道次重建时只删非锁定行、并先取出锁定行用于占位
+        verify(arrangementRepository)
+                .deleteNonManualByEventRoundGradeGender(100L, "final", "高一年级", "男");
+        verify(arrangementRepository)
+                .findManualByEventRoundGradeGender(100L, "final", "高一年级", "男");
+
+        // B01/U01：决赛赛程条目必须落库（round=final），否则赛程表与道次表脱节
+        ArgumentCaptor<EventSchedule> cap = ArgumentCaptor.forClass(EventSchedule.class);
+        verify(eventScheduleRepository).save(cap.capture());
+        assertEquals(ArrangementService.ROUND_FINAL, cap.getValue().getRound());
+        assertEquals("2026-09-20", cap.getValue().getScheduleDate());
+        // 排槽基准 = 预赛结束 08:10 + 默认最小间隔 45 分钟 → 08:55
+        assertEquals("08:55", cap.getValue().getStartTime());
     }
 
     @Test
