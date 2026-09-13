@@ -399,11 +399,17 @@ public class ArrangementService {
             }
             String genderLabel = "F".equals(gender) ? "女子" : "男子";
             String marker = "二次编排决赛·" + genderLabel;
-            // 幂等：删掉本性别旧的决赛条目（其余性别的决赛条目保留，用于顺延起点）
-            rows.stream()
+            // 幂等：删掉本性别旧的决赛条目（其余性别的决赛条目保留，用于顺延起点）。
+            // ★ 必须把「被删掉的这一批」记下来，并在下面算顺延基准时排除它们：
+            //   rows 是删除前抓的快照，删除后这些实体仍可读（endTime 还在），
+            //   若让它们参与 max()，本性别自己上一轮的决赛结束时刻会把新起点一再往后顶，
+            //   于是「重复计算晋级 / 重跑自动编排补回决赛」不再是幂等的——
+            //   每调用一次，决赛就比上一次更晚（08:55 → 10:35 → …），赛程表越滚越离谱。
+            List<EventSchedule> stale = rows.stream()
                     .filter(r -> ROUND_FINAL.equals(r.getRound()))
                     .filter(r -> r.getRemark() != null && r.getRemark().contains(marker))
-                    .forEach(eventScheduleRepository::delete);
+                    .collect(Collectors.toList());
+            stale.forEach(eventScheduleRepository::delete);
 
             Map<String, Object> cfg = systemService.getMeetSchedule();
             // B07/U06：预赛→决赛最小间隔（finalMinGapMinutes，默认 45 分钟，落在建议的 45~60 区间）
@@ -419,10 +425,11 @@ public class ArrangementService {
                     : intVal(cfg.get("defaultDurationMinutes"), 30);
             if (cap > 0) duration = Math.min(duration, cap);
 
-            // 起点 = 预赛结束 与 其他性别决赛结束 二者的最大值 + 间隔
+            // 起点 = 预赛结束 与「本项目本年级其他性别的决赛」结束 二者的最大值 + 间隔
             int startMin = parseHhMm(prelim.getEndTime()) + interval;
             for (EventSchedule r : rows) {
                 if (r == prelim || !ROUND_FINAL.equals(r.getRound())) continue;
+                if (stale.contains(r)) continue;   // 本性别旧条目已删，不得作为顺延基准
                 startMin = Math.max(startMin, parseHhMm(r.getEndTime()) + interval);
             }
 

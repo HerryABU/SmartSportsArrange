@@ -264,9 +264,82 @@ class ArrangementServiceTest {
         assertEquals("08:55", cap.getValue().getStartTime());
     }
 
+    /**
+     * B01/U01 回归：二次编排必须幂等——重复调用决赛时间不得漂移。
+     *
+     * <p>旧实现先取 rows 快照、再删除本性别旧决赛条目，但算顺延基准时仍遍历整份
+     * 快照（含刚被删掉的那些行，其 endTime 依旧可读），于是本性别上一轮的决赛结束
+     * 时刻会把自己的新起点一再往后顶：08:55 → 09:50 → …，赛程表越滚越晚。</p>
+     */
     @Test
-    void getArrangement_emptyReturnsZero() {
-        when(eventRepository.findById(100L)).thenReturn(Optional.of(Event.builder().id(100L).name("x").build()));
+    void computeQualifiers_isIdempotent_finalStartDoesNotDrift() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(4)
+                .needHeats(true).advanceCount(3).build();
+
+        List<Arrangement> prelims = new ArrayList<>();
+        double[] times = {12.5, 12.8, 13.0, 13.2, 13.5};
+        for (int i = 0; i < 5; i++) {
+            Arrangement arr = Arrangement.builder()
+                    .id((long) i + 1).event(event)
+                    .athlete(athlete((long) i + 1, "A" + (i + 1), i % 2 == 1 ? 2L : 1L,
+                            i % 2 == 1 ? "高一2班" : "高一1班"))
+                    .grade("高一年级").gender("男")
+                    .heat(i / 2 + 1).lane((i % 2) + 1).round("preliminary")
+                    .build();
+            arr.setPrelimTime(String.valueOf(times[i]));
+            arr.setPrelimTimeSeconds(times[i]);
+            prelims.add(arr);
+        }
+
+        when(eventRepository.findById(100L)).thenReturn(Optional.of(event));
+        when(arrangementRepository.findByEventRoundGradeGender(100L, "preliminary", "高一年级", "男"))
+                .thenReturn(prelims);
+        when(arrangementRepository.findMaxVersionByEventId(100L)).thenReturn(null);
+        when(arrangementRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+        when(systemService.getMeetSchedule()).thenReturn(new LinkedHashMap<>());
+
+        // 有状态的赛程仓储：让 save/delete/查询 真正互相可见，才能暴露「删了但仍在快照里」
+        List<EventSchedule> store = new ArrayList<>();
+        store.add(EventSchedule.builder()
+                .id(9L).event(event).day(1).scheduleDate("2026-09-20").grade("高一年级")
+                .timeSlot("上午").startTime("08:00").endTime("08:10").venue("田径场")
+                .round(ArrangementService.ROUND_PRELIM).build());
+        long[] seq = {100L};
+        when(eventScheduleRepository.findByEventIdAndGrade(100L, "高一年级"))
+                .thenAnswer(inv -> new ArrayList<>(store));
+        when(eventScheduleRepository.save(any(EventSchedule.class))).thenAnswer(inv -> {
+            EventSchedule s = inv.getArgument(0);
+            if (s.getId() == null) s.setId(++seq[0]);
+            store.removeIf(x -> x.getId() != null && x.getId().equals(s.getId()));
+            store.add(s);
+            return s;
+        });
+        doAnswer(inv -> {
+            store.remove(inv.getArgument(0));
+            return null;
+        }).when(eventScheduleRepository).delete(any(EventSchedule.class));
+
+        arrangementService.computeQualifiers(100L, "高一年级", "男", null);
+        String first = finalStartTime(store);
+        arrangementService.computeQualifiers(100L, "高一年级", "男", null);
+        String second = finalStartTime(store);
+
+        assertEquals("08:55", first, "首次决赛应排在预赛 08:10 + 45 分间隔 = 08:55");
+        assertEquals(first, second, "重复二次编排必须幂等，决赛开始时间不得漂移");
+        // 赛程表里该 项目×年级 只应有一条决赛条目（另一性别未编排）
+        assertEquals(1, store.stream()
+                .filter(s -> ArrangementService.ROUND_FINAL.equals(s.getRound())).count());
+    }
+
+    private String finalStartTime(List<EventSchedule> store) {
+        return store.stream()
+                .filter(s -> ArrangementService.ROUND_FINAL.equals(s.getRound()))
+                .map(EventSchedule::getStartTime)
+                .findFirst().orElse(null);
+    }
+
+    @Test
+    void getArrangement_emptyReturnsZero() {        when(eventRepository.findById(100L)).thenReturn(Optional.of(Event.builder().id(100L).name("x").build()));
         when(arrangementRepository.findByEventId(100L)).thenReturn(List.of());
 
         Map<String, Object> result = arrangementService.getArrangement(100L);
