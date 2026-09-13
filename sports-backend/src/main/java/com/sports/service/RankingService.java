@@ -72,21 +72,28 @@ public class RankingService {
         }
 
         List<TeamScore> sorted = new ArrayList<>(map.values());
+        // R-1 严密性：四项分解键全同的班级必须按 classId（班级维度）/ className（年级维度）
+        // 给出确定性次级排序，否则相对顺序依赖 findAllValid() 返回序，两次请求可能次序漂移。
+        // 次级排序放在 reversed() 之后：主排序保持降序，并列项按 classId 升序确定排列（小者在前）。
+        Comparator<TeamScore> stable = Comparator
+                .comparing((TeamScore ts) -> ts.classId != null ? ts.classId : Long.MAX_VALUE)
+                .thenComparing(ts -> ts.className != null ? ts.className : "");
         if (goldFirst) {
-            // 注意：reversed() 必须放在整条链末尾，逐级 reversed() 会互相抵消导致排序方向错误
             sorted.sort(Comparator
                     .comparingInt(TeamScore::getGoldCount)
                     .thenComparingInt(TeamScore::getSilverCount)
                     .thenComparingInt(TeamScore::getBronzeCount)
                     .thenComparingDouble(TeamScore::getTotalScore)
-                    .reversed());
+                    .reversed()
+                    .thenComparing(stable));
         } else {
             sorted.sort(Comparator
                     .comparingDouble(TeamScore::getTotalScore)
                     .thenComparingInt(TeamScore::getGoldCount)
                     .thenComparingInt(TeamScore::getSilverCount)
                     .thenComparingInt(TeamScore::getBronzeCount)
-                    .reversed());
+                    .reversed()
+                    .thenComparing(stable));
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
@@ -213,17 +220,23 @@ public class RankingService {
 
         List<BoardRow> values = new ArrayList<>(byClass.values());
         // 含入场式口径时，排序基准必须是 赛事得分+入场式得分，否则名次/TOP 与最终总分不一致
+        // R-1 严密性：四项分解键全同的行按 classId 给出确定性次级排序（置于 reversed 之后，小者在前），
+        // 避免相对次序依赖查询返回序。
+        Comparator<BoardRow> stable = Comparator.comparing(
+                (BoardRow r) -> r.classId != null ? r.classId : Long.MAX_VALUE);
         Comparator<BoardRow> cmp = goldFirst
                 ? Comparator.comparingInt((BoardRow r) -> r.gold)
                         .thenComparingInt(r -> r.silver)
                         .thenComparingInt(r -> r.bronze)
                         .thenComparingDouble(r -> effScore(r, includeParade, paradeByClass))
                         .reversed()
+                        .thenComparing(stable)
                 : Comparator.comparingDouble((BoardRow r) -> effScore(r, includeParade, paradeByClass))
                         .thenComparingInt(r -> r.gold)
                         .thenComparingInt(r -> r.silver)
                         .thenComparingInt(r -> r.bronze)
-                        .reversed();
+                        .reversed()
+                        .thenComparing(stable);
         values.sort(cmp);
 
         List<Map<String, Object>> rows = new ArrayList<>();

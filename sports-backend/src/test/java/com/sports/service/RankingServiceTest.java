@@ -350,6 +350,50 @@ class RankingServiceTest {
         assertEquals(21.0, (Double) allRows.get(0).get("totalScore"), 0.001);
     }
 
+    /**
+     * R-1 严密性：四项分解键全同的班级名次并列，但列表顺序必须确定（按 classId 升序），
+     * 不随 findAllValid 返回顺序漂移——否则两次请求可能给出不同次序。
+     * 故意以「逆序」返回（高一2班 id=2 在前、高一1班 id=1 在后）验证排序与插入序无关。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getTeamScores_fullyTiedTeamsHaveStableOrder() {
+        ClassInfo c2 = ClassInfo.builder().id(2L).name("高一2班").grade("高一").build();
+        ClassInfo c1 = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> reversed = List.of(
+                result(2L, 9.0, 1, c2),
+                result(1L, 9.0, 1, c1));
+        when(resultRepository.findAllValid()).thenReturn(reversed);
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> resp = (Map<String, Object>) rankingService.getTeamScores(null);
+        List<Map<String, Object>> teams = (List<Map<String, Object>>) resp.get("records");
+        assertEquals(2, teams.size());
+        assertEquals("高一1班", teams.get(0).get("className"), "classId 小者稳定排前，与返回顺序无关");
+        assertEquals(1, teams.get(0).get("rank"));
+        assertEquals("高一2班", teams.get(1).get("className"));
+        assertEquals(1, teams.get(1).get("rank"), "四项分解键全同仍并列同名次");
+    }
+
+    /** R-1：合分排行同样在四项键全同时按 classId 确定性排序 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_fullyTiedRowsHaveStableOrder() {
+        ClassInfo c2 = ClassInfo.builder().id(2L).name("高一2班").grade("高一").build();
+        ClassInfo c1 = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> reversed = List.of(
+                result(2L, 9.0, 1, c2),
+                result(1L, 9.0, 1, c1));
+        when(resultRepository.findAllValid()).thenReturn(reversed);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of());
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> board = rankingService.getScoreBoard(null, false, 0, false, null);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
+        assertEquals("高一1班", rows.get(0).get("className"), "逆序返回下 classId 小者仍稳定排前");
+        assertEquals("高一2班", rows.get(1).get("className"));
+    }
+
     private Map<String, Object> defaultRule(String type, String sort) {
         Map<String, Object> rule = new LinkedHashMap<>();
         rule.put("team_score_type", type);
