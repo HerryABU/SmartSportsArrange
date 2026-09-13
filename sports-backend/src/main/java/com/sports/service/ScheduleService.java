@@ -745,8 +745,30 @@ public class ScheduleService {
         return buildResult();
     }
 
-    /** 手动保存调整后的赛程（替换全部） */
+    /**
+     * 手动保存调整后的赛程（替换全部）。
+     *
+     * <p>B09/U09 修复：旧实现构建 {@link EventSchedule} 时<b>完全没写 round</b>，
+     * 也不读取入参里的 round——手动保存一次（哪怕只是改个开始时间），
+     * 整张赛程表的轮次就被清空为 null，导出/秩序册按 {@code RoundLabelUtil.label(null)}
+     * 一律显示成「直接决赛」，预赛与决赛的区分彻底丢失。
+     * {@link #buildResult()} 也没把 round 输出给前端，所以前端即使原样回传也无力回天。</p>
+     *
+     * <p>现在按三级取值保证轮次不丢：① 入参显式 round（前端已回传）；
+     * ② 保存前既有行的 round（按 项目×年级×开始时刻×场地 匹配，兼容前端只传调整过的行）；
+     * ③ 兜底按 {@code event.needHeats} 推断（需预赛→preliminary，否则 final）。</p>
+     */
     public Map<String, Object> save(List<Map<String, Object>> items) {
+        // ① 先给「旧行」建索引：手动保存会整表替换，替换前必须先把轮次捞出来
+        Map<String, String> oldRoundByKey = new HashMap<>();
+        Map<Long, String> oldRoundByEvent = new HashMap<>();
+        for (EventSchedule old : scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc()) {
+            if (old.getEvent() == null || old.getRound() == null || old.getRound().isBlank()) continue;
+            oldRoundByKey.putIfAbsent(roundKey(old.getEvent().getId(), old.getGrade(),
+                    old.getStartTime(), old.getVenue()), old.getRound());
+            oldRoundByEvent.putIfAbsent(old.getEvent().getId(), old.getRound());
+        }
+
         scheduleRepository.deleteAllSchedules();
         int order = 1;
         for (Map<String, Object> item : items) {
@@ -756,25 +778,54 @@ public class ScheduleService {
             Event event = eventRepository.findById(eventId).orElse(null);
             if (event == null) continue;
 
+            String grade = str(item.get("grade"), null);
+            String startTime = str(item.get("startTime"), null);
+            String venue = str(item.get("venue"), "田径场");
+            String round = resolveSavedRound(item, event, grade, startTime, venue,
+                    oldRoundByKey, oldRoundByEvent);
+
             EventSchedule s = EventSchedule.builder()
                     .event(event)
                     .day(intVal(item.get("day"), 1))
                     .scheduleDate(str(item.get("scheduleDate"), null))
-                    .grade(str(item.get("grade"), null))
+                    .grade(grade)
                     .timeSlot(str(item.get("timeSlot"), "上午"))
-                    .startTime(str(item.get("startTime"), null))
+                    .startTime(startTime)
                     .endTime(str(item.get("endTime"), null))
-                    .venue(str(item.get("venue"), "田径场"))
+                    .venue(venue)
                     .sortOrder(order++)
                     .durationMinutes(intVal(item.get("durationMinutes"), 30))
+                    .round(round)
                     .remark(str(item.get("remark"), null))
                     .createdAt(LocalDateTime.now())
                     .updatedAt(LocalDateTime.now())
                     .build();
             scheduleRepository.save(s);
         }
-        log.info("手动保存赛程: 共{}条", order - 1);
+        log.info("手动保存赛程: 共{}条（轮次按入参/既有行/needHeats 三级保留）", order - 1);
         return buildResult();
+    }
+
+    /** 轮次取值三级兜底：入参 → 既有行匹配 → event.needHeats 推断（B09/U09） */
+    private String resolveSavedRound(Map<String, Object> item, Event event, String grade,
+                                     String startTime, String venue,
+                                     Map<String, String> oldRoundByKey,
+                                     Map<Long, String> oldRoundByEvent) {
+        Object raw = item.get("round");
+        if (raw != null && !String.valueOf(raw).isBlank()) return String.valueOf(raw).trim();
+        String byKey = oldRoundByKey.get(roundKey(event.getId(), grade, startTime, venue));
+        if (byKey != null) return byKey;
+        String byEvent = oldRoundByEvent.get(event.getId());
+        if (byEvent != null) return byEvent;
+        return Boolean.TRUE.equals(event.getNeedHeats())
+                ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
+    }
+
+    private static String roundKey(Long eventId, String grade, String startTime, String venue) {
+        return (eventId == null ? "" : eventId)
+                + "|" + (grade == null ? "" : grade.trim())
+                + "|" + (startTime == null ? "" : startTime.trim())
+                + "|" + (venue == null ? "" : venue.trim());
     }
 
     public void clear() {
@@ -846,6 +897,14 @@ public class ScheduleService {
     private Map<String, Object> buildResult() {
         List<EventSchedule> schedules = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
 
+        // B09/U09：把「该项目的预赛是否已排出」一并算出来，供轮次标签判定
+        // （round 为 null 的旧行：项目有预赛 → 决赛，无预赛 → 直接决赛）
+        Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                .filter(a -> ArrangementService.ROUND_PRELIM.equals(a.getRound()))
+                .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
         List<Map<String, Object>> items = schedules.stream().map(s -> {
             Event e = s.getEvent();
             Map<String, Object> m = new LinkedHashMap<>();
@@ -869,6 +928,10 @@ public class ScheduleService {
             m.put("venue", s.getVenue());
             m.put("sortOrder", s.getSortOrder());
             m.put("durationMinutes", s.getDurationMinutes());
+            // B09/U09：轮次随行返回，前端原样回传 → 手动保存不再丢轮次
+            m.put("round", s.getRound());
+            m.put("roundLabel", com.sports.common.RoundLabelUtil.label(
+                    s.getRound(), e != null && prelimEventIds.contains(e.getId())));
             m.put("remark", s.getRemark());
             return m;
         }).collect(Collectors.toList());

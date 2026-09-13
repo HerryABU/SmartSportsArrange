@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -274,6 +275,80 @@ class ScheduleServiceTest {
         List<String> used = saved.stream().map(EventSchedule::getVenue).toList();
         assertTrue(used.contains("田赛1区"), "应使用对象数组里的场地名称，实际: " + used);
         assertTrue(used.contains("田赛2区"), "应使用对象数组里的场地名称，实际: " + used);
+    }
+
+    // ==================== B09/U09：手动保存不丢轮次 ====================
+
+    /** 入参未带 round（旧前端）时，按「项目×年级×开始时刻×场地」沿用既有行的轮次 */
+    @Test
+    void manualSaveKeepsExistingRoundWhenPayloadOmitsIt() {
+        Event e = track(31L, "100米");
+        when(eventRepository.findById(31L)).thenReturn(Optional.of(e));
+        // 保存前的既有赛程行：预赛
+        EventSchedule old = EventSchedule.builder()
+                .id(1L).event(e).day(1).grade("高一年级")
+                .startTime("08:00").endTime("08:10").venue("田径场")
+                .round(ArrangementService.ROUND_PRELIM).build();
+        when(scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc()).thenReturn(List.of(old));
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("eventId", 31L);
+        item.put("day", 1);
+        item.put("grade", "高一年级");
+        item.put("startTime", "08:00");
+        item.put("venue", "田径场");
+        item.put("durationMinutes", 12);   // 人工把时长由 10 改为 12
+
+        scheduleService.save(List.of(item));
+
+        assertEquals(1, saved.size());
+        assertEquals(ArrangementService.ROUND_PRELIM, saved.get(0).getRound(),
+                "手动保存不得把既有「预赛」轮次清空");
+        assertEquals(12, saved.get(0).getDurationMinutes(), "人工调整的时长应生效");
+    }
+
+    /** 入参显式带 round（新前端回传）时以入参为准 */
+    @Test
+    void manualSaveUsesPayloadRoundWhenProvided() {
+        Event e = track(32L, "100米");
+        when(eventRepository.findById(32L)).thenReturn(Optional.of(e));
+        when(scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc()).thenReturn(List.of());
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("eventId", 32L);
+        item.put("day", 1);
+        item.put("grade", "高一年级");
+        item.put("startTime", "09:00");
+        item.put("venue", "田径场");
+        item.put("round", ArrangementService.ROUND_FINAL);
+
+        scheduleService.save(List.of(item));
+
+        assertEquals(1, saved.size());
+        assertEquals(ArrangementService.ROUND_FINAL, saved.get(0).getRound());
+    }
+
+    /** 既无入参也无既有行时，按 event.needHeats 推断轮次（需预赛→preliminary） */
+    @Test
+    void manualSaveInfersRoundFromNeedHeats() {
+        Event e = Event.builder().id(33L).name("100米").code("T33").track(true)
+                .laneCount(8).needHeats(true).category("径赛").genderLimit("男子组")
+                .isEnabled(true).sortOrder(33).build();
+        when(eventRepository.findById(33L)).thenReturn(Optional.of(e));
+        when(scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc()).thenReturn(List.of());
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("eventId", 33L);
+        item.put("day", 1);
+        item.put("grade", "高一年级");
+        item.put("startTime", "10:00");
+        item.put("venue", "田径场");
+
+        scheduleService.save(List.of(item));
+
+        assertEquals(1, saved.size());
+        assertEquals(ArrangementService.ROUND_PRELIM, saved.get(0).getRound(),
+                "needHeats 项目在无任何线索时应推断为预赛");
     }
 
     private EventSchedule find(Long eventId) {
