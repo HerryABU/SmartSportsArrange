@@ -107,6 +107,67 @@ public class WordOrderBookService {
         }
     }
 
+    /**
+     * U14/U15：一键生成「最终秩序册」——基于当前（二次编排后的）编排结果生成，
+     * 生成前做完整性校验（参赛名单与报名一致、无未报名人员混入），返回值含校验结果。
+     */
+    public Map<String, Object> generateFinalToDisk() {
+        Map<String, Object> integrity = orderBookIntegrityCheck();
+        try {
+            byte[] data = buildOrderBook(null);
+            Path dir = Path.of("./data/order_book");
+            Files.createDirectories(dir);
+            String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            Path file = dir.resolve("秩序册_最终_" + ts + ".docx");
+            Path latest = dir.resolve("秩序册_final.docx");
+            Files.write(file, data);
+            Files.write(latest, data);
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("file", file.toString());
+            r.put("latest", latest.toString());
+            r.put("generatedAt", LocalDateTime.now().format(FMT));
+            r.put("size", data.length);
+            r.put("integrity", integrity);
+            log.info("最终秩序册(Word)已生成落盘: {}，完整性校验 ok={}", file, integrity.get("ok"));
+            return r;
+        } catch (Exception e) {
+            throw new RuntimeException("生成最终秩序册(Word)失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** U14/U15：秩序册完整性校验——参赛人数与报名审核一致、无未报名人员混入、含决赛项目数 */
+    private Map<String, Object> orderBookIntegrityCheck() {
+        List<Registration> approved = registrationRepository.findByStatus("approved");
+        java.util.Set<Long> regAthletes = approved.stream()
+                .map(Registration::getAthlete).filter(Objects::nonNull)
+                .map(Athlete::getId).collect(Collectors.toSet());
+        java.util.Set<Long> arranged = arrangementRepository.findAll().stream()
+                .map(Arrangement::getAthlete).filter(Objects::nonNull)
+                .map(Athlete::getId).collect(Collectors.toSet());
+        long arrangedNotRegistered = arranged.stream().filter(id -> !regAthletes.contains(id)).count();
+        long registeredNotArranged = regAthletes.stream().filter(id -> !arranged.contains(id)).count();
+
+        List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
+        long eventsWithArrangement = events.stream()
+                .filter(e -> !arrangementRepository.findByEventId(e.getId()).isEmpty()).count();
+        long finalCount = arrangementRepository.findAll().stream()
+                .filter(a -> "final".equals(a.getRound())).count();
+
+        Map<String, Object> check = new LinkedHashMap<>();
+        check.put("registrationApproved", regAthletes.size());
+        check.put("arrangedAthletes", arranged.size());
+        check.put("arrangedNotRegistered", arrangedNotRegistered);
+        check.put("registeredNotArranged", registeredNotArranged);
+        check.put("eventCount", events.size());
+        check.put("eventsWithArrangement", eventsWithArrangement);
+        check.put("finalArrangementCount", finalCount);
+        // ok：无未报名人员混入（硬性），且所有项目均已编排
+        boolean ok = arrangedNotRegistered == 0 && eventsWithArrangement >= events.size();
+        check.put("ok", ok);
+        check.put("message", ok ? "秩序册完整性校验通过" : "秩序册存在缺失或未报名人员混入，请复核");
+        return check;
+    }
+
     // ==================== 文档构建 ====================
 
     private byte[] buildOrderBook(String gradeScope) {

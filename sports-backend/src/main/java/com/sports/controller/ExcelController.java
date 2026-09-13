@@ -117,6 +117,15 @@ public class ExcelController {
         return ApiResponse.success("秩序册(Word)已生成", r);
     }
 
+    /** U14/U15：一键生成「最终秩序册」（基于二次编排结果，附完整性校验） */
+    @PostMapping("/order-book/generate-final")
+    public ApiResponse<?> generateFinalOrderBookDocx() {
+        log.info("一键生成最终秩序册(Word)");
+        Object r = wordOrderBookService.generateFinalToDisk();
+        auditService.record("GENERATE_ORDER_BOOK_FINAL", "ORDER_BOOK", null, "生成最终秩序册(Word): " + r);
+        return ApiResponse.success("最终秩序册(Word)已生成", r);
+    }
+
     /** 读取「生成预赛/编排后自动生成秩序册」开关 */
     @GetMapping("/order-book/auto")
     public ApiResponse<?> getOrderBookAuto() {
