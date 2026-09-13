@@ -407,10 +407,18 @@ public class RankingService {
     public Map<String, Object> getEventRanking(Long eventId) {
         List<Result> results = resultRepository.findByEventIdOrderByTotalRankAsc(eventId);
 
+        Map<String, Object> rule = systemService.getScoringRule();
+        boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+        String tieRuleNote = sequential
+                ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
+                : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
+        Set<Integer> tiedRanks = computeTiedRanks(results);
+
         List<Map<String, Object>> rankings = new ArrayList<>();
         for (Result r : results) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
+            map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
@@ -437,9 +445,30 @@ public class RankingService {
             result.put("record", first.getEvent().getRecord());
         }
         result.put("rankings", rankings);
+        result.put("tieRuleNote", tieRuleNote);
+        result.put("tieHandling", sequential ? "sequential" : "same_rank");
         result.put("totalCount", rankings.size());
 
         return result;
+    }
+
+    /** 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计） */
+    private Set<Integer> computeTiedRanks(List<Result> results) {
+        Map<String, Map<Integer, Integer>> cnt = new LinkedHashMap<>();
+        for (Result r : results) {
+            if (r.getTotalRank() == null) continue;
+            String g = r.getAthlete() != null && r.getAthlete().getGrade() != null
+                    ? r.getAthlete().getGrade() : "未知";
+            cnt.computeIfAbsent(g, k -> new LinkedHashMap<>())
+                    .merge(r.getTotalRank(), 1, Integer::sum);
+        }
+        Set<Integer> tied = new HashSet<>();
+        for (Map<Integer, Integer> m : cnt.values()) {
+            for (Map.Entry<Integer, Integer> e : m.entrySet()) {
+                if (e.getValue() > 1) tied.add(e.getKey());
+            }
+        }
+        return tied;
     }
 
     /**

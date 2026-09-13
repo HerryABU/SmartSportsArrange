@@ -207,12 +207,19 @@ public class ResultService {
      * 获取项目排名
      */
     @Transactional(readOnly = true)
-    public List<Map<String, Object>> getRanking(Long eventId) {
+    public Map<String, Object> getRanking(Long eventId) {
         List<Result> results = resultRepository.findByEventIdOrderByTotalRankAsc(eventId);
+        Map<String, Object> rule = systemService.getScoringRule();
+        boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+        String tieRuleNote = sequential
+                ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
+                : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
+        Set<Integer> tiedRanks = computeTiedRanks(results);
 
-        return results.stream().map(r -> {
+        List<Map<String, Object>> list = results.stream().map(r -> {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
+            map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
@@ -228,6 +235,31 @@ public class ResultService {
             map.put("isRecord", r.getIsRecord());
             return map;
         }).collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("list", list);
+        result.put("tieRuleNote", tieRuleNote);
+        result.put("tieHandling", sequential ? "sequential" : "same_rank");
+        return result;
+    }
+
+    /** 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计） */
+    private Set<Integer> computeTiedRanks(List<Result> results) {
+        Map<String, Map<Integer, Integer>> cnt = new LinkedHashMap<>();
+        for (Result r : results) {
+            if (r.getTotalRank() == null) continue;
+            String g = r.getAthlete() != null && r.getAthlete().getGrade() != null
+                    ? r.getAthlete().getGrade() : "未知";
+            cnt.computeIfAbsent(g, k -> new LinkedHashMap<>())
+                    .merge(r.getTotalRank(), 1, Integer::sum);
+        }
+        Set<Integer> tied = new java.util.HashSet<>();
+        for (Map<Integer, Integer> m : cnt.values()) {
+            for (Map.Entry<Integer, Integer> e : m.entrySet()) {
+                if (e.getValue() > 1) tied.add(e.getKey());
+            }
+        }
+        return tied;
     }
 
     /**
@@ -379,7 +411,7 @@ public class ResultService {
 
     /** Controller: viewRanking (别名) */
     @Transactional(readOnly = true)
-    public List<Map<String, Object>> viewRanking(Long eventId) {
+    public Map<String, Object> viewRanking(Long eventId) {
         return getRanking(eventId);
     }
 
@@ -395,21 +427,35 @@ public class ResultService {
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
                 + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
         try (OutputStream out = response.getOutputStream()) {
+            Map<String, Object> rule = systemService.getScoringRule();
+            boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+            String tieRuleNote = sequential
+                    ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
+                    : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
+            Set<Integer> tiedRanks = computeTiedRanks(results);
+
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
-            data.add(java.util.List.of("排名", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录"));
+            data.add(java.util.List.of("排名", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录", "并列"));
             for (Result r : results) {
                 Athlete a = r.getAthlete();
+                boolean tied = r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank());
+                String rankDisp = r.getTotalRank() != null
+                        ? (tied ? r.getTotalRank() + "=" : String.valueOf(r.getTotalRank())) : "-";
                 data.add(java.util.List.of(
-                    r.getTotalRank() != null ? String.valueOf(r.getTotalRank()) : "-",
+                    rankDisp,
                     a != null ? (a.getName() != null ? a.getName() : "") : "",
                     a != null ? (a.getNumber() != null ? a.getNumber() : "") : "",
                     a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : "",
                     a != null ? (a.getGrade() != null ? a.getGrade() : "") : "",
                     r.getRawTime() != null ? r.getRawTime() : "",
                     r.getScore() != null ? String.valueOf(r.getScore()) : "",
-                    Boolean.TRUE.equals(r.getIsRecord()) ? "是" : ""
+                    Boolean.TRUE.equals(r.getIsRecord()) ? "是" : "",
+                    tied ? "并列" : ""
                 ));
             }
+            // 并列规则说明行（置于表格末尾，便于打印/核对）
+            data.add(java.util.List.of("说明", tieRuleNote, "", "", "", "", "", "", ""));
+
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
             com.alibaba.excel.EasyExcel.write(out)
