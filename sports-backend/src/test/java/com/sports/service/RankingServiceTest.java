@@ -56,7 +56,8 @@ class RankingServiceTest {
         when(resultRepository.findAllValid()).thenReturn(all);
         when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
 
-        List<Map<String, Object>> teams = (List<Map<String, Object>>) rankingService.getTeamScores(null);
+        Map<String, Object> resp = (Map<String, Object>) rankingService.getTeamScores(null);
+        List<Map<String, Object>> teams = (List<Map<String, Object>>) resp.get("records");
         assertEquals(2, teams.size());
         // 高一1班总分 16 排第一
         assertEquals(1, teams.get(0).get("rank"));
@@ -66,6 +67,79 @@ class RankingServiceTest {
         // 高一2班总分 6 排第二
         assertEquals(2, teams.get(1).get("rank"));
         assertEquals(6.0, teams.get(1).get("totalPoints"));
+    }
+
+    // ==================== B12/U18：名次必须与排序口径一致 ====================
+
+    /**
+     * 总分相同但奖牌不同 → 名次必须区分。
+     * 旧实现只拿总分当唯一键，会把这种「总分并列」直接判为同名次，
+     * 丢掉排序已经用过的金/银/铜 tie-break（B12 的高二8班 vs 高二6班正是此形）。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_rankHonoursMedalTieBreakers() {
+        ClassInfo c8 = ClassInfo.builder().id(1L).name("高二8班").grade("高二").build();
+        ClassInfo c6 = ClassInfo.builder().id(2L).name("高二6班").grade("高二").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, c8),    // 高二8班：1 金，总分 9
+                result(2L, 9.0, 9, c6));   // 高二6班：0 金，总分 9
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of());
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> board = rankingService.getScoreBoard(null, false, 0, false, null);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
+
+        assertEquals("高二8班", rows.get(0).get("className"));
+        assertEquals("高二6班", rows.get(1).get("className"));
+        assertEquals(1, rows.get(0).get("rank"));
+        assertEquals(2, rows.get(1).get("rank"), "总分相同但金牌不同，名次不得并列");
+        assertEquals(Boolean.FALSE, rows.get(1).get("tied"));
+    }
+
+    /** 金/银/铜/有效总分四项全同 → 名次并列（标准竞赛排名，取首个位次） */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_fullyTiedTeamsShareRank() {
+        ClassInfo c1 = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        ClassInfo c2 = ClassInfo.builder().id(2L).name("高一2班").grade("高一").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, c1),
+                result(2L, 9.0, 1, c2));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of());
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> board = rankingService.getScoreBoard(null, false, 0, false, null);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) board.get("rows");
+
+        assertEquals(1, rows.get(0).get("rank"));
+        assertEquals(1, rows.get(1).get("rank"), "四项分解键全同应并列同名次");
+        assertEquals(Boolean.TRUE, rows.get(1).get("tied"));
+    }
+
+    /** 团体总分榜：四项分解键全同的班级并列同名次，与 tieRuleNote 的表述一致 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getTeamScores_fullyTiedTeamsShareRank() {
+        ClassInfo c1 = ClassInfo.builder().id(1L).name("高二8班").grade("高二").build();
+        ClassInfo c2 = ClassInfo.builder().id(2L).name("高二6班").grade("高二").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, c1),
+                result(2L, 9.0, 1, c2));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> resp = (Map<String, Object>) rankingService.getTeamScores(null);
+        List<Map<String, Object>> teams = (List<Map<String, Object>>) resp.get("records");
+
+        assertEquals(2, teams.size());
+        assertEquals(1, teams.get(0).get("rank"));
+        assertEquals(1, teams.get(1).get("rank"), "四项分解键全同的班级应并列");
+        assertEquals(Boolean.TRUE, teams.get(1).get("tied"));
+        // medalCount 语义修正后 = 金+银+铜（各 1 枚金）
+        assertEquals(1, teams.get(0).get("medalCount"));
     }
 
     @Test

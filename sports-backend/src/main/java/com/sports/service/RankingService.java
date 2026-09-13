@@ -63,7 +63,6 @@ public class RankingService {
             });
 
             ts.totalScore += result.getScore();
-            ts.medalCount++;
 
             if (result.getTotalRank() != null) {
                 if (result.getTotalRank() == 1) ts.goldCount++;
@@ -91,10 +90,21 @@ public class RankingService {
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
-        int rank = 1;
-        for (TeamScore ts : sorted) {
+        // B12/U18：名次必须与排序口径一致，且四项分解键完全相同才判并列
+        // （旧实现恒为 rank++，与 tieRuleNote 宣称的「名次并列」自相矛盾）
+        List<String> prevKey = null;
+        int rank = 0;
+        for (int i = 0; i < sorted.size(); i++) {
+            TeamScore ts = sorted.get(i);
+            List<String> tieKey = List.of(
+                    String.valueOf(ts.goldCount), String.valueOf(ts.silverCount),
+                    String.valueOf(ts.bronzeCount), String.valueOf(ts.totalScore));
+            boolean tied = prevKey != null && prevKey.equals(tieKey);
+            if (!tied) rank = i + 1;   // 标准竞赛排名：并列取首个位次，被占名次不补授
+            prevKey = tieKey;
+
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("rank", rank++);
+            m.put("rank", rank);
             m.put("classId", ts.classId);
             m.put("className", ts.className);
             m.put("grade", ts.grade);
@@ -102,7 +112,10 @@ public class RankingService {
             m.put("goldCount", ts.goldCount);
             m.put("silverCount", ts.silverCount);
             m.put("bronzeCount", ts.bronzeCount);
-            m.put("medalCount", ts.medalCount);
+            // medalCount 是「奖牌数」= 金+银+铜；旧实现按「得分的名次条数」累加，
+            // 与字段名不符（同一班多人在同名次得分时会虚高）
+            m.put("medalCount", ts.goldCount + ts.silverCount + ts.bronzeCount);
+            m.put("tied", tied);
             result.add(m);
         }
 
@@ -273,18 +286,35 @@ public class RankingService {
         return result;
     }
 
-    /** 并列排名：分数相同给同名次 */
+    /**
+     * 合分排行的名次赋值。
+     *
+     * <p><b>B12/U18 修复</b>：旧实现只拿总分（或含入场式总分）当唯一键去赋名次，
+     * <b>完全忽略排序口径</b>。而排序在 {@code team_score_sort=gold_first} 时是按
+     * 金→银→铜→总分 排的，于是行序与名次列互相矛盾：
+     * 金牌多但总分少的班会排在第 1 行、却显示「第 2 名」。
+     * 另外旧实现宣称「名次并列」但恒按位置递增，全键相同的两个班也拿不到同名次。</p>
+     *
+     * <p>现在用与排序完全相同的<b>四项分解键</b>（金/银/铜/有效总分）判等：
+     * 全键相同才并列，并列取首个位次（标准竞赛排名 1,2,2,4）。
+     * 由于比较器相等 ⟺ 四项全等，故键的书写顺序与 gold_first 无关。</p>
+     */
     private void assignRanks(List<Map<String, Object>> rows, boolean includeParade) {
-        String key = includeParade ? "totalWithParade" : "totalScore";
+        String scoreKey = includeParade ? "totalWithParade" : "totalScore";
+        List<String> prevKey = null;
         int rank = 0;
-        double prev = Double.NaN;
         for (int i = 0; i < rows.size(); i++) {
-            double cur = ((Number) rows.get(i).get(key)).doubleValue();
-            if (i == 0 || Math.abs(cur - prev) > 1e-9) {
-                rank = i + 1;
-                prev = cur;
-            }
-            rows.get(i).put("rank", rank);
+            Map<String, Object> row = rows.get(i);
+            List<String> tieKey = List.of(
+                    String.valueOf(row.get("goldCount")),
+                    String.valueOf(row.get("silverCount")),
+                    String.valueOf(row.get("bronzeCount")),
+                    String.valueOf(((Number) row.get(scoreKey)).doubleValue()));
+            boolean tied = prevKey != null && prevKey.equals(tieKey);
+            if (!tied) rank = i + 1;
+            prevKey = tieKey;
+            row.put("rank", rank);
+            row.put("tied", tied);
         }
     }
 
@@ -545,7 +575,6 @@ public class RankingService {
         int goldCount;
         int silverCount;
         int bronzeCount;
-        int medalCount;
     }
 
     @lombok.Data
