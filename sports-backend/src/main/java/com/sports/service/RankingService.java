@@ -391,20 +391,44 @@ public class RankingService {
                 .sorted(Comparator.comparingDouble(IndividualScore::getTotalScore).reversed())
                 .collect(Collectors.toList());
 
+        // B08/U08：个人榜此前恒用 rank++ 顺序赋名次——既不遵循 scoring_rule.tie_handling，
+        // 也不输出并列标记，与项目排名/成绩表的并列口径完全脱节：
+        // 同一项目里并列得分的两人到了个人榜就变成「第1、第2」，对外口径不一致。
+        // 现按与 calculateRanking 相同的口径处理：
+        //   same_rank（默认）= 密集排名 1,1,2；sequential = 标准竞赛排名 1,1,3（被占名次不补授）。
+        Map<String, Object> rule = systemService.getScoringRule();
+        boolean sequential = "sequential".equals(
+                String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+
         List<Map<String, Object>> result = new ArrayList<>();
-        int rank = 1;
-        for (IndividualScore is : sorted) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("rank", rank++);
-            map.put("athleteId", is.athleteId);
-            map.put("athleteName", is.athleteName);
-            map.put("athleteNumber", is.number);
-            map.put("number", is.number);
-            map.put("className", is.className);
-            map.put("grade", is.grade);
-            map.put("totalScore", Math.round(is.totalScore * 100.0) / 100.0);
-            map.put("eventCount", is.eventCount);
-            result.add(map);
+        int i = 0;
+        int n = sorted.size();
+        int nextRank = 1;
+        while (i < n) {
+            int j = i;
+            while (j + 1 < n && Math.abs(sorted.get(j + 1).getTotalScore()
+                    - sorted.get(i).getTotalScore()) < 1e-9) {
+                j++;
+            }
+            int groupSize = j - i + 1;
+            int rank = nextRank;
+            for (int k = i; k <= j; k++) {
+                IndividualScore is = sorted.get(k);
+                Map<String, Object> map = new LinkedHashMap<>();
+                map.put("rank", rank);
+                map.put("tied", groupSize > 1);
+                map.put("athleteId", is.athleteId);
+                map.put("athleteName", is.athleteName);
+                map.put("athleteNumber", is.number);
+                map.put("number", is.number);
+                map.put("className", is.className);
+                map.put("grade", is.grade);
+                map.put("totalScore", Math.round(is.totalScore * 100.0) / 100.0);
+                map.put("eventCount", is.eventCount);
+                result.add(map);
+            }
+            nextRank = sequential ? rank + groupSize : rank + 1;
+            i = j + 1;
         }
 
         // Paginate
@@ -418,6 +442,11 @@ public class RankingService {
         paged.put("total", total);
         paged.put("page", page);
         paged.put("size", size);
+        // B08/U08：并列规则随榜单一并输出，避免「得分相同却名次不同」无从解释
+        paged.put("tieHandling", sequential ? "sequential" : "same_rank");
+        paged.put("tieRuleNote", sequential
+                ? "并列规则：并列顺延占位（名次如 1,1,3，被占名次不补授），并列者共享该名次。"
+                : "并列规则：同名次并列（名次如 1,1,2），并列者共享该名次，后续名次顺延。");
         return paged;
     }
 

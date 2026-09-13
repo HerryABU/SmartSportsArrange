@@ -142,6 +142,55 @@ class RankingServiceTest {
         assertEquals(1, teams.get(0).get("medalCount"));
     }
 
+    /**
+     * B08/U08 回归：个人积分榜的并列名次。
+     * 默认口径 same_rank = 密集排名（1,1,2），并列者同名次并带 tied 标记，
+     * 且榜单附带并列规则说明——旧实现恒 rank++，两人同为 9 分会显示「第1、第2」。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getIndividualScores_tiesShareRankDense() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, ca),
+                result(2L, 9.0, 1, ca),
+                result(3L, 5.0, 3, ca));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(systemService.getScoringRule()).thenReturn(defaultRuleWithTie("same_rank"));
+
+        Map<String, Object> page = (Map<String, Object>) rankingService.getIndividualScores(null, null, 1, 10);
+        List<Map<String, Object>> records = (List<Map<String, Object>>) page.get("records");
+
+        assertEquals(3, records.size());
+        assertEquals(1, records.get(0).get("rank"));
+        assertEquals(1, records.get(1).get("rank"), "同为 9 分应并列第 1");
+        assertEquals(Boolean.TRUE, records.get(1).get("tied"));
+        assertEquals(2, records.get(2).get("rank"), "密集排名下 5 分应接第 2 名");
+        assertEquals("same_rank", page.get("tieHandling"));
+        assertNotNull(page.get("tieRuleNote"));
+    }
+
+    /** B08/U08：tie_handling=sequential 时改为标准竞赛排名（1,1,3，被占名次不补授） */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getIndividualScores_tiesSkipRankWhenSequential() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> all = List.of(
+                result(1L, 9.0, 1, ca),
+                result(2L, 9.0, 1, ca),
+                result(3L, 5.0, 3, ca));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(systemService.getScoringRule()).thenReturn(defaultRuleWithTie("sequential"));
+
+        Map<String, Object> page = (Map<String, Object>) rankingService.getIndividualScores(null, null, 1, 10);
+        List<Map<String, Object>> records = (List<Map<String, Object>>) page.get("records");
+
+        assertEquals(1, records.get(0).get("rank"));
+        assertEquals(1, records.get(1).get("rank"));
+        assertEquals(3, records.get(2).get("rank"), "sequential 下并列占位，第三名应接第 3");
+        assertEquals("sequential", page.get("tieHandling"));
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void getIndividualScores_paginates() {
@@ -305,6 +354,12 @@ class RankingServiceTest {
         Map<String, Object> rule = new LinkedHashMap<>();
         rule.put("team_score_type", type);
         rule.put("team_score_sort", sort);
+        return rule;
+    }
+
+    private Map<String, Object> defaultRuleWithTie(String tieHandling) {
+        Map<String, Object> rule = defaultRule("class", "total_score");
+        rule.put("tie_handling", tieHandling);
         return rule;
     }
 }
