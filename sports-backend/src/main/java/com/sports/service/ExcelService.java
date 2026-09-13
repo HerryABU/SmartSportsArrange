@@ -627,6 +627,16 @@ public class ExcelService {
     public void exportOrderBook(HttpServletResponse response) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
+        // B03/U03 + B04/U04：参赛运动员集合（已审核报名），用于「参赛班级人数」「号码对照表仅含参赛」
+        Set<Long> participantIds = registrationRepository.findByStatus("approved").stream()
+                .map(r -> r.getAthlete() != null ? r.getAthlete().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Long> participantCountByClass = new LinkedHashMap<>();
+        for (Athlete p : athleteRepository.findAllById(participantIds)) {
+            if (p.getDeletedAt() != null || p.getClassInfo() == null) continue;
+            participantCountByClass.merge(p.getClassInfo().getId(), 1L, Long::sum);
+        }
         setExcelResponse(response, "秩序册_" + dateStr() + ".xlsx");
 
         try (OutputStream out = response.getOutputStream()) {
@@ -684,8 +694,15 @@ public class ExcelService {
             classData.add(List.of("序号", "班级名称", "年级", "班主任", "学生人数"));
             idx = 1;
             for (ClassInfo c : classes) {
+                // B03/U03：人数取「本班参赛运动员数」（按报名审核统计），班主任优先班级登记名、缺失回退绑定账号
+                String teacher = c.getTeacherName() != null && !c.getTeacherName().isBlank() ? c.getTeacherName().trim()
+                        : (c.getTeacherUser() != null
+                            ? (c.getTeacherUser().getName() != null && !c.getTeacherUser().getName().isBlank()
+                                ? c.getTeacherUser().getName().trim()
+                                : n(c.getTeacherUser().getUsername()))
+                            : "-");
                 classData.add(List.of(String.valueOf(idx++), n(c.getName()), n(c.getGrade()),
-                        n(c.getTeacherName()), String.valueOf(c.getStudentCount() != null ? c.getStudentCount() : 0)));
+                        teacher, String.valueOf(participantCountByClass.getOrDefault(c.getId(), 0L))));
             }
 
             com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build();

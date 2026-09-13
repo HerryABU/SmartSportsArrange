@@ -50,6 +50,7 @@ public class WordOrderBookService {
     private final ArrangementRepository arrangementRepository;
     private final EventScheduleRepository scheduleRepository;
     private final AthleteRepository athleteRepository;
+    private final RegistrationRepository registrationRepository;
     private final SystemService systemService;
 
     private static final String FONT = "宋体";
@@ -115,6 +116,16 @@ public class WordOrderBookService {
         List<String> gradeOrder = systemService.getGradeOrder();
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
+        // B03/U03 + B04/U04：参赛运动员集合（已审核报名），用于「参赛班级人数」「号码对照表仅含参赛」
+        Set<Long> participantIds = registrationRepository.findByStatus("approved").stream()
+                .map(r -> r.getAthlete() != null ? r.getAthlete().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Long> participantCountByClass = new LinkedHashMap<>();
+        for (Athlete p : athleteRepository.findAllById(participantIds)) {
+            if (p.getDeletedAt() != null || p.getClassInfo() == null) continue;
+            participantCountByClass.merge(p.getClassInfo().getId(), 1L, Long::sum);
+        }
         List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
 
         StringBuilder body = new StringBuilder();
@@ -210,8 +221,9 @@ public class WordOrderBookService {
         List<List<String>> classRows = new ArrayList<>();
         int ci = 1;
         for (ClassInfo c : sortedClasses) {
+            // B03/U03：人数取「本班参赛运动员数」（按报名审核统计），班主任优先班级登记名、缺失回退绑定账号
             classRows.add(List.of(String.valueOf(ci++), n(c.getName()), n(c.getGrade()),
-                    n(c.getTeacherName()), String.valueOf(c.getStudentCount() != null ? c.getStudentCount() : 0)));
+                    teacherLabel(c), String.valueOf(participantCountByClass.getOrDefault(c.getId(), 0L))));
         }
         body.append(table(List.of("序号", "班级名称", "年级", "班主任", "人数"), classRows, equalWidths(5)));
         body.append(pageBreak());
@@ -331,6 +343,17 @@ public class WordOrderBookService {
                 + "<w:pgMar w:top=\"" + MARGIN + "\" w:right=\"" + MARGIN + "\" w:bottom=\"" + MARGIN
                 + "\" w:left=\"" + MARGIN + "\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/>"
                 + "</w:sectPr></w:body></w:document>";
+    }
+
+    /** B03/U03：班主任展示——优先班级登记姓名，缺失时回退绑定账号姓名/用户名 */
+    private static String teacherLabel(ClassInfo c) {
+        if (c.getTeacherName() != null && !c.getTeacherName().isBlank()) return c.getTeacherName().trim();
+        User t = c.getTeacherUser();
+        if (t != null) {
+            if (t.getName() != null && !t.getName().isBlank()) return t.getName().trim();
+            if (t.getUsername() != null && !t.getUsername().isBlank()) return t.getUsername().trim();
+        }
+        return "-";
     }
 
     private String para(String text, boolean bold, int halfPts, String color, String align) {
