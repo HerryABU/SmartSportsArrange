@@ -220,6 +220,8 @@ public class ResultService {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
             map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
+            map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
+                    ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
@@ -435,18 +437,23 @@ public class ResultService {
             Set<Integer> tiedRanks = computeTiedRanks(results);
 
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
-            data.add(java.util.List.of("排名", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录", "并列"));
+            data.add(java.util.List.of("排名", "年级组名次", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录", "并列"));
             for (Result r : results) {
                 Athlete a = r.getAthlete();
                 boolean tied = r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank());
                 String rankDisp = r.getTotalRank() != null
                         ? (tied ? r.getTotalRank() + "=" : String.valueOf(r.getTotalRank())) : "-";
+                String grade = a != null && a.getGrade() != null ? a.getGrade() : "";
+                // B11/U17：年级组名次（如「高一第1名」），避免各年级多个「第1名」被误读为总冠军
+                String gradeRank = r.getTotalRank() != null && !grade.isEmpty()
+                        ? grade + "第" + r.getTotalRank() + "名" : "";
                 data.add(java.util.List.of(
                     rankDisp,
+                    gradeRank,
                     a != null ? (a.getName() != null ? a.getName() : "") : "",
                     a != null ? (a.getNumber() != null ? a.getNumber() : "") : "",
                     a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : "",
-                    a != null ? (a.getGrade() != null ? a.getGrade() : "") : "",
+                    grade,
                     r.getRawTime() != null ? r.getRawTime() : "",
                     r.getScore() != null ? String.valueOf(r.getScore()) : "",
                     Boolean.TRUE.equals(r.getIsRecord()) ? "是" : "",
@@ -454,7 +461,7 @@ public class ResultService {
                 ));
             }
             // 并列规则说明行（置于表格末尾，便于打印/核对）
-            data.add(java.util.List.of("说明", tieRuleNote, "", "", "", "", "", "", ""));
+            data.add(java.util.List.of("说明", tieRuleNote, "", "", "", "", "", "", "", ""));
 
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());

@@ -419,6 +419,8 @@ public class RankingService {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
             map.put("tied", r.getTotalRank() != null && tiedRanks.contains(r.getTotalRank()));
+            map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
+                    ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
