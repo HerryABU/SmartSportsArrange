@@ -593,6 +593,44 @@
           </div>
         </el-card>
       </el-tab-pane>
+
+      <!-- 操作审计日志（仅超管，U16） -->
+      <el-tab-pane v-if="authStore.isAdmin" label="操作审计" name="audit">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span>操作审计日志</span>
+              <div class="header-actions">
+                <el-input v-model="auditActionFilter" placeholder="动作过滤（如 ARRANGE，留空为全部）" clearable
+                          size="small" style="width:240px" @keyup.enter="fetchAuditLogs" @clear="fetchAuditLogs" />
+                <el-select v-model="auditLimit" size="small" style="width:130px" @change="fetchAuditLogs">
+                  <el-option v-for="n in [50,100,200,500]" :key="n" :label="`最近 ${n} 条`" :value="n" />
+                </el-select>
+                <el-button :icon="Download" @click="exportAuditCsv">导出 CSV</el-button>
+                <el-button :icon="Refresh" @click="fetchAuditLogs" :loading="auditLoading">刷新</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-loading="auditLoading">
+            <el-alert v-if="!auditLoading && !auditRecords.length" type="info" :closable="false" title="暂无审计记录" />
+            <el-table v-else :data="auditRecords" stripe size="small" border>
+              <el-table-column prop="createdAt" label="时间" width="175" />
+              <el-table-column prop="operator" label="操作人" width="120" />
+              <el-table-column label="动作" width="150">
+                <template #default="{row}">
+                  <el-tag size="small" :type="auditActionTag(row.action)">{{ row.action || '—' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="targetType" label="对象类型" width="130" />
+              <el-table-column prop="targetId" label="对象ID" width="100" align="center" />
+              <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
+            </el-table>
+            <div v-if="auditRecords.length" style="margin-top:10px;color:#909399;font-size:12px">
+              共返回 {{ auditRecords.length }} 条（查询上限 {{ auditLimit }}）
+            </div>
+          </div>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- User Dialog -->
@@ -646,7 +684,7 @@
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, DocumentCopy, Plus, Delete, Refresh } from '@element-plus/icons-vue'
+import { Upload, DocumentCopy, Plus, Delete, Refresh, Download } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -848,6 +886,51 @@ async function fetchHealth() {
     health.value = res || {}
   } catch (e) { console.error(e) }
   finally { healthLoading.value = false }
+}
+
+// ============ 操作审计日志（U16） ============
+const auditRecords = ref([])
+const auditLoading = ref(false)
+const auditActionFilter = ref('')
+const auditLimit = ref(100)
+
+async function fetchAuditLogs() {
+  auditLoading.value = true
+  try {
+    const res = await request.get('/audit/logs', {
+      params: { action: auditActionFilter.value || undefined, limit: auditLimit.value }
+    })
+    auditRecords.value = (res && Array.isArray(res.records)) ? res.records : (Array.isArray(res) ? res : [])
+  } catch (e) {
+    console.error(e)
+    ElMessage.error('加载审计日志失败')
+  } finally {
+    auditLoading.value = false
+  }
+}
+
+function auditActionTag(action) {
+  if (!action) return 'info'
+  if (action.includes('IMPORT') || action.includes('EXPORT')) return 'warning'
+  if (action.includes('MODIFY') || action.includes('LOCK')) return 'danger'
+  if (action.includes('ARRANGE')) return 'primary'
+  return 'success'
+}
+
+function exportAuditCsv() {
+  if (!auditRecords.value.length) { ElMessage.warning('暂无可导出的记录'); return }
+  const header = ['时间', '操作人', '动作', '对象类型', '对象ID', '详情']
+  const rows = auditRecords.value.map(r => [r.createdAt, r.operator, r.action, r.targetType, r.targetId, r.detail])
+  const csv = [header, ...rows]
+    .map(cols => cols.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n')
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `audit_logs_${Date.now()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 const gradeList = ref([])
@@ -1333,6 +1416,7 @@ onMounted(() => {
     fetchDbMigrationInfo()
     fetchBackupList()
     fetchHealth()
+    fetchAuditLogs()
   }
 })
 
