@@ -95,6 +95,60 @@
       </el-card>
     </template>
 
+    <!-- B06/U05：兼项冲突检测 —— 同一运动员在相近时间被排到不同项目 -->
+    <el-card shadow="never" class="conflict-card">
+      <template #header>
+        <div class="conflict-header">
+          <span>⚔️ 兼项冲突检测</span>
+          <span class="hint">同一运动员的两个项目时间重叠（或间隔小于 15 分钟）时告警，附根因与调整建议</span>
+          <div class="conflict-actions">
+            <el-tag v-if="conflictSummary" size="small"
+              :type="conflictSummary.blocker ? 'danger' : (conflictSummary.total ? 'warning' : 'success')">
+              共 {{ conflictSummary.total }} 处（严重 {{ conflictSummary.blocker }} / 一般 {{ conflictSummary.warn }}），涉及 {{ conflictSummary.athleteCount }} 人
+            </el-tag>
+            <el-button size="small" type="primary" plain :icon="Search" :loading="conflictLoading" @click="loadConflicts">
+              检测冲突
+            </el-button>
+            <el-button size="small" type="success" plain :icon="Download"
+              :disabled="!conflictList.length" @click="exportConflicts">
+              导出清单
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <template v-if="conflictList.length">
+        <el-table :data="conflictPaged" border stripe size="small" max-height="420">
+          <el-table-column type="index" label="#" width="46" align="center" />
+          <el-table-column prop="severity" label="严重度" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.severity === '严重' ? 'danger' : 'warning'">{{ row.severity }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="type" label="类型" width="112" />
+          <el-table-column prop="athleteName" label="运动员" width="88" />
+          <el-table-column prop="athleteNumber" label="号码布" width="84" />
+          <el-table-column prop="eventAName" label="项目A" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="windowA" label="A 时间/场地" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="eventBName" label="项目B" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="windowB" label="B 时间/场地" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="gapMinutes" label="间隔(分)" width="84" align="center" />
+          <el-table-column prop="suggestion" label="调整建议" min-width="260" show-overflow-tooltip />
+        </el-table>
+        <el-pagination
+          v-if="conflictList.length > conflictPageSize"
+          v-model:current-page="conflictPage"
+          :page-size="conflictPageSize"
+          :total="conflictList.length"
+          layout="total, prev, pager, next"
+          style="margin-top:10px;justify-content:flex-end" />
+      </template>
+
+      <el-empty v-else
+        :description="conflictSummary ? '未检测到兼项冲突' : '点击「检测冲突」检查是否存在兼项冲突'"
+        :image-size="70" />
+    </el-card>
+
     <!-- 运动会日程配置对话框（日期/时段/年级顺序/串行并行 全部可配置，不硬编码） -->
     <el-dialog v-model="showConfigDialog" title="运动会日程配置" width="860px" :close-on-click-modal="false"
       top="4vh">
@@ -322,7 +376,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom } from '@element-plus/icons-vue'
+import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -631,12 +685,70 @@ async function saveMeetConfig() {
   }
 }
 
+// ==================== B06/U05：兼项冲突检测 ====================
+const conflictList = ref([])
+const conflictSummary = ref(null)
+const conflictLoading = ref(false)
+const conflictPage = ref(1)
+const conflictPageSize = ref(20)
+const conflictPaged = computed(() => {
+  const from = (conflictPage.value - 1) * conflictPageSize.value
+  return conflictList.value.slice(from, from + conflictPageSize.value)
+})
+
+/** 把后端冲突条目摊平（eventA/eventB 是对象，表格需要可直接渲染的字段名） */
+function normalizeConflicts(list) {
+  return (list || []).map(c => ({
+    ...c,
+    eventAName: (c.eventA && c.eventA.name) || '',
+    eventBName: (c.eventB && c.eventB.name) || ''
+  }))
+}
+
+function applyConflicts(data) {
+  conflictSummary.value = (data && data.summary) || null
+  conflictList.value = normalizeConflicts(data && data.list)
+  conflictPage.value = 1
+}
+
+async function loadConflicts() {
+  conflictLoading.value = true
+  try {
+    const res = await request.get('/arrange/conflicts')
+    applyConflicts(res || {})
+    if (!conflictList.value.length) ElMessage.success('未检测到兼项冲突')
+    else ElMessage.warning(`检测到 ${conflictList.value.length} 处兼项冲突，请按「调整建议」列处理`)
+  } catch (e) {
+    console.error(e)
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+async function exportConflicts() {
+  try {
+    await downloadApi('/arrange/conflicts/export', '兼项冲突清单.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
+}
+
 // ==================== 一键编排（赛程 + 自动道次） ====================
 async function doAutoSchedule() {
   arranging.value = true
   try {
     const res = await request.post('/schedule/auto', {})
     items.value = res.items || []
+    // B06/U05：编排响应本身已带 conflicts，直接用，省一次往返
+    applyConflicts({ summary: null, list: res.conflicts })
+    if (res.conflicts) {
+      const severe = res.conflicts.filter(c => c.severity === '严重').length
+      conflictSummary.value = {
+        total: res.conflicts.length, blocker: severe, warn: res.conflicts.length - severe,
+        athleteCount: new Set(res.conflicts.map(c => c.athleteId)).size, bufferMinutes: 15
+      }
+    }
     const auto = res.autoArrange || null
     let autoTip = ''
     if (auto) {
@@ -752,8 +864,15 @@ onMounted(() => { fetchList(); fetchEvents() })
 .group-row, .venue-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
 }
+/* B06/U05 兼项冲突卡片 */
+.conflict-card { margin-top: 14px; border-radius: 10px; }
+.conflict-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.conflict-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 @media (max-width: 768px) {
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-right { width: 100%; }
+  .conflict-header { flex-direction: column; align-items: flex-start; }
+  .conflict-actions { margin-left: 0; }
 }
 </style>
