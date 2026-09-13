@@ -155,6 +155,14 @@ public class ScheduleService {
         // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
         estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
 
+        // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
+        // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
+        // 这里在放置之前先算清楚：本项目类别真正需要多少分钟、时段总共能提供多少分钟、
+        // 缺口多少，并把每一个被压缩的项目列成表（需求/实给/压缩比/缺口）。
+        int unitInterval = Math.max(defaultInterval, minInterval);
+        Map<String, Object> feasibility = assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
+        List<Map<String, Object>> compressionReport = compressionReport(units);
+
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
         for (Unit u : units) {
@@ -282,17 +290,51 @@ public class ScheduleService {
             log.warn("补回决赛赛程条目异常", ex);
         }
 
-        // B06/U05：赛程生成后做兼项冲突检测，冲突写入 warnings（不再为空）与 conflicts 清单
+        // B06/U05：赛程生成后做兼项冲突检测。
+        // 冲突清单本身可能上百条，逐条塞进 warnings 会把 warnings 变成噪声、现场反而看不见
+        // （旧实现一次编排产生 552 条告警）。这里改为「一条汇总告警 + 完整清单走 conflicts 字段」。
         List<Map<String, Object>> conflicts = conflictService.detectConflicts();
+        int severeConflicts = 0;
+        for (Map<String, Object> c : conflicts) {
+            if ("严重".equals(c.get("severity"))) severeConflicts++;
+        }
         if (!conflicts.isEmpty()) {
-            for (Map<String, Object> c : conflicts) {
-                warnings.add("兼项冲突: 运动员「" + c.get("athleteName") + "」(" + c.get("athleteNumber")
-                        + ") 在 " + c.get("windowA") + " 与 " + c.get("windowB") + " 时间重叠");
+            Map<String, Object> worst = conflicts.get(0);
+            warnings.add(String.format("兼项冲突告警：共 %d 处（严重 %d 处），例如运动员「%s」在 %s 与 %s 时间冲突；"
+                            + "完整清单见 conflicts 字段或 GET /api/arrange/conflicts/export",
+                    conflicts.size(), severeConflicts, worst.get("athleteName"),
+                    worst.get("windowA"), worst.get("windowB")));
+        }
+
+        // B05/U06：把可行性缺口与压缩亏损提升为业务告警（数量级信息，不再逐条刷屏）
+        if (!Boolean.TRUE.equals(feasibility.get("feasible"))) {
+            for (String label : List.of("track", "field")) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> p = (Map<String, Object>) feasibility.get(label);
+                if (p != null && !Boolean.TRUE.equals(p.get("feasible"))) {
+                    warnings.add(String.format("时间窗容量不足（%s）：需要 %d 分钟，时段仅能提供 %d 分钟，缺口 %d 分钟；"
+                                    + "请增加比赛天数/时段、提高并发位数或削减项目规模",
+                            p.get("label"), p.get("requiredMinutes"), p.get("supplyMinutes"),
+                            p.get("deficitMinutes")));
+                }
             }
+        }
+        if (!compressionReport.isEmpty()) {
+            Map<String, Object> worst = compressionReport.get(0);
+            warnings.add(String.format("时间压缩告警：共 %d 个项目被 maxDurationMinutes 压缩，缺口最大的是「%s」（%s）："
+                            + "预计需 %d 分钟，实给 %d 分钟（%.0f%%），缺口 %d 分钟；明细见 compressionReport",
+                    compressionReport.size(), worst.get("eventName"), worst.get("grade"),
+                    worst.get("requiredMinutes"), worst.get("givenMinutes"),
+                    dblVal(worst.get("ratioPercent"), 0), worst.get("deficitMinutes")));
         }
 
         Map<String, Object> result = buildResult();
         result.put("warnings", warnings);
+        // B06/U05：完整兼项冲突清单（warnings 里只放汇总，避免上百条告警淹没现场）
+        result.put("conflicts", conflicts);
+        // B05/U06：新增「可行性预检」与「压缩亏损明细」两个结构化字段，让现场能算清缺口
+        result.put("feasibility", feasibility);
+        result.put("compressionReport", compressionReport);
         result.put("configUsed", cfg);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         // B01/U01/B17：本次自动编排补回的决赛赛程条目数（0 = 无需补，赛程表已与编排一致）
@@ -577,6 +619,80 @@ public class ScheduleService {
             int cap = e.getMaxDurationMinutes() != null ? e.getMaxDurationMinutes() : defaultDuration;
             u.duration = cap > 0 ? Math.min(u.rawDuration, cap) : u.rawDuration;
         }
+    }
+
+    /**
+     * B05/U06：时间窗容量可行性预检。
+     *
+     * <p>把「需求」与「供给」分别量化后对比：</p>
+     * <ul>
+     *   <li>需求：按类别（径赛/田赛）汇总各单元<b>未压缩</b>的预计用时 + 项目间间隔；</li>
+     *   <li>供给：该类别的可并发位数（径赛 trackSlots / 田赛 fieldSlots）× 全部时段容量。</li>
+     * </ul>
+     * <p>两者口径统一后给出 {@code deficitMinutes}（缺口）与 {@code affectedEvents}
+     * （被 maxDurationMinutes 压缩的项目）。缺口 &gt; 0 说明即便把所有压缩都用上仍排不完，
+     * 必须增加天数/时段/并发位或削减项目规模——这一点以前完全不可见（B05 的现场跑不完）。</p>
+     */
+    private Map<String, Object> assessFeasibility(List<Unit> units, List<Window> windows,
+                                                  int trackSlots, int fieldSlots, int interval) {
+        int totalCapacity = windows.stream().mapToInt(w -> w.capacity).sum();
+        int trackNeed = 0, trackCount = 0;
+        int fieldNeed = 0, fieldCount = 0;
+        for (Unit u : units) {
+            if (u.participants <= 0) continue;
+            int need = u.rawDuration + interval;   // 含项目间间隔
+            if (u.track) { trackNeed += need; trackCount++; } else { fieldNeed += need; fieldCount++; }
+        }
+
+        Map<String, Object> track = poolFeasibility("径赛", trackNeed, trackCount, totalCapacity, trackSlots);
+        Map<String, Object> field = poolFeasibility("田赛", fieldNeed, fieldCount, totalCapacity, fieldSlots);
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("windowCount", windows.size());
+        m.put("windowCapacityMinutes", totalCapacity);
+        m.put("track", track);
+        m.put("field", field);
+        m.put("feasible", Boolean.TRUE.equals(track.get("feasible")) && Boolean.TRUE.equals(field.get("feasible")));
+        return m;
+    }
+
+    private Map<String, Object> poolFeasibility(String label, int need, int unitCount,
+                                                int totalCapacity, int slots) {
+        int supply = totalCapacity * Math.max(1, slots);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("label", label);
+        m.put("unitCount", unitCount);
+        m.put("requiredMinutes", need);
+        m.put("supplyMinutes", supply);
+        m.put("deficitMinutes", Math.max(0, need - supply));
+        m.put("feasible", need <= supply);
+        return m;
+    }
+
+    /**
+     * B05/U06：压缩亏损量化——把每个「实际用时 &lt; 未压缩预计用时」的项目列成表，
+     * 输出需求分钟、实给分钟、压缩比与缺口分钟，供现场判断哪一项最危险。
+     */
+    private List<Map<String, Object>> compressionReport(List<Unit> units) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Unit u : units) {
+            if (u.participants <= 0 || u.duration >= u.rawDuration) continue;
+            Map<String, Object> c = new LinkedHashMap<>();
+            c.put("eventId", u.event.getId());
+            c.put("eventName", u.event.getName());
+            c.put("grade", u.grade);
+            c.put("track", u.track);
+            c.put("participants", u.participants);
+            c.put("concurrency", u.concurrency);
+            c.put("rounds", u.rounds);
+            c.put("requiredMinutes", u.rawDuration);
+            c.put("givenMinutes", u.duration);
+            c.put("deficitMinutes", u.rawDuration - u.duration);
+            c.put("ratioPercent", Math.round(u.duration * 1000.0 / u.rawDuration) / 10.0);
+            out.add(c);
+        }
+        out.sort(Comparator.comparingInt(c -> -intVal(c.get("deficitMinutes"), 0)));
+        return out;
     }
 
     private int countParticipants(Long eventId, String grade) {
