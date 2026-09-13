@@ -164,12 +164,78 @@
           </el-row>
         </el-card>
       </el-tab-pane>
+
+      <!-- U10/B15：数据一致性校验（报名 → 编排 → 成绩 → 总分 跨环节核对） -->
+      <el-tab-pane label="数据校验" name="consistency">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span>数据一致性校验</span>
+              <div>
+                <el-button type="primary" :loading="checkLoading" @click="loadConsistency">
+                  <el-icon><Search /></el-icon>
+                  生成校验报告
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <template v-if="checkReport">
+            <el-alert
+              :type="checkReport.ok ? 'success' : 'warning'"
+              show-icon
+              :closable="false"
+              :title="consistencyAlertText"
+              style="margin-bottom: 14px" />
+
+            <el-row :gutter="16" class="stat-cards">
+              <el-col :span="6" v-for="s in checkSummaryCards" :key="s.label">
+                <el-card shadow="hover" class="stat-card-item">
+                  <div class="stat-value">{{ s.value }}</div>
+                  <div class="stat-label">{{ s.label }}</div>
+                </el-card>
+              </el-col>
+            </el-row>
+
+            <el-card shadow="never" style="margin-top: 16px">
+              <template #header><span>差异清单</span></template>
+              <el-table v-if="(checkReport.discrepancies || []).length"
+                :data="checkReport.discrepancies" border stripe size="small" max-height="360">
+                <el-table-column type="index" label="#" width="46" align="center" />
+                <el-table-column prop="severity" label="级别" width="72" align="center">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.severity === 'P0' ? 'danger' : 'warning'">{{ row.severity }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="type" label="差异类型" min-width="210" />
+                <el-table-column prop="scope" label="范围" min-width="120" />
+                <el-table-column prop="message" label="说明" min-width="320" show-overflow-tooltip />
+              </el-table>
+              <el-empty v-else description="未发现差异" :image-size="60" />
+            </el-card>
+
+            <el-card shadow="never" style="margin-top: 16px">
+              <template #header><span>分项目核对明细</span></template>
+              <el-table :data="checkReport.perEvent || []" border stripe size="small" max-height="360">
+                <el-table-column prop="eventName" label="项目" min-width="150" />
+                <el-table-column prop="registrationApproved" label="报名审核" width="106" align="center" />
+                <el-table-column prop="arrangedAthletes" label="编排人数" width="106" align="center" />
+                <el-table-column prop="resultCount" label="成绩条数" width="106" align="center" />
+              </el-table>
+            </el-card>
+          </template>
+
+          <el-empty v-else
+            description="点击「生成校验报告」，核对 报名 → 编排 → 成绩 → 总分 各环节数据是否对得上"
+            :image-size="100" />
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
@@ -197,6 +263,42 @@ const statCards = ref([
 
 const gradeStats = ref([])
 const eventStats = ref([])
+
+// ==================== U10/B15：数据一致性校验 ====================
+const checkReport = ref(null)
+const checkLoading = ref(false)
+
+const checkSummaryCards = computed(() => {
+  const s = (checkReport.value && checkReport.value.summary) || {}
+  return [
+    { label: '项目数', value: s.eventCount ?? 0 },
+    { label: '报名审核（条）', value: s.registrationApproved ?? 0 },
+    { label: '已编排（人）', value: s.arrangedAthleteCount ?? 0 },
+    { label: '差异处数', value: s.discrepancyCount ?? 0 }
+  ]
+})
+
+const consistencyAlertText = computed(() => {
+  if (!checkReport.value) return ''
+  if (checkReport.value.ok) return '各环节数据一致，未发现差异'
+  const n = (checkReport.value.discrepancies || []).length
+  return `发现 ${n} 处差异，请逐条核对后再出册`
+})
+
+async function loadConsistency() {
+  checkLoading.value = true
+  try {
+    const res = await request.get('/validate/report')
+    checkReport.value = res || null
+    const n = ((res && res.discrepancies) || []).length
+    if (n) ElMessage.warning(`校验完成：发现 ${n} 处差异`)
+    else ElMessage.success('校验完成：各环节数据一致')
+  } catch (e) {
+    console.error(e)
+  } finally {
+    checkLoading.value = false
+  }
+}
 
 async function generateOrderBook() {
   loading.value = true
