@@ -322,14 +322,17 @@ public class ArrangementService {
                 .map(Arrangement::getAthlete)
                 .collect(Collectors.toList());
 
-        // U12/B18：二次编排重建决赛时，必须保留人工锁定的决赛道次。
+        // U12/B18 + P0：二次编排重建决赛时，必须保留人工锁定的决赛道次。
         // 旧实现用 deleteByEventRoundGradeGender 无差别删掉该轮全部行——人工锁定的决赛道次
         // 会被二次编排直接抹掉，锁定形同虚设。这里改为「只删非锁定行」，并把被锁定的运动员
         // 从自动池剔除（其道次已由人工固定）。
+        //
+        // 注意：锁定行必须用 SQL 层过滤的查询取（findManualByEventRoundGradeGender），
+        // 不能先查整轮再在 Java 里 filter——否则待删行会以托管实体留在 session 里，
+        // 而 SQLite 主键会复用被删掉的最大 id，新插入行撞上「已删除但仍托管」的同 id 实例，
+        // 直接抛 Hibernate identifier 冲突（实测 /qualify 500）。
         List<Arrangement> lockedFinals = arrangementRepository
-                .findByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender).stream()
-                .filter(a -> Boolean.TRUE.equals(a.getIsManual()))
-                .collect(Collectors.toList());
+                .findManualByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender);
         arrangementRepository.deleteNonManualByEventRoundGradeGender(eventId, ROUND_FINAL, grade, gender);
         if (!lockedFinals.isEmpty()) {
             Set<Long> lockedIds = lockedFinals.stream()
@@ -599,9 +602,7 @@ public class ArrangementService {
 
         // U12/B18：保留人工锁定项（isManual=true）。自动重排不覆盖锁定项，并把其运动员排除出自动编排池。
         List<Arrangement> locked = arrangementRepository
-                .findByEventRoundGradeGender(eventId, targetRound, grade, gender).stream()
-                .filter(a -> Boolean.TRUE.equals(a.getIsManual()))
-                .collect(Collectors.toList());
+                .findManualByEventRoundGradeGender(eventId, targetRound, grade, gender);
         if (!locked.isEmpty()) {
             Set<Long> lockedAthleteIds = locked.stream()
                     .map(a -> a.getAthlete() != null ? a.getAthlete().getId() : null)

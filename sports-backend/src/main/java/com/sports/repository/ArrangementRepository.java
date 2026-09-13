@@ -72,6 +72,26 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
     /**
      * U12/B18：仅删除「非人工锁定」行——自动重排时保留 isManual=true 的人工调整项，避免覆盖。
      */
+    /**
+     * U12/B18：只取「人工锁定」行。
+     *
+     * <p><b>必须在 SQL 层过滤，不能先查出整轮再在 Java 里 filter。</b>
+     * 原因：紧随其后会执行 {@link #deleteNonManualByEventRoundGradeGender} 这样的
+     * bulk JPQL DELETE，bulk delete 绕过持久化上下文——被删掉的行仍以托管实体形式留在
+     * 当前 session 里。SQLite 的 {@code id integer} 主键在删除最大 id 后会复用该 id，
+     * 新插入行拿到同一个 id 时就会撞上 session 里那个「已删除但仍在托管」的实例，
+     * 抛 Hibernate 的
+     * 「A different object with the same identifier value was already associated with the session」。
+     * 只查锁定行即可完全不触碰待删行，从根上避免该冲突。</p>
+     */
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round "
+            + "AND a.grade = :grade AND a.gender = :gender AND a.isManual = true "
+            + "ORDER BY a.heat ASC, a.lane ASC")
+    List<Arrangement> findManualByEventRoundGradeGender(@Param("eventId") Long eventId,
+                                                       @Param("round") String round,
+                                                       @Param("grade") String grade,
+                                                       @Param("gender") String gender);
+
     @Modifying
     @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round "
             + "AND a.grade = :grade AND a.gender = :gender AND (a.isManual = false OR a.isManual IS NULL)")
