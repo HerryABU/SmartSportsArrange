@@ -42,7 +42,8 @@
             class="lane-cell"
             :class="{
               'lane-empty': !lane.athleteId && !lane.athlete,
-              'lane-occupied': lane.athleteId || lane.athlete
+              'lane-occupied': lane.athleteId || lane.athlete,
+              'lane-locked': lane.locked
             }"
           >
             <div class="lane-number">{{ lane.lane }}</div>
@@ -58,6 +59,23 @@
               </div>
             </div>
             <div v-else class="lane-empty-text">空</div>
+            <!-- U12/B18：锁定人工调整项 —— 锁定后自动重排会跳过它，不再覆盖 -->
+            <el-tooltip
+              v-if="lockable && lane.arrangementId"
+              :content="lane.locked
+                ? '已锁定：自动重排将跳过此项（点击解锁）'
+                : '点击锁定：防止后续自动重排覆盖人工调整'"
+              placement="top"
+            >
+              <button
+                type="button"
+                class="lane-lock"
+                :class="{ 'is-locked': lane.locked }"
+                @click.stop="emit('toggle-lock', lane)"
+              >
+                {{ lane.locked ? '🔒' : '🔓' }}
+              </button>
+            </el-tooltip>
           </div>
         </div>
       </div>
@@ -77,8 +95,15 @@ defineProps({
   statistics: {
     type: Object,
     default: null
+  },
+  // U12/B18：是否显示「锁定」开关（仅编排结果页开启，预览/只读场景关闭）
+  lockable: {
+    type: Boolean,
+    default: false
   }
 })
+
+const emit = defineEmits(['toggle-lock'])
 </script>
 
 <style scoped>
@@ -245,5 +270,36 @@ defineProps({
   text-align: center;
   color: #c0c4cc;
   font-size: 13px;
+}
+
+/* U12/B18 锁定开关 */
+.lane-locked {
+  background: linear-gradient(135deg, #fff8e6 0%, #fdf1d6 100%);
+  border-color: #f0d39a;
+}
+
+.lane-lock {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  color: #909399;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: all 0.2s;
+}
+
+.lane-lock:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.2);
+}
+
+.lane-lock.is-locked {
+  border-color: #e6a23c;
+  background: #fdf6ec;
 }
 </style>

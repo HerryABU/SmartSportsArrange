@@ -130,7 +130,7 @@
             </div>
           </template>
           <div class="heat-grid">
-            <HeatGrid :heats="heats" :statistics="statistics" />
+            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" @toggle-lock="toggleLock" />
           </div>
         </el-card>
 
@@ -334,6 +334,25 @@ const refreshArrangement = async () => {
     heats.value = []
     statistics.value = null
     arranged.value = false
+  }
+}
+
+/**
+ * U12/B18：锁定 / 解锁单条编排。
+ * 锁定后 isManual=true，后续自动编排会「为锁定项占位/让道」而不是覆盖它，
+ * 二次编排重建决赛时也会保留被锁定的道次。
+ */
+const toggleLock = async (lane) => {
+  if (!lane || !lane.arrangementId) return
+  const next = !lane.locked
+  try {
+    await request.put(`/arrange/${lane.arrangementId}/lock`, null, { params: { locked: next } })
+    ElMessage.success(next
+      ? '已锁定：后续自动编排不再覆盖此项'
+      : '已解锁：此项将重新参与自动编排')
+    await refreshArrangement()
+  } catch (e) {
+    console.error(e)
   }
 }
 
