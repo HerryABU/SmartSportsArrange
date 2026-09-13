@@ -318,6 +318,7 @@ public class SystemService {
     //   defaultIntervalMinutes           —— 项目间隔时间
     //   minIntervalMinutes               —— 项目间隔下限（不小于此值，避免项目紧贴导致现场不可行）
     //   compressionWarnRatio             —— 压缩告警阈值（被压到预计用时的 1/ratio 以下时写 warnings 告警）
+    //   finalMinGapMinutes               —— 预赛→决赛最小间隔（B07/U06，默认 45 分钟，落在建议的 45~60 区间）
 
     /** 读取运动会日程配置（含默认值兜底） */
     @Transactional(readOnly = true)
@@ -453,6 +454,8 @@ public class SystemService {
         // B05/U07：项目间隔下限（避免紧贴）+ 压缩告警阈值（被压到预计用时的 1/ratio 以下即告警）
         def.put("minIntervalMinutes", 5);
         def.put("compressionWarnRatio", 1.5);
+        // B07/U06：预赛→决赛最小间隔（默认 45 分钟，给成绩确认/晋级公布/决赛检录留出时间）
+        def.put("finalMinGapMinutes", 45);
         // 场地：名称 + 编码（编码用于标识/展示；并数上限取决于场地数量，故场地需先录全）
         List<Map<String, Object>> venues = new ArrayList<>();
         venues.add(defaultVenue("田径场", "TRACK"));

@@ -249,6 +249,11 @@
             <el-input-number v-model="meetForm.compressionWarnRatio" :min="1" :max="5" :step="0.1" :precision="1" />
             <span class="hint">（被压到预计用时 1/阈值 以下时告警，建议 1.5）</span>
           </div>
+          <div style="display:flex;gap:8px;align-items:center;width:100%;margin-top:8px">
+            <span>预赛-决赛最小间隔</span>
+            <el-input-number v-model="meetForm.finalMinGapMinutes" :min="10" :max="180" :step="5" />
+            <span class="hint">（B07/U06：预赛结束后至少间隔此时长再决赛，默认 45 分钟，建议 45~60）</span>
+          </div>
         </el-form-item>
 
         <el-form-item label="场地">
@@ -361,6 +366,8 @@ const meetForm = reactive({
   // B05/U07：项目间隔下限 + 压缩告警阈值（被压到预计用时的 1/ratio 以下即告警）
   minIntervalMinutes: 5,
   compressionWarnRatio: 1.5,
+  // B07/U06：预赛→决赛最小间隔（默认 45 分钟）
+  finalMinGapMinutes: 45,
   venues: defaultVenueList()
 })
 
@@ -610,7 +617,9 @@ async function saveMeetConfig() {
       fieldPerAthleteMinutes: meetForm.fieldPerAthleteMinutes,
       // B05/U07：间隔下限 + 压缩告警阈值随配置提交
       minIntervalMinutes: meetForm.minIntervalMinutes,
-      compressionWarnRatio: meetForm.compressionWarnRatio
+      compressionWarnRatio: meetForm.compressionWarnRatio,
+      // B07/U06：预赛→决赛最小间隔随配置提交
+      finalMinGapMinutes: meetForm.finalMinGapMinutes
     }
     await request.put('/system/meet-schedule', payload)
     ElMessage.success('运动会日程配置已保存')

@@ -373,9 +373,9 @@ public class ArrangementService {
                     .forEach(eventScheduleRepository::delete);
 
             Map<String, Object> cfg = systemService.getMeetSchedule();
-            // Bug5 修复：预赛→决赛最小间隔（finalMinGapMinutes，默认 30 分钟）——现场需完成
-            // 成绩确认、晋级公布、决赛检录；取 max(默认间隔, 最小间隔)
-            int minGap = Math.max(1, intVal(cfg.get("finalMinGapMinutes"), 30));
+            // B07/U06：预赛→决赛最小间隔（finalMinGapMinutes，默认 45 分钟，落在建议的 45~60 区间）
+            // ——给成绩确认、晋级公布、决赛检录留出时间；取 max(默认间隔, 最小间隔)
+            int minGap = Math.max(1, intVal(cfg.get("finalMinGapMinutes"), 45));
             int interval = Math.max(intVal(cfg.get("defaultIntervalMinutes"), 5), minGap);
             int heatMinutes = intVal(cfg.get("heatMinutes"), 6);
             int lanes = Math.max(1, resolveLanes(event));
