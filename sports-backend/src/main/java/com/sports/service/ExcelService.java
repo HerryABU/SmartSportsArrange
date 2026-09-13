@@ -571,6 +571,10 @@ public class ExcelService {
             result.put("success", listener.getSuccessCount());
             result.put("failed", listener.getErrorCount());
             result.put("errors", listener.getErrors());
+            // B02/U13：说明/汇总行单独计数，不再混入 failed
+            // （模板自带的「填写说明」Sheet 曾被当成数据，产生一整片假错误）
+            result.put("skipped", listener.getSkipped());
+            result.put("skippedCount", listener.getSkipped().size());
             return result;
         } catch (IOException e) {
             throw new RuntimeException("读取Excel文件失败: " + e.getMessage());
