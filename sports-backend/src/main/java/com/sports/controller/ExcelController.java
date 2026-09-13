@@ -1,6 +1,7 @@
 package com.sports.controller;
 
 import com.sports.common.ApiResponse;
+import com.sports.service.AuditService;
 import com.sports.service.ExcelService;
 import com.sports.service.SystemService;
 import com.sports.service.WordOrderBookService;
@@ -26,6 +27,7 @@ public class ExcelController {
     private final ExcelService excelService;
     private final WordOrderBookService wordOrderBookService;
     private final SystemService systemService;
+    private final AuditService auditService;
 
     // ===== 模板下载 =====
     @GetMapping("/template/{type}")
@@ -54,19 +56,28 @@ public class ExcelController {
     @PostMapping("/import/athletes")
     public ApiResponse<?> importAthletes(@RequestParam MultipartFile file) throws IOException {
         log.info("Excel导入运动员: filename={}", file.getOriginalFilename());
-        return ApiResponse.success("导入完成", excelService.importAthletes(file));
+        Object r = excelService.importAthletes(file);
+        auditService.record("IMPORT_ATHLETES", "ATHLETE", null,
+                "导入运动员文件: " + file.getOriginalFilename() + ", 结果=" + r);
+        return ApiResponse.success("导入完成", r);
     }
 
     @PostMapping("/import/scores")
     public ApiResponse<?> importScores(@RequestParam MultipartFile file) throws IOException {
         log.info("Excel导入成绩: filename={}", file.getOriginalFilename());
-        return ApiResponse.success("导入完成", excelService.importScores(file));
+        Object r = excelService.importScores(file);
+        auditService.record("IMPORT_SCORES", "RESULT", null,
+                "导入成绩文件: " + file.getOriginalFilename() + ", 结果=" + r);
+        return ApiResponse.success("导入完成", r);
     }
 
     @PostMapping("/import/registrations")
     public ApiResponse<?> importRegistrations(@RequestParam MultipartFile file) throws IOException {
         log.info("Excel导入报名: filename={}", file.getOriginalFilename());
-        return ApiResponse.success("导入完成", excelService.importRegistrations(file));
+        Object r = excelService.importRegistrations(file);
+        auditService.record("IMPORT_REGISTRATIONS", "REGISTRATION", null,
+                "导入报名文件: " + file.getOriginalFilename() + ", 结果=" + r);
+        return ApiResponse.success("导入完成", r);
     }
 
     // ===== 导出 =====
@@ -101,7 +112,9 @@ public class ExcelController {
     @PostMapping("/order-book/generate")
     public ApiResponse<?> generateOrderBookDocx() {
         log.info("生成秩序册(Word)落盘");
-        return ApiResponse.success("秩序册(Word)已生成", wordOrderBookService.generateToDisk());
+        Object r = wordOrderBookService.generateToDisk();
+        auditService.record("GENERATE_ORDER_BOOK", "ORDER_BOOK", null, "生成秩序册(Word): " + r);
+        return ApiResponse.success("秩序册(Word)已生成", r);
     }
 
     /** 读取「生成预赛/编排后自动生成秩序册」开关 */

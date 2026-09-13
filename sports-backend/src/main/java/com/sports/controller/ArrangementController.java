@@ -3,6 +3,7 @@ package com.sports.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.ApiResponse;
 import com.sports.service.ArrangementService;
+import com.sports.service.AuditService;
 import com.sports.service.ConflictService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +26,7 @@ public class ArrangementController {
 
     private final ArrangementService arrangementService;
     private final ConflictService conflictService;
+    private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/events/{eventId}")
@@ -32,7 +34,9 @@ public class ArrangementController {
             @PathVariable Long eventId,
             @RequestBody Map<String, Object> config) {
         log.info("执行编排: eventId={}, config={}", eventId, config);
-        return ApiResponse.success("编排成功", arrangementService.executeArrangement(eventId, config));
+        Object r = arrangementService.executeArrangement(eventId, config);
+        auditService.record("ARRANGE", "EVENT", eventId, "执行编排: " + config);
+        return ApiResponse.success("编排成功", r);
     }
 
     @PostMapping("/preview")
@@ -60,7 +64,10 @@ public class ArrangementController {
     public ApiResponse<?> setLock(@PathVariable Long arrangementId,
                                   @RequestParam(defaultValue = "true") boolean locked) {
         log.info("锁定/解锁编排: id={}, locked={}", arrangementId, locked);
-        return ApiResponse.success(locked ? "已锁定" : "已解锁", arrangementService.setLock(arrangementId, locked));
+        Object r = arrangementService.setLock(arrangementId, locked);
+        auditService.record(locked ? "LOCK" : "UNLOCK", "ARRANGEMENT", arrangementId,
+                locked ? "锁定编排项" : "解锁编排项");
+        return ApiResponse.success(locked ? "已锁定" : "已解锁", r);
     }
 
     @DeleteMapping("/events/{eventId}")

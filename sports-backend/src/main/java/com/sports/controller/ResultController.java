@@ -2,6 +2,7 @@ package com.sports.controller;
 
 import com.sports.common.ApiResponse;
 import com.sports.entity.Result;
+import com.sports.service.AuditService;
 import com.sports.service.ResultService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
@@ -24,6 +25,7 @@ import java.util.Map;
 public class ResultController {
 
     private final ResultService resultService;
+    private final AuditService auditService;
 
     @GetMapping
     public ApiResponse<List<Map<String, Object>>> list(
@@ -42,20 +44,27 @@ public class ResultController {
     @PutMapping("/{id}")
     public ApiResponse<Result> modify(@PathVariable Long id, @RequestBody @Valid Map<String, Object> resultInput) {
         log.info("修改成绩: id={}", id);
-        return ApiResponse.success("修改成功", resultService.modify(id, resultInput));
+        Result r = resultService.modify(id, resultInput);
+        // U16：记录成绩修改（含改动内容）
+        auditService.record("SCORE_MODIFY", "RESULT", id, "修改成绩: " + resultInput);
+        return ApiResponse.success("修改成功", r);
     }
 
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable Long id) {
         log.info("删除成绩: id={}", id);
         resultService.delete(id);
+        auditService.record("SCORE_DELETE", "RESULT", id, "删除成绩记录");
         return ApiResponse.success("删除成功", null);
     }
 
     @PostMapping("/import")
     public ApiResponse<?> importResults(@RequestParam MultipartFile file) throws IOException {
         log.info("导入成绩: filename={}", file.getOriginalFilename());
-        return ApiResponse.success("导入成功", resultService.importResults(file));
+        Object r = resultService.importResults(file);
+        auditService.record("IMPORT_SCORES", "RESULT", null,
+                "导入成绩文件: " + file.getOriginalFilename() + ", 结果=" + r);
+        return ApiResponse.success("导入成功", r);
     }
 
     @PostMapping("/events/{eventId}/calculate-ranking")
