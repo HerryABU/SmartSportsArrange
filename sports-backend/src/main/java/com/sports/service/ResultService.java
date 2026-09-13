@@ -452,7 +452,7 @@ public class ResultService {
                     rankDisp,
                     gradeRank,
                     a != null ? (a.getName() != null ? a.getName() : "") : "",
-                    a != null ? (a.getNumber() != null ? a.getNumber() : "") : "",
+                    a != null ? athleteRef(a) : "",
                     a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : "",
                     grade,
                     r.getRawTime() != null ? r.getRawTime() : "",
@@ -471,6 +471,23 @@ public class ResultService {
                 .sheet("成绩表").doWrite(data.subList(1, data.size()));
             log.info("导出成绩: eventId={}, 共{}条", eventId, results.size());
         }
+    }
+
+    /**
+     * B02/U02：成绩导出中的「运动员号码」列取值——优先号码布，号码布未生成时回退学号。
+     *
+     * <p>背景：号码布是「系统按号码簿规则生成」的（见导入模板「填写说明」），
+     * 尚未执行生成时 {@code athlete.number} 全为 null。此时若导出仍只写 number，
+     * 该列会整列为空，回导只能靠姓名匹配——而重名运动员（本库 1047 人中 348 个重名）
+     * 会全部失败，「导出 → 回导」的闭环直接断裂（实测 456 条成绩里 388 条回导失败）。</p>
+     *
+     * <p>导入端按「号码布或学号」匹配（模板「填写说明」已如此约定），
+     * 因此导出侧同步回退学号即可让文件真正可回导。</p>
+     */
+    private static String athleteRef(Athlete a) {
+        if (a == null) return "";
+        if (a.getNumber() != null && !a.getNumber().isBlank()) return a.getNumber();
+        return a.getStudentId() != null ? a.getStudentId() : "";
     }
 
     /**
@@ -502,10 +519,13 @@ public class ResultService {
                 if (e == null || a == null) continue;
                 data.add(java.util.List.of(
                         e.getCode() != null ? e.getCode() : "",
-                        a.getNumber() != null ? a.getNumber() : "",
+                        athleteRef(a),
                         a.getName() != null ? a.getName() : "",
                         r.getRawTime() != null ? r.getRawTime() : "",
-                        e.getGradeGroup() != null ? e.getGradeGroup() : "",
+                        // 组别 = 该成绩所在组次（Result.heat）。
+                        // 旧实现写的是 event.gradeGroup（项目所属年级组），既语义错位、
+                        // 又与导入端 ScoreExcelModel.heat(Integer) 的类型不符——组次信息丢失。
+                        r.getHeat() != null ? String.valueOf(r.getHeat()) : "",
                         r.getLane() != null ? String.valueOf(r.getLane()) : "",
                         r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
                         r.getRemark() != null ? r.getRemark() : ""));
@@ -560,10 +580,10 @@ public class ResultService {
                     if (e == null || a == null) continue;
                     rows.add(java.util.List.of(
                             e.getCode() != null ? e.getCode() : "",
-                            a.getNumber() != null ? a.getNumber() : "",
+                            athleteRef(a),
                             a.getName() != null ? a.getName() : "",
                             r.getRawTime() != null ? r.getRawTime() : "",
-                            e.getGradeGroup() != null ? e.getGradeGroup() : "",
+                            r.getHeat() != null ? String.valueOf(r.getHeat()) : "",
                             r.getLane() != null ? String.valueOf(r.getLane()) : "",
                             r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
                             r.getRemark() != null ? r.getRemark() : ""));

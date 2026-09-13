@@ -78,8 +78,16 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             // 查找运动员
             Athlete athlete = null;
             if (model.getAthleteNumber() != null && !model.getAthleteNumber().isBlank()) {
-                athlete = athleteRepository.findByNumber(model.getAthleteNumber().trim())
-                        .orElseThrow(() -> new RuntimeException("号码簿 '" + model.getAthleteNumber() + "' 不存在"));
+                // B02/U02：按「号码布 或 学号」匹配——导入模板「填写说明」明确写了
+                // 「运动员号码：填号码布编号；也可填学号（系统按号码/学号匹配运动员）」，
+                // 但旧实现只调 findByNumber，学号分支从未生效。
+                // 而号码布是「系统按规则生成」的，未生成时 number 全空、导出列会回填学号，
+                // 于是导出的成绩表回导时报「号码簿 '102002' 不存在」——文档与实现对不上。
+                String ref = model.getAthleteNumber().trim();
+                athlete = athleteRepository.findByNumber(ref)
+                        .or(() -> athleteRepository.findByStudentId(ref))
+                        .orElseThrow(() -> new RuntimeException(
+                                "号码布/学号 '" + ref + "' 不存在（该列可填号码布编号或学号）"));
             } else if (model.getAthleteName() != null && !model.getAthleteName().isBlank()) {
                 List<Athlete> byName = athleteRepository.findByName(model.getAthleteName().trim());
                 if (byName.size() == 1) {
@@ -87,7 +95,8 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 } else if (byName.isEmpty()) {
                     throw new RuntimeException("运动员 '" + model.getAthleteName() + "' 不存在");
                 } else {
-                    throw new RuntimeException("运动员 '" + model.getAthleteName() + "' 存在多个重名，请使用号码簿");
+                    throw new RuntimeException("运动员 '" + model.getAthleteName() + "' 存在 " + byName.size()
+                            + " 个重名，请改用号码布编号或学号填写「运动员号码」列");
                 }
             }
 
