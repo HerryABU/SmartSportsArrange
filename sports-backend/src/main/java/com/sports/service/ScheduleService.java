@@ -676,19 +676,27 @@ public class ScheduleService {
         List<EventSchedule> schedules = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
-        String fileName = "项目赛程表_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        // B09/U09：赛程表补「轮次」列——此前仅有项目名称，预赛与决赛混在一起无法区分，
+        // 现场拿到赛程表看不出哪个是决赛。统一走 RoundLabelUtil（预赛/决赛/直接决赛）。
+        Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                .filter(a -> ArrangementService.ROUND_PRELIM.equals(a.getRound()))
+                .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        // B13/U11：赛程表是最容易「拿错版本」的一份出口，文件名统一带「阶段 + 版本 + 生成时间」，
+        // 与 arrange_result.json / 编排表 / 成绩表 / 秩序册 命名口径一致。
+        // 阶段判定：任一「有预赛的项目」已排出决赛条目 = 二次编排后。
+        boolean afterSecond = schedules.stream()
+                .anyMatch(s -> ArrangementService.ROUND_FINAL.equals(s.getRound())
+                        && s.getEvent() != null && prelimEventIds.contains(s.getEvent().getId()));
+        String fileName = "项目赛程表_" + com.sports.common.ExportNaming.stage(afterSecond)
+                + "_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
         String enc = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
 
         try (OutputStream out = response.getOutputStream()) {
-            // B09/U09：赛程表补「轮次」列——此前仅有项目名称，预赛与决赛混在一起无法区分，
-            // 现场拿到赛程表看不出哪个是决赛。统一走 RoundLabelUtil（预赛/决赛/直接决赛）。
-            Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
-                    .filter(a -> ArrangementService.ROUND_PRELIM.equals(a.getRound()))
-                    .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
-                    .filter(Objects::nonNull)
-                    .collect(Collectors.toSet());
             List<List<String>> data = new ArrayList<>();
             data.add(List.of("第几天", "日期", "时段", "开始", "结束", "场地", "年级", "项目名称", "项目编码",
                     "轮次", "类别", "是否田径", "道次", "项目内并发", "预计用时(分)"));
