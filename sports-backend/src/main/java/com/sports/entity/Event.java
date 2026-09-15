@@ -111,6 +111,16 @@ public class Event {
     private String bundleGroup;
 
     /**
+     * 组次裁判数量：每个组次（heat / 组 / 轮）需要安排的裁判人数。
+     * <p>田赛如立定跳远：一组次 5 人需 x 名裁判 → 填 x；拔河：一组 3 人 → 填 3；
+     * 若 N 组并行，仍按单组填写，系统按「组次裁判数量」为每组分别安排。
+     * 留空 / 0 表示该项目不需要安排裁判。</p>
+     */
+    @Column
+    @JsonProperty("refereesPerGroup")
+    private Integer refereesPerGroup;
+
+    /**
      * @deprecated 已由「并发位数」模型取代（见 {@link #concurrency} 与全局 trackSlots/fieldSlots）。
      *             该字段仅为兼容历史数据保留，不再参与任何编排计算。
      */

@@ -39,6 +39,7 @@
   - [学生端 Student](#12-学生端-student)
   - [系统设置 System](#13-系统设置-system)
   - [用户管理 Users](#14-用户管理-users)
+  - [裁判管理 Referees](#141-裁判管理-referees)
   - [Excel 导入导出 Excel](#15-excel-导入导出-excel)
   - [数据库备份 Backup](#16-数据库备份-backup)
   - [数据库迁移 DbMigration](#17-数据库迁移-dbmigration)
@@ -110,6 +111,7 @@ java -jar sports-2.5.0.jar
 |------|------|
 | 批量创建 | 班级批量生成（按高中/初中/小学折叠选择）+ 用户批量生成 |
 | 用户管理 | 按角色 Tab 查看/增删改、重置密码、Excel 导入、批量创建；班主任 Tab 可展开查看管辖班级的学生 |
+| 裁判管理 | 裁判花名册（独立于登录账号）：增删改查、Excel 批量导入（专长项目支持 [a,b，c] 列表语法）、模板下载；智能编排时按「组次裁判数量」自动分配 |
 | 号码簿规则 | 号码生成模板自定义（`{grade}{class}{seq:02d}` 等变量）+ 实时预览；**按名单顺序生成（补全空缺）与重排（覆盖）**，撞号自动顺延 |
 | 编排规则 | 软约束开关 + 算法参数（尝试次数/超时/优化轮数） |
 | 积分规则 | 名次积分表、并列处理、破纪录加分、参与分、接力倍数、团体总分口径 |
@@ -508,7 +510,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 > ⚠️ `PUT /api/events/{id}` 与 `/api/events/batch` 为**部分更新（PATCH）**：仅请求体中显式出现的字段会被写入，
 > 其余字段（含 `isTrack`、`laneCount`、`category`、`concurrency`）保持原值——因此「批量修改项目内并发」不会误伤田赛标记。
 
-**项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号，可经 Excel「顺序号」列批量导入）、`bundleGroup`（并行捆绑组字母，可经 Excel「并行捆绑组」列批量导入）。
+**项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号，可经 Excel「顺序号」列批量导入）、`bundleGroup`（并行捆绑组字母，可经 Excel「并行捆绑组」列批量导入）、`refereesPerGroup`（组次裁判数量：每个组次所需裁判人数，智能编排时按此数自动分配裁判；留空/0=不安排裁判）。
 
 ---
 
@@ -654,7 +656,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 13. 系统设置 System
 
-前缀 `/api/system`，26 个端点。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
+前缀 `/api/system`，33 个端点。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 裁判管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -702,6 +704,26 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | POST | `/api/system/users/import` | multipart `file` | SA | Excel 导入用户 |
 | GET | `/api/system/users/template` | — | 公开 | 下载用户导入模板 |
 | POST | `/api/system/users/batch` | Body 批量参数 | SA | 批量创建用户 |
+
+---
+
+### 14.1 裁判管理 Referees
+
+前缀 `/api/system/referees`，7 个端点，**全部仅 SA**。裁判是「被编排的人力资源」，不拥有系统登录账号；通过智能编排引擎按「组次裁判数量」（`event.refereesPerGroup`）分配到各个组次。
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/system/referees` | — | SA | 裁判列表 |
+| GET | `/api/system/referees/{id}` | Path id | SA | 裁判详情 |
+| POST | `/api/system/referees` | Body `{name, phone?, specialties?}` | SA | 创建裁判 |
+| PUT | `/api/system/referees/{id}` | Path id, Body | SA | 更新裁判 |
+| DELETE | `/api/system/referees/{id}` | Path id | SA | 删除裁判（软删除） |
+| POST | `/api/system/referees/import` | multipart `file` | SA | Excel 批量导入（按姓名 upsert） |
+| GET | `/api/system/referees/template` | — | SA | 下载裁判导入模板 |
+
+**裁判实体字段**：`name`（姓名，唯一）、`phone`（电话）、`specialties`（专长项目，JSON 数组，如 `["立定跳远","拔河"]`）、`status`（active）。
+**专长项目 Excel 语法**：单元格可写 `[立定跳远,拔河，跳绳]`（中英文逗号混合），系统归一化为标准 JSON 落库；留空表示不限项目。
+**与编排的关系**：裁判经「组次裁判数量」在智能编排中按组次自动分配，详见 [4. 智能编排](#4-智能编排)。
 
 ---
 
