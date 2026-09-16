@@ -1,6 +1,8 @@
 package com.sports.service;
 
 import com.alibaba.excel.EasyExcel;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.dto.excel.*;
 import com.sports.entity.*;
 import com.sports.repository.*;
@@ -29,6 +31,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ExcelService {
 
+    private static final ObjectMapper OB_MAPPER = new ObjectMapper();
+
     private final AthleteRepository athleteRepository;
     private final RegistrationRepository registrationRepository;
     private final ResultRepository resultRepository;
@@ -36,6 +40,8 @@ public class ExcelService {
     private final ClassInfoRepository classInfoRepository;
     private final ArrangementRepository arrangementRepository;
     private final EventScheduleRepository scheduleRepository;
+    private final EventRefereeRepository eventRefereeRepository;
+    private final RefereeRepository refereeRepository;
 
     // ==================== 列别名映射表 ====================
 
@@ -690,6 +696,21 @@ public class ExcelService {
             if (p.getDeletedAt() != null || p.getClassInfo() == null) continue;
             participantCountByClass.merge(p.getClassInfo().getId(), 1L, Long::sum);
         }
+        // 裁判分配查找表：key=eventId|grade|gender|round|heat → 裁判姓名串（分组道次名单挂载用）
+        Map<Long, Referee> refMapAll = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        Map<String, String> refByHeat = new HashMap<>();
+        for (EventReferee er : eventRefereeRepository.findAll()) {
+            if (er.getEvent() == null) continue;
+            List<Long> ids = parseRefIds(er.getRefereeIds());
+            String names = ids.stream()
+                    .map(id -> refMapAll.get(id) != null ? refMapAll.get(id).getName() : "未知")
+                    .collect(Collectors.joining("、"));
+            String key = er.getEvent().getId() + "|" + (er.getGrade() == null ? "" : er.getGrade()) + "|"
+                    + (er.getGender() == null ? "" : er.getGender()) + "|"
+                    + (er.getRound() == null ? "" : er.getRound()) + "|" + er.getHeat();
+            refByHeat.put(key, names);
+        }
         setExcelResponse(response, "秩序册_" + dateStr() + ".xlsx");
 
         try (OutputStream out = response.getOutputStream()) {
@@ -717,7 +738,7 @@ public class ExcelService {
 
             // Sheet2: 分组道次名单（决赛优先，无决赛用预赛）——U09/B10：新增「轮次」列
             List<List<String>> laneData = new ArrayList<>();
-            laneData.add(List.of("项目", "轮次", "性别", "年级", "组次", "道次", "号码", "姓名", "班级"));
+            laneData.add(List.of("项目", "轮次", "性别", "年级", "组次", "道次", "号码", "姓名", "班级", "裁判"));
             for (Event e : events) {
                 List<Arrangement> all = arrangementRepository.findByEventId(e.getId());
                 if (all.isEmpty()) continue;
@@ -733,10 +754,14 @@ public class ExcelService {
                     Athlete at = a.getAthlete();
                     if (at == null) continue;
                     String rl = com.sports.common.RoundLabelUtil.label(a.getRound(), hasPrelim);
+                    String refKey = e.getId() + "|" + (a.getGrade() == null ? "" : a.getGrade()) + "|"
+                            + (a.getGender() == null ? "" : a.getGender()) + "|"
+                            + (a.getRound() == null ? "" : a.getRound()) + "|" + a.getHeat();
                     laneData.add(List.of(safe(e.getName()), rl, safe(e.getGenderLimit()), safe(a.getGrade()),
                             safe(a.getHeat()), safe(a.getLane()),
                             safe(at.getNumber()), safe(at.getName()),
-                            at.getClassInfo() != null ? safe(at.getClassInfo().getName()) : "-"));
+                            at.getClassInfo() != null ? safe(at.getClassInfo().getName()) : "-",
+                            refByHeat.getOrDefault(refKey, "")));
                 }
             }
 
@@ -868,6 +893,17 @@ public class ExcelService {
     private static String n(String s) { return s != null ? s : ""; }
 
     private static String safe(Object o) { return o == null ? "" : String.valueOf(o); }
+
+    /** 解析 event_referee.referee_ids（JSON 数组字符串）为裁判 ID 列表 */
+    private static List<Long> parseRefIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<Integer> list = OB_MAPPER.readValue(json, new TypeReference<List<Integer>>() {});
+            return list.stream().map(Long::valueOf).collect(Collectors.toList());
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
 
     private static String toStringSafe(Object v) {
         return v != null ? v.toString() : "";

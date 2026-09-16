@@ -1,5 +1,7 @@
 package com.sports.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.Grades;
 import com.sports.common.RoundLabelUtil;
 import com.sports.entity.*;
@@ -53,6 +55,10 @@ public class WordOrderBookService {
     private final AthleteRepository athleteRepository;
     private final RegistrationRepository registrationRepository;
     private final SystemService systemService;
+    private final EventRefereeRepository eventRefereeRepository;
+    private final RefereeRepository refereeRepository;
+
+    private static final ObjectMapper WORD_REF_MAPPER = new ObjectMapper();
 
     private static final String FONT = "宋体";
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
@@ -302,6 +308,21 @@ public class WordOrderBookService {
         // ---- 四、分组与道次编排 ----
         body.append(heading("四、分组与道次编排", 1));
         boolean anyArranged = false;
+
+        // 裁判分配查找表：key=eventId|grade|round|heat（忽略性别，分组表按年级×组次聚合）→ 裁判姓名串
+        Map<Long, Referee> wordRefMapAll = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        Map<String, String> wordRefByHeat = new HashMap<>();
+        for (EventReferee er : eventRefereeRepository.findAll()) {
+            if (er.getEvent() == null) continue;
+            String names = parseWordRefIds(er.getRefereeIds()).stream()
+                    .map(id -> wordRefMapAll.get(id) != null ? wordRefMapAll.get(id).getName() : "未知")
+                    .collect(Collectors.joining("、"));
+            String key = er.getEvent().getId() + "|" + (er.getGrade() == null ? "" : er.getGrade()) + "|"
+                    + (er.getRound() == null ? "" : er.getRound()) + "|" + er.getHeat();
+            wordRefByHeat.put(key, names);
+        }
+
         for (Event e : events) {
             if (gradeScope != null && !gradeScope.isBlank()
                     && !(e.getGradeGroup() != null && Grades.same(gradeScope, e.getGradeGroup()))) {
@@ -344,29 +365,33 @@ public class WordOrderBookService {
                         for (Arrangement a : gradePool) {
                             Athlete at = a.getAthlete();
                             if (at == null) continue;
+                            String refKey = e.getId() + "|" + gEntry.getKey() + "|" + round + "|" + a.getHeat();
                             rows.add(List.of(
                                     String.valueOf(seq++),
                                     n(at.getNumber()),
                                     n(at.getName()),
                                     at.getClassInfo() != null ? n(at.getClassInfo().getName()) : "-",
-                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-"));
+                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-",
+                                    wordRefByHeat.getOrDefault(refKey, "")));
                         }
-                        body.append(table(List.of("出场顺序", "号码", "姓名", "班级", "性别"),
-                                rows, equalWidths(5)));
+                        body.append(table(List.of("出场顺序", "号码", "姓名", "班级", "性别", "裁判"),
+                                rows, equalWidths(6)));
                     } else {
                         for (Arrangement a : gradePool) {
                             Athlete at = a.getAthlete();
                             if (at == null) continue;
+                            String refKey = e.getId() + "|" + gEntry.getKey() + "|" + round + "|" + a.getHeat();
                             rows.add(List.of(
                                     String.valueOf(a.getHeat()),
                                     String.valueOf(a.getLane()),
                                     n(at.getNumber()),
                                     n(at.getName()),
                                     at.getClassInfo() != null ? n(at.getClassInfo().getName()) : "-",
-                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-"));
+                                    "M".equals(at.getGender()) ? "男" : "F".equals(at.getGender()) ? "女" : "-",
+                                    wordRefByHeat.getOrDefault(refKey, "")));
                         }
-                        body.append(table(List.of("组次", "道次", "号码", "姓名", "班级", "性别"),
-                                rows, equalWidths(6)));
+                        body.append(table(List.of("组次", "道次", "号码", "姓名", "班级", "性别", "裁判"),
+                                rows, equalWidths(7)));
                     }
                 }
             }
@@ -536,6 +561,17 @@ public class WordOrderBookService {
     }
 
     private static String n(String s) { return s != null ? s : ""; }
+
+    /** 解析 event_referee.referee_ids（JSON 数组字符串）为裁判 ID 列表 */
+    private static List<Long> parseWordRefIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<Integer> list = WORD_REF_MAPPER.readValue(json, new TypeReference<List<Integer>>() {});
+            return list.stream().map(Long::valueOf).collect(Collectors.toList());
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
 
     private static int intOf(Object v, int def) {
         if (v instanceof Number n) return n.intValue();

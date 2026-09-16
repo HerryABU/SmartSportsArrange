@@ -1054,9 +1054,23 @@ public class ArrangementService {
             boolean isField = event != null && Boolean.FALSE.equals(event.getTrack());
             // Bug2/3 修复：加「年级」列并按 赛次→年级→组次→道次 排序（各年级组号独立，杜绝混排）
             // Bug4 修复：田赛输出「出场顺序」连续序号，不再出现 组号+道次
+
+            // 裁判分配查找表：key=年级|性别|赛次|组次 → 裁判姓名串（道次表挂载用）
+            Map<Long, Referee> refMapAll = refereeRepository.findAll().stream()
+                    .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+            Map<String, String> refNamesByHeat = new HashMap<>();
+            for (EventReferee er : eventRefereeRepository.findByEventId(eventId)) {
+                String names = parseRefIds(er.getRefereeIds()).stream()
+                        .map(id -> refMapAll.get(id) != null ? refMapAll.get(id).getName() : "未知")
+                        .collect(Collectors.joining("、"));
+                String key = er.getGrade() + "|" + (er.getGender() == null ? "" : er.getGender())
+                        + "|" + er.getRound() + "|" + er.getHeat();
+                refNamesByHeat.put(key, names);
+            }
+
             rows.add(isField
-                    ? java.util.List.of("赛次", "年级", "出场顺序", "运动员", "号码簿", "班级", "预赛成绩", "晋级")
-                    : java.util.List.of("赛次", "年级", "组号", "道次", "运动员", "号码簿", "班级", "预赛成绩", "晋级"));
+                    ? java.util.List.of("赛次", "年级", "出场顺序", "运动员", "号码簿", "班级", "预赛成绩", "晋级", "裁判")
+                    : java.util.List.of("赛次", "年级", "组号", "道次", "运动员", "号码簿", "班级", "预赛成绩", "晋级", "裁判"));
             List<Arrangement> sorted = arrangements.stream()
                     .sorted(Comparator
                             .comparingInt((Arrangement a) ->
@@ -1071,6 +1085,9 @@ public class ArrangementService {
                 Athlete ath = a.getAthlete();
                 String round = roundLabel(a.getRound());
                 String grade = a.getGrade() == null ? "" : a.getGrade();
+                String gender = a.getGender() == null ? "" : a.getGender();
+                String refKey = grade + "|" + gender + "|" + a.getRound() + "|" + a.getHeat();
+                String refNames = refNamesByHeat.getOrDefault(refKey, "");
                 if (isField) {
                     String key = round + "|" + grade;
                     if (!key.equals(lastKey)) { fieldSeq = 1; lastKey = key; }
@@ -1082,7 +1099,8 @@ public class ArrangementService {
                             ath.getNumber() != null ? ath.getNumber() : "",
                             ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
                             a.getPrelimTime() != null ? a.getPrelimTime() : "",
-                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : ""));
+                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : "",
+                            refNames));
                 } else {
                     rows.add(java.util.List.of(
                             round,
@@ -1093,7 +1111,8 @@ public class ArrangementService {
                             ath.getNumber() != null ? ath.getNumber() : "",
                             ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
                             a.getPrelimTime() != null ? a.getPrelimTime() : "",
-                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : ""));
+                            Boolean.TRUE.equals(a.getQualified()) ? "✓" : "",
+                            refNames));
                 }
             }
             java.util.List<java.util.List<String>> headCols = rows.get(0).stream()
