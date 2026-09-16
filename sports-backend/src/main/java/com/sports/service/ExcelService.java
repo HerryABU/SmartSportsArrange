@@ -85,6 +85,7 @@ public class ExcelService {
         COLUMN_ALIASES.put("defaultLanes", List.of("跑道数","道数","lanes","defaultLanes"));
         COLUMN_ALIASES.put("scoringType",  List.of("计分方式","计分规则","scoringType"));
         COLUMN_ALIASES.put("record",       List.of("校纪录","纪录","record"));
+        COLUMN_ALIASES.put("refereesPerGroup", List.of("组次裁判数量","每组裁判数","每组次裁判数","裁判人数","裁判数","refereesPerGroup"));
     }
 
     private static void initTypeFields() {
@@ -109,7 +110,7 @@ public class ExcelService {
             "username","用户名","password","密码","realName","姓名","role","角色","phone","电话")));
         TYPE_FIELDS.put("event", new LinkedHashMap<>(Map.of(
             "name","项目名称","code","项目编码","category","类别","genderLimit","性别限制",
-            "defaultLanes","跑道数","scoringType","计分规则","record","校纪录")));
+            "defaultLanes","跑道数","scoringType","计分规则","record","校纪录","refereesPerGroup","组次裁判数量")));
     }
 
     /** 智能匹配列名→标准字段 */
@@ -169,16 +170,17 @@ public class ExcelService {
             case "event" -> {
                 // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
                 // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(1=串行,n=并行)/
-                // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)
+                // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)/Q组次裁判数量
                 // 并行数=项目内并发人数（径赛=每组人数即道次，田赛=工位数，游泳=泳道数）；
                 // 项目绑定场地后受该场地 parallelMax 约束（上限=可用场地/泳道数）
+                // 组次裁判数量=每个组次（heat/组/轮）需安排的裁判人数，留空/0=不安排裁判
                 fileName = "项目表导入模板_表格2.xlsx";
                 sheet.add(List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码",
-                        "性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)"));
-                sheet.add(List.of("100M","100米","是","8","1","8","","8","TRACK","男子组","高一年级","否","0","田径场","20","10"));
-                sheet.add(List.of("4X100M","4×100米接力","是","8","2","4","","8","TRACK","男子组","高一年级","是","4","田径场","30","15"));
-                sheet.add(List.of("TY_F","跳远(女子)","否","0","3","1","A","1","FIELD_A","女子组","高一年级","否","0","田赛A区","90","10"));
-                sheet.add(List.of("SWIM_M","50米蛙泳(男子)","是","8","4","4","","4","SWIM","男子组","高一年级","否","0","游泳馆","25","10"));
+                        "性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量"));
+                sheet.add(List.of("100M","100米","是","8","1","8","","8","TRACK","男子组","高一年级","否","0","田径场","20","10","2"));
+                sheet.add(List.of("4X100M","4×100米接力","是","8","2","4","","8","TRACK","男子组","高一年级","是","4","田径场","30","15","3"));
+                sheet.add(List.of("TY_F","跳远(女子)","否","0","3","1","A","1","FIELD_A","女子组","高一年级","否","0","田赛A区","90","10","1"));
+                sheet.add(List.of("SWIM_M","50米蛙泳(男子)","是","8","4","4","","4","SWIM","男子组","高一年级","否","0","游泳馆","25","10","2"));
             }
             default -> {
                 fileName = "导入模板.xlsx";
@@ -522,6 +524,7 @@ public class ExcelService {
                 .defaultLanes(parseIntSafe(v.get("defaultLanes"), 8))
                 .scoringType(v.get("scoringType") != null ? v.get("scoringType") : "global")
                 .record(v.get("record"))
+                .refereesPerGroup(parseIntSafe(v.get("refereesPerGroup"), 0))
                 .isEnabled(true).sortOrder(0).build();
         eventRepository.save(event);
     }
