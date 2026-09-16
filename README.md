@@ -502,7 +502,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 4. 项目 Events
 
-前缀 `/api/events`，11 个端点。
+前缀 `/api/events`，14 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -516,12 +516,17 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | DELETE | `/api/events/{id}` | Path id | T/SA | 删除项目 |
 | POST | `/api/events/presets` | Body categoryFilter | T/SA | 获取预设项目模板 |
 | POST | `/api/events/import` | multipart `file` | T/SA | Excel 导入项目 |
-| GET | `/api/events/export` | — | S/CT/T/SA | 导出项目数据 |
+| GET | `/api/events/export` | — | S/CT/T/SA | 导出项目数据（Excel/CSV 布局） |
+| **GET** | **`/api/events/export/json`** | — | S/CT/T/SA | **导出项目 JSON（`{type,version,exportedAt,count,defaults,events[]}` 全字段 + 默认值）** |
+| **GET** | **`/api/events/template/json`** | — | S/CT/T/SA | **下载 JSON 导入模板（默认值 + 示例）** |
+| **POST** | **`/api/events/import/json`** | multipart `file`(.json) | T/SA | **导入项目 JSON（全字段往返；按 `code` 覆盖/新增，返回 `{total,created,updated,success,failed,errors[]}`）** |
 
 > ⚠️ `PUT /api/events/{id}` 与 `/api/events/batch` 为**部分更新（PATCH）**：仅请求体中显式出现的字段会被写入，
 > 其余字段（含 `isTrack`、`laneCount`、`category`、`concurrency`）保持原值——因此「批量修改项目内并发」不会误伤田赛标记。
 
-**项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号，可经 Excel「顺序号」列批量导入）、`bundleGroup`（并行捆绑组字母，可经 Excel「并行捆绑组」列批量导入）、`refereesPerGroup`（组次裁判数量：每个组次所需裁判人数，智能编排时按此数自动分配裁判；留空/0=不安排裁判）。
+**项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号，可经 Excel「顺序号」列批量导入）、`bundleGroup`（并行捆绑组字母，可经 Excel「并行捆绑组」列批量导入）、`refereesPerGroup`（组次裁判数量：每个组次所需裁判人数，智能编排时按此数自动分配裁判；留空/0=不安排裁判）、`drawLots`（抽签：组内道次随机分配）、`defaultVenue`/`defaultVenueCode`（默认场地/场地编码）、`scoringType`/`scoringRules`（计分）。
+
+**项目字典 JSON 往返**：`export/json` 输出**全部字段 + `defaults` 默认值块**（`eventType/isTrack/laneCount/concurrency/groupSize/refereesPerGroup/drawLots/maxDurationMinutes/intervalMinutes/needHeats/maxPerHeat/advanceCount/scoringType/sortOrder/enabled` 等），既可用于**备份/跨机迁移**，也可**导出→编辑→导入**做批量维护。`import/json` 接受完整导出结构或裸数组，按 `code` 判定：**已存在→仅覆盖 JSON 中出现的字段（安全 PATCH 语义）；不存在→新建（缺省字段用默认值）**，逐条独立、单条失败不影响其余。Excel 布局列同步扩展了「组次裁判数量 / 抽签」两列，保持 Excel 与 JSON 口径一致。
 
 ---
 

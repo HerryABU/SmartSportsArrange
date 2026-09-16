@@ -11,8 +11,10 @@
       </div>
       <div class="pg-actions">
         <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
-        <el-button plain @click="downloadTemplate" :icon="Download">下载表格2模板</el-button>
-        <el-button plain @click="handleExport" :icon="Download">导出</el-button>
+        <el-button plain @click="downloadTemplate" :icon="Download">表格2模板</el-button>
+        <el-button plain @click="handleExport" :icon="Download">导出Excel</el-button>
+        <el-button plain @click="downloadJsonTemplate" :icon="DocumentCopy">JSON模板</el-button>
+        <el-button plain @click="handleExportJson" :icon="Download">导出JSON</el-button>
       </div>
     </div>
 
@@ -41,6 +43,17 @@
           style="display:inline-block;margin-left:8px"
         >
           <el-button type="warning"><el-icon><Upload /></el-icon> 导入Excel/CSV</el-button>
+        </el-upload>
+        <el-upload
+          :action="importJsonUrl"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".json"
+          :on-success="onImportJsonSuccess"
+          :on-error="onImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="warning" plain><el-icon><Upload /></el-icon> 导入JSON</el-button>
         </el-upload>
       </div>
       <div class="toolbar-right">
@@ -686,12 +699,12 @@ function downloadTemplate() {
   // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(=项目内并发)/
   // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时/P间隔
   const csv =
-    '代码,项目,是否田径(是/否),道次(田赛写0),顺序号,每组次几人,捆绑字母(同字母同批并行),并行数(项目内并发人),场地编码,性别,年级组,是否团体(是/否),团体人数,场地,最大用时(分),间隔(分)\n' +
-    '100M,100米,是,8,1,8,,8,TRACK,男子组,高一年级,否,0,田径场,20,10\n' +
-    '100F,100米(女子),是,8,2,8,,8,TRACK,女子组,高一年级,否,0,田径场,20,10\n' +
-    '4X100M,4×100米接力,是,8,3,4,,8,TRACK,男子组,高一年级,是,4,田径场,30,15\n' +
-    'TY_F,跳远(女子),否,0,4,1,A,1,FIELD_A,女子组,高一年级,否,0,田赛A区,90,10\n' +
-    'SWIM_M,50米蛙泳(男子),是,8,5,4,,4,SWIM,男子组,高一年级,否,0,游泳馆,25,10\n'
+    '代码,项目,是否田径(是/否),道次(田赛写0),顺序号,每组次几人,捆绑字母(同字母同批并行),并行数(项目内并发人),场地编码,性别,年级组,是否团体(是/否),团体人数,场地,最大用时(分),间隔(分),组次裁判数量,抽签(是/否)\n' +
+    '100M,100米,是,8,1,8,,8,TRACK,男子组,高一年级,否,0,田径场,20,10,2,否\n' +
+    '100F,100米(女子),是,8,2,8,,8,TRACK,女子组,高一年级,否,0,田径场,20,10,2,否\n' +
+    '4X100M,4×100米接力,是,8,3,4,,8,TRACK,男子组,高一年级,是,4,田径场,30,15,3,否\n' +
+    'TY_F,跳远(女子),否,0,4,1,A,1,FIELD_A,女子组,高一年级,否,0,田赛A区,90,10,5,否\n' +
+    'SWIM_M,50米蛙泳(男子),是,8,5,4,,4,SWIM,男子组,高一年级,否,0,游泳馆,25,10,2,是\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -705,6 +718,40 @@ async function handleExport() {
     ElMessage.success('导出成功')
   } catch (e) {
     ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
+}
+
+// ---- JSON 导入/导出（全字段往返） ----
+const importJsonUrl = apiBase() + '/events/import/json'
+
+function onImportJsonSuccess(res: any) {
+  const d = res?.data || res || {}
+  const created = d.created ?? 0
+  const updated = d.updated ?? 0
+  const failed = d.failed ?? 0
+  if (failed > 0) {
+    ElMessage.warning(`JSON 导入完成：新增 ${created}，更新 ${updated}，失败 ${failed}`)
+  } else {
+    ElMessage.success(`JSON 导入完成：新增 ${created}，更新 ${updated}`)
+  }
+  fetchData()
+}
+
+async function handleExportJson() {
+  try {
+    await downloadApi('/events/export/json', '比赛项目.json')
+    ElMessage.success('已导出 JSON（含全部字段与默认值）')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出 JSON 失败，请重新登录后再试')
+  }
+}
+
+async function downloadJsonTemplate() {
+  try {
+    await downloadApi('/events/template/json', '比赛项目模板.json')
+    ElMessage.success('已下载 JSON 模板')
+  } catch (e) {
+    ElMessage.error(e?.message || '下载 JSON 模板失败')
   }
 }
 

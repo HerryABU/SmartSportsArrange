@@ -31,7 +31,9 @@ public class EventService {
 
     /** 仅用于「部分更新」的字段合并；忽略未知属性，避免前端多传键导致 400 */
     private final ObjectMapper objectMapper = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+            .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
 
     /** 查询所有启用的项目 */
     @Transactional(readOnly = true)
@@ -378,6 +380,9 @@ public class EventService {
                 .defaultVenue(emptyToNull(val(row, 13)))
                 .maxDurationMinutes(nullIfBlankInt(val(row, 14)))
                 .intervalMinutes(nullIfBlankInt(val(row, 15)))
+                // Q 列：组次裁判数量；R 列：抽签（随机道次）
+                .refereesPerGroup(nullIfBlankInt(val(row, 16)))
+                .drawLots(parseYesNo(val(row, 17), false))
                 .needHeats(true)
                 .maxPerHeat(isTrack ? lanes : 1)
                 .scoringType("global")
@@ -435,6 +440,8 @@ public class EventService {
         if (src.getDefaultVenue() != null) target.setDefaultVenue(src.getDefaultVenue());
         if (src.getMaxDurationMinutes() != null) target.setMaxDurationMinutes(src.getMaxDurationMinutes());
         if (src.getIntervalMinutes() != null) target.setIntervalMinutes(src.getIntervalMinutes());
+        if (src.getRefereesPerGroup() != null) target.setRefereesPerGroup(src.getRefereesPerGroup());
+        if (src.getDrawLots() != null) target.setDrawLots(src.getDrawLots());
         if (src.getRecord() != null) target.setRecord(src.getRecord());
         target.setNeedHeats(src.getNeedHeats());
         target.setUpdatedAt(LocalDateTime.now());
@@ -553,7 +560,7 @@ public class EventService {
             // 表格2 折中布局（保留全部字段，顺序号/每组次几人/捆绑字母/并行数/场地编码 紧挨排布）：
             // A代码/B项目/C是否田径/D道次/E顺序号/F每组次几人/G捆绑字母/H并行数/I场地编码/
             // J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)
-            data.add(java.util.List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码","性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)"));
+            data.add(java.util.List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码","性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量","抽签"));
             for (Event e : events) {
                 boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
                 int concurrency = e.getConcurrency() != null && e.getConcurrency() > 0
@@ -576,13 +583,214 @@ public class EventService {
                 String.valueOf(e.getTeamMembers() != null ? e.getTeamMembers() : 0),
                 nz(e.getDefaultVenue()),
                 e.getMaxDurationMinutes() != null ? String.valueOf(e.getMaxDurationMinutes()) : "",
-                e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : ""));
+                e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : "",
+                e.getRefereesPerGroup() != null ? String.valueOf(e.getRefereesPerGroup()) : "",
+                Boolean.TRUE.equals(e.getDrawLots()) ? "是" : "否"));
             }
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
             com.alibaba.excel.EasyExcel.write(out).head(headCols)
                 .sheet("比赛项目").doWrite(data.subList(1, data.size()));
         }
+    }
+
+    // ==================== JSON 导出 / 导入（全字段往返，含默认值） ====================
+
+    /**
+     * 项目字段默认值：JSON/Excel 导入时缺省字段的回填基准；导出时一并给出便于对照与二次编辑。
+     * 与 {@link #applyEventDefaults} / {@link #syncDerivedFields} 的口径保持一致。
+     */
+    public static Map<String, Object> eventDefaults() {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("eventType", "径赛");
+        d.put("distanceType", null);
+        d.put("isTrack", true);
+        d.put("laneCount", 8);
+        d.put("defaultLanes", 8);
+        d.put("isTeam", false);
+        d.put("teamSize", 0);
+        d.put("concurrency", 8);
+        d.put("groupSize", 8);
+        d.put("bundleGroup", null);
+        d.put("refereesPerGroup", 0);
+        d.put("drawLots", false);
+        d.put("maxDurationMinutes", 20);
+        d.put("intervalMinutes", 5);
+        d.put("needHeats", true);
+        d.put("maxPerHeat", 8);
+        d.put("maxParticipants", null);
+        d.put("advanceCount", 8);
+        d.put("scoringType", "global");
+        d.put("sortOrder", 0);
+        d.put("enabled", true);
+        return d;
+    }
+
+    /** 单个项目 → 全字段 Map（键与实体 @JsonProperty 对齐，可直接回灌导入） */
+    public Map<String, Object> eventToMap(Event e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("code", e.getCode());
+        m.put("name", e.getName());
+        m.put("eventType", e.getCategory());
+        m.put("distanceType", e.getDistanceType());
+        m.put("isTrack", !Boolean.FALSE.equals(e.getTrack()));
+        m.put("laneCount", e.getLaneCount());
+        m.put("isTeam", Boolean.TRUE.equals(e.getTeam()));
+        m.put("teamSize", e.getTeamMembers());
+        m.put("maxDurationMinutes", e.getMaxDurationMinutes());
+        m.put("intervalMinutes", e.getIntervalMinutes());
+        m.put("concurrency", e.getConcurrency());
+        m.put("groupSize", e.getGroupSize());
+        m.put("bundleGroup", e.getBundleGroup());
+        m.put("refereesPerGroup", e.getRefereesPerGroup());
+        m.put("drawLots", Boolean.TRUE.equals(e.getDrawLots()));
+        m.put("defaultVenue", e.getDefaultVenue());
+        m.put("defaultVenueCode", e.getDefaultVenueCode());
+        m.put("gender", e.getGenderLimit());
+        m.put("gradeGroup", e.getGradeGroup());
+        m.put("defaultLanes", e.getDefaultLanes());
+        m.put("needHeats", e.getNeedHeats());
+        m.put("maxPerHeat", e.getMaxPerHeat());
+        m.put("maxParticipants", e.getMaxParticipants());
+        m.put("advanceCount", e.getAdvanceCount());
+        m.put("scoringType", e.getScoringType());
+        m.put("scoringRules", e.getScoringRules());
+        m.put("sortOrder", e.getSortOrder());
+        m.put("enabled", e.getIsEnabled());
+        m.put("registrationStart", e.getRegistrationStart());
+        m.put("registrationEnd", e.getRegistrationEnd());
+        m.put("record", e.getRecord());
+        m.put("description", e.getRemark());
+        return m;
+    }
+
+    /** 全量项目 JSON（含 meta / defaults / events），用于导出下载 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> exportEventsJson() {
+        List<Event> events = new ArrayList<>(eventRepository.findAll());
+        events.sort(java.util.Comparator.comparingInt(e -> e.getSortOrder() == null ? 0 : e.getSortOrder()));
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("type", "sports-events");
+        root.put("version", 1);
+        root.put("exportedAt", LocalDateTime.now().toString());
+        root.put("count", events.size());
+        root.put("defaults", eventDefaults());
+        root.put("events", events.stream().map(this::eventToMap).toList());
+        return root;
+    }
+
+    /** JSON 模板：默认值 + 1 条示例（供用户填写后导入） */
+    public Map<String, Object> jsonTemplate() {
+        Map<String, Object> sample = new LinkedHashMap<>(eventDefaults());
+        sample.put("code", "100M");
+        sample.put("name", "100米");
+        sample.put("eventType", "径赛");
+        sample.put("isTrack", true);
+        sample.put("laneCount", 8);
+        sample.put("concurrency", 8);
+        sample.put("groupSize", 8);
+        sample.put("refereesPerGroup", 2);
+        sample.put("drawLots", false);
+        sample.put("maxDurationMinutes", 20);
+        sample.put("intervalMinutes", 5);
+        sample.put("gender", "M");
+        sample.put("gradeGroup", "高一年级");
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("type", "sports-events");
+        root.put("version", 1);
+        root.put("defaults", eventDefaults());
+        root.put("events", List.of(sample));
+        return root;
+    }
+
+    /**
+     * JSON 文件导入（全字段往返）。接受两种结构：
+     * <ul>
+     *   <li>导出文件的完整结构 <code>{ type, version, defaults, events: [...] }</code>；</li>
+     *   <li>裸数组 <code>[ {...}, {...} ]</code>。</li>
+     * </ul>
+     * 按 <code>code</code> 判定：已存在 → 部分覆盖（仅覆盖 JSON 中出现的字段）；不存在 → 新建（缺省字段用默认值）。
+     */
+    public Map<String, Object> importEventsJson(MultipartFile file) {
+        if (file == null || file.isEmpty()) throw new IllegalArgumentException("请上传 JSON 文件");
+        String text;
+        try {
+            text = com.sports.common.FileEncoding.decode(file.getBytes());
+        } catch (IOException ex) {
+            throw new RuntimeException("读取 JSON 文件失败: " + ex.getMessage());
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(text);
+            com.fasterxml.jackson.databind.JsonNode arr = root.isArray() ? root : root.path("events");
+            if (arr == null || !arr.isArray()) {
+                throw new IllegalArgumentException("JSON 结构不正确：应为数组，或含 events 数组的对象");
+            }
+            for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = objectMapper.convertValue(n, Map.class);
+                items.add(m);
+            }
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new RuntimeException("JSON 解析失败: " + ex.getMessage());
+        }
+        return upsertEventsFromMaps(items);
+    }
+
+    /** 逐条 upsert：单条失败不影响其余，返回成功/失败明细 */
+    private Map<String, Object> upsertEventsFromMaps(List<Map<String, Object>> items) {
+        int created = 0, updated = 0;
+        List<Map<String, Object>> errors = new ArrayList<>();
+        int idx = 0;
+        for (Map<String, Object> raw : items) {
+            idx++;
+            Map<String, Object> item = new LinkedHashMap<>(raw);
+            item.remove("id");
+            item.remove("createdAt");
+            item.remove("updatedAt");
+            item.remove("deletedAt");
+            Object codeObj = item.get("code");
+            String code = codeObj == null ? null : String.valueOf(codeObj).trim();
+            try {
+                if (code == null || code.isEmpty()) throw new IllegalArgumentException("缺少 code");
+                Optional<Event> existOpt = eventRepository.findByCode(code);
+                if (existOpt.isPresent()) {
+                    Event exist = existOpt.get();
+                    objectMapper.updateValue(exist, item);
+                    syncDerivedFields(exist);
+                    exist.setUpdatedAt(LocalDateTime.now());
+                    eventRepository.save(exist);
+                    updated++;
+                } else {
+                    Event evt = objectMapper.convertValue(item, Event.class);
+                    evt.setId(null);
+                    evt.setCode(code);
+                    applyEventDefaults(evt);
+                    evt.setCreatedAt(LocalDateTime.now());
+                    evt.setUpdatedAt(LocalDateTime.now());
+                    eventRepository.save(evt);
+                    created++;
+                }
+            } catch (Exception e) {
+                Map<String, Object> err = new LinkedHashMap<>();
+                err.put("index", idx);
+                err.put("code", code);
+                err.put("message", e.getMessage() == null ? e.toString() : e.getMessage());
+                errors.add(err);
+            }
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("total", items.size());
+        res.put("created", created);
+        res.put("updated", updated);
+        res.put("success", created + updated);
+        res.put("failed", errors.size());
+        res.put("errors", errors);
+        log.info("JSON 导入项目: total={}, created={}, updated={}, failed={}",
+                items.size(), created, updated, errors.size());
+        return res;
     }
 
     /** 读取 CSV 文件为 EasyExcel 兼容的行格式（自动识别 UTF-8/GB18030 等编码） */

@@ -24,6 +24,7 @@ import java.util.Map;
 public class EventController {
 
     private final EventService eventService;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     @GetMapping
     public ApiResponse<List<Event>> list(
@@ -138,5 +139,41 @@ public class EventController {
     public void export(HttpServletResponse response) throws IOException {
         log.info("导出比赛项目数据");
         eventService.exportEvents(response);
+    }
+
+    // ==================== JSON 导出 / 导入 / 模板（全字段往返） ====================
+
+    /** 导出全部项目为 JSON（含 meta / defaults / events 全字段） */
+    @GetMapping("/export/json")
+    public void exportJson(HttpServletResponse response) throws IOException {
+        log.info("导出比赛项目 JSON");
+        Map<String, Object> data = eventService.exportEventsJson();
+        response.setContentType("application/json");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "比赛项目_" + com.sports.common.ExportNaming.stamp() + ".json";
+        String enc = java.net.URLEncoder.encode(fileName, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
+        objectMapper.writeValue(response.getWriter(), data);
+    }
+
+    /** 下载 JSON 导入模板（默认值 + 示例） */
+    @GetMapping("/template/json")
+    public void templateJson(HttpServletResponse response) throws IOException {
+        log.info("下载比赛项目 JSON 模板");
+        Map<String, Object> data = eventService.jsonTemplate();
+        response.setContentType("application/json");
+        response.setCharacterEncoding("utf-8");
+        String enc = java.net.URLEncoder.encode("比赛项目模板.json", java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + enc + ";filename*=UTF-8''" + enc);
+        objectMapper.writeValue(response.getWriter(), data);
+    }
+
+    /** 导入项目 JSON（全字段往返，按 code 覆盖/新增） */
+    @PostMapping("/import/json")
+    public ApiResponse<?> importJson(@RequestParam MultipartFile file) throws IOException {
+        log.info("导入比赛项目 JSON: filename={}", file.getOriginalFilename());
+        return ApiResponse.success("导入完成", eventService.importEventsJson(file));
     }
 }
