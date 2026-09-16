@@ -78,6 +78,18 @@
             </el-tooltip>
           </div>
         </div>
+
+        <!-- 裁判分配（智能编排产出，可在此查看本组次裁判） -->
+        <div v-if="heat.referees && heat.referees.length" class="heat-referees">
+          <span class="ref-label">
+            <el-icon><Medal /></el-icon> 裁判 ({{ heat.refereeCount }})
+          </span>
+          <span v-for="r in heat.referees" :key="r.id" class="ref-tag">{{ r.name }}</span>
+        </div>
+        <div v-else-if="showRefereeSlot" class="heat-referees heat-referees-empty">
+          <span class="ref-label"><el-icon><Medal /></el-icon> 裁判</span>
+          <span class="ref-none">本组次未安排裁判</span>
+        </div>
       </div>
     </div>
 
@@ -87,6 +99,8 @@
 </template>
 
 <script setup>
+import { Medal } from '@element-plus/icons-vue'
+
 defineProps({
   heats: {
     type: Array,
@@ -98,6 +112,11 @@ defineProps({
   },
   // U12/B18：是否显示「锁定」开关（仅编排结果页开启，预览/只读场景关闭）
   lockable: {
+    type: Boolean,
+    default: false
+  },
+  // 是否展示「未安排裁判」占位（仅当项目设置了组次裁判数量且确实需裁判时开启）
+  showRefereeSlot: {
     type: Boolean,
     default: false
   }
@@ -301,5 +320,50 @@ const emit = defineEmits(['toggle-lock'])
 .lane-lock.is-locked {
   border-color: #e6a23c;
   background: #fdf6ec;
+}
+
+/* 裁判分配 footer */
+.heat-referees {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e6f4ff 100%);
+  border-top: 1px dashed #b6dcff;
+}
+
+.heat-referees-empty {
+  background: #fafafa;
+  border-top: 1px dashed #e4e7ed;
+}
+
+.ref-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d6fc4;
+  margin-right: 2px;
+}
+
+.heat-referees-empty .ref-label {
+  color: #909399;
+}
+
+.ref-tag {
+  font-size: 12px;
+  color: #1d6fc4;
+  background: #fff;
+  border: 1px solid #b6dcff;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-weight: 500;
+}
+
+.ref-none {
+  font-size: 12px;
+  color: #c0c4cc;
 }
 </style>

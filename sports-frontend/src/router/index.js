@@ -105,6 +105,12 @@ const routes = [
         meta: { title: '系统设置' }
       },
       {
+        path: 'referees',
+        name: 'TeacherReferees',
+        component: () => import('@/views/teacher/Referees.vue'),
+        meta: { title: '裁判管理', role: ['SUPER_ADMIN'] }
+      },
+      {
         path: 'help',
         name: 'TeacherHelp',
         component: () => import('@/views/teacher/Help.vue'),

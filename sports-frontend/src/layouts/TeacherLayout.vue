@@ -33,6 +33,7 @@
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <div style="padding:4px 16px;font-size:11px;color:rgba(255,255,255,.35)">管理员专用</div>
+          <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=users"><el-icon><Avatar /></el-icon><span>用户管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=batch"><el-icon><MagicStick /></el-icon><span>批量创建</span></el-menu-item>
         </template>
@@ -71,6 +72,7 @@
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
+          <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=users"><el-icon><Avatar /></el-icon><span>用户管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=batch"><el-icon><MagicStick /></el-icon><span>批量创建</span></el-menu-item>
         </template>
@@ -129,7 +131,7 @@ import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Guide, Location } from '@element-plus/icons-vue'
+import { Expand, Guide, Location, Medal } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 

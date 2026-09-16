@@ -95,6 +95,10 @@
                   清除
                 </el-button>
               </el-button-group>
+              <el-button type="warning" :icon="Medal" :disabled="!arranged"
+                @click="openRefereeDialog" style="margin-left:8px">
+                裁判调整
+              </el-button>
             </div>
           </div>
         </el-card>
@@ -130,7 +134,7 @@
             </div>
           </template>
           <div class="heat-grid">
-            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" @toggle-lock="toggleLock" />
+            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" :show-referee-slot="needReferees" @toggle-lock="toggleLock" />
           </div>
         </el-card>
 
@@ -253,13 +257,48 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 裁判调整对话框 -->
+    <el-dialog v-model="refereeDialogVisible" title="组次裁判调整" width="760px" :close-on-click-modal="false">
+      <div v-if="refereeAssignments" class="referee-adjust">
+        <div class="ref-adjust-tip">
+          <el-icon><Medal /></el-icon>
+          <span>本项目每组次需安排 <b>{{ refereeAssignments.refereesPerGroup }}</b> 名裁判。
+          下方逐组次勾选裁判，保存后即时生效；重新「执行编排」会按「组次裁判数量」自动重排并覆盖此处调整。</span>
+        </div>
+        <el-table :data="refereeEditItems" size="small" border max-height="420">
+          <el-table-column label="年级组" prop="grade" width="110" align="center" />
+          <el-table-column label="性别" width="80" align="center">
+            <template #default="{ row }">{{ row.gender === 'M' ? '男' : (row.gender === 'F' ? '女' : row.gender) }}</template>
+          </el-table-column>
+          <el-table-column label="赛次" width="80" align="center">
+            <template #default="{ row }">{{ row.round === 'final' ? '决赛' : (row.round === 'preliminary' ? '预赛' : row.round) }}</template>
+          </el-table-column>
+          <el-table-column label="组次" width="70" align="center" prop="heat" />
+          <el-table-column label="裁判">
+            <template #default="{ row }">
+              <el-select v-model="row.selectedIds" multiple filterable placeholder="选择裁判" style="width:100%">
+                <el-option v-for="r in allReferees" :key="r.id" :label="r.name + (r.specialties?.length ? '（' + r.specialties.join('/') + '）' : '')" :value="r.id" />
+              </el-select>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <el-empty v-else description="暂无可调整的裁判分配（请先执行编排）" />
+      <template #footer>
+        <el-button @click="refereeDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveRefereeAdjust" :loading="refereeAdjusting" :icon="Medal">
+          保存调整
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft, Timer } from '@element-plus/icons-vue'
+import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft, Timer, Medal } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -279,6 +318,17 @@ const dialogVisible = ref(false)
 const arranging = ref(false)
 const previewData = ref(null)
 const mobileDrawer = ref(false)
+
+// ===== 裁判分配（查看 + 手工调整） =====
+const refereeAssignments = ref(null)   // { items:[{grade,gender,round,heat,referees:[{id,name}]}], refereesPerGroup }
+const allReferees = ref([])             // 裁判池（/system/referees）
+const refereeDialogVisible = ref(false)
+const refereeAdjusting = ref(false)
+const refereeEditItems = ref([])        // 可编辑副本
+// 是否需要裁判：项目设置了组次裁判数量 > 0
+const needReferees = computed(() =>
+  refereeAssignments.value && refereeAssignments.value.refereesPerGroup > 0
+)
 
 // ===== 预赛淘汰 =====
 const roundsData = ref([])
@@ -438,6 +488,17 @@ const onEventClick = async (data) => {
   Object.keys(prelimTimeMap).forEach(k => delete prelimTimeMap[k])
   activeRound.value = 'final'
   await refreshArrangement()
+  await loadRefereeAssignments()
+}
+
+/** 拉取某项目全部组次裁判分配（含裁判数量配置） */
+const loadRefereeAssignments = async () => {
+  if (!selectedEvent.value) return
+  try {
+    refereeAssignments.value = await request.get('/arrange/events/' + selectedEvent.value.id + '/referees')
+  } catch (e) {
+    refereeAssignments.value = null
+  }
 }
 
 const showArrangeDialog = () => {
@@ -461,6 +522,7 @@ const executeArrange = async () => {
       }
     )
     await refreshArrangement()
+    await loadRefereeAssignments()
     previewData.value = null
     dialogVisible.value = false
     const timeInfo = result.executionTimeMs != null
@@ -633,6 +695,57 @@ const exportSheet = async () => {
     await downloadApi('/arrange/events/' + selectedEvent.value.id + '/export', '编排道次.xlsx')
     ElMessage.success('导出成功')
   } catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
+}
+
+// ==================== 裁判调整（手工覆盖智能编排的自动分配） ====================
+/** 打开裁判调整对话框：拉取裁判池 + 当前分配，构建可编辑副本 */
+const openRefereeDialog = async () => {
+  if (!selectedEvent.value) { ElMessage.warning('请先选择项目'); return }
+  refereeDialogVisible.value = true
+  refereeAdjusting.value = false
+  // 拉取裁判池（兼作专长提示）
+  try {
+    const list = await request.get('/system/referees')
+    allReferees.value = Array.isArray(list) ? list : (list?.records || [])
+  } catch (e) {
+    allReferees.value = []
+  }
+  // 用当前分配初始化可编辑副本
+  const items = (refereeAssignments.value && refereeAssignments.value.items) || []
+  refereeEditItems.value = items.map(it => ({
+    grade: it.grade,
+    gender: it.gender,
+    round: it.round,
+    heat: it.heat,
+    selectedIds: (it.referees || []).map(r => r.id)
+  }))
+}
+
+/** 保存裁判调整：逐组次 PUT（仅在该项目下更新对应组次裁判） */
+const saveRefereeAdjust = async () => {
+  if (!selectedEvent.value) return
+  refereeAdjusting.value = true
+  try {
+    let ok = 0
+    for (const it of refereeEditItems.value) {
+      await request.put('/arrange/events/' + selectedEvent.value.id + '/referees/heat', {
+        grade: it.grade,
+        gender: it.gender,
+        round: it.round,
+        heat: it.heat,
+        refereeIds: it.selectedIds || []
+      })
+      ok++
+    }
+    ElMessage.success(`已更新 ${ok} 个组次的裁判安排`)
+    refereeDialogVisible.value = false
+    await loadRefereeAssignments()
+    await refreshArrangement()
+  } catch (e) {
+    ElMessage.error('裁判调整失败: ' + (e.response?.data?.message || e.message || '未知错误'))
+  } finally {
+    refereeAdjusting.value = false
+  }
 }
 </script>
 
@@ -881,4 +994,21 @@ const exportSheet = async () => {
 }
 .prelim-qualifiers-title { font-size: 13px; font-weight: 600; color: #67c23a; margin-bottom: 8px; }
 .qualifier-tag { margin: 0 6px 6px 0; }
+
+/* 裁判调整对话框 */
+.referee-adjust { display: flex; flex-direction: column; gap: 12px; }
+.ref-adjust-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #606266;
+  background: #f0f7ff;
+  border: 1px solid #d0e4f7;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ref-adjust-tip .el-icon { color: #1d6fc4; margin-top: 2px; flex-shrink: 0; }
+.ref-adjust-tip b { color: #1d6fc4; }
 </style>
