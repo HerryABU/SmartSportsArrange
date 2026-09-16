@@ -42,9 +42,10 @@
             :key="lane.lane"
             class="lane-cell"
             :class="{
-              'lane-empty': !lane.athleteId && !lane.athlete,
+              'lane-empty': !lane.athleteId && !lane.athlete && !lane.reserved,
               'lane-occupied': lane.athleteId || lane.athlete,
-              'lane-locked': lane.locked
+              'lane-locked': lane.locked,
+              'lane-reserved': lane.reserved
             }"
           >
             <div class="lane-number">{{ lane.lane }}</div>
@@ -58,6 +59,12 @@
               <div class="lane-class">
                 {{ lane.className || (lane.athlete && lane.athlete.className) || '-' }}
               </div>
+            </div>
+            <div v-else-if="lane.reserved" class="lane-content">
+              <div class="lane-athlete">
+                <span class="reserved-text">预留空位</span>
+              </div>
+              <div class="lane-class" v-if="lane.scheduledTime">⏱ {{ prettyTime(lane.scheduledTime) }}</div>
             </div>
             <div v-else class="lane-empty-text">空</div>
             <!-- U12/B18：锁定人工调整项 —— 锁定后自动重排会跳过它，不再覆盖 -->
@@ -129,6 +136,13 @@ defineProps({
 })
 
 const emit = defineEmits(['toggle-lock'])
+
+// 预留空位时间展示：2026-09-16T09:30 → 09-16 09:30
+function prettyTime(t) {
+  if (!t) return ''
+  const s = String(t).replace('T', ' ')
+  return s.length >= 16 ? s.slice(5, 16) : s
+}
 </script>
 
 <style scoped>
@@ -301,6 +315,20 @@ const emit = defineEmits(['toggle-lock'])
 .lane-class {
   font-size: 12px;
   color: #909399;
+}
+
+/* 预留模拟空位（项目级编排） */
+.lane-reserved {
+  background: linear-gradient(135deg, #fffaf0 0%, #fff4e0 100%);
+  border: 1px dashed #f0c37a;
+}
+.lane-reserved .lane-number {
+  background: linear-gradient(135deg, #e6a23c 0%, #f0b45f 100%);
+}
+.reserved-text {
+  font-weight: 600;
+  font-size: 13px;
+  color: #b8860b;
 }
 
 .lane-empty-text {

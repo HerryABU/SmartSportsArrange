@@ -102,6 +102,14 @@
                 @click="openRefereeDialog" style="margin-left:8px">
                 裁判调整
               </el-button>
+              <el-button type="info" :icon="Grid" :disabled="!selectedEvent"
+                @click="openReservationDialog" style="margin-left:8px">
+                模拟空位
+              </el-button>
+              <el-button type="danger" plain :icon="RefreshLeft" :loading="rebuildingFinals"
+                @click="rebuildAllFinals" style="margin-left:8px">
+                重排全部决赛
+              </el-button>
             </div>
           </div>
         </el-card>
@@ -321,6 +329,70 @@
         <el-button @click="verifyDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 模拟空位（项目级编排预留）对话框 -->
+    <el-dialog v-model="reservationDialogVisible" title="预留模拟空位（项目级编排）" width="720px">
+      <el-form :inline="true" class="resv-form">
+        <el-form-item label="年级">
+          <el-select v-model="resvForm.grade" style="width: 130px">
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="性别">
+          <el-select v-model="resvForm.gender" clearable style="width: 100px">
+            <el-option label="男子" value="M" />
+            <el-option label="女子" value="F" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="赛次">
+          <el-select v-model="resvForm.round" style="width: 100px">
+            <el-option label="决赛" value="final" />
+            <el-option label="预赛" value="preliminary" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="起始组次">
+          <el-input-number v-model="resvForm.heat" :min="1" :max="99" style="width: 110px" />
+        </el-form-item>
+        <el-form-item label="预留数">
+          <el-input-number v-model="resvForm.count" :min="1" :max="20" style="width: 110px" />
+        </el-form-item>
+        <el-form-item label="时间">
+          <el-date-picker v-model="resvForm.scheduledTime" type="datetime" placeholder="预留时间"
+            format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm" style="width: 190px" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="resvForm.note" style="width: 150px" maxlength="50" placeholder="如：决赛待定名额" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="submitReservation" :loading="resvSubmitting" :icon="Grid">预留空位</el-button>
+        </el-form-item>
+      </el-form>
+      <el-divider />
+      <el-table v-if="reservations.length" :data="reservations" size="small" max-height="320">
+        <el-table-column label="年级" prop="grade" width="110" />
+        <el-table-column label="性别" width="70">
+          <template #default="{ row }">{{ row.gender === 'M' ? '男' : (row.gender === 'F' ? '女' : '-') }}</template>
+        </el-table-column>
+        <el-table-column label="赛次" width="70">
+          <template #default="{ row }">{{ row.round === 'preliminary' ? '预赛' : '决赛' }}</template>
+        </el-table-column>
+        <el-table-column label="组次" prop="heat" width="60" align="center" />
+        <el-table-column label="道次" prop="lane" width="60" align="center" />
+        <el-table-column label="时间" min-width="130">
+          <template #default="{ row }">{{ row.scheduledTime ? row.scheduledTime.replace('T', ' ') : '-' }}</template>
+        </el-table-column>
+        <el-table-column label="备注" prop="note" show-overflow-tooltip />
+        <el-table-column label="操作" width="70" align="center">
+          <template #default="{ row }">
+            <el-button size="small" type="danger" link @click="removeReservation(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="暂无预留空位" />
+      <template #footer>
+        <el-button @click="reservationDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -359,6 +431,77 @@ const selfCheck = async () => {
     ElMessage.error('自检失败: ' + (e.response?.data?.message || e.message || '未知错误'))
   } finally {
     verifying.value = false
+  }
+}
+
+// 模拟空位（项目级编排预留）与两阶段「重排全部决赛」
+const reservationDialogVisible = ref(false)
+const reservations = ref([])
+const resvSubmitting = ref(false)
+const rebuildingFinals = ref(false)
+const resvForm = reactive({ grade: '', gender: '', round: 'final', heat: 1, count: 1, scheduledTime: null, note: '' })
+
+const loadReservations = async () => {
+  if (!selectedEvent.value) return
+  try {
+    reservations.value = (await request.get('/arrange/events/' + selectedEvent.value.id + '/reservations')) || []
+  } catch (e) {
+    reservations.value = []
+  }
+}
+const openReservationDialog = async () => {
+  if (!selectedEvent.value) { ElMessage.warning('请先选择项目'); return }
+  if (!resvForm.grade) resvForm.grade = arrangeConfig.grade || gradeOptions.value[0] || ''
+  reservationDialogVisible.value = true
+  await loadReservations()
+}
+const submitReservation = async () => {
+  if (!resvForm.grade) { ElMessage.warning('请选择年级'); return }
+  resvSubmitting.value = true
+  try {
+    await request.post('/arrange/events/' + selectedEvent.value.id + '/reservations/reserve', {
+      grade: resvForm.grade,
+      gender: resvForm.gender || null,
+      round: resvForm.round,
+      heat: resvForm.heat,
+      count: resvForm.count,
+      scheduledTime: resvForm.scheduledTime || null,
+      note: resvForm.note || null
+    })
+    ElMessage.success('已预留模拟空位')
+    await loadReservations()
+    await refreshArrangement()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || e.message || '预留失败')
+  } finally {
+    resvSubmitting.value = false
+  }
+}
+const removeReservation = async (row) => {
+  try {
+    await request.delete('/arrange/reservations/' + row.id)
+    ElMessage.success('已删除')
+    await loadReservations()
+    await refreshArrangement()
+  } catch (e) {
+    ElMessage.error(e?.message || '删除失败')
+  }
+}
+const rebuildAllFinals = async () => {
+  try {
+    await ElMessageBox.confirm('将对全部已录入预赛成绩的项目重新计算晋级并重排决赛，是否继续？', '重排全部决赛', { type: 'warning' })
+  } catch {
+    return
+  }
+  rebuildingFinals.value = true
+  try {
+    const r = await request.post('/arrange/finals/rebuild-all')
+    ElMessage.success('决赛重排完成：重排 ' + (r?.rebuiltSlices || 0) + ' 个年级×性别切片')
+    await refreshArrangement()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || e.message || '重排失败')
+  } finally {
+    rebuildingFinals.value = false
   }
 }
 const heats = ref([])

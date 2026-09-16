@@ -257,6 +257,10 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 **抽签（随机道次）** 🎲：项目开启「抽签」（`event.drawLots`）后，组内道次按**随机抽签**分配——xxx、yyy 等人在同一组内随机占位，而非按班级顺序固定「x 在 1 道、y 在 2 道」；仅作用于非人工锁定占用的道次。编排结果中开启抽签的组次标题会显示「🎲 抽签」徽标。可在项目表单或「批量修改」中开启。
 
+**预留模拟空位（项目级编排）** 🟡：项目级编排时可**预留模拟空位并标注时间**（如决赛待定名额、轮空/弃位、转场预留）——空位不占用真实运动员，单独存于 `arrangement_reservation` 表，查看编排时以橙色虚线「预留空位」格并入对应组次（含「仅预留、无真实编排」的合成组次），并显示预留时间。接口：`GET/POST /api/arrange/events/{id}/reservations`、`POST .../reservations/reserve`（按组次自动预留 N 个空道，道次不足顺延到下一组次）、`DELETE /api/arrange/reservations/{id}`；前端工具栏「模拟空位」按钮打开预留对话框（年级/性别/赛次/起始组次/预留数/时间/备注，含列表与删除）。
+
+**两阶段编排（报名后 → 预赛后）**：第一阶段＝**报名后**编排（`needHeats` 项目先排预赛，其余直接决赛）；第二阶段＝**预赛淘汰后**编排（录入成绩 → 立即计算晋级 → 生成决赛）。工具栏「重排全部决赛」按钮可在**全部预赛完成后**一次性重排所有已录成绩项目的决赛：`POST /api/arrange/finals/rebuild-all`（遍历 `needHeats` 项目 → 已录预赛成绩的「年级×性别」切片 → 重算晋级并生成决赛，返回 `{needHeatsEvents, rebuiltSlices, details}`）。
+
 **裁判分配（可视化）**：执行编排后，每个组次卡片底部以蓝色徽标展示本组次分配的裁判姓名（来自「智能编排」自动分配，详见 §7.1）。工具栏「裁判调整」按钮可打开对话框，按「年级组 / 性别 / 赛次 / 组次」逐组勾选裁判（裁判池带专长提示），保存后立即生效，并写入审计日志 `ARRANGE_REFEREE_ADJUST`；再次「执行编排」会按「组次裁判数量」自动重排并覆盖手工调整。
 
 ### 9. 项目编排（赛程编排）
@@ -562,20 +566,34 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 7. 智能编排 Arrange
 
-前缀 `/api/arrange`，10 个端点。
+前缀 `/api/arrange`，24 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
-| POST | `/api/arrange/events/{eventId}` | Path eventId, Body config | T/SA | 对指定项目执行自动编排 |
+| POST | `/api/arrange/events/{eventId}` | Path eventId, Body config | T/SA | 对指定项目执行自动编排（返回含 `selfCheck` 自检报告） |
 | POST | `/api/arrange/preview` | Body config | T/SA | 预览编排（不落库） |
-| GET | `/api/arrange/events/{eventId}` | Path eventId | S/CT/T/SA | 查看项目编排结果（含各组次裁判） |
+| GET | `/api/arrange/events/{eventId}` | Path eventId | S/CT/T/SA | 查看项目编排结果（含各组次裁判、预留空位） |
 | PUT | `/api/arrange/events/{eventId}` | Path eventId, Body adjustments[] | T/SA | 手动调整编排 |
-| DELETE | `/api/arrange/events/{eventId}` | Path eventId | T/SA | 清除该项目编排（含裁判分配） |
+| PUT | `/api/arrange/{arrangementId}/lock` | Path id, Query locked | T/SA | 锁定/解锁单条编排（锁定后自动重排不覆盖） |
+| DELETE | `/api/arrange/events/{eventId}` | Path eventId | T/SA | 清除该项目编排（含裁判分配、预留空位） |
 | POST | `/api/arrange/batch` | Body `[eventIds]` | T/SA | 批量编排多个项目 |
 | POST | `/api/arrange/events/{eventId}/rollback` | Path eventId | T/SA | 回滚编排 |
-| GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel，含裁判列） |
+| POST | `/api/arrange/events/{eventId}/preliminary` | Path eventId, Body `{grade, gender}` | T/SA | 生成预赛编排 |
+| POST | `/api/arrange/events/{eventId}/prelim-results` | Body `{grade, gender, items[]}` | T/SA | 录入预赛成绩 |
+| POST | `/api/arrange/events/{eventId}/qualify` | Body `{grade, gender, advanceCount}` | T/SA | 预赛淘汰「立即计算」并生成决赛 |
+| GET | `/api/arrange/events/{eventId}/qualifiers` | Path eventId, Query grade/gender | S/CT/T/SA | 查看晋级名单 |
+| **GET** | **`/api/arrange/events/{eventId}/verify`** | Path eventId | S/CT/T/SA | **编排自检（对抗式校验）：`{valid, violations[], violationCount, checkedHeats}`** |
+| **GET** | **`/api/arrange/events/{eventId}/reservations`** | Path eventId | S/CT/T/SA | **查看预留模拟空位** |
+| **POST** | **`/api/arrange/events/{eventId}/reservations`** | Body `{grade, gender, round, heat, lane, scheduledTime, note}` | T/SA | **新增单个预留空位** |
+| **POST** | **`/api/arrange/events/{eventId}/reservations/reserve`** | Body `{grade, gender, round, heat, count, scheduledTime, note}` | T/SA | **按组次自动预留 N 个空道** |
+| **DELETE** | **`/api/arrange/reservations/{id}`** | Path id | T/SA | **删除预留空位** |
+| **POST** | **`/api/arrange/finals/rebuild-all`** | — | T/SA | **全部预赛完成后一次性重排全部决赛** |
 | GET | `/api/arrange/events/{eventId}/referees` | Path eventId | S/CT/T/SA | 查看该项目全部组次裁判分配（含姓名） |
 | PUT | `/api/arrange/events/{eventId}/referees/heat` | Path eventId, Body `{grade, gender, round, heat, refereeIds[]}` | T/SA | 手工调整某组次裁判（重新自动编排会覆盖） |
+| GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel，含裁判列） |
+| GET | `/api/arrange/export-all` | — | T/SA | 全量编排导出（JSON，含决赛，供 `arrange_result.json`） |
+| GET | `/api/arrange/conflicts` | — | T/SA | 兼项冲突检测（清单 + 建议） |
+| GET | `/api/arrange/conflicts/export` | — | T/SA | 兼项冲突清单导出（Excel） |
 
 #### 7.1 裁判自动分配（smart referee assignment）
 

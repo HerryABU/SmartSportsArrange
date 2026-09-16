@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.Grades;
 import com.sports.entity.Arrangement;
+import com.sports.entity.ArrangementReservation;
 import com.sports.entity.Athlete;
 import com.sports.entity.Event;
 import com.sports.entity.EventReferee;
@@ -11,6 +12,7 @@ import com.sports.entity.EventSchedule;
 import com.sports.entity.Referee;
 import com.sports.entity.Registration;
 import com.sports.repository.ArrangementRepository;
+import com.sports.repository.ArrangementReservationRepository;
 import com.sports.repository.EventRefereeRepository;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
@@ -53,6 +55,7 @@ public class ArrangementService {
     private final EventScheduleRepository eventScheduleRepository;
     private final RefereeRepository refereeRepository;
     private final EventRefereeRepository eventRefereeRepository;
+    private final ArrangementReservationRepository arrangementReservationRepository;
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
 
@@ -901,6 +904,8 @@ public class ArrangementService {
                     heatDetails.add(heatInfo);
                 }
             }
+            // 合并「预留模拟空位」（项目级编排）：把预留道次与时间挂到组次视图上
+            attachReservationsToHeats(heatDetails, eventId, entry.getKey());
 
             Integer version = entry.getValue().stream()
                     .map(Arrangement::getVersion)
@@ -982,7 +987,8 @@ public class ArrangementService {
     public void clearArrangement(Long eventId) {
         arrangementRepository.deleteByEventId(eventId);
         eventRefereeRepository.deleteByEventId(eventId);
-        log.info("清空编排(含裁判分配): eventId={}", eventId);
+        arrangementReservationRepository.deleteByEventId(eventId);
+        log.info("清空编排(含裁判分配/预留空位): eventId={}", eventId);
     }
 
     /**
@@ -1728,6 +1734,231 @@ public class ArrangementService {
         result.put("checkedHeats", byHeat.size());
         result.put("generatedAt", LocalDateTime.now().toString());
         return result;
+    }
+
+    // ==================== 预留模拟空位（项目级编排） ====================
+
+    /** 查询某项目全部预留空位 */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> listReservations(Long eventId) {
+        return arrangementReservationRepository.findByEventId(eventId).stream()
+                .sorted(Comparator.comparing(ArrangementReservation::getRound)
+                        .thenComparing(r -> r.getGrade() == null ? "" : r.getGrade())
+                        .thenComparing(r -> r.getHeat() == null ? 0 : r.getHeat())
+                        .thenComparing(r -> r.getLane() == null ? 0 : r.getLane()))
+                .map(this::reservationToMap)
+                .collect(Collectors.toList());
+    }
+
+    /** 新增单个预留空位 */
+    public Map<String, Object> addReservation(Long eventId, Map<String, Object> body) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        ArrangementReservation r = ArrangementReservation.builder()
+                .event(event)
+                .grade(str(body, "grade"))
+                .gender(str(body, "gender"))
+                .round(str(body, "round") != null ? str(body, "round") : ROUND_FINAL)
+                .heat(intOrNull(body, "heat"))
+                .lane(intOrNull(body, "lane"))
+                .scheduledTime(parseTime(body.get("scheduledTime")))
+                .kind(str(body, "kind") != null ? str(body, "kind") : "reserved")
+                .note(str(body, "note"))
+                .build();
+        return reservationToMap(arrangementReservationRepository.save(r));
+    }
+
+    public void deleteReservation(Long id) {
+        arrangementReservationRepository.deleteById(id);
+    }
+
+    /** 便捷预留：为某组次自动预留 count 个空道（道次不足则顺延到下一组次） */
+    public Map<String, Object> reserveSlots(Long eventId, Map<String, Object> body) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        String grade = str(body, "grade");
+        String gender = str(body, "gender");
+        String round = str(body, "round") != null ? str(body, "round") : ROUND_FINAL;
+        Integer heat = intOrNull(body, "heat");
+        Integer cntObj = intOrNull(body, "count");
+        int count = cntObj != null && cntObj > 0 ? cntObj : 1;
+        LocalDateTime time = parseTime(body.get("scheduledTime"));
+        String note = str(body, "note");
+
+        int lanes = resolveLanes(event);
+        List<Map<String, Object>> created = new ArrayList<>();
+        int remaining = count;
+        int h = heat != null && heat > 0 ? heat : 1;
+        int guard = 0;
+        while (remaining > 0 && guard++ < 200) {
+            final int curHeat = h;
+            Set<Integer> occupied = new HashSet<>();
+            arrangementRepository.findByEventIdAndRound(eventId, round).stream()
+                    .filter(a -> (grade == null || grade.equals(a.getGrade()))
+                            && (gender == null || gender.equals(a.getGender()))
+                            && Objects.equals(a.getHeat(), curHeat))
+                    .forEach(a -> { if (a.getLane() != null) occupied.add(a.getLane()); });
+            arrangementReservationRepository.findByEventIdAndRound(eventId, round).stream()
+                    .filter(r -> Objects.equals(r.getHeat(), curHeat)
+                            && (grade == null || grade.equals(r.getGrade()))
+                            && (gender == null || gender.equals(r.getGender())))
+                    .forEach(r -> { if (r.getLane() != null) occupied.add(r.getLane()); });
+            for (int lane = 1; lane <= lanes && remaining > 0; lane++) {
+                if (occupied.contains(lane)) continue;
+                ArrangementReservation saved = arrangementReservationRepository.save(
+                        ArrangementReservation.builder()
+                                .event(event).grade(grade).gender(gender).round(round)
+                                .heat(h).lane(lane)
+                                .scheduledTime(time).kind("reserved").note(note)
+                                .build());
+                created.add(reservationToMap(saved));
+                remaining--;
+            }
+            h++;
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("created", created.size());
+        res.put("reservations", created);
+        return res;
+    }
+
+    /**
+     * 两阶段编排·第二阶段：全部预赛完成（已录入成绩）后，一次性重排全部决赛。
+     * 遍历 needHeats 项目 → 找出已录预赛成绩的 年级×性别 切片 → 逐个重算晋级并生成决赛。
+     */
+    public Map<String, Object> rebuildAllFinals() {
+        List<Event> events = eventRepository.findAll().stream()
+                .filter(e -> Boolean.TRUE.equals(e.getNeedHeats()))
+                .collect(Collectors.toList());
+        List<Map<String, Object>> details = new ArrayList<>();
+        int rebuilt = 0;
+        for (Event e : events) {
+            List<Arrangement> prelim = arrangementRepository.findByEventIdAndRound(e.getId(), ROUND_PRELIM);
+            if (prelim.isEmpty()) continue;
+            Set<String> slices = new LinkedHashSet<>();
+            for (Arrangement a : prelim) {
+                if (a.getPrelimTimeSeconds() != null) {
+                    slices.add((a.getGrade() == null ? "" : a.getGrade()) + "|"
+                            + (a.getGender() == null ? "" : a.getGender()));
+                }
+            }
+            for (String s : slices) {
+                String[] p = s.split("\\|", -1);
+                try {
+                    Object r = computeQualifiers(e.getId(), p[0], p[1], null);
+                    rebuilt++;
+                    Map<String, Object> d = new LinkedHashMap<>();
+                    d.put("eventId", e.getId());
+                    d.put("eventName", e.getName());
+                    d.put("grade", p[0]);
+                    d.put("gender", p[1]);
+                    d.put("ok", true);
+                    int finalsCount = arrangementRepository.findByEventRoundGradeGender(
+                            e.getId(), ROUND_FINAL, p[0], p[1]).size();
+                    d.put("finalHeatRows", finalsCount);
+                    details.add(d);
+                } catch (Exception ex) {
+                    Map<String, Object> d = new LinkedHashMap<>();
+                    d.put("eventId", e.getId());
+                    d.put("eventName", e.getName());
+                    d.put("grade", p[0]);
+                    d.put("gender", p[1]);
+                    d.put("ok", false);
+                    d.put("error", String.valueOf(ex.getMessage()));
+                    details.add(d);
+                }
+            }
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("needHeatsEvents", events.size());
+        res.put("rebuiltSlices", rebuilt);
+        res.put("details", details);
+        return res;
+    }
+
+    private Map<String, Object> reservationToMap(ArrangementReservation r) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", r.getId());
+        m.put("eventId", r.getEvent() != null ? r.getEvent().getId() : null);
+        m.put("grade", r.getGrade());
+        m.put("gender", r.getGender());
+        m.put("round", r.getRound());
+        m.put("heat", r.getHeat());
+        m.put("lane", r.getLane());
+        m.put("scheduledTime", r.getScheduledTime() != null ? r.getScheduledTime().toString() : null);
+        m.put("kind", r.getKind());
+        m.put("note", r.getNote());
+        return m;
+    }
+
+    /** 把某赛次的预留空位合并进组次视图（含「仅预留、无真实编排」的合成组次） */
+    private void attachReservationsToHeats(List<Map<String, Object>> heatDetails, Long eventId, String round) {
+        List<ArrangementReservation> resv = arrangementReservationRepository.findByEventIdAndRound(eventId, round);
+        if (resv.isEmpty()) return;
+        Map<String, Map<String, Object>> idx = new LinkedHashMap<>();
+        for (Map<String, Object> h : heatDetails) {
+            idx.put(String.valueOf(h.get("grade")) + "|" + h.get("heat"), h);
+        }
+        for (ArrangementReservation r : resv) {
+            String key = (r.getGrade() == null ? "" : r.getGrade()) + "|" + r.getHeat();
+            Map<String, Object> h = idx.get(key);
+            if (h == null) {
+                h = laneBrief(r.getHeat() == null ? 1 : r.getHeat(), r.getGrade(), new ArrayList<>());
+                heatDetails.add(h);
+                idx.put(key, h);
+            }
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lanes = (List<Map<String, Object>>) h.get("lanes");
+            boolean occupied = lanes.stream().anyMatch(l -> Objects.equals(l.get("lane"), r.getLane()));
+            if (!occupied) {
+                Map<String, Object> cell = new LinkedHashMap<>();
+                cell.put("lane", r.getLane());
+                cell.put("reserved", true);
+                cell.put("reservationId", r.getId());
+                cell.put("scheduledTime", r.getScheduledTime() != null ? r.getScheduledTime().toString() : null);
+                cell.put("note", r.getNote());
+                lanes.add(cell);
+                lanes.sort(Comparator.comparingInt(l -> l.get("lane") instanceof Number n ? n.intValue() : 999));
+            }
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> rlist = (List<Map<String, Object>>) h.computeIfAbsent("reservations", k -> new ArrayList<>());
+            rlist.add(reservationToMap(r));
+            h.put("reservationCount", rlist.size());
+        }
+    }
+
+    private static String str(Map<String, Object> m, String k) {
+        Object v = m == null ? null : m.get(k);
+        if (v == null) return null;
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private static Integer intOrNull(Map<String, Object> m, String k) {
+        Object v = m == null ? null : m.get(k);
+        if (v instanceof Number n) return n.intValue();
+        if (v == null) return null;
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static LocalDateTime parseTime(Object v) {
+        if (v == null) return null;
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty()) return null;
+        try {
+            return LocalDateTime.parse(s.replace(' ', 'T'));
+        } catch (Exception ignore) {
+            // ignore
+        }
+        try {
+            return java.time.LocalDate.parse(s).atStartOfDay();
+        } catch (Exception ignore) {
+            return null;
+        }
     }
 
     // ==================== 裁判 ID / 专长 JSON 解析 ====================

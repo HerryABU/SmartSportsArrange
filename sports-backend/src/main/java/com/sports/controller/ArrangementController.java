@@ -207,6 +207,55 @@ public class ArrangementController {
         return ApiResponse.success("自检完成", arrangementService.verifyArrangement(eventId));
     }
 
+    // ==================== 预留模拟空位（项目级编排）+ 两阶段重排 ====================
+
+    /** 查看某项目全部预留模拟空位 */
+    @GetMapping("/events/{eventId}/reservations")
+    public ApiResponse<?> listReservations(@PathVariable Long eventId) {
+        return ApiResponse.success(arrangementService.listReservations(eventId));
+    }
+
+    /** 新增单个预留空位。body: {grade, gender, round, heat, lane, scheduledTime, note, kind} */
+    @PostMapping("/events/{eventId}/reservations")
+    public ApiResponse<?> addReservation(@PathVariable Long eventId,
+                                         @RequestBody Map<String, Object> body) {
+        log.info("新增预留空位: eventId={}, body={}", eventId, body);
+        Object r = arrangementService.addReservation(eventId, body);
+        auditService.record("ARRANGE_RESERVE_ADD", "EVENT", eventId, "新增预留模拟空位: " + body);
+        return ApiResponse.success("已预留", r);
+    }
+
+    /** 便捷预留：为某组次自动预留 count 个空道。body: {grade, gender, round, heat, count, scheduledTime, note} */
+    @PostMapping("/events/{eventId}/reservations/reserve")
+    public ApiResponse<?> reserveSlots(@PathVariable Long eventId,
+                                       @RequestBody Map<String, Object> body) {
+        log.info("批量预留模拟空位: eventId={}, body={}", eventId, body);
+        Object r = arrangementService.reserveSlots(eventId, body);
+        auditService.record("ARRANGE_RESERVE_SLOTS", "EVENT", eventId, "批量预留模拟空位: " + body);
+        return ApiResponse.success("预留成功", r);
+    }
+
+    /** 删除某条预留空位 */
+    @DeleteMapping("/reservations/{id}")
+    public ApiResponse<Void> deleteReservation(@PathVariable Long id) {
+        log.info("删除预留空位: id={}", id);
+        arrangementService.deleteReservation(id);
+        auditService.record("ARRANGE_RESERVE_DEL", "RESERVATION", id, "删除预留模拟空位");
+        return ApiResponse.success("已删除", null);
+    }
+
+    /**
+     * 两阶段编排·第二阶段：全部预赛完成后一次性重排全部决赛。
+     * 遍历 needHeats 项目 → 已录预赛成绩的 年级×性别 切片 → 重算晋级并生成决赛。
+     */
+    @PostMapping("/finals/rebuild-all")
+    public ApiResponse<?> rebuildAllFinals() {
+        log.info("全部预赛完成后重排全部决赛");
+        Object r = arrangementService.rebuildAllFinals();
+        auditService.record("ARRANGE_FINALS_REBUILD_ALL", "EVENT", null, "重排全部决赛: " + r);
+        return ApiResponse.success("决赛重排完成", r);
+    }
+
     /**
      * 全量编排导出（含预赛与决赛），作为 arrange_result.json 的程序化来源与统一数据源（B01/U01/B17）。
      * 二次编排后调用本接口即可得到含决赛的完整编排 JSON。
