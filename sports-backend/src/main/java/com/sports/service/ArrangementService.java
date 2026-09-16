@@ -62,6 +62,9 @@ public class ArrangementService {
     private static final int OPTIMIZATION_ROUNDS = 3;
     private static final int TIMEOUT_SECONDS = 20;
 
+    /** 对抗式自检最大重排轮数：编排完成后若独立校验发现硬约束违反，则换随机种子重排，最多尝试此次数 */
+    private static final int ADVERSARIAL_MAX_ROUNDS = 5;
+
     public static final String ROUND_PRELIM = "preliminary";
     public static final String ROUND_FINAL = "final";
 
@@ -658,7 +661,17 @@ public class ArrangementService {
                     "heats", List.of(), "statistics", Map.of("totalAthletes", 0, "totalHeats", 0));
         }
 
-        Placement placement = allocate(pool, lanes, lockedRows);
+        boolean lottery = Boolean.TRUE.equals(event.getDrawLots());
+        Placement placement;
+        List<String> hardViolations;
+        int rearrange = 0;
+        long baseSeed = System.nanoTime();
+        // 对抗式自检：生成 → 独立校验硬约束 → 若违反则以不同随机种子重排，最多 ADVERSARIAL_MAX_ROUNDS 轮
+        do {
+            placement = allocate(pool, lanes, lockedRows, rearrange == 0 ? null : (baseSeed + rearrange), lottery);
+            hardViolations = validatePlacement(placement, lanes);
+            rearrange++;
+        } while (!hardViolations.isEmpty() && rearrange < ADVERSARIAL_MAX_ROUNDS);
         int heats = placement.heats;
 
         // 版本号：取该赛次当前最大版本 + 1
@@ -760,6 +773,14 @@ public class ArrangementService {
         List<String> allWarnings = new ArrayList<>(placement.warnings);
         allWarnings.addAll(refereeWarnings);
         result.put("warnings", allWarnings);
+        // 对抗式自检报告：本次编排是否满足全部硬约束、重排次数
+        Map<String, Object> selfCheck = new LinkedHashMap<>();
+        selfCheck.put("valid", hardViolations.isEmpty());
+        selfCheck.put("violations", hardViolations);
+        selfCheck.put("rearrangeCount", Math.max(0, rearrange - 1));
+        selfCheck.put("maxRounds", ADVERSARIAL_MAX_ROUNDS);
+        selfCheck.put("algorithm", "adversarial");
+        result.put("selfCheck", selfCheck);
         result.put("version", version);
         return result;
     }
@@ -782,7 +803,7 @@ public class ArrangementService {
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
 
-        Placement placement = allocate(athletes, lanes, null);
+        Placement placement = allocate(athletes, lanes, null, null, false);
 
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
@@ -1139,10 +1160,12 @@ public class ArrangementService {
      * 因此不会再出现「自动项与人工锁定项同组同道」的重复落位（旧实现只把锁定运动员
      * 排除出池，却没占位，重排后组号从 1 重算，锁定道次可能被新项顶掉）。</p>
      */
-    private Placement allocate(List<Athlete> athletes, int lanes, List<Arrangement> locked) {
+    private Placement allocate(List<Athlete> athletes, int lanes, List<Arrangement> locked,
+                                Long seed, boolean lottery) {
         int n = athletes.size();
         List<String> warnings = new ArrayList<>();
         List<Arrangement> locks = locked == null ? List.of() : locked;
+        Random rnd = seed != null ? new Random(seed) : null;
 
         // 按班级分组（班级缺失归为 0）
         Map<Long, List<Athlete>> byClass = athletes.stream()
@@ -1227,25 +1250,35 @@ public class ArrangementService {
         List<Map.Entry<Long, List<Athlete>>> sortedClasses = byClass.entrySet().stream()
                 .sorted((e1, e2) -> Integer.compare(e2.getValue().size(), e1.getValue().size()))
                 .collect(Collectors.toList());
+        // 对抗式：随机化班级处理顺序（仍保证可行性，因为 heats>=maxClassSize）
+        if (rnd != null) Collections.shuffle(sortedClasses, rnd);
 
         // 阶段一：分班入组（同组不同班）
         for (Map.Entry<Long, List<Athlete>> entry : sortedClasses) {
             Long classId = entry.getKey();
             boolean[] usedHeat = classHeatFlags.get(classId);
             List<Athlete> members = entry.getValue();
+            if (rnd != null) {
+                members = new ArrayList<>(members);
+                Collections.shuffle(members, rnd);
+            }
 
             for (Athlete athlete : members) {
                 int bestHeat = -1;
                 int minOcc = Integer.MAX_VALUE;
+                List<Integer> candidates = new ArrayList<>();
                 for (int h = 0; h < heats; h++) {
                     if (usedHeat[h]) continue;          // 硬约束：同班同组禁止
                     if (occupancy[h] >= lanes) continue;
                     if (occupancy[h] < minOcc) {
                         minOcc = occupancy[h];
-                        bestHeat = h;
+                        candidates.clear();
+                        candidates.add(h);
+                    } else if (occupancy[h] == minOcc) {
+                        candidates.add(h);
                     }
                 }
-                if (bestHeat < 0) {
+                if (candidates.isEmpty()) {
                     // 理论不可达（heats>=maxClassSize）；保险兜底：挑人最少的组
                     for (int h = 0; h < heats; h++) {
                         if (occupancy[h] < lanes && (bestHeat < 0 || occupancy[h] < occupancy[bestHeat])) {
@@ -1258,6 +1291,11 @@ public class ArrangementService {
                         warnings.add("无法为运动员 " + athlete.getName() + " 分配合适的组");
                         continue;
                     }
+                } else {
+                    // 对抗式：多个组次人数相同（平局）时，随机挑一个，使重排产生不同布局
+                    bestHeat = rnd != null && candidates.size() > 1
+                            ? candidates.get(rnd.nextInt(candidates.size()))
+                            : candidates.get(0);
                 }
                 Arrangement arr = new Arrangement();
                 arr.setAthlete(athlete);
@@ -1267,27 +1305,59 @@ public class ArrangementService {
             }
         }
 
-        // 阶段二：组内分道（软约束：同班在不同组的道次尽量错开；已被锁定项占用的道次跳过）
+        // 阶段二：组内分道
         for (int h = 0; h < heats; h++) {
             List<Arrangement> inHeat = matrix[h];
             if (inHeat.isEmpty()) continue;
 
-            // 依道次顺序逐个挑选「当前班在该道次占用最少」的选手落位
+            if (lottery) {
+                // 抽签：运动员随机抽到道次（仅占用未被锁定占用的道次），实现 xxx、yyy 同组随机占位，
+                // 而非按班级顺序固定 x 在 1 道、y 在 2 道
+                List<Integer> freeLanes = new ArrayList<>();
+                for (int l = 0; l < lanes; l++) if (!laneTaken[h][l]) freeLanes.add(l + 1);
+                List<Arrangement> pending = inHeat.stream()
+                        .filter(a -> a.getLane() == null).collect(Collectors.toList());
+                List<Arrangement> shuffled = new ArrayList<>(pending);
+                if (rnd != null) {
+                    Collections.shuffle(shuffled, rnd);
+                    Collections.shuffle(freeLanes, rnd);
+                } else {
+                    Collections.shuffle(shuffled);
+                    Collections.shuffle(freeLanes);
+                }
+                int i = 0;
+                for (Arrangement a : shuffled) {
+                    int lane = freeLanes.get(i++);
+                    a.setLane(lane);
+                    laneTaken[h][lane - 1] = true;
+                    Long cid = classIdOf(a.getAthlete());
+                    classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[lane - 1]++;
+                }
+                continue;
+            }
+
+            // 非抽签：依道次顺序逐个挑选「当前班在该道次占用最少」的选手落位（对抗式随机平局）
             for (int l = 0; l < lanes; l++) {
                 if (laneTaken[h][l]) continue;      // 该道已被人工锁定项占用，自动项不得落位
-                // 为当前道次挑一个选手：优先选班-道占用最少的
                 Arrangement best = null;
                 int bestScore = Integer.MAX_VALUE;
+                List<Arrangement> tieCands = new ArrayList<>();
                 for (Arrangement cand : inHeat) {
                     if (cand.getLane() != null) continue;   // 锁定项已有道次，不参与
                     Long cid = classIdOf(cand.getAthlete());
-                    int[] laneUse = classLaneUse.computeIfAbsent(cid, k -> new int[lanes]);
-                    if (laneUse[l] < bestScore) {
-                        bestScore = laneUse[l];
-                        best = cand;
+                    int score = classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[l];
+                    if (score < bestScore) {
+                        bestScore = score;
+                        tieCands.clear();
+                        tieCands.add(cand);
+                    } else if (score == bestScore) {
+                        tieCands.add(cand);
                     }
                 }
-                if (best != null) {
+                if (!tieCands.isEmpty()) {
+                    best = rnd != null && tieCands.size() > 1
+                            ? tieCands.get(rnd.nextInt(tieCands.size()))
+                            : tieCands.get(0);
                     best.setLane(l + 1);
                     Long cid = classIdOf(best.getAthlete());
                     classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[l]++;
@@ -1304,6 +1374,38 @@ public class ArrangementService {
             placement.heatsMatrix.add(matrix[h]);
         }
         return placement;
+    }
+
+    /**
+     * 对抗式自检（内存态）：校验分配结果的硬约束，返回违反清单（空 = 全部满足）。
+     * <ul>
+     *   <li>同一组不能同班（人工锁定项豁免同班校验，但道次唯一仍校验）；</li>
+     *   <li>道次在 [1, lanes] 且不重复占用。</li>
+     * </ul>
+     * 软约束（如「同班道次错开」）不在此列，仅作为 warnings 由 allocate 产出。
+     */
+    private List<String> validatePlacement(Placement placement, int lanes) {
+        List<String> violations = new ArrayList<>();
+        for (int h = 0; h < placement.heats; h++) {
+            List<Arrangement> in = placement.heatsMatrix.get(h);
+            Set<Long> classes = new HashSet<>();
+            Set<Integer> usedLanes = new HashSet<>();
+            for (Arrangement a : in) {
+                Integer lane = a.getLane();
+                if (lane != null && (lane < 1 || lane > lanes)) {
+                    violations.add(String.format("第%d组道次越界（lane=%d，合法区间 1~%d）", h + 1, lane, lanes));
+                } else if (lane != null && !usedLanes.add(lane)) {
+                    violations.add(String.format("第%d组道次%d被重复占用", h + 1, lane));
+                }
+                // 人工锁定项：仅校验道次唯一（同班同组是人工选择，不视为编排错误）
+                if (a.getId() != null && Boolean.TRUE.equals(a.getIsManual())) continue;
+                Long cid = classIdOf(a.getAthlete());
+                if (!classes.add(cid)) {
+                    violations.add(String.format("第%d组出现同班重复（班级ID=%d），违反「同一组不能同班」", h + 1, cid));
+                }
+            }
+        }
+        return violations;
     }
 
     // ==================== 辅助方法 ====================
@@ -1543,6 +1645,91 @@ public class ArrangementService {
         return getRefereeAssignments(eventId);
     }
 
+    /**
+     * 独立自检（落库态）：重新读取已保存的编排，逐一核对硬约束，返回结构化报告。
+     * 与 allocate 内的 validatePlacement 互为「生成方 vs 校验方」的对抗关系——
+     * 编排引擎只负责生成，本方法作为不信任生成结果的独立校验者，发现错误即意味着需要重排。
+     *
+     * <p>校验项：① 同一组不能同班（锁定项豁免）；② 道次唯一且不越界；
+     * ③ 同一赛次（round+年级+性别）下同一运动员不得跨组重复出现。</p>
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> verifyArrangement(Long eventId) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        List<Arrangement> all = arrangementRepository.findByEventId(eventId);
+        if (all.isEmpty()) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("eventId", eventId);
+            empty.put("eventName", event.getName());
+            empty.put("valid", true);
+            empty.put("violations", List.of());
+            empty.put("violationCount", 0);
+            empty.put("checkedHeats", 0);
+            empty.put("generatedAt", LocalDateTime.now().toString());
+            return empty;
+        }
+
+        List<Map<String, Object>> violations = new ArrayList<>();
+
+        // ① + ② 按 round|年级|性别|组次 分组校验
+        Map<String, List<Arrangement>> byHeat = all.stream()
+                .collect(Collectors.groupingBy(a ->
+                                (a.getRound() == null || a.getRound().isBlank() ? ROUND_FINAL : a.getRound())
+                                        + "|" + (a.getGrade() == null ? "" : a.getGrade())
+                                        + "|" + (a.getGender() == null ? "" : a.getGender())
+                                        + "|" + a.getHeat(),
+                        LinkedHashMap::new, Collectors.toList()));
+        for (Map.Entry<String, List<Arrangement>> e : byHeat.entrySet()) {
+            String[] parts = e.getKey().split("\\|");
+            String round = parts[0], grade = parts[1], gender = parts[2];
+            int heat = e.getValue().isEmpty() ? 0 : e.getValue().get(0).getHeat();
+            Set<Long> classes = new HashSet<>();
+            Set<Integer> usedLanes = new HashSet<>();
+            for (Arrangement a : e.getValue()) {
+                Integer lane = a.getLane();
+                if (lane != null && !usedLanes.add(lane)) {
+                    violations.add(Map.of("type", "LANE_DUPLICATE",
+                            "message", String.format("%s %s %s 第%d组道次%d重复占用",
+                                    roundLabel(round), grade, genderLabel(gender), heat, lane)));
+                }
+                if (a.getId() != null && Boolean.TRUE.equals(a.getIsManual())) continue; // 锁定项豁免同班
+                Long cid = classIdOf(a.getAthlete());
+                if (!classes.add(cid)) {
+                    violations.add(Map.of("type", "SAME_CLASS_IN_HEAT",
+                            "message", String.format("%s %s %s 第%d组出现同班重复（班级ID=%d），违反「同一组不能同班」",
+                                    roundLabel(round), grade, genderLabel(gender), heat, cid)));
+                }
+            }
+        }
+
+        // ③ 同一赛次下运动员跨组重复
+        Map<String, Set<Long>> seen = new HashMap<>();
+        for (Arrangement a : all) {
+            if (a.getAthlete() == null) continue;
+            String key = (a.getRound() == null || a.getRound().isBlank() ? ROUND_FINAL : a.getRound())
+                    + "|" + (a.getGrade() == null ? "" : a.getGrade())
+                    + "|" + (a.getGender() == null ? "" : a.getGender());
+            Set<Long> ids = seen.computeIfAbsent(key, k -> new HashSet<>());
+            if (!ids.add(a.getAthlete().getId())) {
+                violations.add(Map.of("type", "ATHLETE_DUPLICATE_ACROSS_HEATS",
+                        "message", String.format("%s %s %s 下运动员「%s」在同一赛次跨组重复出现",
+                                roundLabel(a.getRound()), a.getGrade(), genderLabel(a.getGender()),
+                                a.getAthlete().getName())));
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("eventId", eventId);
+        result.put("eventName", event.getName());
+        result.put("valid", violations.isEmpty());
+        result.put("violations", violations);
+        result.put("violationCount", violations.size());
+        result.put("checkedHeats", byHeat.size());
+        result.put("generatedAt", LocalDateTime.now().toString());
+        return result;
+    }
+
     // ==================== 裁判 ID / 专长 JSON 解析 ====================
 
     private List<Long> parseRefIds(String json) {
@@ -1574,6 +1761,12 @@ public class ArrangementService {
 
     private static String roundLabel(String round) {
         return ROUND_PRELIM.equals(round) ? "预赛" : "决赛";
+    }
+
+    private static String genderLabel(String gender) {
+        if ("F".equals(gender)) return "女子";
+        if ("M".equals(gender)) return "男子";
+        return gender == null || gender.isBlank() ? "" : gender;
     }
 
     /** 解析时间字符串为秒；支持 "12.34"、"1:23.45"、"1:02:03.45" */

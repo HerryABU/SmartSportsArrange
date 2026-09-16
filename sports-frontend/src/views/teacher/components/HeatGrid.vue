@@ -34,6 +34,7 @@
       <div v-for="heat in heats" :key="heat.heat || heat.heatNo" class="heat-block">
         <div class="heat-title">
           <span class="heat-badge">第 {{ heat.heat || heat.heatNo }} 组</span>
+          <span v-if="lottery" class="draw-badge" title="本组道次为随机抽签分配">🎲 抽签</span>
         </div>
         <div class="lane-grid">
           <div
@@ -119,6 +120,11 @@ defineProps({
   showRefereeSlot: {
     type: Boolean,
     default: false
+  },
+  // 抽签（随机道次）：开启后组内道次为随机分配，组标题显示抽签徽标
+  lottery: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -193,7 +199,10 @@ const emit = defineEmits(['toggle-lock'])
 .heat-title {
   background: linear-gradient(135deg, #409eff 0%, #337ecc 100%);
   padding: 10px 16px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
 .heat-badge {
@@ -201,6 +210,16 @@ const emit = defineEmits(['toggle-lock'])
   font-weight: 700;
   font-size: 15px;
   letter-spacing: 2px;
+}
+
+.draw-badge {
+  font-size: 11px;
+  color: #7a4a00;
+  background: #ffe9b3;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 /* 跑道网格 */

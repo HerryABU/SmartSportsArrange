@@ -94,6 +94,9 @@
                 <el-button type="danger" @click="clearArrange" :disabled="!arranged" :icon="Delete">
                   清除
                 </el-button>
+                <el-button type="info" @click="selfCheck" :disabled="!arranged" :icon="CircleCheck" :loading="verifying">
+                  自检
+                </el-button>
               </el-button-group>
               <el-button type="warning" :icon="Medal" :disabled="!arranged"
                 @click="openRefereeDialog" style="margin-left:8px">
@@ -134,7 +137,7 @@
             </div>
           </template>
           <div class="heat-grid">
-            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" :show-referee-slot="needReferees" @toggle-lock="toggleLock" />
+            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" :show-referee-slot="needReferees" :lottery="selectedEvent?.drawLots === true" @toggle-lock="toggleLock" />
           </div>
         </el-card>
 
@@ -292,13 +295,39 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 编排自检报告 -->
+    <el-dialog v-model="verifyDialogVisible" title="编排自检报告" width="580px">
+      <div v-if="verifyResult">
+        <el-alert
+          :title="verifyResult.valid ? '编排正确：全部硬约束通过' : ('发现 ' + (verifyResult.violationCount || 0) + ' 处问题')"
+          :type="verifyResult.valid ? 'success' : 'error'"
+          :closable="false"
+          show-icon
+        />
+        <div v-if="verifyResult.violations && verifyResult.violations.length" class="verify-list">
+          <div v-for="(v, i) in verifyResult.violations" :key="i" class="verify-item">
+            <el-tag size="small" type="danger">{{ v.type }}</el-tag>
+            <span class="verify-msg">{{ v.message }}</span>
+          </div>
+        </div>
+        <div class="verify-meta">
+          校验组次：{{ verifyResult.checkedHeats }} · 生成时间：{{ verifyResult.generatedAt }}
+        </div>
+      </div>
+      <el-empty v-else description="点击「自检」开始校验" />
+      <template #footer>
+        <el-button type="primary" @click="selfCheck" :loading="verifying" :icon="CircleCheck">重新自检</el-button>
+        <el-button @click="verifyDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft, Timer, Medal } from '@element-plus/icons-vue'
+import { Search, Trophy, MagicStick, View, Download, Delete, Grid, Setting, Switch, RefreshLeft, Timer, Medal, CircleCheck } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -312,6 +341,26 @@ const treeRef = ref(null)
 const treeRefMobile = ref(null)
 const selectedEvent = ref(null)
 const arranged = ref(false)
+
+// 编排自检（对抗式校验）
+const verifyDialogVisible = ref(false)
+const verifyResult = ref(null)
+const verifying = ref(false)
+const selfCheck = async () => {
+  if (!selectedEvent.value) { ElMessage.warning('请先选择项目'); return }
+  verifying.value = true
+  try {
+    const r = await request.get('/arrange/events/' + selectedEvent.value.id + '/verify')
+    verifyResult.value = r
+    verifyDialogVisible.value = true
+    if (r.valid) ElMessage.success('自检通过：编排满足全部硬约束')
+    else ElMessage.warning('自检发现 ' + (r.violationCount || 0) + ' 处问题')
+  } catch (e) {
+    ElMessage.error('自检失败: ' + (e.response?.data?.message || e.message || '未知错误'))
+  } finally {
+    verifying.value = false
+  }
+}
 const heats = ref([])
 const statistics = ref(null)
 const dialogVisible = ref(false)
@@ -480,7 +529,9 @@ const onEventClick = async (data) => {
     gender: data.event.genderLimit,
     isTrack: data.event.isTrack !== false && data.event.category !== '田赛',
     needHeats: data.event.needHeats !== false,
-    advanceCount: data.event.advanceCount ?? 8
+    advanceCount: data.event.advanceCount ?? 8,
+    drawLots: data.event.drawLots === true,
+    refereesPerGroup: data.event.refereesPerGroup ?? 0
   }
   prelimAdvance.value = selectedEvent.value.advanceCount
   previewData.value = null
@@ -529,6 +580,17 @@ const executeArrange = async () => {
       ? '，耗时 ' + result.executionTimeMs + 'ms'
       : ''
     ElMessage.success('编排完成！共 ' + (result.statistics?.totalHeats || 0) + ' 组' + timeInfo)
+    // 编排后对抗式自检：后端已在校验不通过时自动重排，此处仅把结果反馈给操作者
+    if (result.selfCheck) {
+      if (result.selfCheck.valid) {
+        if (result.selfCheck.rearrangeCount > 0) {
+          ElMessage.info('对抗式自检通过：自动重排 ' + result.selfCheck.rearrangeCount + ' 次后满足全部硬约束')
+        }
+      } else {
+        ElMessage.warning('自检仍发现 ' + (result.selfCheck.violations?.length || 0)
+          + ' 处硬约束违反，请点击「自检」查看详情并人工处理')
+      }
+    }
   } catch (e) {
     ElMessage.error('编排失败: ' + (e.response?.data?.message || e.message || '未知错误'))
   } finally {
@@ -939,6 +1001,32 @@ const saveRefereeAdjust = async () => {
   font-size: 12px;
   color: #909399;
   margin-left: 8px;
+}
+
+/* 编排自检报告 */
+.verify-list {
+  margin: 14px 0 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.verify-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fef0f0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.verify-msg {
+  color: #f56c6c;
+}
+.verify-meta {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 
 /* 滚动条美化 */

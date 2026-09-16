@@ -121,6 +121,15 @@ public class Event {
     private Integer refereesPerGroup;
 
     /**
+     * 抽签（随机道次）：true 时组内道次按随机抽签分配（xxx、yyy 同组随机占位，
+     * 而非按班级顺序固定 x 在 1 道、y 在 2 道）。仅作用于非人工锁定占用的道次。
+     */
+    @Column
+    @Builder.Default
+    @JsonProperty("drawLots")
+    private Boolean drawLots = false;
+
+    /**
      * @deprecated 已由「并发位数」模型取代（见 {@link #concurrency} 与全局 trackSlots/fieldSlots）。
      *             该字段仅为兼容历史数据保留，不再参与任何编排计算。
      */

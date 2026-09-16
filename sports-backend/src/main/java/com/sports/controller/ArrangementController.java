@@ -198,6 +198,16 @@ public class ArrangementController {
     }
 
     /**
+     * 编排自检（对抗式校验）：独立读取已落库编排，核对硬约束，返回 {valid, violations, checks}。
+     * 与编排引擎互为「生成 vs 校验」关系——可作为编排后的质量门禁或手动复检入口。
+     */
+    @GetMapping("/events/{eventId}/verify")
+    public ApiResponse<?> verifyArrangement(@PathVariable Long eventId) {
+        log.info("编排自检: eventId={}", eventId);
+        return ApiResponse.success("自检完成", arrangementService.verifyArrangement(eventId));
+    }
+
+    /**
      * 全量编排导出（含预赛与决赛），作为 arrange_result.json 的程序化来源与统一数据源（B01/U01/B17）。
      * 二次编排后调用本接口即可得到含决赛的完整编排 JSON。
      */

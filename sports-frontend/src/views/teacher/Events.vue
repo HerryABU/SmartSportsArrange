@@ -312,6 +312,10 @@
           <el-input-number v-model="formData.refereesPerGroup" :min="0" :max="20" style="width: 100%" placeholder="每个组次需几名裁判" />
           <div class="form-tip">每个组次（heat/组/轮）需安排的裁判人数。田赛如立定跳远一组 5 人填 x 名裁判即填 x；拔河一组 3 人填 3；N 组并行仍按单组填写，系统自动为每组分别安排。留空/0 表示不安排裁判</div>
         </el-form-item>
+        <el-form-item label="抽签（随机道次）" prop="drawLots">
+          <el-switch v-model="formData.drawLots" active-text="开启" inactive-text="关闭" />
+          <div class="form-tip">开启后，组内道次按随机抽签分配（xxx、yyy 同组随机占位），而非按班级顺序固定 x 在 1 道、y 在 2 道。仅作用于非人工锁定占用的道次</div>
+        </el-form-item>
         <el-form-item label="默认场地" prop="defaultVenue">
           <el-input v-model="formData.defaultVenue" placeholder="如 田径场 / 田赛A区" maxlength="50" />
         </el-form-item>
@@ -487,6 +491,9 @@
           <el-input-number v-model="batchPatch.refereesPerGroup" :min="0" :max="20" value-on-clear="null"
             placeholder="不修改" style="width:100%" />
         </el-form-item>
+        <el-form-item label="抽签（随机道次）">
+          <el-switch v-model="batchPatch.drawLots" />
+        </el-form-item>
         <el-form-item label="每组次几人">
           <el-input-number v-model="batchPatch.groupSize" :min="1" :max="200" value-on-clear="null"
             placeholder="不修改（单组人数）" style="width:100%" />
@@ -557,6 +564,8 @@ interface EventItem {
   maxPerHeat?: number
   /** 组次裁判数量：每个组次(heat/组/轮)需安排的裁判人数；0/空 = 不安排裁判 */
   refereesPerGroup?: number
+  /** 抽签（随机道次）：开启后组内道次随机分配 */
+  drawLots?: boolean
 }
 
 interface TemplateItem {
@@ -650,6 +659,7 @@ const formData = reactive<EventItem>({
   advanceCount: 8,
   maxPerHeat: 8,
   refereesPerGroup: undefined,
+  drawLots: false,
 })
 
 const formRules: FormRules = {
@@ -821,6 +831,7 @@ function resetFormData() {
   formData.advanceCount = 8
   formData.maxPerHeat = 8
   formData.refereesPerGroup = undefined
+  formData.drawLots = false
 }
 
 // 组装提交体：径赛/田赛 自动联动 道次
@@ -835,6 +846,7 @@ function buildPayload() {
     advanceCount: isTrack ? (formData.advanceCount ?? 8) : null,
     maxPerHeat: isTrack ? (formData.maxPerHeat ?? formData.laneCount ?? 8) : 1,
     refereesPerGroup: formData.refereesPerGroup ?? 0,
+    drawLots: formData.drawLots === true,
   }
 }
 
@@ -866,6 +878,7 @@ function fillFormFromRow(row: EventItem) {
   formData.advanceCount = row.advanceCount ?? 8
   formData.maxPerHeat = row.maxPerHeat ?? (isTrack ? (row.laneCount ?? 8) : 1)
   formData.refereesPerGroup = row.refereesPerGroup ?? undefined
+  formData.drawLots = row.drawLots === true
 }
 
 function onEventTypeChange(val: string) {
@@ -997,6 +1010,7 @@ const batchPatch = reactive<Record<string, any>>({
   groupSize: undefined,
   bundleGroup: undefined,
   refereesPerGroup: undefined,
+  drawLots: undefined,
   defaultVenue: undefined,
   defaultVenueCode: undefined,
   enabled: undefined,
@@ -1088,7 +1102,7 @@ function openBatchEdit() {
   Object.assign(batchPatch, {
     eventType: undefined, gender: undefined, gradeGroup: undefined,
     laneCount: null, teamSize: null, concurrency: undefined, groupSize: undefined, bundleGroup: undefined,
-    refereesPerGroup: undefined, defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
+    refereesPerGroup: undefined, drawLots: undefined, defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
   })
   batchEditVisible.value = true
 }
@@ -1120,6 +1134,9 @@ function buildPatchPayload(): Record<string, any> {
   }
   if (batchPatch.refereesPerGroup !== undefined && batchPatch.refereesPerGroup !== null) {
     p.refereesPerGroup = batchPatch.refereesPerGroup
+  }
+  if (batchPatch.drawLots !== undefined && batchPatch.drawLots !== null) {
+    p.drawLots = batchPatch.drawLots === true
   }
   if (batchPatch.defaultVenue && String(batchPatch.defaultVenue).trim()) {
     p.defaultVenue = String(batchPatch.defaultVenue).trim()
