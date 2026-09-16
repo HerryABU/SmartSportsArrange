@@ -207,6 +207,14 @@ public class ArrangementController {
         return ApiResponse.success("自检完成", arrangementService.verifyArrangement(eventId));
     }
 
+    // ==================== 裁判工作安排（裁判视图） ====================
+
+    /** 裁判工作安排表：按裁判聚合其全部分配（含未分配裁判） */
+    @GetMapping("/referee-board")
+    public ApiResponse<?> refereeBoard() {
+        return ApiResponse.success(arrangementService.getRefereeBoard());
+    }
+
     // ==================== 预留模拟空位（项目级编排）+ 两阶段重排 ====================
 
     /** 查看某项目全部预留模拟空位 */

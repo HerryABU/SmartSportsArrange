@@ -111,6 +111,12 @@ const routes = [
         meta: { title: '裁判管理', role: ['SUPER_ADMIN'] }
       },
       {
+        path: 'referee-board',
+        name: 'TeacherRefereeBoard',
+        component: () => import('@/views/teacher/RefereeBoard.vue'),
+        meta: { title: '裁判工作安排' }
+      },
+      {
         path: 'help',
         name: 'TeacherHelp',
         component: () => import('@/views/teacher/Help.vue'),

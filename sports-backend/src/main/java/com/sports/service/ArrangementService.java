@@ -1736,6 +1736,68 @@ public class ArrangementService {
         return result;
     }
 
+    // ==================== 裁判工作安排（裁判视图） ====================
+
+    /**
+     * 裁判工作安排表：按裁判聚合其在各项目/年级/性别/赛次/组次的分配，
+     * 供「裁判」角色查看各自的工作安排（含未分配的裁判）。
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getRefereeBoard() {
+        List<EventReferee> all = eventRefereeRepository.findAll();
+        Map<Long, Referee> refMap = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        Map<Long, List<Map<String, Object>>> byRef = new LinkedHashMap<>();
+        int totalAssign = 0;
+        for (EventReferee er : all) {
+            List<Long> ids = parseRefIds(er.getRefereeIds());
+            if (ids.isEmpty()) continue;
+            Event ev = er.getEvent();
+            for (Long id : ids) {
+                Map<String, Object> a = new LinkedHashMap<>();
+                a.put("eventId", ev != null ? ev.getId() : null);
+                a.put("eventName", ev != null ? ev.getName() : null);
+                a.put("category", ev != null ? ev.getCategory() : null);
+                a.put("grade", er.getGrade());
+                a.put("gender", er.getGender());
+                a.put("round", er.getRound());
+                a.put("heat", er.getHeat());
+                byRef.computeIfAbsent(id, k -> new ArrayList<>()).add(a);
+                totalAssign++;
+            }
+        }
+        List<Map<String, Object>> referees = new ArrayList<>();
+        for (Map.Entry<Long, List<Map<String, Object>>> e : byRef.entrySet()) {
+            referees.add(refereeBoardItem(e.getKey(), refMap.get(e.getKey()), e.getValue()));
+        }
+        referees.sort((a, b) -> Integer.compare((int) b.get("count"), (int) a.get("count")));
+
+        List<Map<String, Object>> idle = new ArrayList<>();
+        for (Referee r : refMap.values()) {
+            if (!byRef.containsKey(r.getId())) {
+                idle.add(refereeBoardItem(r.getId(), r, List.of()));
+            }
+        }
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("referees", referees);
+        res.put("idle", idle);
+        res.put("refereeCount", refMap.size());
+        res.put("totalAssignments", totalAssign);
+        return res;
+    }
+
+    private Map<String, Object> refereeBoardItem(Long id, Referee r, List<Map<String, Object>> assignments) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("refereeId", id);
+        item.put("refereeName", r != null ? r.getName() : "");
+        item.put("phone", r != null ? r.getPhone() : null);
+        item.put("specialties", r != null ? parseRefereeSpecialties(r.getSpecialties()) : List.of());
+        item.put("count", assignments.size());
+        item.put("assignments", assignments);
+        return item;
+    }
+
     // ==================== 预留模拟空位（项目级编排） ====================
 
     /** 查询某项目全部预留空位 */

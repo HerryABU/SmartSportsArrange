@@ -274,6 +274,19 @@
 
       <!-- 批量创建 — 仅管理员可见 -->
       <el-tab-pane v-if="authStore.isAdmin" label="批量创建" name="batch">
+        <!-- 批量导入中心：管理员四类名单导入入口（班主任 / 学生 / 体育老师 / 裁判） -->
+        <el-card shadow="never" style="margin-bottom:16px">
+          <template #header><span>📥 批量导入中心（班主任名单 · 学生名单 · 体育老师 · 裁判）</span></template>
+          <el-table :data="importEntries" size="small">
+            <el-table-column label="导入对象" prop="name" width="140" />
+            <el-table-column label="说明" prop="desc" />
+            <el-table-column label="入口" width="200">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" plain @click="gotoImport(row)">{{ row.action }}</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
         <el-row :gutter="16">
           <!-- 批量创建班级 -->
           <el-col :span="12">
@@ -992,6 +1005,18 @@ const userForm = reactive({ username:'', realName:'', role:'TEACHER', password:'
 const gradeForm = reactive({ name:'', sortOrder:0 })
 
 const userImportUrl = apiBase() + '/system/users/import'
+
+// 批量导入中心：四类名单导入入口（学生 / 班主任 / 体育老师 / 裁判）
+const importEntries = [
+  { key: 'students', name: '学生名单', desc: '批量导入学生花名册，自动生成运动员并分配号码簿（支持列映射预览）', action: '去导入学生名单', hash: '#/teacher/athletes' },
+  { key: 'ct', name: '班主任名单', desc: '批量导入班主任账号（用户导入，角色选「班主任」）', action: '去导入用户', tab: 'users' },
+  { key: 'pe', name: '体育老师', desc: '批量导入体育老师账号（用户导入，角色选「体育老师」）', action: '去导入用户', tab: 'users' },
+  { key: 'ref', name: '裁判', desc: '批量导入裁判花名册（专长项目支持 [a,b，c] 逗号列表语法）', action: '去导入裁判', hash: '#/teacher/referees' }
+]
+const gotoImport = (row) => {
+  if (row.hash) { window.location.hash = row.hash; return }
+  if (row.tab) { activeTab.value = row.tab }
+}
 const uploadHeaders = computed(() => ({
   Authorization: 'Bearer ' + authStore.token
 }))

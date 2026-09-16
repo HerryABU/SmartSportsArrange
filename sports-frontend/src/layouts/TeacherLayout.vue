@@ -30,6 +30,7 @@
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
+        <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <div style="padding:4px 16px;font-size:11px;color:rgba(255,255,255,.35)">管理员专用</div>
@@ -70,6 +71,7 @@
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
+        <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
