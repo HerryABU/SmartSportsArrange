@@ -555,18 +555,31 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 7. 智能编排 Arrange
 
-前缀 `/api/arrange`，8 个端点。
+前缀 `/api/arrange`，10 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | POST | `/api/arrange/events/{eventId}` | Path eventId, Body config | T/SA | 对指定项目执行自动编排 |
 | POST | `/api/arrange/preview` | Body config | T/SA | 预览编排（不落库） |
-| GET | `/api/arrange/events/{eventId}` | Path eventId | S/CT/T/SA | 查看项目编排结果 |
+| GET | `/api/arrange/events/{eventId}` | Path eventId | S/CT/T/SA | 查看项目编排结果（含各组次裁判） |
 | PUT | `/api/arrange/events/{eventId}` | Path eventId, Body adjustments[] | T/SA | 手动调整编排 |
-| DELETE | `/api/arrange/events/{eventId}` | Path eventId | T/SA | 清除该项目编排 |
+| DELETE | `/api/arrange/events/{eventId}` | Path eventId | T/SA | 清除该项目编排（含裁判分配） |
 | POST | `/api/arrange/batch` | Body `[eventIds]` | T/SA | 批量编排多个项目 |
 | POST | `/api/arrange/events/{eventId}/rollback` | Path eventId | T/SA | 回滚编排 |
-| GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel） |
+| GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel，含裁判列） |
+| GET | `/api/arrange/events/{eventId}/referees` | Path eventId | S/CT/T/SA | 查看该项目全部组次裁判分配（含姓名） |
+| PUT | `/api/arrange/events/{eventId}/referees/heat` | Path eventId, Body `{grade, gender, round, heat, refereeIds[]}` | T/SA | 手工调整某组次裁判（重新自动编排会覆盖） |
+
+#### 7.1 裁判自动分配（smart referee assignment）
+
+执行编排（`POST /events/{eventId}`）时，若项目 `refereesPerGroup > 0`，引擎为**每个组次**分别安排裁判，规则：
+
+1. **数量**：每组次安排 `refereesPerGroup` 名（如立定跳远一组次 x 人 → 填 x；拔河一组 3 人 → 填 3；N 组并行仍按单组各安排，系统自动算好互不抢占）。
+2. **专长优先**：裁判「专长项目」含本项目（编码或名称命中）者优先入选。
+3. **负载均衡**：非专长裁判按历史被分配次数升序入选，避免个别人被连排。
+4. **并行互不抢占**：同一 (项目×年级×性别×赛次) 切片内，各组次尽量不重复占用同一裁判；裁判池不足时复用并写入 `warnings[]`（如「裁判不足：…第N组次仅分配到 M 名（需 K 名）」）。
+5. **落库**：结果写入 `event_referee` 表（key = event×grade×gender×round×heat），编排视图与道次表均挂载 `referees[]`（{id,name}）。
+6. **手工调整**：`PUT /referees/heat` 可临时换人；重新执行自动编排会按 `refereesPerGroup` 重新分配并覆盖。
 
 ---
 

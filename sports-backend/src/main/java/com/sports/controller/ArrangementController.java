@@ -159,6 +159,38 @@ public class ArrangementController {
         return ApiResponse.success(arrangementService.viewQualifiers(eventId, grade, gender));
     }
 
+    // ==================== 裁判分配（智能编排产出 + 手工调整） ====================
+
+    /** 查看某项目全部组次裁判分配（含裁判姓名） */
+    @GetMapping("/events/{eventId}/referees")
+    public ApiResponse<?> viewReferees(@PathVariable Long eventId) {
+        log.info("查看裁判分配: eventId={}", eventId);
+        return ApiResponse.success(arrangementService.getRefereeAssignments(eventId));
+    }
+
+    /**
+     * 手工调整某组次裁判。body: {grade, gender, round, heat, refereeIds:[id...]}
+     * 重新执行编排（POST /events/{eventId}）会按「组次裁判数量」重新自动分配并覆盖此调整。
+     */
+    @PutMapping("/events/{eventId}/referees/heat")
+    public ApiResponse<?> adjustHeatReferees(@PathVariable Long eventId,
+                                             @RequestBody Map<String, Object> body) {
+        String grade = (String) body.get("grade");
+        String gender = (String) body.get("gender");
+        String round = (String) body.get("round");
+        int heat = body.get("heat") instanceof Number n ? n.intValue() : 0;
+        @SuppressWarnings("unchecked")
+        List<Long> refereeIds = (List<Long>) body.get("refereeIds");
+        log.info("手工调整裁判: eventId={}, grade={}, gender={}, round={}, heat={}, ids={}",
+                eventId, grade, gender, round, heat, refereeIds);
+        Object r = arrangementService.updateHeatReferees(eventId, grade, gender, round, heat,
+                refereeIds != null ? refereeIds : List.of());
+        auditService.record("ARRANGE_REFEREE_ADJUST", "EVENT", eventId,
+                "手工调整裁判: grade=" + grade + ", gender=" + gender + ", round=" + round
+                        + ", heat=" + heat + ", ids=" + refereeIds);
+        return ApiResponse.success("裁判调整成功", r);
+    }
+
     @GetMapping("/events/{eventId}/export")
     public void exportLaneSheet(@PathVariable Long eventId, HttpServletResponse response) throws IOException {
         log.info("导出道次表: eventId={}", eventId);

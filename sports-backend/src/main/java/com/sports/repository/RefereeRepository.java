@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -18,4 +19,7 @@ public interface RefereeRepository extends JpaRepository<Referee, Long>, JpaSpec
 
     /** 是否存在同名且未删除的裁判 */
     boolean existsByName(String name);
+
+    /** 按状态查询（@SQLRestriction 自动排除软删除记录） */
+    List<Referee> findByStatus(String status);
 }

@@ -1,14 +1,20 @@
 package com.sports.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.Grades;
 import com.sports.entity.Arrangement;
 import com.sports.entity.Athlete;
 import com.sports.entity.Event;
+import com.sports.entity.EventReferee;
 import com.sports.entity.EventSchedule;
+import com.sports.entity.Referee;
 import com.sports.entity.Registration;
 import com.sports.repository.ArrangementRepository;
+import com.sports.repository.EventRefereeRepository;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
+import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -45,8 +51,12 @@ public class ArrangementService {
     private final RegistrationRepository registrationRepository;
     private final EventRepository eventRepository;
     private final EventScheduleRepository eventScheduleRepository;
+    private final RefereeRepository refereeRepository;
+    private final EventRefereeRepository eventRefereeRepository;
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
+
+    private static final ObjectMapper REF_MAPPER = new ObjectMapper();
 
     // 默认算法参数（可被 arrange_rule.algorithm_params 覆盖）
     private static final int OPTIMIZATION_ROUNDS = 3;
@@ -699,6 +709,18 @@ public class ArrangementService {
         log.info("编排保存完成: eventId={}, round={}, 共{}组{}名（含人工锁定{}名）, version={}",
                 event.getId(), round, heats, arrangements.size(), lockedRows.size(), version);
 
+        // 裁判自动分配：按「组次裁判数量」为每组分别安排（专长优先 + 负载均衡 + 并行组次互不抢占）
+        List<String> refereeWarnings = assignReferees(event, grade, gender, round, heats);
+
+        // 构建 (年级|赛次|组次) → 裁判ID 列表 与 裁判ID → 实体 的查找表，供视图挂载
+        Map<String, List<Long>> heatRefIds = new HashMap<>();
+        for (EventReferee er : eventRefereeRepository
+                .findByEventIdAndGradeAndGenderAndRound(event.getId(), grade, gender, round)) {
+            heatRefIds.put(refKey(grade, round, er.getHeat()), parseRefIds(er.getRefereeIds()));
+        }
+        Map<Long, Referee> refMap = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+
         // 保存后统一生成视图（带数据库回填的 id）
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         Map<Integer, List<Arrangement>> byHeat = arrangements.stream()
@@ -711,7 +733,9 @@ public class ArrangementService {
             for (Arrangement saved : sortedInHeat) {
                 lanesInHeat.add(laneInfo(saved));
             }
-            heatDetails.add(laneBrief(e.getKey(), grade, lanesInHeat));
+            Map<String, Object> heatInfo = laneBrief(e.getKey(), grade, lanesInHeat);
+            attachReferees(heatInfo, heatRefIds.getOrDefault(refKey(grade, round, e.getKey()), List.of()), refMap);
+            heatDetails.add(heatInfo);
         }
 
         log.info("编排结果视图生成完成: eventId={}, round={}, {}组{}名", event.getId(), round, heats, arrangements.size());
@@ -733,7 +757,9 @@ public class ArrangementService {
         result.put("round", round);
         result.put("heats", heatDetails);
         result.put("statistics", statistics);
-        result.put("warnings", placement.warnings);
+        List<String> allWarnings = new ArrayList<>(placement.warnings);
+        allWarnings.addAll(refereeWarnings);
+        result.put("warnings", allWarnings);
         result.put("version", version);
         return result;
     }
@@ -807,6 +833,18 @@ public class ArrangementService {
                     "rounds", List.of());
         }
 
+        // 裁判分配查找表（按 年级|赛次|组次 聚合，跨性别取并集）—— 供分组视图挂载
+        Map<String, List<Long>> heatRefIds = new HashMap<>();
+        for (EventReferee er : eventRefereeRepository.findByEventId(eventId)) {
+            String key = er.getGrade() + "|" + er.getRound() + "|" + er.getHeat();
+            List<Long> ids = heatRefIds.computeIfAbsent(key, k -> new ArrayList<>());
+            for (Long id : parseRefIds(er.getRefereeIds())) {
+                if (!ids.contains(id)) ids.add(id);
+            }
+        }
+        Map<Long, Referee> refMap = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+
         // 按赛次分组（历史 NULL 行视为 final）
         Map<String, List<Arrangement>> byRound = arrangements.stream()
                 .collect(Collectors.groupingBy(a ->
@@ -835,7 +873,11 @@ public class ArrangementService {
                         lanesInHeat.add(laneInfo(arr));
                         total++;
                     }
-                    heatDetails.add(laneBrief(he.getKey(), gentry.getKey(), lanesInHeat));
+                    Map<String, Object> heatInfo = laneBrief(he.getKey(), gentry.getKey(), lanesInHeat);
+                    attachReferees(heatInfo,
+                            heatRefIds.getOrDefault(refKey(gentry.getKey(), entry.getKey(), he.getKey()), List.of()),
+                            refMap);
+                    heatDetails.add(heatInfo);
                 }
             }
 
@@ -918,7 +960,8 @@ public class ArrangementService {
      */
     public void clearArrangement(Long eventId) {
         arrangementRepository.deleteByEventId(eventId);
-        log.info("清空编排: eventId={}", eventId);
+        eventRefereeRepository.deleteByEventId(eventId);
+        log.info("清空编排(含裁判分配): eventId={}", eventId);
     }
 
     /**
@@ -1306,6 +1349,208 @@ public class ArrangementService {
         heatInfo.put("grade", grade);
         heatInfo.put("lanes", lanesInHeat);
         return heatInfo;
+    }
+
+    // ==================== 裁判自动分配（智能编排） ====================
+
+    /** 组次标识键：年级|赛次|组次（忽略性别，因 getArrangement 按此聚合） */
+    private static String refKey(String grade, String round, int heat) {
+        return grade + "|" + round + "|" + heat;
+    }
+
+    /**
+     * 为某 (项目×年级×性别×赛次) 切片的每组次分配裁判。
+     * <p>策略：每组需 event.refereesPerGroup 名裁判；专长匹配该项目者优先，
+     * 其次按历史使用次数做负载均衡；同一切片内各组次尽量不重复分配同一裁判
+     * （满足「N 组并行时各组次互不抢占裁判」的隐含要求）；裁判池不足时复用并告警。</p>
+     */
+    private List<String> assignReferees(Event event, String grade, String gender, String round, int heats) {
+        int k = event.getRefereesPerGroup() == null ? 0 : event.getRefereesPerGroup();
+        List<String> warnings = new ArrayList<>();
+        if (k <= 0 || heats <= 0) return warnings;
+
+        // 重排该切片前，先清除旧分配
+        eventRefereeRepository.deleteByEventIdAndGradeAndGenderAndRound(event.getId(), grade, gender, round);
+
+        List<Referee> pool = refereeRepository.findByStatus("active");
+        if (pool.isEmpty()) {
+            warnings.add("未配置任何裁判，无法为「" + event.getName() + "」分配裁判，请在裁判管理中录入裁判");
+            return warnings;
+        }
+
+        // 该项目用于专长匹配的键（编码 / 名称，忽略大小写与空白）
+        Set<String> eventKeys = new HashSet<>();
+        if (event.getCode() != null) eventKeys.add(event.getCode().trim().toLowerCase());
+        if (event.getName() != null) eventKeys.add(event.getName().trim().toLowerCase());
+
+        Map<Long, Boolean> specialtyMatch = new HashMap<>();
+        for (Referee r : pool) {
+            boolean match = parseRefereeSpecialties(r.getSpecialties()).stream()
+                    .map(s -> s.trim().toLowerCase())
+                    .anyMatch(eventKeys::contains);
+            specialtyMatch.put(r.getId(), match);
+        }
+
+        Map<Long, Integer> usage = new HashMap<>();
+        Set<Long> assignedThisSlice = new HashSet<>(); // 本切片已分配的裁判（并行组次互不抢占）
+
+        for (int h = 1; h <= heats; h++) {
+            List<Referee> candidates = new ArrayList<>(pool);
+            candidates.sort((a, b) -> {
+                int au = assignedThisSlice.contains(a.getId()) ? 1 : 0;
+                int bu = assignedThisSlice.contains(b.getId()) ? 1 : 0;
+                if (au != bu) return Integer.compare(au, bu);            // 未分配优先
+                int am = specialtyMatch.getOrDefault(a.getId(), false) ? 1 : 0;
+                int bm = specialtyMatch.getOrDefault(b.getId(), false) ? 1 : 0;
+                if (am != bm) return Integer.compare(bm, am);            // 专长优先
+                return Integer.compare(usage.getOrDefault(a.getId(), 0), usage.getOrDefault(b.getId(), 0)); // 负载均衡
+            });
+
+            List<Long> chosen = new ArrayList<>();
+            for (Referee r : candidates) {
+                if (chosen.size() >= k) break;
+                if (!assignedThisSlice.contains(r.getId())) chosen.add(r.getId());
+            }
+            // 裁判池不足以覆盖全部并行组次：放宽复用（仍按专有/负载排序），并告警
+            if (chosen.size() < k) {
+                for (Referee r : candidates) {
+                    if (chosen.size() >= k) break;
+                    if (!chosen.contains(r.getId())) chosen.add(r.getId());
+                }
+            }
+            if (chosen.size() < k) {
+                warnings.add("裁判不足：项目「" + event.getName() + "」" + grade + " " + roundLabel(round)
+                        + " 第" + h + "组次仅分配到 " + chosen.size() + " 名（需 " + k + " 名）");
+            }
+            for (Long id : chosen) {
+                usage.put(id, usage.getOrDefault(id, 0) + 1);
+                assignedThisSlice.add(id);
+            }
+
+            EventReferee er = new EventReferee();
+            er.setEvent(event);
+            er.setGrade(grade);
+            er.setGender(gender);
+            er.setRound(round);
+            er.setHeat(h);
+            er.setRefereeIds(writeRefereeIds(chosen));
+            er.setCreatedAt(LocalDateTime.now());
+            er.setUpdatedAt(LocalDateTime.now());
+            eventRefereeRepository.save(er);
+        }
+        log.info("裁判分配完成: eventId={}, grade={}, gender={}, round={}, 每组{}名×{}组",
+                event.getId(), grade, gender, round, k, heats);
+        return warnings;
+    }
+
+    /** 把裁判 ID 列表挂载到组次视图（{id,name}） */
+    private void attachReferees(Map<String, Object> heatInfo, List<Long> ids, Map<Long, Referee> refMap) {
+        List<Map<String, Object>> refs = new ArrayList<>();
+        for (Long id : ids) {
+            Referee r = refMap.get(id);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", id);
+            m.put("name", r != null ? r.getName() : "未知");
+            refs.add(m);
+        }
+        heatInfo.put("referees", refs);
+        heatInfo.put("refereeCount", refs.size());
+    }
+
+    /** 查询某项目全部裁判分配（含裁判姓名），供前端「裁判安排」面板使用 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getRefereeAssignments(Long eventId) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        Map<Long, Referee> refMap = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (EventReferee er : eventRefereeRepository.findByEventId(eventId)) {
+            List<Map<String, Object>> refs = new ArrayList<>();
+            for (Long id : parseRefIds(er.getRefereeIds())) {
+                Referee r = refMap.get(id);
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", id);
+                m.put("name", r != null ? r.getName() : "未知");
+                refs.add(m);
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("grade", er.getGrade());
+            item.put("gender", er.getGender());
+            item.put("round", er.getRound());
+            item.put("heat", er.getHeat());
+            item.put("referees", refs);
+            items.add(item);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("eventId", eventId);
+        result.put("eventName", event.getName());
+        result.put("refereesPerGroup", event.getRefereesPerGroup() == null ? 0 : event.getRefereesPerGroup());
+        result.put("items", items);
+        return result;
+    }
+
+    /**
+     * 手工调整某组次裁判（如临时换人）。refereeIds 必须为已存在的裁判 ID 列表。
+     */
+    public Map<String, Object> updateHeatReferees(Long eventId, String grade, String gender,
+                                                  String round, int heat, List<Long> refereeIds) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        Map<Long, Referee> refMap = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        for (Long id : refereeIds) {
+            if (id == null || !refMap.containsKey(id)) throw new RuntimeException("裁判不存在: " + id);
+        }
+        List<EventReferee> existing = eventRefereeRepository
+                .findByEventIdAndGradeAndGenderAndRoundAndHeat(eventId, grade, gender, round, heat);
+        EventReferee er;
+        if (existing.isEmpty()) {
+            er = new EventReferee();
+            er.setEvent(event);
+            er.setGrade(grade);
+            er.setGender(gender);
+            er.setRound(round);
+            er.setHeat(heat);
+        } else {
+            er = existing.get(0);
+        }
+        er.setRefereeIds(writeRefereeIds(refereeIds));
+        er.setUpdatedAt(LocalDateTime.now());
+        if (er.getCreatedAt() == null) er.setCreatedAt(LocalDateTime.now());
+        eventRefereeRepository.save(er);
+        log.info("手工调整裁判: eventId={}, grade={}, gender={}, round={}, heat={}, ids={}",
+                eventId, grade, gender, round, heat, refereeIds);
+        return getRefereeAssignments(eventId);
+    }
+
+    // ==================== 裁判 ID / 专长 JSON 解析 ====================
+
+    private List<Long> parseRefIds(String json) {
+        if (json == null || json.isBlank()) return new ArrayList<>();
+        try {
+            List<Integer> list = REF_MAPPER.readValue(json, new TypeReference<List<Integer>>() {});
+            return list.stream().map(Long::valueOf).collect(Collectors.toList());
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
+    }
+
+    private String writeRefereeIds(List<Long> ids) {
+        try {
+            return REF_MAPPER.writeValueAsString(ids);
+        } catch (Exception e) {
+            throw new RuntimeException("序列化裁判分配失败: " + e.getMessage());
+        }
+    }
+
+    private List<String> parseRefereeSpecialties(String json) {
+        if (json == null || json.isBlank()) return new ArrayList<>();
+        try {
+            return REF_MAPPER.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
     }
 
     private static String roundLabel(String round) {
