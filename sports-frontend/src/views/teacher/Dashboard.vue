@@ -1,148 +1,134 @@
 <template>
   <div class="dashboard">
-    <!-- 欢迎横幅 -->
-    <div class="welcome-banner">
-      <div class="banner-left">
-        <h2 class="banner-title">👋 欢迎回来，{{ authStore.user?.realName || authStore.user?.username || '管理员' }}</h2>
-        <p class="banner-subtitle">{{ greetingText }}</p>
+    <!-- 角色横幅（管理员 / 体育老师） -->
+    <div class="role-hero">
+      <h2 class="role-hero-title">{{ isAdmin ? '🛡️ 管理员工作台' : '🏟️ 体育老师工作台' }}</h2>
+      <p class="role-hero-desc">
+        👋 {{ authStore.user?.realName || authStore.user?.username || '老师' }}，{{ greetingText }}
+        ｜ {{ currentDateStr }} {{ currentTime }}
+      </p>
+      <div class="role-hero-tags">
+        <span class="role-hero-tag">{{ isAdmin ? '管理员' : '体育老师' }}</span>
+        <span class="role-hero-tag">待办 {{ todoCount }}</span>
+        <span v-if="isAdmin" class="role-hero-tag">四类名单批量导入</span>
+        <span v-else class="role-hero-tag">导入 → 编排 → 统计</span>
       </div>
-      <div class="banner-right">
-        <div class="date-display">
-          <div class="date-day">{{ currentDay }}</div>
-          <div class="date-full">{{ currentDateStr }}</div>
+    </div>
+
+    <!-- 统计 -->
+    <div class="role-stats">
+      <div v-for="s in stats" :key="s.label" class="role-stat">
+        <div class="role-stat-num">{{ s.value }}</div>
+        <div class="role-stat-label">{{ s.label }}</div>
+      </div>
+    </div>
+
+    <!-- 角色专属入口 -->
+    <div class="role-card">
+      <div class="role-card-head">
+        <span class="role-card-title">{{ isAdmin ? '管理员专属' : '编排与成绩' }}</span>
+        <span class="role-card-extra">{{ isAdmin ? '账号 / 名单 / 裁判 / 系统' : '赛程 / 道次 / 成绩 / 排名' }}</span>
+      </div>
+      <div class="role-quick">
+        <div v-for="q in roleQuick" :key="q.path" class="role-quick-item" @click="go(q.path)">
+          <span class="role-quick-ico">{{ q.ico }}</span>
+          <div>
+            <div class="role-quick-title">{{ q.title }}</div>
+            <div class="role-quick-desc">{{ q.desc }}</div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- 统计卡片 -->
-    <el-row :gutter="16" class="stats-row">
-      <el-col :xs="12" :sm="12" :md="6" v-for="stat in stats" :key="stat.label">
-        <div class="stat-card" :style="{ '--card-color': stat.color }">
-          <div class="stat-card-inner">
-            <div class="stat-icon-wrap">
-              <el-icon :size="28"><component :is="stat.icon" /></el-icon>
+    <!-- 三步工作流 -->
+    <div v-for="stage in flowStages" :key="stage.step" class="role-card">
+      <div class="role-card-head">
+        <span class="role-card-title">{{ stage.step }}. {{ stage.title }}</span>
+        <span class="role-card-extra">{{ stage.desc }}</span>
+      </div>
+      <div class="role-quick">
+        <div v-for="l in stage.links" :key="l.path" class="role-quick-item" @click="go(l.path)">
+          <span class="role-quick-ico"><el-icon><component :is="l.icon" /></el-icon></span>
+          <div>
+            <div class="role-quick-title">
+              {{ l.label }}
+              <el-tag v-if="todoBadge(l.path)" size="small" :type="badgeTypeOf(l.path)" style="margin-left:6px">
+                {{ todoBadge(l.path) }}
+              </el-tag>
             </div>
-            <div class="stat-body">
-              <div class="stat-value">{{ stat.value }}</div>
-              <div class="stat-label">{{ stat.label }}</div>
-            </div>
+            <div class="role-quick-desc">点击进入</div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <el-row :gutter="16">
+      <!-- 待办 -->
+      <el-col :xs="24" :md="12">
+        <div class="role-card">
+          <div class="role-card-head">
+            <span class="role-card-title">待办提醒</span>
+            <span class="role-card-extra">共 {{ todoCount }} 项</span>
+          </div>
+          <ul v-if="todos.length" class="role-list">
+            <li v-for="t in todos" :key="t.label" class="role-list-item" style="cursor:pointer" @click="t.onClick && t.onClick()">
+              <span class="role-quick-ico"><el-icon><component :is="t.icon" /></el-icon></span>
+              <div class="role-list-main">
+                <div class="role-list-title">{{ t.label }}</div>
+              </div>
+              <el-tag size="small" :type="t.badgeType || 'info'">{{ t.count }}</el-tag>
+            </li>
+          </ul>
+          <el-empty v-else description="暂无待办" />
+        </div>
+      </el-col>
+
+      <!-- 报名进度 -->
+      <el-col :xs="24" :md="12">
+        <div class="role-card">
+          <div class="role-card-head">
+            <span class="role-card-title">报名进度</span>
+            <span class="role-card-extra">按年级</span>
+          </div>
+          <ul v-if="registrationProgress.length" class="role-list">
+            <li v-for="p in registrationProgress" :key="p.name" class="role-list-item">
+              <div class="role-list-main">
+                <div class="role-list-title">{{ p.name }} · {{ p.registered }}/{{ p.total }}</div>
+                <el-progress :percentage="pct(p)" :stroke-width="8" />
+              </div>
+            </li>
+          </ul>
+          <el-empty v-else description="暂无进度数据" />
         </div>
       </el-col>
     </el-row>
 
-    <!-- 快捷操作 + 待办提醒 -->
-    <el-row :gutter="16" class="info-row">
-      <el-col :xs="24" :sm="24" :md="14">
-        <el-card class="quick-card" shadow="hover">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Connection /></el-icon>
-              <span>运动会工作流 · 导入 → 编排 → 统计</span>
-            </div>
+    <!-- 今日赛程 -->
+    <div class="role-card">
+      <div class="role-card-head">
+        <span class="role-card-title">今日赛程</span>
+        <span class="role-card-extra">{{ todaySchedule.length }} 项</span>
+      </div>
+      <el-table v-if="todaySchedule.length" :data="todaySchedule" size="small" border stripe>
+        <el-table-column label="时间" width="110">
+          <template #default="{ row }">{{ row.time || row.startTime || row.slot || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="项目" min-width="140">
+          <template #default="{ row }">{{ row.eventName || row.name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="场地" width="120">
+          <template #default="{ row }">{{ row.venue || row.venueName || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="scheduleStatusType(row.status || row.state)">
+              {{ scheduleStatusText(row.status || row.state) }}
+            </el-tag>
           </template>
-          <div class="flow-steps">
-            <div v-for="stage in flowStages" :key="stage.step" class="flow-stage">
-              <div class="flow-stage-head">
-                <span class="flow-no">{{ stage.step }}</span>
-                <div class="flow-head-text">
-                  <div class="flow-title">{{ stage.title }}</div>
-                  <div class="flow-desc">{{ stage.desc }}</div>
-                </div>
-              </div>
-              <div class="flow-links">
-                <div v-for="link in stage.links" :key="link.path" class="flow-link"
-                  @click="$router.push(link.path)">
-                  <span class="flow-link-icon" :style="{ background: link.bg, color: link.color }">
-                    <el-icon :size="16"><component :is="link.icon" /></el-icon>
-                  </span>
-                  <span class="flow-link-label">{{ link.label }}</span>
-                  <el-badge v-if="todoBadge(link.path)" :value="todoBadge(link.path)" :max="99"
-                    :type="badgeTypeOf(link.path)" style="margin-left:auto" />
-                </div>
-              </div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :xs="24" :sm="24" :md="10">
-        <el-card class="todo-card" shadow="hover">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Bell /></el-icon>
-              <span>待办提醒</span>
-              <el-badge :value="todoCount" :hidden="todoCount === 0" :max="99" style="margin-left:8px" />
-            </div>
-          </template>
-          <div v-if="todos.length" class="todo-list">
-            <div v-for="item in todos" :key="item.label" class="todo-item" @click="item.onClick">
-              <div class="todo-left">
-                <el-icon :size="18" :color="item.color"><component :is="item.icon" /></el-icon>
-                <span>{{ item.label }}</span>
-              </div>
-              <el-badge :value="item.count" :type="item.badgeType" v-if="item.count > 0" />
-            </div>
-          </div>
-          <el-empty v-else description="暂无待办事项" :image-size="60" />
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- 报名进度 + 今日赛程 -->
-    <el-row :gutter="16" class="info-row">
-      <el-col :xs="24" :sm="24" :md="12">
-        <el-card class="progress-card" shadow="hover">
-          <template #header>
-            <div class="card-header">
-              <el-icon><DataBoard /></el-icon>
-              <span>报名进度</span>
-            </div>
-          </template>
-          <div v-if="registrationProgress.length" class="progress-list">
-            <div v-for="item in registrationProgress" :key="item.name" class="progress-item">
-              <div class="progress-info">
-                <span class="progress-name">{{ item.name }}</span>
-                <span class="progress-text">{{ item.registered }}/{{ item.total }} 人</span>
-              </div>
-              <el-progress
-                :percentage="item.total > 0 ? Math.round(item.registered / item.total * 100) : 0"
-                :stroke-width="14"
-                :text-inside="true"
-                :status="item.registered >= item.total ? 'success' : undefined"
-              />
-            </div>
-          </div>
-          <el-empty v-else description="暂无报名数据" :image-size="60" />
-        </el-card>
-      </el-col>
-      <el-col :xs="24" :sm="24" :md="12">
-        <el-card class="schedule-card" shadow="hover">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Clock /></el-icon>
-              <span>今日赛程</span>
-            </div>
-          </template>
-          <div v-if="todaySchedule.length" class="schedule-list">
-            <div v-for="item in todaySchedule" :key="item.id" class="schedule-item">
-              <div class="sched-time-col">
-                <div class="sched-time">{{ item.time }}</div>
-                <div class="sched-location">{{ item.location }}</div>
-              </div>
-              <div class="sched-divider"></div>
-              <div class="sched-info">
-                <div class="sched-event">{{ item.eventName }}</div>
-                <div class="sched-meta">{{ item.gender }} · {{ item.heat }} · {{ item.status }}</div>
-              </div>
-              <el-tag :type="scheduleStatusType(item.statusCode)" size="small" effect="light">
-                {{ item.status }}
-              </el-tag>
-            </div>
-          </div>
-          <el-empty v-else description="今日暂无赛程" :image-size="60" />
-        </el-card>
-      </el-col>
-    </el-row>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="今日暂无赛程" />
+    </div>
   </div>
 </template>
 
@@ -158,6 +144,8 @@ import request from '@/utils/request'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
+const router = useRouter()
+const isAdmin = computed(() => !!authStore.isAdmin)
 
 const greetingText = computed(() => {
   const hour = new Date().getHours()
@@ -192,6 +180,27 @@ const stats = ref([
   { label: '比赛项目', value: 0, icon: Trophy, color: '#E6A23C' },
   { label: '报名总数', value: 0, icon: Document, color: '#F56C6C' }
 ])
+
+// 角色专属快捷入口
+const roleQuick = computed(() => isAdmin.value ? [
+  { ico: '👥', title: '用户管理', desc: '班主任 / 体育老师账号批量导入', path: '/teacher/settings?tab=users' },
+  { ico: '✨', title: '批量创建', desc: '班级与用户一键生成 · 四类导入入口', path: '/teacher/settings?tab=batch' },
+  { ico: '🥇', title: '裁判管理', desc: '裁判花名册与专长（Excel 导入）', path: '/teacher/referees' },
+  { ico: '🧑‍⚖️', title: '裁判工作台', desc: '裁判视角：执裁安排汇总', path: '/referee/dashboard' },
+  { ico: '⚙️', title: '系统设置', desc: '运动会配置 / 数据库 / 备份', path: '/teacher/settings' }
+] : [
+  { ico: '🗓️', title: '赛程编排', desc: '天×时段×场地调度', path: '/teacher/schedule' },
+  { ico: '🏁', title: '道次编排', desc: '分组分道 · 自检 · 抽签 · 两阶段', path: '/teacher/arrange' },
+  { ico: '✍️', title: '成绩录入', desc: '录入与名次积分', path: '/teacher/scores' },
+  { ico: '🏆', title: '合分排行', desc: '班级总分与名次', path: '/teacher/ranking' },
+  { ico: '🥇', title: '裁判工作安排', desc: '查看各裁判分配', path: '/teacher/referee-board' }
+])
+
+function go(path) {
+  if (!path) return
+  // 带 ?tab= 的深链：整串交给 router，保留查询参数
+  router.push(path)
+}
 
 // 三步工作流：导入 → 编排 → 统计
 const flowStages = [
@@ -249,6 +258,15 @@ function scheduleStatusType(code) {
   const map = { preparing: 'info', in_progress: 'success', finished: 'warning', cancelled: 'danger' }
   return map[code] || 'info'
 }
+function scheduleStatusText(code) {
+  const map = { preparing: '待开始', in_progress: '进行中', finished: '已结束', cancelled: '已取消' }
+  return map[code] || (code || '-')
+}
+function pct(p) {
+  const total = Number(p.total || 0)
+  if (!total) return 0
+  return Math.min(100, Math.round((Number(p.registered || 0) / total) * 100))
+}
 
 async function fetchStats() {
   try {
@@ -272,17 +290,17 @@ async function fetchTodos() {
         {
           label: '待审核报名', count: res.pendingRegistrations || 0,
           icon: WarningFilled, color: '#E6A23C', badgeType: 'warning',
-          onClick: () => window._router?.push('/teacher/registrations')
+          onClick: () => router.push('/teacher/registrations')
         },
         {
           label: '未编排项目', count: res.unarrangedEvents || 0,
           icon: Grid, color: '#409EFF', badgeType: '',
-          onClick: () => window._router?.push('/teacher/arrange')
+          onClick: () => router.push('/teacher/arrange')
         },
         {
           label: '待录入成绩', count: res.pendingScores || 0,
           icon: EditPen, color: '#F56C6C', badgeType: 'danger',
-          onClick: () => window._router?.push('/teacher/scores')
+          onClick: () => router.push('/teacher/scores')
         },
         {
           label: '已完成事项', count: res.completed || 0,
@@ -327,193 +345,16 @@ async function fetchTodaySchedule() {
 onMounted(() => {
   updateTime()
   timeTimer = setInterval(updateTime, 1000)
-  window._router = useRouter()
   fetchStats()
   fetchTodos()
   fetchRegistrationProgress()
   fetchTodaySchedule()
 })
-
 onBeforeUnmount(() => {
   if (timeTimer) clearInterval(timeTimer)
-  delete window._router
 })
 </script>
 
 <style scoped>
-.dashboard { padding: 8px; }
-
-.welcome-banner {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: linear-gradient(135deg, #409eff 0%, #337ecc 100%);
-  border-radius: 16px;
-  padding: 24px 32px;
-  margin-bottom: 20px;
-  color: #fff;
-  box-shadow: 0 8px 24px rgba(64, 158, 255, 0.25);
-}
-.banner-title { margin: 0 0 6px; font-size: 22px; font-weight: 600; }
-.banner-subtitle { margin: 0; font-size: 14px; opacity: 0.85; }
-.date-display { text-align: center; }
-.date-day { font-size: 36px; font-weight: 700; line-height: 1; opacity: 0.9; }
-.date-full { font-size: 13px; opacity: 0.75; margin-top: 4px; }
-
-.stats-row { margin-bottom: 20px; }
-.stat-card {
-  position: relative;
-  background: #fff;
-  border-radius: 14px;
-  padding: 20px;
-  transition: all 0.3s ease;
-  border: 1px solid #ebeef5;
-  overflow: hidden;
-}
-.stat-card::after {
-  content: '';
-  position: absolute;
-  top: 0; right: 0;
-  width: 80px; height: 80px;
-  background: var(--card-color);
-  opacity: 0.06;
-  border-radius: 50%;
-  transform: translate(30%, -30%);
-}
-.stat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0, 0, 0, 0.08); }
-.stat-card-inner { display: flex; align-items: center; gap: 14px; }
-.stat-icon-wrap {
-  width: 52px; height: 52px;
-  border-radius: 14px;
-  background: var(--card-color);
-  color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-.stat-value { font-size: 30px; font-weight: 700; color: #303133; line-height: 1.1; }
-.stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
-
-.info-row { margin-bottom: 20px; }
-.quick-card, .todo-card, .progress-card, .schedule-card {
-  border-radius: 14px;
-  height: 100%;
-}
-.quick-card :deep(.el-card__header),
-.todo-card :deep(.el-card__header),
-.progress-card :deep(.el-card__header),
-.schedule-card :deep(.el-card__header) {
-  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
-  border-radius: 14px 14px 0 0;
-  padding: 14px 20px;
-}
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.flow-steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  padding: 4px 0;
-}
-.flow-stage {
-  border: 1px solid #ebeef5;
-  border-radius: 14px;
-  padding: 14px;
-  background: linear-gradient(180deg, #fafcff 0%, #ffffff 100%);
-  transition: all 0.25s;
-}
-.flow-stage:hover { box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06); transform: translateY(-2px); }
-.flow-stage-head { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
-.flow-no {
-  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
-  background: linear-gradient(135deg, var(--color-primary), var(--color-info));
-  color: #fff; font-size: 15px; font-weight: 700;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.flow-head-text { line-height: 1.3; }
-.flow-title { font-size: 15px; font-weight: 700; color: #303133; }
-.flow-desc { font-size: 11px; color: #909399; }
-.flow-links { display: flex; flex-direction: column; gap: 8px; }
-.flow-link {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; border-radius: 10px;
-  cursor: pointer; font-size: 13px; color: #303133;
-  border: 1px solid transparent;
-  transition: all 0.2s;
-}
-.flow-link:hover { background: #f5f7fa; border-color: #e4e7ed; transform: translateX(2px); }
-.flow-link-icon {
-  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.flow-link-label { color: #303133; }
-
-.todo-list { padding: 4px 0; }
-.todo-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.todo-item:hover { background: #f5f7fa; }
-.todo-left { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-
-.progress-list { padding: 4px 0; }
-.progress-item { margin-bottom: 14px; }
-.progress-item:last-child { margin-bottom: 0; }
-.progress-info {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.progress-name { font-size: 13px; font-weight: 500; color: #303133; }
-.progress-text { font-size: 12px; color: #909399; }
-
-.schedule-list { padding: 4px 0; max-height: 320px; overflow-y: auto; }
-.schedule-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid #f0f0f0;
-}
-.schedule-item:last-child { border-bottom: none; }
-.schedule-item:hover { background: #fafafa; border-radius: 6px; }
-.sched-time-col { min-width: 70px; text-align: center; }
-.sched-time { font-size: 14px; font-weight: 600; color: #409EFF; }
-.sched-location { font-size: 11px; color: #909399; }
-.sched-divider { width: 1px; height: 32px; background: #e4e7ed; flex-shrink: 0; }
-.sched-info { flex: 1; }
-.sched-event { font-size: 14px; font-weight: 500; color: #303133; }
-.sched-meta { font-size: 12px; color: #909399; margin-top: 2px; }
-
-@media (max-width: 768px) {
-  .welcome-banner {
-    flex-direction: column;
-    text-align: center;
-    padding: 20px 16px;
-    gap: 12px;
-  }
-  .banner-title { font-size: 18px; }
-  .banner-subtitle { font-size: 13px; }
-  .date-display { display: flex; gap: 8px; align-items: baseline; justify-content: center; }
-  .date-day { font-size: 28px; }
-  .stat-card { padding: 14px; }
-  .stat-card-inner { gap: 10px; }
-  .stat-icon-wrap { width: 42px; height: 42px; border-radius: 10px; }
-  .stat-icon-wrap .el-icon { font-size: 22px; }
-  .stat-value { font-size: 24px; }
-  .quick-actions { grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .quick-item { padding: 10px 4px; font-size: 12px; }
-  .quick-icon { width: 40px; height: 40px; }
-  .flow-steps { grid-template-columns: 1fr; }
-}
+.dashboard { padding: 4px 2px 8px; }
 </style>

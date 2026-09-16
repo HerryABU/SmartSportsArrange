@@ -1,0 +1,271 @@
+/* ============================================================
+   角色主题 · 视觉重构（管理员 / 体育老师 / 班主任 / 裁判 / 学生）
+   ------------------------------------------------------------
+   用法：在布局根节点挂 `class="role-root role-<role>"`，
+   内部使用 var(--role-accent) / var(--role-ink) / var(--role-soft)
+   即可自动继承该角色的配色，保证 5 个入口视觉语言统一。
+   ============================================================ */
+
+.role-root {
+  --role-accent: #3b82f6;
+  --role-accent-2: #6366f1;
+  --role-soft: #eff6ff;
+  --role-ink: #2563eb;
+  --role-border: #dbeafe;
+}
+
+/* 管理员：红橙 —— 系统级、管控感 */
+.role-root.role-admin {
+  --role-accent: #ef4444;
+  --role-accent-2: #f97316;
+  --role-soft: #fef2f2;
+  --role-ink: #dc2626;
+  --role-border: #fee2e2;
+}
+
+/* 体育老师：蓝紫 —— 编排与成绩主线 */
+.role-root.role-teacher {
+  --role-accent: #3b82f6;
+  --role-accent-2: #6366f1;
+  --role-soft: #eff6ff;
+  --role-ink: #2563eb;
+  --role-border: #dbeafe;
+}
+
+/* 班主任：翠绿 —— 本班视角 */
+.role-root.role-class-teacher {
+  --role-accent: #10b981;
+  --role-accent-2: #059669;
+  --role-soft: #ecfdf5;
+  --role-ink: #047857;
+  --role-border: #d1fae5;
+}
+
+/* 裁判：琥珀 —— 执裁视角 */
+.role-root.role-referee {
+  --role-accent: #f59e0b;
+  --role-accent-2: #d97706;
+  --role-soft: #fffbeb;
+  --role-ink: #b45309;
+  --role-border: #fde68a;
+}
+
+/* 学生：紫罗兰 —— 个人视角 */
+.role-root.role-student {
+  --role-accent: #8b5cf6;
+  --role-accent-2: #7c3aed;
+  --role-soft: #f5f3ff;
+  --role-ink: #6d28d9;
+  --role-border: #ede9fe;
+}
+
+/* ---------- 工作台（Dashboard）通用块 ---------- */
+
+.role-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  padding: 22px 26px;
+  margin-bottom: 18px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--role-accent) 0%, var(--role-accent-2) 100%);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+.role-hero::after {
+  content: '';
+  position: absolute;
+  right: -40px;
+  top: -60px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+}
+.role-hero-title {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 6px;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.role-hero-desc {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 720px;
+}
+.role-hero-tags {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.role-hero-tag {
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 统计块 */
+.role-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.role-stat {
+  background: #fff;
+  border: 1px solid var(--role-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.role-stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+.role-stat-num {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--role-ink);
+  line-height: 1.1;
+}
+.role-stat-label {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+.role-stat-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #c0c4cc;
+}
+
+/* 卡片 */
+.role-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.role-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f2f3f5;
+}
+.role-card-head::before {
+  content: '';
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--role-accent), var(--role-accent-2));
+}
+.role-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+}
+.role-card-extra {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+}
+
+/* 快捷入口网格 */
+.role-quick {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+.role-quick-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--role-border);
+  border-radius: 12px;
+  background: var(--role-soft);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.role-quick-item:hover {
+  border-color: var(--role-accent);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1);
+  transform: translateY(-2px);
+}
+.role-quick-ico {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  background: #fff;
+  border: 1px solid var(--role-border);
+}
+.role-quick-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #303133;
+}
+.role-quick-desc {
+  font-size: 11.5px;
+  color: #909399;
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+/* 列表行 */
+.role-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.role-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+.role-list-item:hover { background: #f8fafc; }
+.role-list-main { flex: 1; min-width: 0; }
+.role-list-title { font-size: 13px; font-weight: 600; color: #303133; }
+.role-list-desc { font-size: 11.5px; color: #909399; margin-top: 2px; }
+
+/* 角色徽标（布局 / 页头复用） */
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--role-ink);
+  background: var(--role-soft);
+  border: 1px solid var(--role-border);
+}
+
+@media (max-width: 768px) {
+  .role-hero { padding: 18px; border-radius: 14px; }
+  .role-hero-title { font-size: 18px; }
+  .role-stats { grid-template-columns: repeat(2, 1fr); }
+  .role-quick { grid-template-columns: 1fr; }
+}

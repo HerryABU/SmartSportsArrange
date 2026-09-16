@@ -202,6 +202,27 @@ const routes = [
       }
     ]
   },
+  // 裁判工作台（裁判视角；裁判为被编排的人力资源、无登录账号，故由管理员/体育老师进入并投屏给裁判查看）
+  {
+    path: '/referee',
+    component: () => import('@/layouts/RefereeLayout.vue'),
+    redirect: '/referee/dashboard',
+    meta: { requiresAuth: true, role: ['TEACHER', 'SUPER_ADMIN'] },
+    children: [
+      {
+        path: 'dashboard',
+        name: 'RefereeDashboard',
+        component: () => import('@/views/referee/Dashboard.vue'),
+        meta: { title: '执裁看板' }
+      },
+      {
+        path: 'board',
+        name: 'RefereeBoardAll',
+        component: () => import('@/views/teacher/RefereeBoard.vue'),
+        meta: { title: '全体裁判安排' }
+      }
+    ]
+  },
   // 现场大屏（数据大屏 / 排行榜大屏，全屏投屏用）
   {
     path: '/screen',

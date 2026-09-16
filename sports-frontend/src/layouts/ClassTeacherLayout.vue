@@ -1,9 +1,12 @@
 <template>
-  <div class="ct-layout">
+  <div class="ct-layout role-root role-class-teacher">
     <!-- Desktop sidebar -->
     <div class="sidebar">
       <div class="sidebar-header">
         <div class="logo"><span class="logo-icon">📚</span><span class="logo-text">班主任端</span></div>
+        <div class="role-badge">
+          <span class="role-chip">🎓 班主任</span>
+        </div>
       </div>
       <el-menu :default-active="activeMenu" router class="sidebar-menu">
         <el-menu-item index="/class-teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>班级看板</span></el-menu-item>
@@ -112,7 +115,7 @@ watch(() => route.path, (p) => { activeMenu.value = p }, { immediate: true })
 .sidebar-menu{border-right:none;background:transparent!important;flex:1;padding-top:4px}
 .sidebar-menu :deep(.el-menu-item){color:rgba(255,255,255,.65)!important;margin:2px 8px;border-radius:10px;height:42px;line-height:42px;font-size:13px;transition:all .2s}
 .sidebar-menu :deep(.el-menu-item:hover){background:rgba(255,255,255,.1)!important;color:#fff!important}
-.sidebar-menu :deep(.el-menu-item.is-active){background:linear-gradient(135deg,rgba(76,175,80,.9),rgba(56,142,60,.9))!important;color:#fff!important;box-shadow:0 4px 12px rgba(76,175,80,.3)}
+.sidebar-menu :deep(.el-menu-item.is-active){background:linear-gradient(135deg,var(--role-accent),var(--role-accent-2))!important;color:#fff!important;box-shadow:0 4px 12px rgba(16,185,129,.3)}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .header{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:var(--bg-header);backdrop-filter:blur(12px);border-bottom:1px solid var(--border-light);flex-shrink:0}
 .header-right{display:flex;align-items:center;gap:8px}

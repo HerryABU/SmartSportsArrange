@@ -1,5 +1,5 @@
 <template>
-  <div class="teacher-layout">
+  <div class="teacher-layout role-root" :class="isAdmin ? 'role-admin' : 'role-teacher'">
     <!-- Desktop sidebar -->
     <div class="sidebar">
       <div class="sidebar-header">
@@ -31,6 +31,7 @@
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
         <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
+        <el-menu-item index="/referee/dashboard"><el-icon><Medal /></el-icon><span>裁判工作台</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <div style="padding:4px 16px;font-size:11px;color:rgba(255,255,255,.35)">管理员专用</div>
@@ -72,6 +73,7 @@
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
         <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
+        <el-menu-item index="/referee/dashboard"><el-icon><Medal /></el-icon><span>裁判工作台</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
@@ -190,7 +192,7 @@ watch(() => route.fullPath, (p) => { activeMenu.value = p }, { immediate: true }
 .sidebar-menu :deep(.el-menu-item-group__title) { color:rgba(255,255,255,.3); font-size:11px; padding:12px 16px 4px; letter-spacing:.5px; }
 .sidebar-menu :deep(.el-menu-item) { color:rgba(255,255,255,.6)!important; margin:2px 8px; border-radius:10px; height:42px; line-height:42px; font-size:13px; transition:all .2s; }
 .sidebar-menu :deep(.el-menu-item:hover) { background:rgba(255,255,255,.08)!important; color:#fff!important; }
-.sidebar-menu :deep(.el-menu-item.is-active) { background:linear-gradient(135deg,rgba(59,130,246,.85),rgba(99,102,241,.85))!important; color:#fff!important; box-shadow:0 4px 12px rgba(59,130,246,.3); }
+.sidebar-menu :deep(.el-menu-item.is-active) { background:linear-gradient(135deg,var(--role-accent),var(--role-accent-2))!important; color:#fff!important; box-shadow:0 4px 12px rgba(59,130,246,.3); }
 .sidebar-foot { padding: 12px 16px 16px; }
 .foot-btn { width:100%; justify-content:flex-start; color:rgba(255,255,255,.82)!important; background:rgba(255,255,255,.08)!important; border:1px solid rgba(255,255,255,.14)!important; font-size:13px; }
 .foot-btn:hover { background:rgba(255,255,255,.18)!important; color:#fff!important; }
