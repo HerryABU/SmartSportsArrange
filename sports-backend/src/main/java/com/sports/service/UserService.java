@@ -215,6 +215,7 @@ public class UserService {
             case "TEACHER" -> "ROLE_TEACHER";
             case "CLASS_TEACHER" -> "ROLE_CLASS_TEACHER";
             case "STUDENT" -> "ROLE_STUDENT";
+            case "REFEREE" -> "ROLE_REFEREE";
             default -> role.startsWith("ROLE_") ? role : "ROLE_" + role;
         };
     }
@@ -227,6 +228,7 @@ public class UserService {
             case "ROLE_TEACHER" -> "TEACHER";
             case "ROLE_CLASS_TEACHER" -> "CLASS_TEACHER";
             case "ROLE_STUDENT" -> "STUDENT";
+            case "ROLE_REFEREE" -> "REFEREE";
             default -> role.replace("ROLE_", "");
         };
     }

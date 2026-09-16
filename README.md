@@ -146,15 +146,17 @@ java -jar sports-2.6.1.jar
 | 赛程查看 | 本班运动员的组次、道次、时间 |
 | 成绩查看 | 本班成绩 + 总分/金银铜汇总 |
 
-### 裁判（视角 · 无登录账号）
+### 裁判（REFEREE · 可登录）
 
-裁判是**被编排的人力资源**（不拥有登录账号），由智能编排按项目「组次裁判数量」自动分配（专长优先 + 负载均衡）。管理端为其提供独立视角：
+裁判既是**被编排的人力资源**（由智能编排按项目「组次裁判数量」自动分配，专长优先 + 负载均衡），**也可以拥有登录账号**（角色 `ROLE_REFEREE`）自行登录查看本人执裁安排。裁判花名册与账号通过 `referee.user_id` 关联。
 
 | 页面 | 功能 |
 |------|------|
-| 裁判管理（`/teacher/referees`，SA） | 裁判花名册增删改查、Excel 批量导入（专长 `[a,b，c]`）、模板下载 |
+| 裁判管理（`/teacher/referees`，SA） | 花名册增删改查、Excel 批量导入（专长 `[a,b，c]`）、模板下载、**单个/批量开通登录账号**（账号列显示「已开通/未开通」） |
 | 裁判工作安排（`/teacher/referee-board`，T/SA） | 按裁判聚合「项目/年级/性别/赛次/组次」分配，含未分配裁判 |
-| **裁判工作台（`/referee/dashboard`，独立布局）** | 裁判专属视觉（琥珀色系）工作区：执裁看板 + 全体裁判安排，供现场投屏/查阅 |
+| **裁判工作台（`/referee/dashboard`，独立布局）** | 裁判登录后进入（琥珀色系）；**裁判本人看到「我的执裁安排」**（`GET /api/referee/me`），管理员/体育老师则看到全体裁判安排（可投屏） |
+
+> **开通账号**：裁判管理页「开通账号」/「批量开通账号」→ `POST /api/system/referees/{id}/account`、`POST /api/system/referees/accounts/open-all`。用户名默认取手机号（无手机号则 `ref{id}`，冲突自动加后缀），初始密码默认 `123456`；也可在「用户管理」Excel 导入中直接把角色填 `REFEREE` 建账号。
 
 ### 学生（STUDENT）
 
@@ -767,11 +769,11 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 14.1 裁判管理 Referees
 
-前缀 `/api/system/referees`，7 个端点，**全部仅 SA**。裁判是「被编排的人力资源」，不拥有系统登录账号；通过智能编排引擎按「组次裁判数量」（`event.refereesPerGroup`）分配到各个组次。
+前缀 `/api/system/referees`，9 个端点，**全部仅 SA**。裁判既是「被编排的人力资源」（通过智能编排引擎按「组次裁判数量」`event.refereesPerGroup` 分配到各个组次），**也可拥有登录账号**（角色 `ROLE_REFEREE`，经 `referee.user_id` 关联），登录后进入裁判工作台查看本人执裁安排（`GET /api/referee/me`）。
 
 **前端入口**：教师端（仅 SA 可见）「裁判管理」页（`/teacher/referees`）——列表查看、新增/编辑（姓名必填、电话、专长项目多行文本，前端按 `[,，]` 切分）、删除、Excel 导入（带 Bearer Token）、下载导入模板。
 
-**裁判工作安排（裁判视图）**：教师端「裁判工作安排」页（`/teacher/referee-board`，T/SA 可见）——按裁判聚合其在各「项目 / 年级 / 性别 / 赛次 / 组次」的编排分配（可展开查看明细、按姓名/专长搜索、统计分配组次数与未分配裁判）。数据来自 `GET /api/arrange/referee-board`（聚合 `event_referee`）。裁判仍是「被编排的人力资源」，此页用于查看/派工，而非裁判登录。
+**裁判工作安排（裁判视图）**：教师端「裁判工作安排」页（`/teacher/referee-board`，T/SA 可见）——按裁判聚合其在各「项目 / 年级 / 性别 / 赛次 / 组次」的编排分配（可展开查看明细、按姓名/专长搜索、统计分配组次数与未分配裁判）。数据来自 `GET /api/arrange/referee-board`（聚合 `event_referee`）。裁判本人登录后看到的是**自己的**安排（`GET /api/referee/me`），此页为管理端汇总视图。
 
 **批量导入中心（管理员）**：Settings →「批量创建」标签页顶部提供四类名单导入入口——**学生名单**（→ 运动员管理页，列映射预览导入 `/excel/import-with-mapping`）、**班主任名单 / 体育老师**（→「用户管理」标签页，`/api/system/users/import` + 模板）、**裁判**（→「裁判管理」页，`/api/system/referees/import` + 模板）。
 
@@ -784,8 +786,12 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | DELETE | `/api/system/referees/{id}` | Path id | SA | 删除裁判（软删除） |
 | POST | `/api/system/referees/import` | multipart `file` | SA | Excel 批量导入（按姓名 upsert） |
 | GET | `/api/system/referees/template` | — | SA | 下载裁判导入模板 |
+| **POST** | **`/api/system/referees/{id}/account`** | Path id, Body `{username?, password?}` | SA | **为某裁判开通登录账号（角色 REFEREE，默认用户名取手机号、密码 123456）** |
+| **POST** | **`/api/system/referees/accounts/open-all`** | — | SA | **批量为未开通账号的裁判开通账号** |
 
-**裁判实体字段**：`name`（姓名，唯一）、`phone`（电话）、`specialties`（专长项目，JSON 数组，如 `["立定跳远","拔河"]`）、`status`（active）。
+**裁判端接口**：`GET /api/referee/me`（角色 `ROLE_REFEREE`/T/SA）——当前登录裁判本人的执裁安排（未绑定档案时返回 `linked=false`）。
+
+**裁判实体字段**：`name`（姓名，唯一）、`phone`（电话）、`specialties`（专长项目，JSON 数组，如 `["立定跳远","拔河"]`）、`status`（active）、`userId`（关联登录账号，空=未开通）。
 **专长项目 Excel 语法**：单元格可写 `[立定跳远,拔河，跳绳]`（中英文逗号混合），系统归一化为标准 JSON 落库；留空表示不限项目。
 **与编排的关系**：裁判经「组次裁判数量」在智能编排中按组次自动分配，详见 [4. 智能编排](#4-智能编排)。
 

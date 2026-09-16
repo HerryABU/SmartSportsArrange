@@ -185,6 +185,8 @@ public class AuthService {
             case "ROLE_CLASS_TEACHER" -> List.of("athlete:view", "class:view", "registration:manage",
                     "event:view", "arrange:view", "result:view", "ranking:view", "statistics:view");
             case "ROLE_STUDENT" -> List.of("event:view", "arrange:view", "result:view", "ranking:view");
+            // 裁判：仅需查看自己的执裁安排与相关赛程/项目信息
+            case "ROLE_REFEREE" -> List.of("referee:view", "event:view", "arrange:view", "result:view");
             default -> List.of("event:view", "arrange:view", "result:view", "ranking:view");
         };
     }

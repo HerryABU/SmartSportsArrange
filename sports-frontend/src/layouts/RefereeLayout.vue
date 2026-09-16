@@ -8,12 +8,13 @@
         </div>
       </div>
       <el-menu :default-active="activeMenu" router class="sidebar-menu">
-        <el-menu-item index="/referee/dashboard"><el-icon><HomeFilled /></el-icon><span>执裁看板</span></el-menu-item>
-        <el-menu-item index="/referee/board"><el-icon><Medal /></el-icon><span>全体裁判安排</span></el-menu-item>
+        <el-menu-item index="/referee/dashboard"><el-icon><HomeFilled /></el-icon><span>我的执裁安排</span></el-menu-item>
+        <el-menu-item v-if="!isReferee" index="/referee/board"><el-icon><Medal /></el-icon><span>全体裁判安排</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
       </el-menu>
       <div class="sidebar-foot">
-        <el-button class="foot-btn" @click="backToConsole">← 返回主控端</el-button>
+        <el-button v-if="!isReferee" class="foot-btn" @click="backToConsole">← 返回主控端</el-button>
+        <el-button v-else class="foot-btn" @click="logout">退出登录</el-button>
       </div>
     </div>
 
@@ -46,11 +47,17 @@ const router = useRouter()
 const authStore = useAuthStore()
 
 const activeMenu = computed(() => route.path)
+const isReferee = computed(() => !!authStore.isReferee)
 
 function backToConsole() {
   if (authStore.isClassTeacher) router.push('/class-teacher/dashboard')
   else if (authStore.isStudent) router.push('/student/home')
   else router.push('/teacher/dashboard')
+}
+
+function logout() {
+  authStore.logout()
+  router.push('/login')
 }
 </script>
 

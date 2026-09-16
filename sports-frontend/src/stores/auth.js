@@ -39,6 +39,10 @@ export const useAuthStore = defineStore('auth', () => {
     return userRole.value === 'STUDENT'
   })
 
+  const isReferee = computed(() => {
+    return userRole.value === 'REFEREE'
+  })
+
   // Actions
   async function login(username, password) {
     try {
@@ -109,6 +113,7 @@ export const useAuthStore = defineStore('auth', () => {
     isTeacher,
     isClassTeacher,
     isStudent,
+    isReferee,
     isAdmin,
     login,
     logout,

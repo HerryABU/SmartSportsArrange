@@ -67,10 +67,13 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/profile").authenticated()
                         .requestMatchers("/api/auth/change-password").authenticated()
 
+                        // ===== 裁判端（ROLE_REFEREE）：查看自己的执裁安排与相关赛程 =====
+                        .requestMatchers("/api/referee/**").hasAnyAuthority("ROLE_REFEREE", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+
                         // ===== 学生端 =====
                         .requestMatchers(HttpMethod.GET, "/api/student/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/events/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/arrange/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/events/**").hasAnyAuthority("ROLE_REFEREE", "ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/arrange/**").hasAnyAuthority("ROLE_REFEREE", "ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/results/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/ranking/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 

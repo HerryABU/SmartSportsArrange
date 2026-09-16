@@ -25,6 +25,9 @@
               <el-button type="success" size="small"><el-icon><Upload /></el-icon> 导入Excel</el-button>
             </el-upload>
             <el-button size="small" plain @click="downloadTemplate" style="margin-left:4px"><el-icon><DocumentCopy /></el-icon> 下载模板</el-button>
+            <el-button size="small" type="warning" plain @click="openAllAccounts" :loading="accountWorking" style="margin-left:4px">
+              <el-icon><Key /></el-icon> 批量开通账号
+            </el-button>
           </div>
         </div>
       </template>
@@ -45,9 +48,17 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column label="登录账号" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.hasAccount ? 'success' : 'info'" effect="plain">
+              {{ row.hasAccount ? '已开通' : '未开通' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="240">
           <template #default="{ row }">
             <el-button type="primary" size="small" link @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="!row.hasAccount" type="warning" size="small" link @click="openAccount(row)">开通账号</el-button>
             <el-button type="danger" size="small" link @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -81,7 +92,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Upload, DocumentCopy } from '@element-plus/icons-vue'
+import { Plus, Upload, DocumentCopy, Key } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { useAuthStore } from '@/stores/auth'
@@ -97,6 +108,55 @@ const specialtiesText = ref('')
 
 const importUrl = apiBase() + '/system/referees/import'
 const uploadHeaders = computed(() => ({ Authorization: 'Bearer ' + authStore.token }))
+const accountWorking = ref(false)
+
+/** 为单个裁判开通登录账号（角色 REFEREE；用户名默认取手机号，密码默认 123456） */
+async function openAccount(row) {
+  try {
+    const r = await request.post('/system/referees/' + row.id + '/account', {})
+    if (r?.created) {
+      ElMessageBox.alert(
+        `裁判「${r.name}」账号已开通\n用户名：${r.username}\n初始密码：${r.password}`,
+        '账号已开通',
+        { confirmButtonText: '知道了', type: 'success' }
+      )
+    } else {
+      ElMessage.info(r?.message || '该裁判已开通账号')
+    }
+    fetchList()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e.message || '开通账号失败')
+  }
+}
+
+/** 批量为尚未开通账号的裁判开通账号 */
+async function openAllAccounts() {
+  try {
+    await ElMessageBox.confirm(
+      '将为所有尚未开通账号的裁判创建登录账号（用户名默认取手机号，密码默认 123456），是否继续？',
+      '批量开通裁判账号',
+      { type: 'warning' }
+    )
+  } catch { return }
+  accountWorking.value = true
+  try {
+    const r = await request.post('/system/referees/accounts/open-all')
+    const created = r?.created || 0
+    if (created > 0) {
+      const lines = (r.accounts || []).map(a => `${a.name}：${a.username} / ${a.password}`).join('\n')
+      ElMessageBox.alert(`已开通 ${created} 个裁判账号：\n${lines}`, '批量开通完成', {
+        confirmButtonText: '知道了', type: 'success'
+      })
+    } else {
+      ElMessage.success('所有裁判均已开通账号')
+    }
+    fetchList()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e.message || '批量开通失败')
+  } finally {
+    accountWorking.value = false
+  }
+}
 
 async function fetchList() {
   loading.value = true

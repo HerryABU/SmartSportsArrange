@@ -236,7 +236,7 @@ public class ExcelService {
                 notes.add(List.of("运动员号码", "填号码布编号或学号。"));
             }
             case "class" -> notes.add(List.of("班级编码", "唯一标识；班主任可填姓名，系统按规则匹配登录账号。"));
-            case "user" -> notes.add(List.of("角色", "取值：ADMIN/TEACHER/CLASS_TEACHER/STUDENT。"));
+            case "user" -> notes.add(List.of("角色", "取值：ADMIN/TEACHER/CLASS_TEACHER/STUDENT/REFEREE（REFEREE=裁判，可登录查看本人执裁安排）。"));
             case "event" -> {
                 notes.add(List.of("道次", "田赛填 0；径赛填实际道次数。"));
                 notes.add(List.of("每组次几人", "径赛=每组人数即道次，田赛=工位数，游泳=泳道数。"));

@@ -1787,6 +1787,45 @@ public class ArrangementService {
         return res;
     }
 
+    /**
+     * 裁判端：当前登录裁判自己的执裁安排（裁判花名册按 {@code user_id} 关联登录账号）。
+     * <p>未关联裁判记录时返回 {@code linked=false}，前端提示联系管理员开通/绑定。</p>
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getRefereeBoardForUser(Long userId) {
+        Map<String, Object> res = new LinkedHashMap<>();
+        Optional<Referee> refOpt = refereeRepository.findFirstByUserId(userId);
+        if (refOpt.isEmpty()) {
+            res.put("linked", false);
+            res.put("count", 0);
+            res.put("assignments", List.of());
+            return res;
+        }
+        Referee r = refOpt.get();
+        List<Map<String, Object>> assignments = new ArrayList<>();
+        for (EventReferee er : eventRefereeRepository.findAll()) {
+            if (!parseRefIds(er.getRefereeIds()).contains(r.getId())) continue;
+            Event ev = er.getEvent();
+            Map<String, Object> a = new LinkedHashMap<>();
+            a.put("eventId", ev != null ? ev.getId() : null);
+            a.put("eventName", ev != null ? ev.getName() : null);
+            a.put("category", ev != null ? ev.getCategory() : null);
+            a.put("grade", er.getGrade());
+            a.put("gender", er.getGender());
+            a.put("round", er.getRound());
+            a.put("heat", er.getHeat());
+            assignments.add(a);
+        }
+        res.put("linked", true);
+        res.put("refereeId", r.getId());
+        res.put("refereeName", r.getName());
+        res.put("phone", r.getPhone());
+        res.put("specialties", parseRefereeSpecialties(r.getSpecialties()));
+        res.put("count", assignments.size());
+        res.put("assignments", assignments);
+        return res;
+    }
+
     private Map<String, Object> refereeBoardItem(Long id, Referee r, List<Map<String, Object>> assignments) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("refereeId", id);

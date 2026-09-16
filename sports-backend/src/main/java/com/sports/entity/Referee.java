@@ -10,9 +10,10 @@ import org.hibernate.annotations.SQLRestriction;
 import java.time.LocalDateTime;
 
 /**
- * 裁判花名册（独立于登录账号的角色体系）。
- * <p>裁判只是「被编排的人力资源」，不拥有系统登录权限；通过智能编排引擎按
- * 「项目.组次裁判数量」分配到各个组次（heat / 组 / 轮）。</p>
+ * 裁判花名册。
+ * <p>裁判既可作为「被编排的人力资源」由智能编排引擎按「项目.组次裁判数量」分配到各个组次
+ * （heat / 组 / 轮），也<b>可拥有登录账号</b>（角色 {@code ROLE_REFEREE}）以便自行登录查看执裁安排——
+ * 二者通过 {@link #userId} 关联（为空表示尚未开通账号）。</p>
  * <p>专长项目 {@link #specialties} 以 JSON 数组字符串存储（如 ["立定跳远","拔河"]），
  * Excel 导入时兼容 [a,b，c]（中英文逗号混合）写法。</p>
  */
@@ -51,6 +52,13 @@ public class Referee {
     @Column(length = 20)
     @Builder.Default
     private String status = "active";
+
+    /**
+     * 关联的登录账号（user.id）。为空表示尚未开通账号；
+     * 不为空则该裁判可用该账号登录（角色 ROLE_REFEREE）查看自己的执裁安排。
+     */
+    @Column(name = "user_id")
+    private Long userId;
 
     private LocalDateTime createdAt;
 

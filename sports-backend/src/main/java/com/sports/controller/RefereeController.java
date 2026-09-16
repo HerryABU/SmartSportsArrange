@@ -63,4 +63,21 @@ public class RefereeController {
         log.info("下载裁判导入模板");
         refereeService.downloadTemplate(response);
     }
+
+    // ==================== 裁判登录账号（角色 ROLE_REFEREE） ====================
+
+    /** 为某裁判开通登录账号（body 可选 username/password，默认用户名取手机号、密码 123456） */
+    @PostMapping("/{id}/account")
+    public ApiResponse<?> openAccount(@PathVariable Long id,
+                                      @RequestBody(required = false) Map<String, Object> body) {
+        log.info("为裁判开通账号: id={}", id);
+        return ApiResponse.success("账号已开通", refereeService.openAccount(id, body == null ? Map.of() : body));
+    }
+
+    /** 批量为尚未开通账号的裁判开通账号 */
+    @PostMapping("/accounts/open-all")
+    public ApiResponse<?> openAccountsForAll() {
+        log.info("批量开通裁判账号");
+        return ApiResponse.success("批量开通完成", refereeService.openAccountsForAll());
+    }
 }

@@ -22,4 +22,7 @@ public interface RefereeRepository extends JpaRepository<Referee, Long>, JpaSpec
 
     /** 按状态查询（@SQLRestriction 自动排除软删除记录） */
     List<Referee> findByStatus(String status);
+
+    /** 按关联的登录账号查裁判（用于裁判端「我的执裁安排」） */
+    Optional<Referee> findFirstByUserId(Long userId);
 }

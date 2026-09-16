@@ -202,12 +202,12 @@ const routes = [
       }
     ]
   },
-  // 裁判工作台（裁判视角；裁判为被编排的人力资源、无登录账号，故由管理员/体育老师进入并投屏给裁判查看）
+  // 裁判工作台（裁判可登录：角色 REFEREE；管理员/体育老师亦可进入查看或投屏）
   {
     path: '/referee',
     component: () => import('@/layouts/RefereeLayout.vue'),
     redirect: '/referee/dashboard',
-    meta: { requiresAuth: true, role: ['TEACHER', 'SUPER_ADMIN'] },
+    meta: { requiresAuth: true, role: ['REFEREE', 'TEACHER', 'SUPER_ADMIN'] },
     children: [
       {
         path: 'dashboard',
@@ -219,7 +219,8 @@ const routes = [
         path: 'board',
         name: 'RefereeBoardAll',
         component: () => import('@/views/teacher/RefereeBoard.vue'),
-        meta: { title: '全体裁判安排' }
+        // 全体裁判安排为管理端视图，裁判本人只看看板（自己的安排）
+        meta: { title: '全体裁判安排', role: ['TEACHER', 'SUPER_ADMIN'] }
       }
     ]
   },
@@ -291,6 +292,8 @@ router.beforeEach(async (to, from, next) => {
         next('/class-teacher/dashboard')
       } else if (authStore.isStudent) {
         next('/student/home')
+      } else if (authStore.isReferee) {
+        next('/referee/dashboard')
       } else {
         next()
       }
@@ -316,6 +319,8 @@ router.beforeEach(async (to, from, next) => {
         next('/class-teacher/dashboard')
       } else if (authStore.isStudent) {
         next('/student/home')
+      } else if (authStore.isReferee) {
+        next('/referee/dashboard')
       } else {
         next('/login')
       }

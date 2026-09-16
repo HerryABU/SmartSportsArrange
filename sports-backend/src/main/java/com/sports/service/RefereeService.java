@@ -4,10 +4,13 @@ import com.alibaba.excel.EasyExcel;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.entity.Referee;
+import com.sports.entity.User;
 import com.sports.repository.RefereeRepository;
+import com.sports.repository.UserRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -32,6 +35,101 @@ public class RefereeService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final RefereeRepository refereeRepository;
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    /** 裁判账号默认密码 */
+    private static final String DEFAULT_PASSWORD = "123456";
+    /** 裁判登录账号角色 */
+    private static final String REFEREE_ROLE = "ROLE_REFEREE";
+
+    // ==================== 裁判登录账号 ====================
+
+    /**
+     * 为某裁判开通登录账号（角色 ROLE_REFEREE）并回填 {@code referee.userId}。
+     * <p>body 可选：username（默认取手机号，其次 ref{id}）、password（默认 123456）。已开通则幂等返回。</p>
+     */
+    public Map<String, Object> openAccount(Long refereeId, Map<String, Object> body) {
+        Referee referee = refereeRepository.findById(refereeId)
+                .orElseThrow(() -> new RuntimeException("裁判不存在: " + refereeId));
+
+        String password = body != null && body.get("password") != null
+                ? String.valueOf(body.get("password")).trim() : DEFAULT_PASSWORD;
+        if (password.isBlank()) password = DEFAULT_PASSWORD;
+
+        String requested = body != null && body.get("username") != null
+                ? String.valueOf(body.get("username")).trim() : null;
+        String username = requested != null && !requested.isBlank()
+                ? requested
+                : (referee.getPhone() != null && !referee.getPhone().isBlank()
+                        ? referee.getPhone().trim()
+                        : "ref" + referee.getId());
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        // 已关联账号：幂等返回（不改密码）
+        if (referee.getUserId() != null) {
+            Optional<User> u = userRepository.findById(referee.getUserId());
+            if (u.isPresent()) {
+                res.put("refereeId", referee.getId());
+                res.put("name", referee.getName());
+                res.put("userId", u.get().getId());
+                res.put("username", u.get().getUsername());
+                res.put("created", false);
+                res.put("message", "该裁判已开通账号");
+                return res;
+            }
+        }
+        // 用户名冲突时自动追加裁判 id 去重
+        if (userRepository.existsByUsername(username)) {
+            username = username + "_" + referee.getId();
+        }
+
+        User user = new User();
+        user.setUsername(username);
+        user.setPassword(passwordEncoder.encode(password));
+        user.setRole(REFEREE_ROLE);
+        user.setName(referee.getName());
+        user.setPhone(referee.getPhone());
+        user.setStatus("active");
+        user.setCreatedAt(LocalDateTime.now());
+        user.setUpdatedAt(LocalDateTime.now());
+        user = userRepository.save(user);
+
+        referee.setUserId(user.getId());
+        referee.setUpdatedAt(LocalDateTime.now());
+        refereeRepository.save(referee);
+
+        res.put("refereeId", referee.getId());
+        res.put("name", referee.getName());
+        res.put("userId", user.getId());
+        res.put("username", user.getUsername());
+        res.put("password", password);
+        res.put("created", true);
+        log.info("为裁判开通账号成功: {} -> {}", referee.getName(), username);
+        return res;
+    }
+
+    /** 批量为尚未开通账号的裁判开通账号（用户名取手机号，其次 ref{id}；默认密码 123456） */
+    public Map<String, Object> openAccountsForAll() {
+        List<Map<String, Object>> accounts = new ArrayList<>();
+        int created = 0;
+        for (Referee r : refereeRepository.findAll()) {
+            if (r.getUserId() != null) continue;
+            try {
+                Map<String, Object> a = openAccount(r.getId(), Map.of());
+                if (Boolean.TRUE.equals(a.get("created"))) {
+                    accounts.add(a);
+                    created++;
+                }
+            } catch (Exception e) {
+                log.warn("裁判 {} 开通账号失败: {}", r.getName(), e.getMessage());
+            }
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("created", created);
+        res.put("accounts", accounts);
+        return res;
+    }
 
     /** 列出所有未删除裁判 */
     @Transactional(readOnly = true)
@@ -242,6 +340,8 @@ public class RefereeService {
         map.put("specialties", specs);
         map.put("specialtiesText", String.join("，", specs));
         map.put("status", "active".equals(r.getStatus()) ? "ACTIVE" : r.getStatus().toUpperCase());
+        map.put("userId", r.getUserId());
+        map.put("hasAccount", r.getUserId() != null);
         map.put("createdAt", r.getCreatedAt());
         map.put("updatedAt", r.getUpdatedAt());
         return map;
