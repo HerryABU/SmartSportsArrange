@@ -27,6 +27,7 @@ public class ArrangementController {
     private final ArrangementService arrangementService;
     private final ConflictService conflictService;
     private final AuditService auditService;
+    private final com.sports.service.SystemService systemService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/events/{eventId}")
@@ -205,6 +206,24 @@ public class ArrangementController {
     public ApiResponse<?> verifyArrangement(@PathVariable Long eventId) {
         log.info("编排自检: eventId={}", eventId);
         return ApiResponse.success("自检完成", arrangementService.verifyArrangement(eventId));
+    }
+
+    // ==================== 裁判编排开关 ====================
+
+    /** 是否启用裁判编排（关闭后编排不分配裁判，裁判池为空同样自动跳过） */
+    @GetMapping("/referee-arrange-enabled")
+    public ApiResponse<?> getRefereeArrangeEnabled() {
+        return ApiResponse.success(Map.of("enabled", systemService.isRefereeArrangeEnabled()));
+    }
+
+    /** 设置是否启用裁判编排 */
+    @PutMapping("/referee-arrange-enabled")
+    public ApiResponse<?> setRefereeArrangeEnabled(@RequestBody Map<String, Object> body) {
+        boolean enabled = body.get("enabled") != null && Boolean.TRUE.equals(body.get("enabled"));
+        systemService.setRefereeArrangeEnabled(enabled);
+        auditService.record("ARRANGE_REFEREE_TOGGLE", "SYSTEM", null, "裁判编排开关: " + enabled);
+        log.info("裁判编排开关: {}", enabled);
+        return ApiResponse.success(enabled ? "已启用裁判编排" : "已关闭裁判编排", Map.of("enabled", enabled));
     }
 
     // ==================== 裁判工作安排（裁判视图） ====================

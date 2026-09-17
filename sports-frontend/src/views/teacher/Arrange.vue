@@ -110,6 +110,14 @@
                 @click="rebuildAllFinals" style="margin-left:8px">
                 重排全部决赛
               </el-button>
+              <el-tooltip
+                content="裁判编排已关闭（设置 → 编排规则），编排不会分配裁判；如需分配请到设置中开启"
+                placement="bottom"
+              >
+                <el-tag v-if="!refereeArrangeEnabled" type="info" effect="plain" style="margin-left:8px">
+                  🧑‍⚖️ 裁判编排已关闭
+                </el-tag>
+              </el-tooltip>
             </div>
           </div>
         </el-card>
@@ -514,6 +522,7 @@ const mobileDrawer = ref(false)
 // ===== 裁判分配（查看 + 手工调整） =====
 const refereeAssignments = ref(null)   // { items:[{grade,gender,round,heat,referees:[{id,name}]}], refereesPerGroup }
 const allReferees = ref([])             // 裁判池（/system/referees）
+const refereeArrangeEnabled = ref(true) // 全局「裁判编排」开关（设置 → 编排规则）
 const refereeDialogVisible = ref(false)
 const refereeAdjusting = ref(false)
 const refereeEditItems = ref([])        // 可编辑副本
@@ -659,6 +668,14 @@ onMounted(async () => {
     }
   } catch (e) {
     console.error('加载编排规则失败', e)
+  }
+
+  // 全局「裁判编排」开关（关闭时编排不分配裁判）
+  try {
+    const flag = await request.get('/arrange/referee-arrange-enabled')
+    refereeArrangeEnabled.value = flag?.enabled !== false
+  } catch (e) {
+    refereeArrangeEnabled.value = true
   }
 })
 

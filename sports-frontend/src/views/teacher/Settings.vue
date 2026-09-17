@@ -233,6 +233,14 @@
               <span class="rule-desc">0 表示不限制</span>
             </el-form-item>
 
+            <el-divider content-position="left">🧑‍⚖️ 裁判编排</el-divider>
+            <el-form-item label="启用裁判编排">
+              <el-switch v-model="refereeArrangeEnabled" :loading="refereeArrangeSaving" @change="saveRefereeArrange" />
+              <span class="rule-desc">
+                关闭后编排<b>不分配裁判</b>（组次裁判数量将被忽略）；裁判池为空时同样自动跳过。关闭不影响分组/分道等其它编排
+              </span>
+            </el-form-item>
+
             <el-divider content-position="left">⚙️ 算法参数</el-divider>
             <el-form-item label="最大尝试次数">
               <el-input-number v-model="arrangeRuleForm.params.max_attempts" :min="100" :max="100000" :step="100" />
@@ -1295,7 +1303,30 @@ async function doGenerateNumberBook() {
 }
 
 // ---- 编排规则 ----
+// 裁判编排开关（独立持久化，切换即保存）
+const refereeArrangeEnabled = ref(true)
+const refereeArrangeSaving = ref(false)
+async function fetchRefereeArrangeEnabled() {
+  try {
+    const res = await request.get('/arrange/referee-arrange-enabled')
+    refereeArrangeEnabled.value = res?.enabled !== false
+  } catch (e) { /* 默认开启 */ }
+}
+async function saveRefereeArrange(val) {
+  refereeArrangeSaving.value = true
+  try {
+    await request.put('/arrange/referee-arrange-enabled', { enabled: !!val })
+    ElMessage.success(val ? '已启用裁判编排' : '已关闭裁判编排（编排不分配裁判）')
+  } catch (e) {
+    refereeArrangeEnabled.value = !val // 回滚
+    ElMessage.error(e.response?.data?.message || e.message || '保存失败')
+  } finally {
+    refereeArrangeSaving.value = false
+  }
+}
+
 async function fetchArrangeRule() {
+  await fetchRefereeArrangeEnabled()
   try {
     const res = await request.get('/system/arrange-rule')
     if (res) {

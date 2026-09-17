@@ -1494,6 +1494,14 @@ public class ArrangementService {
     private List<String> assignReferees(Event event, String grade, String gender, String round, int heats) {
         int k = event.getRefereesPerGroup() == null ? 0 : event.getRefereesPerGroup();
         List<String> warnings = new ArrayList<>();
+        // 全局开关：关闭「裁判编排」时跳过裁判分配（并清理旧分配），不影响其它编排流程
+        if (!systemService.isRefereeArrangeEnabled()) {
+            if (k > 0 && heats > 0) {
+                eventRefereeRepository.deleteByEventIdAndGradeAndGenderAndRound(event.getId(), grade, gender, round);
+                warnings.add("裁判编排已关闭（设置 → 编排规则），本项目未分配裁判");
+            }
+            return warnings;
+        }
         if (k <= 0 || heats <= 0) return warnings;
 
         // 重排该切片前，先清除旧分配

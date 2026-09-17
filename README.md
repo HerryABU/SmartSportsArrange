@@ -280,6 +280,8 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 **裁判分配（可视化）**：执行编排后，每个组次卡片底部以蓝色徽标展示本组次分配的裁判姓名（来自「智能编排」自动分配，详见 §7.1）。工具栏「裁判调整」按钮可打开对话框，按「年级组 / 性别 / 赛次 / 组次」逐组勾选裁判（裁判池带专长提示），保存后立即生效，并写入审计日志 `ARRANGE_REFEREE_ADJUST`；再次「执行编排」会按「组次裁判数量」自动重排并覆盖手工调整。
 
+**裁判编排开关** 🧑‍⚖️：可在「设置 → 编排规则 → 裁判编排」一键**启用/关闭裁判编排**（配置键 `arrange.referee_enabled`，默认**开启**）。关闭后编排**照常进行但不分配裁判**（项目「组次裁判数量」被忽略，并清理该切片旧分配）；**裁判池为空时同样自动跳过**，绝不阻断分组/分道等其它编排。编排页在关闭状态会显示「🧑‍⚖️ 裁判编排已关闭」提示。接口：`GET/PUT /api/arrange/referee-arrange-enabled`。
+
 ### 9. 项目编排（赛程编排）
 
 将比赛项目自动调度到「天 × 时段 × 场地」时间表，**模型为「1~n 并发位」**（已废弃早期「串行/并行」开关）：
@@ -588,7 +590,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 7. 智能编排 Arrange
 
-前缀 `/api/arrange`，24 个端点。
+前缀 `/api/arrange`，26 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -610,6 +612,8 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | **POST** | **`/api/arrange/events/{eventId}/reservations/reserve`** | Body `{grade, gender, round, heat, count, scheduledTime, note}` | T/SA | **按组次自动预留 N 个空道** |
 | **DELETE** | **`/api/arrange/reservations/{id}`** | Path id | T/SA | **删除预留空位** |
 | **POST** | **`/api/arrange/finals/rebuild-all`** | — | T/SA | **全部预赛完成后一次性重排全部决赛** |
+| **GET** | **`/api/arrange/referee-arrange-enabled`** | — | S/CT/T/SA | **查询是否启用「裁判编排」** |
+| **PUT** | **`/api/arrange/referee-arrange-enabled`** | Body `{enabled}` | T/SA | **设置是否启用「裁判编排」（关闭后编排不分配裁判）** |
 | GET | `/api/arrange/events/{eventId}/referees` | Path eventId | S/CT/T/SA | 查看该项目全部组次裁判分配（含姓名） |
 | PUT | `/api/arrange/events/{eventId}/referees/heat` | Path eventId, Body `{grade, gender, round, heat, refereeIds[]}` | T/SA | 手工调整某组次裁判（重新自动编排会覆盖） |
 | GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel，含裁判列） |

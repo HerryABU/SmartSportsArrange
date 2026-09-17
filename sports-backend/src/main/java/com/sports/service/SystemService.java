@@ -90,6 +90,33 @@ public class SystemService {
         log.info("秩序册自动生成开关已更新: {}", enabled);
     }
 
+    // ==================== 裁判编排开关 ====================
+
+    private static final String REFEREE_ARRANGE_KEY = "arrange.referee_enabled";
+
+    /**
+     * 是否启用「裁判编排」——编排时是否按项目「组次裁判数量」自动分配裁判。
+     * <p>默认<b>开启</b>；关闭后编排照常进行但<b>不分配裁判</b>（裁判池为空时亦自动跳过，不影响编排）。</p>
+     */
+    @Transactional(readOnly = true)
+    public boolean isRefereeArrangeEnabled() {
+        return systemConfigRepository.findByConfigKey(REFEREE_ARRANGE_KEY)
+                .map(c -> !"false".equalsIgnoreCase(String.valueOf(c.getConfigValue()).trim()))
+                .orElse(true);
+    }
+
+    /** 设置「裁判编排」开关 */
+    public void setRefereeArrangeEnabled(boolean enabled) {
+        SystemConfig config = systemConfigRepository.findByConfigKey(REFEREE_ARRANGE_KEY)
+                .orElse(SystemConfig.builder().configKey(REFEREE_ARRANGE_KEY).build());
+        config.setConfigValue(String.valueOf(enabled));
+        config.setConfigType("bool");
+        config.setDescription("启用裁判编排：编排时按项目「组次裁判数量」自动分配裁判");
+        config.setUpdatedAt(LocalDateTime.now());
+        systemConfigRepository.save(config);
+        log.info("裁判编排开关已更新: {}", enabled);
+    }
+
     /** 保存基本设置 */
     public void saveBasic(Map<String, Object> body) {
         for (Map.Entry<String, Object> entry : body.entrySet()) {
