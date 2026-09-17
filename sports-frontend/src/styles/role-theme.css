@@ -230,6 +230,108 @@
   line-height: 1.5;
 }
 
+/* ---------- 分步流程（顺序 + 录入，一步一步引导） ---------- */
+
+.role-steps {
+  display: flex;
+  flex-direction: column;
+}
+.role-step {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding: 10px 0 14px;
+}
+/* 连接线（序号圆点中心 = 16px） */
+.role-step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 15px;
+  top: 42px;
+  bottom: -2px;
+  width: 2px;
+  background: #eef1f5;
+}
+.role-step-no {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+  color: #64748b;
+  background: #f1f5f9;
+  border: 2px solid #e2e8f0;
+  position: relative;
+  z-index: 1;
+  transition: all 0.2s;
+}
+.role-step.is-current .role-step-no {
+  color: #fff;
+  background: linear-gradient(135deg, var(--role-accent), var(--role-accent-2));
+  border-color: transparent;
+  box-shadow: 0 0 0 4px var(--role-soft);
+}
+.role-step.is-done .role-step-no {
+  color: #fff;
+  background: #10b981;
+  border-color: transparent;
+}
+.role-step-body {
+  flex: 1;
+  min-width: 0;
+  padding-top: 2px;
+}
+.role-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.role-step-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #303133;
+}
+.role-step.is-current .role-step-title { color: var(--role-ink); }
+.role-step-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+}
+.role-step-tip {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #b88230;
+  background: #fffbeb;
+  border: 1px dashed #fde68a;
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+.role-step-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.role-step-tag.tag-entry { color: #2563eb; background: #eff6ff; border: 1px solid #dbeafe; }
+.role-step-tag.tag-config { color: #6d28d9; background: #f5f3ff; border: 1px solid #ede9fe; }
+.role-step-tag.tag-arrange { color: #c2410c; background: #fff7ed; border: 1px solid #fed7aa; }
+.role-step-tag.tag-report { color: #047857; background: #ecfdf5; border: 1px solid #d1fae5; }
+.role-step-action {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* 列表行 */
 .role-list {
   list-style: none;

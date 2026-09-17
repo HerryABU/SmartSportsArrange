@@ -23,18 +23,37 @@
       </div>
     </div>
 
-    <!-- 快捷入口（班主任工作流） -->
+    <!-- 分步流程（顺序 + 录入） -->
     <div class="role-card">
       <div class="role-card-head">
-        <span class="role-card-title">班级工作流</span>
-        <span class="role-card-extra">名单 → 报名 → 赛程 → 成绩</span>
+        <span class="role-card-title">班级工作流 · 一步一步来</span>
+        <span class="role-card-extra">
+          <el-tag v-if="currentStepNo" type="primary" size="small" effect="dark" round>
+            建议当前：第 {{ currentStepNo }} 步
+          </el-tag>
+          <span v-else>共 {{ steps.length }} 步</span>
+        </span>
       </div>
-      <div class="role-quick">
-        <div v-for="q in quickLinks" :key="q.path" class="role-quick-item" @click="$router.push(q.path)">
-          <span class="role-quick-ico"><el-icon :size="20"><component :is="q.icon" /></el-icon></span>
-          <div>
-            <div class="role-quick-title">{{ q.title }}</div>
-            <div class="role-quick-desc">{{ q.desc }}</div>
+      <div class="role-steps">
+        <div
+          v-for="s in steps"
+          :key="s.no"
+          class="role-step"
+          :class="{ 'is-current': currentStepNo === s.no, 'is-done': s.done }"
+        >
+          <div class="role-step-no">{{ s.no }}</div>
+          <div class="role-step-body">
+            <div class="role-step-head">
+              <span class="role-step-title">{{ s.title }}</span>
+              <span class="role-step-tag" :class="'tag-' + s.kind">{{ kindLabel(s.kind) }}</span>
+              <div class="role-step-action">
+                <el-button size="small" :type="currentStepNo === s.no ? 'primary' : 'default'" @click="$router.push(s.to)">
+                  {{ actionLabel(s.kind) }}
+                </el-button>
+              </div>
+            </div>
+            <div class="role-step-desc">{{ s.desc }}</div>
+            <div v-if="s.tip" class="role-step-tip">💡 {{ s.tip }}</div>
           </div>
         </div>
       </div>
@@ -84,8 +103,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { UserFilled, DocumentAdd, Medal, Trophy, List, Calendar } from '@element-plus/icons-vue'
+import { ref, computed, onMounted } from 'vue'
+import { UserFilled, DocumentAdd, Medal, Trophy } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 
 const loading = ref(false)
@@ -100,12 +119,44 @@ const statCards = ref([
   { label: '获奖(前三)', value: 0, icon: Trophy, color: '#dc2626', bg: '#fef2f2' }
 ])
 
-const quickLinks = [
-  { title: '班级名单', desc: '花名册导入 / 手动添加', path: '/class-teacher/athletes', icon: List },
-  { title: '运动会报名', desc: '逐个报名 / 批量导入', path: '/class-teacher/registration', icon: DocumentAdd },
-  { title: '赛程查看', desc: '本班道次 / 组次安排', path: '/class-teacher/schedule', icon: Calendar },
-  { title: '成绩查看', desc: '积分 / 奖牌 / 破纪录', path: '/class-teacher/results', icon: Trophy }
-]
+// ============ 分步工作流（顺序 + 录入） ============
+// kind: entry=录入 / arrange=编排 / report=统计；done 用于定位「建议当前步骤」
+const steps = computed(() => {
+  const list = [
+    {
+      title: '录入班级名单', kind: 'entry', to: '/class-teacher/athletes',
+      desc: 'Excel 导入全班花名册（自动创建学生账号 + 运动员），或手动添加。',
+      tip: '名单不全报名会漏人，导入后先核对本班人数。',
+      done: (stats.value.athleteCount || 0) > 0
+    },
+    {
+      title: '报名运动会项目', kind: 'entry', to: '/class-teacher/registration',
+      desc: '按学号定位逐个报名，或整队按项目批量勾选；已报好的整表可批量导入。',
+      tip: '报名提交后需体育老师审核通过，才算正式参赛。',
+      done: (stats.value.registrationCount || 0) > 0
+    },
+    {
+      title: '查看本班赛程', kind: 'arrange', to: '/class-teacher/schedule',
+      desc: '查看本班运动员的组次、道次与时间安排（体育老师编排后生成）。',
+      done: schedules.value.length > 0
+    },
+    {
+      title: '查看成绩与获奖', kind: 'report', to: '/class-teacher/results',
+      desc: '本班成绩明细、总分与金银铜（前三名）汇总。',
+      done: (stats.value.awardCount || 0) > 0
+    }
+  ]
+  return list.map((s, i) => ({ ...s, no: i + 1 }))
+})
+
+/** 建议当前步骤 = 第一个尚未完成的步骤 */
+const currentStepNo = computed(() => {
+  const hit = steps.value.find(s => !s.done)
+  return hit ? hit.no : 0
+})
+
+const kindLabel = (k) => ({ entry: '录入', config: '配置', arrange: '编排', report: '统计' }[k] || k)
+const actionLabel = (k) => ({ entry: '去录入 →', config: '去配置 →', arrange: '去查看 →', report: '去查看 →' }[k] || '去处理 →')
 
 onMounted(async () => {
   loading.value = true
