@@ -1,5 +1,6 @@
 package com.sports.entity;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -153,8 +154,21 @@ public class Event {
     @JsonProperty("defaultVenueCode")
     private String defaultVenueCode;
 
+    /**
+     * 性别限制：中文组别（男子组/女子组/混合组）或 M/F；null = 不限性别。
+     *
+     * <p>U22/B19：JSON 契约主键为 {@code gender}（与前端 Events.vue 一致），
+     * 但该字段的 Java 名 / Excel 导入列键是 {@code genderLimit}（见 ExcelService 的
+     * COLUMN_ALIASES）。历史上有客户按字段名发 {@code genderLimit}，因不在契约里被 Jackson
+     * 静默丢弃 → 库中为空 → 「不限性别」 → 自动编排时男女两组都去排，空组抛
+     * 「没有符合条件的已审核报名记录」并毒化外层事务导致整个接口 500。
+     * 这里用 {@link JsonAlias} 同时接受两种键名，从入口消除这一类静默丢字段的坑。</p>
+     *
+     * <p>兼容写法归一化见 {@link com.sports.common.GenderUtil}（男子组/M、女子组/F 双轨）。</p>
+     */
     @Column(length = 10)
     @JsonProperty("gender")
+    @JsonAlias({"genderLimit"})
     private String genderLimit;
 
     /** 年级组（如"高一年级"、"初二年级"等） */
