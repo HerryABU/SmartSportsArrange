@@ -153,7 +153,7 @@ public class ScheduleService {
         // 再被 maxDurationMinutes 硬压到 20 分钟，现场时间估算彻底失真（B05 的 144→20）。
         // 正确的约束路径：parallelMax → 并发池槽位数（trackSlots/fieldSlots/专用池，已在上面处理），
         // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
-        estimateDurations(units, defaultDuration, heatMinutes, fieldPerAthlete);
+        estimateDurations(units, heatMinutes, fieldPerAthlete);
 
         // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
         // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
@@ -161,7 +161,9 @@ public class ScheduleService {
         // 缺口多少，并把每一个被压缩的项目列成表（需求/实给/压缩比/缺口）。
         int unitInterval = Math.max(defaultInterval, minInterval);
         Map<String, Object> feasibility = assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
-        List<Map<String, Object>> compressionReport = compressionReport(units);
+        // U24/B21：先按容量等比适配时长，再进入放置；compressionReport 放到放置之后统计，
+        // 这样「就近缩短」的那部分也如实计入（报告反映的是真正落地的时长）。
+        fitDurationsToPools(units, feasibility, unitInterval, defaultDuration);
 
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
@@ -327,24 +329,37 @@ public class ScheduleService {
                     worst.get("windowA"), worst.get("windowB")));
         }
 
-        // B05/U06：把可行性缺口与压缩亏损提升为业务告警（数量级信息，不再逐条刷屏）
+        // U24/B21：放置完成后统计「真正落地的时长 vs 真实估算」——此时 u.duration 已含
+        // 容量等比缩放与就剩余空间缩短两部分，报告因而与赛程表逐行对得上。
+        List<Map<String, Object>> compressionReport = compressionReport(units);
+
+        // B05/U06 + U24/B21：容量告警给出**可执行结论**——缺口多少、至少需要几位并发、已等比压缩到多少。
+        // 只写「缺口 699 分钟」现场无法落地；写「田赛并发位需 ≥3（当前 2）」才能立刻照做。
         if (!Boolean.TRUE.equals(feasibility.get("feasible"))) {
             for (String label : List.of("track", "field")) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> p = (Map<String, Object>) feasibility.get(label);
-                if (p != null && !Boolean.TRUE.equals(p.get("feasible"))) {
-                    warnings.add(String.format("时间窗容量不足（%s）：需要 %d 分钟，时段仅能提供 %d 分钟，缺口 %d 分钟；"
-                                    + "请增加比赛天数/时段、提高并发位数或削减项目规模",
-                            p.get("label"), p.get("requiredMinutes"), p.get("supplyMinutes"),
-                            p.get("deficitMinutes")));
-                }
+                if (p == null || Boolean.TRUE.equals(p.get("feasible"))) continue;
+                int curSlots = "track".equals(label) ? trackSlots : fieldSlots;
+                Object scale = p.get("scalePercent");
+                warnings.add(String.format("时间窗容量不足（%s）：需求 %d 分钟，时段×%d 位并发仅能提供 %d 分钟，缺口 %d 分钟；"
+                                + "建议把%s并发位增至 ≥%d 位（或增加比赛天数/时段、削减项目规模）。%s压缩明细见 compressionReport",
+                        p.get("label"), p.get("requiredMinutes"), curSlots, p.get("supplyMinutes"),
+                        p.get("deficitMinutes"), p.get("label"), p.get("requiredSlots"),
+                        scale == null ? "已按真实用时等比压缩，" : "已按真实用时等比压缩至约 " + scale + "%，"));
             }
         }
         if (!compressionReport.isEmpty()) {
+            // U24/B21：压缩幅度超过 compressionWarnRatio 的算「严重压缩」，单独点出来
+            int severe = 0;
+            for (Map<String, Object> c : compressionReport) {
+                if (dblVal(c.get("ratioPercent"), 100) * compressionWarnRatio <= 100) severe++;
+            }
             Map<String, Object> worst = compressionReport.get(0);
-            warnings.add(String.format("时间压缩告警：共 %d 个项目被 maxDurationMinutes 压缩，缺口最大的是「%s」（%s）："
-                            + "预计需 %d 分钟，实给 %d 分钟（%.0f%%），缺口 %d 分钟；明细见 compressionReport",
-                    compressionReport.size(), worst.get("eventName"), worst.get("grade"),
+            warnings.add(String.format("时长压缩告警：共 %d 个项目的时长被压缩（其中 %d 项压缩幅度超过 %.1f 倍阈值），"
+                            + "压缩最重的是「%s」（%s）：预计需 %d 分钟，实给 %d 分钟（%.0f%%），缺口 %d 分钟；明细见 compressionReport",
+                    compressionReport.size(), severe, compressionWarnRatio,
+                    worst.get("eventName"), worst.get("grade"),
                     worst.get("requiredMinutes"), worst.get("givenMinutes"),
                     dblVal(worst.get("ratioPercent"), 0), worst.get("deficitMinutes")));
         }
@@ -402,8 +417,11 @@ public class ScheduleService {
                     u.grade == null ? "不分年级" : u.grade));
             return;
         }
+        // 采用候选给出的实际时长：首选时长放得下就保持，放不下就按该处剩余空间就近缩短
+        // （缩短后的值会写进赛程表与 compressionReport，不做无声处理）
+        u.duration = best.duration;
         Cursor cursor = pool.cursors.get(best.slotIdx);
-        Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, u.duration);
+        Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, best.duration);
         if (probe == null) {   // 理论上不会发生（findBestSlot 已校验容量）
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
@@ -415,17 +433,27 @@ public class ScheduleService {
                 warnings, compressionWarnRatio, busy);
     }
 
-    /** 候选位置：某槽位 × 某窗口 × 某起点，及把该单元放在此处的兼项冲突条数 */
+    /**
+     * 候选位置：某槽位 × 某窗口 × 某起点，加上「此处实际能放多久」与「兼项冲突条数」。
+     *
+     * <p>{@code shrunk} = 该处的剩余空间不足以容纳首选时长，只能就近缩短（会落到赛程表
+     * 与 compressionReport 里）。有了它，算法不必在「硬塞进零碎空间」和「整个项目排不下」
+     * 之间二选一：还有空间就保住真实时长，空间不够才缩到刚好放得下。</p>
+     */
     private static class Cand {
         final int slotIdx;
         final int windowIdx;
         final int startMinute;
+        final int duration;     // 实际采用时长（放不下首选时长时 = 该处可用空间）
+        final boolean shrunk;
         final int conflicts;
 
-        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts) {
+        Cand(int slotIdx, int windowIdx, int startMinute, int duration, boolean shrunk, int conflicts) {
             this.slotIdx = slotIdx;
             this.windowIdx = windowIdx;
             this.startMinute = startMinute;
+            this.duration = duration;
+            this.shrunk = shrunk;
             this.conflicts = conflicts;
         }
     }
@@ -445,15 +473,19 @@ public class ScheduleService {
         Cand best = null;
         for (int si = 0; si < pool.cursors.size(); si++) {
             Cursor c = pool.cursors.get(si);
-            for (int wi = c.windowIdx; wi < windows.size(); wi++) {
+            // U25/B22：扫描**所有**窗口（含已部分占用的早先窗口），而不是只从游标当前位置往后，
+            // 这样早先窗口剩下的 60~90 分钟碎片也能派上用场，不必整块闲置。
+            for (int wi = 0; wi < windows.size(); wi++) {
                 Window w = windows.get(wi);
-                int floor = (wi == c.windowIdx) ? c.used : 0;   // 不倒退到该槽位已用满的时段之前
-                for (int used = floor; used + u.duration <= w.capacity; used += interval) {
-                    int gap = used == 0 ? 0 : interval;         // 与 Cursor.place 的段前间隔口径一致
-                    if (used + gap + u.duration > w.capacity) break;
-                    int start = w.startMinute + used + gap;
-                    int n = countConflicts(u.athleteIds, w.day, start, u.duration, busy);
-                    Cand cand = new Cand(si, wi, start, n);
+                int base = c.usedAt(wi);
+                int gap = base == 0 ? 0 : interval;             // 与 Cursor.place 的段前间隔口径一致
+                for (int used = base + gap; ; used += interval) {
+                    int room = w.capacity - used;               // 此处最多还能放多久
+                    if (room < u.floorDuration) break;          // 越往后剩余越小，可以收工
+                    int dur = Math.min(u.duration, room);       // 放得下就用首选时长，放不下就近缩短
+                    int start = w.startMinute + used;
+                    int n = countConflicts(u.athleteIds, w.day, start, dur, busy);
+                    Cand cand = new Cand(si, wi, start, dur, dur < u.duration, n);
                     if (beats(cand, best)) best = cand;
                 }
             }
@@ -461,9 +493,16 @@ public class ScheduleService {
         return best;
     }
 
-    /** 候选排序：冲突少者优；冲突相同则窗口靠前、起点靠前、槽位号小者优 */
+    /**
+     * 候选排序：**不缩短者优先**（尽量保住真实时长）→ 冲突少者优先（尽量避开兼项）
+     * → 窗口/起点/槽位靠前者优先（现场更早、更连续）。
+     *
+     * <p>顺序不能反：先按冲突挑会为了避让而挑到只剩零碎空间的位置，把项目压得毫无意义；
+     * 只有「所有位置都放不下首选时长」时，才轮到就近缩短。</p>
+     */
     private static boolean beats(Cand a, Cand b) {
         if (b == null) return true;
+        if (a.shrunk != b.shrunk) return !a.shrunk;
         if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
         if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
         if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
@@ -600,16 +639,19 @@ public class ScheduleService {
                 .durationMinutes(u.duration)
                 .round(needPrelim ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL)
                 .remark(u.duration >= u.rawDuration ? null
-                        : String.format("预计%d分钟，已按上限%d分钟压缩", u.rawDuration, u.duration))
+                        : String.format("预计%d分钟，实给%d分钟（按可用时段容量适配）", u.rawDuration, u.duration))
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
-        // B05/U07：严重压缩告警——被压缩到预计用时的 1/ratio 以下时写入 warnings，避免静默压缩导致现场跑不完
-        if (u.duration < u.rawDuration && u.rawDuration >= u.duration * compressionWarnRatio) {
-            warnings.add(String.format("⚠️ 时间压缩告警：项目「%s」（%s）预计需 %d 分钟，被压缩上限限制为 %d 分钟"
-                            + "（约 %.0f%%），现场时间可能不足；建议增大并发位数/场地并行数或调小项目规模",
+        // B05/U07 + U24/B21：逐条压缩告警只保留「项目显式配了 maxDurationMinutes 而被压」的情形——
+        // 那是用户自己设的上限，值得逐项确认；容量不足造成的等比压缩由 autoSchedule 汇总成
+        // 「一池一条」的可执行告警，避免十几条重复文案把真正的业务问题淹没。
+        if (u.explicitMaxDuration > 0 && u.rawDuration > u.explicitMaxDuration) {
+            warnings.add(String.format("⚠️ 项目时长上限告警：「%s」（%s）预计需 %d 分钟，受该项目显式上限 "
+                            + "maxDurationMinutes=%d 约束压缩为 %d 分钟（约 %.0f%%）；如现场时间充足可上调该上限",
                     u.event.getName(), u.grade == null ? "不分年级" : u.grade,
-                    u.rawDuration, u.duration, u.duration * 100.0 / u.rawDuration));
+                    u.rawDuration, u.explicitMaxDuration, u.duration,
+                    u.explicitMaxDuration * 100.0 / u.rawDuration));
         }
         saved.add(scheduleRepository.save(s));
 
@@ -764,8 +806,14 @@ public class ScheduleService {
         return e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
     }
 
-    /** 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算），并受最大时间封顶 */
-    private void estimateDurations(List<Unit> units, int defaultDuration,
+    /**
+     * 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算）。
+     *
+     * <p>U24/B21：时长以<b>真实估算</b>为准，只受项目<b>显式配置</b>的 maxDurationMinutes 约束；
+     * 不再拿 defaultDurationMinutes 当上限一刀切。能否排下由 {@link #fitDurationsToPools}
+     * 按各并发池的真实可用容量等比缩放决定（并如实上报缺口与所需并发位）。</p>
+     */
+    private void estimateDurations(List<Unit> units,
                                    int heatMinutes, int fieldPerAthlete) {
         for (Unit u : units) {
             Event e = u.event;
@@ -794,8 +842,15 @@ public class ScheduleService {
             }
             u.rawDuration = Math.max(MIN_DURATION, rounds * (isTrack ? heatMinutes : fieldPerAthlete));
 
-            int cap = e.getMaxDurationMinutes() != null ? e.getMaxDurationMinutes() : defaultDuration;
-            u.duration = cap > 0 ? Math.min(u.rawDuration, cap) : u.rawDuration;
+            // U24/B21：首选时长 = min(真实估算, 项目显式上限)；未配上限就用真实估算。
+            // 旧写法把 defaultDurationMinutes(30) 当上限，与「当天有多少时间」无关——
+            // 44 人跳远需 198 分钟也被砍成 30 分钟，18 个项目无一例外「全压缩」，
+            // 排出来的表看着整齐、现场根本跑不完。真正排不下的部分改由容量等比缩放处理。
+            u.explicitMaxDuration = e.getMaxDurationMinutes() != null && e.getMaxDurationMinutes() > 0
+                    ? e.getMaxDurationMinutes() : 0;
+            u.duration = u.explicitMaxDuration > 0
+                    ? Math.min(u.rawDuration, u.explicitMaxDuration)
+                    : u.rawDuration;
         }
     }
 
@@ -822,8 +877,8 @@ public class ScheduleService {
             if (u.track) { trackNeed += need; trackCount++; } else { fieldNeed += need; fieldCount++; }
         }
 
-        Map<String, Object> track = poolFeasibility("径赛", trackNeed, trackCount, totalCapacity, trackSlots);
-        Map<String, Object> field = poolFeasibility("田赛", fieldNeed, fieldCount, totalCapacity, fieldSlots);
+        Map<String, Object> track = poolFeasibility("径赛", trackNeed, trackCount, totalCapacity, trackSlots, windows.size());
+        Map<String, Object> field = poolFeasibility("田赛", fieldNeed, fieldCount, totalCapacity, fieldSlots, windows.size());
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("windowCount", windows.size());
@@ -835,16 +890,76 @@ public class ScheduleService {
     }
 
     private Map<String, Object> poolFeasibility(String label, int need, int unitCount,
-                                                int totalCapacity, int slots) {
+                                                int totalCapacity, int slots, int windowCount) {
         int supply = totalCapacity * Math.max(1, slots);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("label", label);
         m.put("unitCount", unitCount);
+        m.put("slots", Math.max(1, slots));
+        m.put("windowCount", windowCount);
         m.put("requiredMinutes", need);
         m.put("supplyMinutes", supply);
         m.put("deficitMinutes", Math.max(0, need - supply));
         m.put("feasible", need <= supply);
+        // U24/B21：给出**可执行**的结论——该池至少要几位并发才排得下（ceil(需求/单个时段容量)）。
+        // 只说「缺口 699 分钟」现场无法落地；说「田赛并发位需 ≥3（当前 2）」才能立刻照做。
+        m.put("requiredSlots", (int) Math.ceil((double) need / Math.max(1, totalCapacity)));
         return m;
+    }
+
+    /**
+     * U24/B21：把「真实估算时长」按各并发池的可用容量<b>等比公平缩放</b>。
+     *
+     * <p>某池需求 ≤ 供给 → 不压缩，全部保留真实用时；需求 &gt; 供给 → 按
+     * {@code k = (供给 − 间隔总和) / 原始总需求} 对该池<b>所有</b>单元等比缩放。
+     * 「统一等比」而不是「一部分砍到地板、一部分原样排」，结果可解释、可复现，
+     * 也让 compressionReport 里的百分比有统一的物理含义（该池被压缩到的比例）。</p>
+     *
+     * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限为
+     * min(defaultDurationMinutes, 真实估算)，避免把大项压到「比一轮用时还短」的不可执行状态。</p>
+     */
+    private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility,
+                                     int interval, int floorMinutes) {
+        // 先给所有单元定「执行下限」：min(单轮默认时长, 真实估算)，不低于 MIN_DURATION。
+        // 放置阶段（findBestSlot）会用它判断「这点剩余空间还值不值得塞进去」。
+        for (Unit u : units) {
+            u.floorDuration = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
+        }
+        for (String key : List.of("track", "field")) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pool = (Map<String, Object>) feasibility.get(key);
+            if (pool == null) continue;
+            int need = intVal(pool.get("requiredMinutes"), 0);
+            int supply = intVal(pool.get("supplyMinutes"), 0);
+            if (need <= 0 || need <= supply) continue;   // 容量够 → 保留真实用时
+            boolean isTrack = "track".equals(key);
+            long totalRaw = 0;
+            int unitsInPool = 0;
+            for (Unit u : units) {
+                if (u.participants <= 0 || u.track != isTrack) continue;
+                totalRaw += u.rawDuration;
+                unitsInPool++;
+            }
+            if (totalRaw <= 0) continue;
+            // 项目间隔同样占时间；此外每个「槽位×时段」块尾部最多会浪费 floorMinutes（碎片放不进项目），
+            // 也要先从供给里扣掉。否则把「需求」缩放到「刚好等于容量」，必然因碎片而排不下——
+            // 实测正是如此：田赛闲置 612 分钟却仍有 3 个项目排不下。
+            int slotsInPool = Math.max(1, intVal(pool.get("slots"), 1));
+            int windowCount = Math.max(1, intVal(pool.get("windowCount"), 1));
+            long wasteBudget = (long) slotsInPool * windowCount * floorMinutes;
+            double k = Math.max(0.05, Math.min(1.0,
+                    (supply - (long) unitsInPool * interval - wasteBudget) / (double) totalRaw));
+            for (Unit u : units) {
+                if (u.participants <= 0 || u.track != isTrack) continue;
+                // 缩放下限 = min(单轮默认时长, 真实估算)：再挤也不该把一个大项压到比单轮用时还短，
+                // 那已经不是「压缩」而是「不可执行」。真实估算本身就不足者不受影响。
+                int floor = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
+                int scaled = Math.max(floor, (int) Math.floor(u.rawDuration * k));
+                int target = u.explicitMaxDuration > 0 ? Math.min(scaled, u.explicitMaxDuration) : scaled;
+                u.duration = Math.min(u.duration, Math.max(MIN_DURATION, target));
+            }
+            pool.put("scalePercent", Math.round(k * 1000.0) / 10.0);
+        }
     }
 
     /**
@@ -1173,6 +1288,8 @@ public class ScheduleService {
         int concurrency = 1;  // 项目内并发人数（径赛=道次/每组人数；田赛=工位数）
         int duration;
         int rawDuration;
+        int explicitMaxDuration;   // 项目显式配置的时长上限（0 = 未配置；仅此时才允许按时长封顶）
+        int floorDuration;         // 执行下限：再挤也不低于此值（min(单轮默认时长, 真实估算)）
         int participants;
         int heats;            // 径赛组数
         int rounds;           // 总轮次（径赛=组数、田赛=批次数）
@@ -1260,76 +1377,83 @@ public class ScheduleService {
         }
     }
 
-    /** 场地时间游标：在窗口序列上顺序推进 */
+    /**
+     * 场地时间游标：**逐窗口记账**（每个窗口各自的已用分钟），而不是只记「当前推进到哪」。
+     *
+     * <p>U25/B22：旧实现是「单向传送带」——只有 {@code windowIdx} + {@code used} 两个标量，
+     * 一旦推进到后面的窗口，前面窗口的剩余空间就<b>再也回不去</b>。实测（SMOKE_SEED=20260918）：
+     * 田赛 1680 分钟容量只用了 1068 分钟、闲置 612 分钟（大多是早先窗口 60~90 分钟的碎片），
+     * 却仍有 3 个项目「排不下」——宁可整块闲置也不回填，是典型的死算法。</p>
+     *
+     * <p>改为按窗口记账后，放置可以回填任意窗口的剩余空间，打包浪费从「整块闲置」降到
+     * 「每块至多浪费 floorDuration」，容量利用率显著提升。</p>
+     */
     private static class Cursor {
-        int windowIdx = 0;
-        int used = 0;   // 当前窗口已用分钟数（含间隔）
+        int windowIdx = 0;      // 已推进到的窗口（仅供参考/田赛分组的「不倒退」下界）
+        int used = 0;           // windowIdx 窗口内的已用分钟（含间隔）
+        final Map<Integer, Integer> usedByWindow = new HashMap<>();
 
-        /** 把一段时长放进当前游标位置；放不下就顺延到下一时段 */
+        /** 某窗口已用分钟（含该项目的前置间隔） */
+        int usedAt(int wi) {
+            return usedByWindow.getOrDefault(wi, 0);
+        }
+
+        /** 记下「第 wi 个窗口用到相对起点 endRel 分钟」，并同步推进标记 */
+        private void mark(int wi, int endRel) {
+            usedByWindow.merge(wi, endRel, Math::max);
+            if (wi >= windowIdx) {
+                windowIdx = wi;
+                used = usedByWindow.getOrDefault(wi, 0);
+            }
+        }
+
+        /** 放进最早的「还放得下」窗口（回填允许）；都放不下返回 null */
         Slot place(List<Window> windows, int duration, int interval) {
             return place(windows, duration, interval, 0);
         }
 
-        /**
-         * 同上，但起点不早于 minWindowIdx 号窗口 —— 用于田赛分组：让同组项目落在同一时段。
-         * 若当前已推进到更靠后的窗口，则以当前窗口为准（不会回退）。
-         */
+        /** 同上，但起点不早于 minWindowIdx 号窗口（用于田赛分组：同组落在同一天起） */
         Slot place(List<Window> windows, int duration, int interval, int minWindowIdx) {
-            if (windowIdx < minWindowIdx) {
-                windowIdx = minWindowIdx;
-                used = 0;
-            }
-            while (windowIdx < windows.size()) {
-                Window w = windows.get(windowIdx);
-                // 段前间隔：除窗口起点外，项目之间留出间隔
-                int gap = used == 0 ? 0 : interval;
-                if (used + gap + duration <= w.capacity) {
-                    int start = w.startMinute + used + gap;
-                    used += gap + duration;
-                    return new Slot(w, start);
+            for (int wi = Math.max(0, minWindowIdx); wi < windows.size(); wi++) {
+                Window w = windows.get(wi);
+                int u = usedAt(wi);
+                int gap = u == 0 ? 0 : interval;     // 段前间隔：除窗口起点外，项目之间留间隔
+                if (u + gap + duration <= w.capacity) {
+                    mark(wi, u + gap + duration);
+                    return new Slot(w, w.startMinute + u + gap);
                 }
-                windowIdx++;
-                used = 0;
             }
             return null;
         }
 
-        /**
-         * 探测最早可放位置（只读，不推进游标）。
-         * 起点不早于 max(当前窗口, minWindowIdx)；返回该位置所在的窗口号与具体 Slot。
-         */
+        /** 探测最早可放位置（只读，不记账）；起点不早于 minWindowIdx 号窗口 */
         Probe probe(List<Window> windows, int duration, int interval, int minWindowIdx) {
-            int wi = Math.max(windowIdx, minWindowIdx);
-            int u = (wi == windowIdx) ? used : 0;
-            while (wi < windows.size()) {
+            for (int wi = Math.max(0, minWindowIdx); wi < windows.size(); wi++) {
                 Window w = windows.get(wi);
+                int u = usedAt(wi);
                 int gap = u == 0 ? 0 : interval;
                 if (u + gap + duration <= w.capacity) {
                     return new Probe(wi, new Slot(w, w.startMinute + u + gap));
                 }
-                wi++;
-                u = 0;
             }
             return null;
         }
 
         /**
-         * 在指定窗口、指定起点放置（推进游标）；放不下（超出窗口容量）返回 null。
+         * 在指定窗口、指定起点放置；越界 / 与该窗口已有占用重叠则返回 null。
          * 用于田赛分组/捆绑组：把同组项目强制落到同一 (窗口, 起点) 以实现同时开赛。
+         * 允许「回填」——只要起点不在已有占用的前沿之前。
          */
-        Probe placeAt(List<Window> windows, int windowIdx, int startMinute, int duration) {
-            if (windowIdx < 0 || windowIdx >= windows.size()) return null;
-            Window w = windows.get(windowIdx);
-            int rel = startMinute - w.startMinute;     // 相对窗口起点的偏移
+        Probe placeAt(List<Window> windows, int wi, int startMinute, int duration) {
+            if (wi < 0 || wi >= windows.size()) return null;
+            Window w = windows.get(wi);
+            int rel = startMinute - w.startMinute;      // 相对窗口起点的偏移
             if (rel < 0) return null;
             if (rel + duration > w.capacity) return null;
-            if (windowIdx != this.windowIdx) {          // 跳到新的（更靠后）窗口，从头计量
-                this.windowIdx = windowIdx;
-                this.used = 0;
-            }
-            int end = rel + duration;
-            if (end > used) used = end;                 // 维持窗口内已用前沿，避免后续重叠
-            return new Probe(windowIdx, new Slot(w, startMinute));
+            int u = usedAt(wi);
+            if (u > 0 && rel < u) return null;          // 不许压到已占用区间上
+            mark(wi, rel + duration);
+            return new Probe(wi, new Slot(w, startMinute));
         }
 
         /** 比较推进程度：窗口更靠前、或同窗口已用时间更短的更"空闲" */
