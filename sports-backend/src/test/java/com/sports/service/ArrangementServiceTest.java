@@ -2,8 +2,11 @@ package com.sports.service;
 
 import com.sports.entity.*;
 import com.sports.repository.ArrangementRepository;
+import com.sports.repository.ArrangementReservationRepository;
+import com.sports.repository.EventRefereeRepository;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
+import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -30,6 +33,11 @@ class ArrangementServiceTest {
     @Mock private RegistrationRepository registrationRepository;
     @Mock private EventRepository eventRepository;
     @Mock private EventScheduleRepository eventScheduleRepository;
+    // 服务后续新增的依赖：漏 @Mock 会让 @InjectMocks 注入 null，调用处直接 NPE
+    // （曾导致本测试类 6 个用例长期报 "eventRefereeRepository is null"）。
+    @Mock private RefereeRepository refereeRepository;
+    @Mock private EventRefereeRepository eventRefereeRepository;
+    @Mock private ArrangementReservationRepository arrangementReservationRepository;
     @Mock private WordOrderBookService wordOrderBookService;
     @Mock private SystemService systemService;
 
