@@ -417,11 +417,11 @@ public class ScheduleService {
                     u.grade == null ? "不分年级" : u.grade));
             return;
         }
-        // 采用候选给出的实际时长：首选时长放得下就保持，放不下就按该处剩余空间就近缩短
-        // （缩短后的值会写进赛程表与 compressionReport，不做无声处理）
-        u.duration = best.duration;
+        // U26/B23：整块放置——u.duration 就是该项目的编排时间单位，不做任何「就地缩短」。
+        // 若找不到能整块放下的位置，就如实报「排不下」，由用户按建议调整并发位/天数，
+        // 而不是把一个 200 分钟的项目偷偷塞进 60 分钟的缝隙里。
         Cursor cursor = pool.cursors.get(best.slotIdx);
-        Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, best.duration);
+        Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, u.duration);
         if (probe == null) {   // 理论上不会发生（findBestSlot 已校验容量）
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
@@ -434,27 +434,24 @@ public class ScheduleService {
     }
 
     /**
-     * 候选位置：某槽位 × 某窗口 × 某起点，加上「此处实际能放多久」与「兼项冲突条数」。
+     * 候选位置：某槽位 × 某窗口 × 某起点，及把该单元放在此处的兼项冲突条数。
      *
-     * <p>{@code shrunk} = 该处的剩余空间不足以容纳首选时长，只能就近缩短（会落到赛程表
-     * 与 compressionReport 里）。有了它，算法不必在「硬塞进零碎空间」和「整个项目排不下」
-     * 之间二选一：还有空间就保住真实时长，空间不够才缩到刚好放得下。</p>
+     * <p>U26/B23：候选**只包含「整块放得下」的位置**——项目时间是编排的原子单位，
+     * 一个项目必须完整占住它自己的时长，不能按旁边剩多少空间临时改小。</p>
      */
     private static class Cand {
         final int slotIdx;
         final int windowIdx;
         final int startMinute;
-        final int duration;     // 实际采用时长（放不下首选时长时 = 该处可用空间）
-        final boolean shrunk;
         final int conflicts;
+        final int leftover;     // 放进去之后该时段还剩多少分钟（越小越"贴合"，用于 best-fit）
 
-        Cand(int slotIdx, int windowIdx, int startMinute, int duration, boolean shrunk, int conflicts) {
+        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts, int leftover) {
             this.slotIdx = slotIdx;
             this.windowIdx = windowIdx;
             this.startMinute = startMinute;
-            this.duration = duration;
-            this.shrunk = shrunk;
             this.conflicts = conflicts;
+            this.leftover = leftover;
         }
     }
 
@@ -479,31 +476,42 @@ public class ScheduleService {
                 Window w = windows.get(wi);
                 int base = c.usedAt(wi);
                 int gap = base == 0 ? 0 : interval;             // 与 Cursor.place 的段前间隔口径一致
-                for (int used = base + gap; ; used += interval) {
-                    int room = w.capacity - used;               // 此处最多还能放多久
-                    if (room < u.floorDuration) break;          // 越往后剩余越小，可以收工
-                    int dur = Math.min(u.duration, room);       // 放得下就用首选时长，放不下就近缩短
-                    int start = w.startMinute + used;
-                    int n = countConflicts(u.athleteIds, w.day, start, dur, busy);
-                    Cand cand = new Cand(si, wi, start, dur, dur < u.duration, n);
-                    if (beats(cand, best)) best = cand;
+                // U26/B23：项目时间 = 编排的原子单位——只考虑「整块放得下」的位置，
+                // 不按剩余空间临时改小时长（那会让项目时长取决于旁边恰好剩多少，现场无法据此布置）。
+                if (base + gap + u.duration > w.capacity) continue;
+                // 默认贴着该窗口的已用前沿开始（最早、不留空档）；只有当「后移」能真正减少
+                // 兼项冲突时才后移——不为填尾巴而人为制造空档。
+                int start = w.startMinute + base + gap;
+                int n = countConflicts(u.athleteIds, w.day, start, u.duration, busy);
+                for (int off = base + gap + interval; n > 0 && off + u.duration <= w.capacity; off += interval) {
+                    int s2 = w.startMinute + off;
+                    int n2 = countConflicts(u.athleteIds, w.day, s2, u.duration, busy);
+                    if (n2 < n) {
+                        n = n2;
+                        start = s2;
+                    }
                 }
+                Cand cand = new Cand(si, wi, start, n, w.capacity - base - gap - u.duration);
+                if (beats(cand, best)) best = cand;
             }
         }
         return best;
     }
 
     /**
-     * 候选排序：**不缩短者优先**（尽量保住真实时长）→ 冲突少者优先（尽量避开兼项）
-     * → 窗口/起点/槽位靠前者优先（现场更早、更连续）。
+     * 候选排序：**冲突少者优先**（尽量避开兼项）→ **贴合者优先**（best-fit：放进已有块后剩余最小，
+     * 把碎片收拢、尽量不新开块，从而给后面的大项目留下完整时段）→ 窗口/起点/槽位靠前者优先。
      *
-     * <p>顺序不能反：先按冲突挑会为了避让而挑到只剩零碎空间的位置，把项目压得毫无意义；
-     * 只有「所有位置都放不下首选时长」时，才轮到就近缩短。</p>
+     * <p>U26/B23：不再有「是否缩短」这一维——项目时长是固定的编排单位，候选里全是能整块放下的位置。</p>
+     *
+     * <p><b>为什么要有 best-fit</b>：只按「最早可用」放置等于 first-fit，会把每个块都啃掉一口，
+     * 最后每个块都只剩几十~一百来分钟的尾巴，谁都塞不下——实测就因此丢掉了一个大项目。
+     * 改成「先填满已有块再开新块」后，块数更少、碎片更少，与装箱可行性预判（FFD）也就对得上了。</p>
      */
     private static boolean beats(Cand a, Cand b) {
         if (b == null) return true;
-        if (a.shrunk != b.shrunk) return !a.shrunk;
         if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
+        if (a.leftover != b.leftover) return a.leftover < b.leftover;
         if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
         if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
         return a.slotIdx < b.slotIdx;
@@ -910,9 +918,15 @@ public class ScheduleService {
     /**
      * U24/B21：把「真实估算时长」按各并发池的可用容量<b>等比公平缩放</b>。
      *
-     * <p>某池需求 ≤ 供给 → 不压缩，全部保留真实用时；需求 &gt; 供给 → 按
-     * {@code k = (供给 − 间隔总和) / 原始总需求} 对该池<b>所有</b>单元等比缩放。
-     * 「统一等比」而不是「一部分砍到地板、一部分原样排」，结果可解释、可复现，
+     * <p>某池需求 ≤ 供给 → 不压缩，全部保留真实用时；需求 &gt; 供给 → 对该池<b>所有</b>单元
+     * 等比缩放，取下面两个口径中<b>更小</b>的 k：</p>
+     * <ul>
+     *   <li><b>总量口径</b>：{@code (供给 − 间隔总和 − 打包余量) / 原始总需求}；</li>
+     *   <li><b>整块口径（U26/B23）</b>：项目时间是编排的原子单位，每个项目必须整块落地，
+     *       所以每块要塞下 {@code ceil(单元数/块数)} 个项目，最长项目不得超过
+     *       {@code (单块可用时长) / 每块项目数}。</li>
+     * </ul>
+     * <p>「统一等比」而不是「一部分砍到地板、一部分原样排」，结果可解释、可复现，
      * 也让 compressionReport 里的百分比有统一的物理含义（该池被压缩到的比例）。</p>
      *
      * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限为
@@ -920,11 +934,6 @@ public class ScheduleService {
      */
     private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility,
                                      int interval, int floorMinutes) {
-        // 先给所有单元定「执行下限」：min(单轮默认时长, 真实估算)，不低于 MIN_DURATION。
-        // 放置阶段（findBestSlot）会用它判断「这点剩余空间还值不值得塞进去」。
-        for (Unit u : units) {
-            u.floorDuration = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
-        }
         for (String key : List.of("track", "field")) {
             @SuppressWarnings("unchecked")
             Map<String, Object> pool = (Map<String, Object>) feasibility.get(key);
@@ -946,9 +955,36 @@ public class ScheduleService {
             // 实测正是如此：田赛闲置 612 分钟却仍有 3 个项目排不下。
             int slotsInPool = Math.max(1, intVal(pool.get("slots"), 1));
             int windowCount = Math.max(1, intVal(pool.get("windowCount"), 1));
-            long wasteBudget = (long) slotsInPool * windowCount * floorMinutes;
-            double k = Math.max(0.05, Math.min(1.0,
-                    (supply - (long) unitsInPool * interval - wasteBudget) / (double) totalRaw));
+            int blocks = Math.max(1, slotsInPool * windowCount);
+            int capacityPerWindow = Math.max(1, supply / slotsInPool / windowCount);
+            long wasteBudget = (long) blocks * floorMinutes;   // 每块尾部最多浪费一个执行下限
+            // ① 总量口径：供给扣掉间隔与打包余量后能承载多少「时长」
+            double kSum = (supply - (long) unitsInPool * interval - wasteBudget) / (double) totalRaw;
+            // ② 整块口径（U26/B23）：项目时间是编排的原子单位，每个项目必须**整块**落地，
+            //    于是问题就是「把 n 个整块装进 blocks 个容量 blockUsable 的箱子」——典型的装箱问题。
+            //    这里二分搜索**最大的、仍然装得下**的 k：既保住整块语义，又不会像
+            //    「任意两块都塞得下」那种充分条件那样过度压缩（实测 0.438 vs 实得 0.55+，
+            //    前者会出现「压到 44% 却还闲置 40% 容量」的自相矛盾）。
+            int blockUsable = Math.max(MIN_DURATION, capacityPerWindow - interval);
+            double hi = Math.min(1.0, kSum);
+            double lo = 0.05;
+            double k = lo;
+            long[] probeDur = new long[unitsInPool];
+            for (int it = 0; it < 24; it++) {              // 24 次足够收敛到 1e-7
+                double mid = (lo + hi) / 2;
+                int idx = 0;
+                for (Unit u : units) {
+                    if (u.participants <= 0 || u.track != isTrack) continue;
+                    int fl = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
+                    probeDur[idx++] = Math.max(fl, (int) Math.floor(u.rawDuration * mid));
+                }
+                if (packsIntoBlocks(probeDur, blocks, blockUsable)) {
+                    k = mid;
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
             for (Unit u : units) {
                 if (u.participants <= 0 || u.track != isTrack) continue;
                 // 缩放下限 = min(单轮默认时长, 真实估算)：再挤也不该把一个大项压到比单轮用时还短，
@@ -960,6 +996,28 @@ public class ScheduleService {
             }
             pool.put("scalePercent", Math.round(k * 1000.0) / 10.0);
         }
+    }
+
+    /**
+     * 整块装箱可行性（U26/B23）：把 durations 整块装进 blocks 个容量为 blockUsable 的箱子。
+     *
+     * <p>用「按大小递减 + 最满的可装块」(best-fit decreasing)——经典装箱近似算法。
+     * n 只有几十个单元，O(n²) 的代价可忽略；比「任意两块都塞得下」这类充分条件精确得多，
+     * 能避免过度压缩（否则会出现「压到 44% 却还闲置 40% 容量」的自相矛盾）。</p>
+     */
+    private static boolean packsIntoBlocks(long[] durations, int blocks, int blockUsable) {
+        long[] sorted = durations.clone();
+        Arrays.sort(sorted);
+        long[] bin = new long[blocks];
+        for (int i = sorted.length - 1; i >= 0; i--) {          // 从最大块开始装
+            int best = -1;
+            for (int b = 0; b < blocks; b++) {
+                if (bin[b] + sorted[i] <= blockUsable && (best < 0 || bin[b] > bin[best])) best = b;
+            }
+            if (best < 0) return false;                          // 没箱子装得下 → 该 k 不可行
+            bin[best] += sorted[i];
+        }
+        return true;
     }
 
     /**
@@ -1289,7 +1347,6 @@ public class ScheduleService {
         int duration;
         int rawDuration;
         int explicitMaxDuration;   // 项目显式配置的时长上限（0 = 未配置；仅此时才允许按时长封顶）
-        int floorDuration;         // 执行下限：再挤也不低于此值（min(单轮默认时长, 真实估算)）
         int participants;
         int heats;            // 径赛组数
         int rounds;           // 总轮次（径赛=组数、田赛=批次数）
