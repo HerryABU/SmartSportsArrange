@@ -810,6 +810,7 @@ public class ExcelService {
     }
 
     /** 导出成绩册Excel */
+    @Transactional
     public void exportResultBook(HttpServletResponse response) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         setExcelResponse(response, "成绩册_" + dateStr() + ".xlsx");

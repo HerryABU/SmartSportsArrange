@@ -157,6 +157,12 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                     .updatedAt(java.time.LocalDateTime.now())
                     .build();
 
+            // 备注含破纪录标记（破纪录/纪录/记录/record，不区分大小写）→ 标记为破纪录成绩，
+            // 使「破纪录」可由成绩导入 备注 列直接带入，records 榜与团体加分据此计算。
+            if (isRecordRemark(model.getRemark())) {
+                result.setIsRecord(true);
+            }
+
             if (model.getWindSpeed() != null && !model.getWindSpeed().isBlank()) {
                 try {
                     result.setWindSpeed(Double.parseDouble(model.getWindSpeed().trim()));
@@ -188,6 +194,16 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     public List<Map<String, Object>> getSkipped() { return skipped; }
 
     private static boolean isBlank(String s) { return s == null || s.isBlank(); }
+
+    /** 备注是否为破纪录标记（破纪录/破记录/新纪录/新记录/纪录/记录/record，不区分大小写） */
+    private static boolean isRecordRemark(String remark) {
+        if (remark == null || remark.isBlank()) return false;
+        String r = remark.trim().toLowerCase();
+        return r.contains("破纪录") || r.contains("破记录")
+                || r.contains("新纪录") || r.contains("新记录")
+                || r.contains("纪录") || r.contains("记录")
+                || r.contains("record");
+    }
 
     /**
      * 辅助 Sheet 判定：模板/导出表里的「填写说明」Sheet 不是数据。
