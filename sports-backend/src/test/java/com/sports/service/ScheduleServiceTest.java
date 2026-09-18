@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -356,5 +357,144 @@ class ScheduleServiceTest {
                 .filter(s -> s.getEvent() != null && eventId.equals(s.getEvent().getId()))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("未找到 eventId=" + eventId + " 的赛程行"));
+    }
+
+    // ==================== U27/B24：算法正确性与可靠性 ====================
+
+    /**
+     * 容量充足时必须给足真实估算用时。
+     *
+     * <p>旧实现把 defaultDurationMinutes 当上限一刀切：本例 66 人 × 3 分钟 = 198 分钟会被砍成 30 分钟，
+     * 排出来的表看着整齐、现场根本跑不完。这里故意把 defaultDurationMinutes 设成 30 来守住这条。</p>
+     */
+    @Test
+    void capacityIsEnoughKeepsRealEstimate() {
+        Map<String, Object> c = cfg(1, 2);
+        c.put("defaultDurationMinutes", 30);
+        when(systemService.getMeetSchedule()).thenReturn(c);
+        events(field(11L, "跳远", 1));
+        regs(11L, 66);
+
+        scheduleService.autoSchedule(null);
+
+        assertEquals(1, saved.size());
+        assertEquals(198, saved.get(0).getDurationMinutes(),
+                "容量充足（08:00-18:00 共 600 分钟）时必须给足真实估算用时");
+        assertEquals("08:00", saved.get(0).getStartTime());
+        assertEquals("11:18", saved.get(0).getEndTime());
+    }
+
+    /**
+     * 项目时间是编排的原子单位：容量紧张时**整块**落地（行内 duration 与起止时刻自洽）、
+     * 同口径单元等比缩放一致、不丢项目、同场地同时段不重叠。
+     */
+    @Test
+    void wholeBlockPlacementUnderTightCapacity() {
+        Map<String, Object> c = cfg(1, 1);   // 并发位 1，且把时段压到 240 分钟 → 120+120+间隔 > 240
+        c.put("dayConfigs", List.of(Map.of("day", 1, "date", "2026-09-20", "slots",
+                List.of(Map.of("key", "AM", "name", "上午", "start", "08:00", "end", "12:00")))));
+        when(systemService.getMeetSchedule()).thenReturn(c);
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1));
+        regs(11L, 40);
+        regs(12L, 40);
+
+        scheduleService.autoSchedule(null);
+
+        assertEquals(2, saved.size(), "整块装箱后两个项目都必须排下，不得丢项目");
+        EventSchedule a = find(11L);
+        EventSchedule b = find(12L);
+        assertEquals(a.getDurationMinutes(), b.getDurationMinutes(),
+                "同口径（各 120 分钟）的单元应得到一致的缩放时长");
+        assertTrue(a.getDurationMinutes() > 0 && a.getDurationMinutes() <= 120,
+                "压缩后时长应在 (0, 原始估算] 区间内，实际 " + a.getDurationMinutes());
+        for (EventSchedule s : saved) {
+            assertEquals(s.getDurationMinutes(), toMin(s.getEndTime()) - toMin(s.getStartTime()),
+                    "项目必须整块落地：行内时长与起止时刻必须自洽");
+        }
+        assertNoSameVenueSlotOverlap();
+    }
+
+    /** 兼项冲突规避：同一批运动员兼报两项时，应排到间隔 ≥ 冲突缓冲的位置（而不是照旧叠在一起） */
+    @Test
+    void avoidsAthleteConflictWhenPossible() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1));
+        regsShared(2, 11L, 12L);
+
+        scheduleService.autoSchedule(null);
+
+        assertEquals(2, saved.size());
+        EventSchedule a = find(11L);
+        EventSchedule b = find(12L);
+        assertEquals(a.getDay(), b.getDay(), "本用例只有一个时段，两天内比较无意义");
+        int gap = Math.max(toMin(b.getStartTime()) - toMin(a.getEndTime()),
+                toMin(a.getStartTime()) - toMin(b.getEndTime()));
+        assertTrue(gap >= ConflictService.CONFLICT_BUFFER_MIN,
+                "兼报两项的运动员必须被排到间隔 ≥ " + ConflictService.CONFLICT_BUFFER_MIN
+                        + " 分钟的位置，实际间隔 " + gap + " 分钟");
+    }
+
+    /** 同输入两次编排必须完全一致：算法必须可复现，不依赖随机数或当前时间 */
+    @Test
+    void deterministicForSameInput() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1), track(21L, "100米"));
+        regs(11L, 20);
+        regs(12L, 20);
+        regs(21L, 8);
+
+        scheduleService.autoSchedule(null);
+        List<String> first = signature();
+        saved.clear();
+        scheduleService.autoSchedule(null);
+
+        assertEquals(first, signature(), "同一输入两次编排结果必须完全一致");
+        assertFalse(first.isEmpty(), "签名不应为空（确保确实排出了赛程）");
+    }
+
+    /** 落库赛程的规范化签名，用于确定性断言 */
+    private List<String> signature() {
+        return saved.stream()
+                .map(s -> s.getEvent().getId() + "|" + s.getDay() + "|" + s.getStartTime()
+                        + "|" + s.getEndTime() + "|" + s.getVenue() + "|" + s.getDurationMinutes())
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    /** 同一批运动员同时报名多个项目（用于兼项冲突用例） */
+    private void regsShared(int n, Long... eventIds) {
+        List<Registration> shared = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            shared.add(Registration.builder()
+                    .athlete(Athlete.builder().id(9000L + i).grade("高一年级").gender("M").build())
+                    .status("approved").build());
+        }
+        for (Long id : eventIds) {
+            when(registrationRepository.findApprovedByEventId(id)).thenReturn(new ArrayList<>(shared));
+        }
+    }
+
+    /** 同一场地、同一天、同一时段内，任意两行不得时间重叠（容量约束的硬不变量） */
+    private void assertNoSameVenueSlotOverlap() {
+        for (int i = 0; i < saved.size(); i++) {
+            for (int j = i + 1; j < saved.size(); j++) {
+                EventSchedule a = saved.get(i);
+                EventSchedule b = saved.get(j);
+                if (!Objects.equals(a.getDay(), b.getDay())) continue;
+                if (!Objects.equals(a.getVenue(), b.getVenue())) continue;
+                if (!Objects.equals(a.getTimeSlot(), b.getTimeSlot())) continue;
+                int as = toMin(a.getStartTime());
+                int ae = toMin(a.getEndTime());
+                int bs = toMin(b.getStartTime());
+                int be = toMin(b.getEndTime());
+                assertTrue(ae <= bs || be <= as, "同一场地同一时段内不得重叠："
+                        + a.getEvent().getName() + " 与 " + b.getEvent().getName());
+            }
+        }
+    }
+
+    private static int toMin(String hhmm) {
+        String[] p = hhmm.split(":");
+        return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
     }
 }

@@ -153,7 +153,7 @@ public class ScheduleService {
         // 再被 maxDurationMinutes 硬压到 20 分钟，现场时间估算彻底失真（B05 的 144→20）。
         // 正确的约束路径：parallelMax → 并发池槽位数（trackSlots/fieldSlots/专用池，已在上面处理），
         // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
-        estimateDurations(units, heatMinutes, fieldPerAthlete);
+        estimateDurations(units, heatMinutes, fieldPerAthlete, defaultDuration);
 
         // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
         // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
@@ -163,7 +163,7 @@ public class ScheduleService {
         Map<String, Object> feasibility = assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
         // U24/B21：先按容量等比适配时长，再进入放置；compressionReport 放到放置之后统计，
         // 这样「就近缩短」的那部分也如实计入（报告反映的是真正落地的时长）。
-        fitDurationsToPools(units, feasibility, unitInterval, defaultDuration);
+        fitDurationsToPools(units, feasibility, unitInterval);
 
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
@@ -333,6 +333,23 @@ public class ScheduleService {
         // 容量等比缩放与就剩余空间缩短两部分，报告因而与赛程表逐行对得上。
         List<Map<String, Object>> compressionReport = compressionReport(units);
 
+        // U27/B24：统计「有报名却没排进去」的单元（按池分）。容量告警必须把这件事一并说清——
+        // 只说「已压缩到 55.9%」而不同时说明「仍 N 个排不下」会让人误以为压缩后都排下了。
+        Set<String> placedKeys = new HashSet<>();
+        for (EventSchedule s : saved) {
+            if (s.getEvent() != null) {
+                placedKeys.add(s.getEvent().getId() + "|" + (s.getGrade() == null ? "" : s.getGrade()));
+            }
+        }
+        int unplacedTrack = 0;
+        int unplacedField = 0;
+        for (Unit u : units) {
+            if (u.participants <= 0) continue;
+            if (placedKeys.contains(u.event.getId() + "|" + (u.grade == null ? "" : u.grade))) continue;
+            if (u.track) unplacedTrack++;
+            else unplacedField++;
+        }
+
         // B05/U06 + U24/B21：容量告警给出**可执行结论**——缺口多少、至少需要几位并发、已等比压缩到多少。
         // 只写「缺口 699 分钟」现场无法落地；写「田赛并发位需 ≥3（当前 2）」才能立刻照做。
         if (!Boolean.TRUE.equals(feasibility.get("feasible"))) {
@@ -342,11 +359,14 @@ public class ScheduleService {
                 if (p == null || Boolean.TRUE.equals(p.get("feasible"))) continue;
                 int curSlots = "track".equals(label) ? trackSlots : fieldSlots;
                 Object scale = p.get("scalePercent");
+                int unplaced = "track".equals(label) ? unplacedTrack : unplacedField;
                 warnings.add(String.format("时间窗容量不足（%s）：需求 %d 分钟，时段×%d 位并发仅能提供 %d 分钟，缺口 %d 分钟；"
-                                + "建议把%s并发位增至 ≥%d 位（或增加比赛天数/时段、削减项目规模）。%s压缩明细见 compressionReport",
+                                + "%s，仍有 %d 个项目未能排入；建议把%s并发位增至 ≥%d 位（或增加比赛天数/时段、削减项目规模）。"
+                                + "压缩明细见 compressionReport",
                         p.get("label"), p.get("requiredMinutes"), curSlots, p.get("supplyMinutes"),
-                        p.get("deficitMinutes"), p.get("label"), p.get("requiredSlots"),
-                        scale == null ? "已按真实用时等比压缩，" : "已按真实用时等比压缩至约 " + scale + "%，"));
+                        p.get("deficitMinutes"),
+                        scale == null ? "已按真实用时等比压缩" : "已按真实用时等比压缩至约 " + scale + "%",
+                        unplaced, p.get("label"), p.get("requiredSlots")));
             }
         }
         if (!compressionReport.isEmpty()) {
@@ -444,14 +464,12 @@ public class ScheduleService {
         final int windowIdx;
         final int startMinute;
         final int conflicts;
-        final int leftover;     // 放进去之后该时段还剩多少分钟（越小越"贴合"，用于 best-fit）
 
-        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts, int leftover) {
+        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts) {
             this.slotIdx = slotIdx;
             this.windowIdx = windowIdx;
             this.startMinute = startMinute;
             this.conflicts = conflicts;
-            this.leftover = leftover;
         }
     }
 
@@ -491,7 +509,7 @@ public class ScheduleService {
                         start = s2;
                     }
                 }
-                Cand cand = new Cand(si, wi, start, n, w.capacity - base - gap - u.duration);
+                Cand cand = new Cand(si, wi, start, n);
                 if (beats(cand, best)) best = cand;
             }
         }
@@ -499,19 +517,18 @@ public class ScheduleService {
     }
 
     /**
-     * 候选排序：**冲突少者优先**（尽量避开兼项）→ **贴合者优先**（best-fit：放进已有块后剩余最小，
-     * 把碎片收拢、尽量不新开块，从而给后面的大项目留下完整时段）→ 窗口/起点/槽位靠前者优先。
+     * 候选排序：**冲突少者优先**（尽量避开兼项）→ 窗口靠前 → 起点靠前 → 槽位号小。
      *
      * <p>U26/B23：不再有「是否缩短」这一维——项目时长是固定的编排单位，候选里全是能整块放下的位置。</p>
      *
-     * <p><b>为什么要有 best-fit</b>：只按「最早可用」放置等于 first-fit，会把每个块都啃掉一口，
-     * 最后每个块都只剩几十~一百来分钟的尾巴，谁都塞不下——实测就因此丢掉了一个大项目。
-     * 改成「先填满已有块再开新块」后，块数更少、碎片更少，与装箱可行性预判（FFD）也就对得上了。</p>
+     * <p>U27/B24：这里**刻意不做 best-fit**。槽位是**并行**资源（不同场地同时开赛），
+     * 若为了「贴合」而把后面的项目塞进同一槽位的尾巴，就会出现「两个田赛没能同时开赛」，
+     * 白白浪费并行位、还把赛程拉长（回归用例 `fieldSlotsAllowParallelProjects` 正是守这一点）。
+     * 「填满已有块」的收益改由**预判口径与放置口径一致**来保证：见 {@link #greedyPacks}。</p>
      */
     private static boolean beats(Cand a, Cand b) {
         if (b == null) return true;
         if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
-        if (a.leftover != b.leftover) return a.leftover < b.leftover;
         if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
         if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
         return a.slotIdx < b.slotIdx;
@@ -822,7 +839,7 @@ public class ScheduleService {
      * 按各并发池的真实可用容量等比缩放决定（并如实上报缺口与所需并发位）。</p>
      */
     private void estimateDurations(List<Unit> units,
-                                   int heatMinutes, int fieldPerAthlete) {
+                                   int heatMinutes, int fieldPerAthlete, int defaultDuration) {
         for (Unit u : units) {
             Event e = u.event;
             boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
@@ -848,7 +865,10 @@ public class ScheduleService {
                     u.athleteIds.add(r.getAthlete().getId());
                 }
             }
-            u.rawDuration = Math.max(MIN_DURATION, rounds * (isTrack ? heatMinutes : fieldPerAthlete));
+            // 单轮用时未配置（0）时退回「项目默认时长」，保证任何配置下都能得到一个正数估算
+            int perUnit = isTrack ? heatMinutes : fieldPerAthlete;
+            int estimated = rounds * perUnit;
+            u.rawDuration = Math.max(MIN_DURATION, estimated > 0 ? estimated : defaultDuration);
 
             // U24/B21：首选时长 = min(真实估算, 项目显式上限)；未配上限就用真实估算。
             // 旧写法把 defaultDurationMinutes(30) 当上限，与「当天有多少时间」无关——
@@ -919,21 +939,21 @@ public class ScheduleService {
      * U24/B21：把「真实估算时长」按各并发池的可用容量<b>等比公平缩放</b>。
      *
      * <p>某池需求 ≤ 供给 → 不压缩，全部保留真实用时；需求 &gt; 供给 → 对该池<b>所有</b>单元
-     * 等比缩放，取下面两个口径中<b>更小</b>的 k：</p>
+     * 等比缩放，用二分搜索取「<b>仍然整块装得下</b>的最大 k」：</p>
      * <ul>
-     *   <li><b>总量口径</b>：{@code (供给 − 间隔总和 − 打包余量) / 原始总需求}；</li>
-     *   <li><b>整块口径（U26/B23）</b>：项目时间是编排的原子单位，每个项目必须整块落地，
-     *       所以每块要塞下 {@code ceil(单元数/块数)} 个项目，最长项目不得超过
-     *       {@code (单块可用时长) / 每块项目数}。</li>
+     *   <li><b>上界</b> = 总量口径 {@code (供给 − 间隔总和) / 原始总需求}；</li>
+     *   <li><b>可行性判定</b> = {@link #greedyPacks}，它<b>模拟真实放置策略</b>（项目顺序 +
+     *       窗口靠前 + 槽位并行 + 块尾碎片）。预判与实际放置同源，才不会出现
+     *       「预判装得下、实际却丢项目」——这正是早先用理想 FFD 预判踩过的坑。</li>
      * </ul>
      * <p>「统一等比」而不是「一部分砍到地板、一部分原样排」，结果可解释、可复现，
      * 也让 compressionReport 里的百分比有统一的物理含义（该池被压缩到的比例）。</p>
      *
-     * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限为
-     * min(defaultDurationMinutes, 真实估算)，避免把大项压到「比一轮用时还短」的不可执行状态。</p>
+     * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限固定为
+     * {@link #MIN_DURATION}——**不可**拿 defaultDurationMinutes 当下限，那是「默认时长」而非
+     * 「最小时长」，设大时会顶住缩放、使其完全失效。</p>
      */
-    private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility,
-                                     int interval, int floorMinutes) {
+    private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility, int interval) {
         for (String key : List.of("track", "field")) {
             @SuppressWarnings("unchecked")
             Map<String, Object> pool = (Map<String, Object>) feasibility.get(key);
@@ -950,22 +970,16 @@ public class ScheduleService {
                 unitsInPool++;
             }
             if (totalRaw <= 0) continue;
-            // 项目间隔同样占时间；此外每个「槽位×时段」块尾部最多会浪费 floorMinutes（碎片放不进项目），
-            // 也要先从供给里扣掉。否则把「需求」缩放到「刚好等于容量」，必然因碎片而排不下——
-            // 实测正是如此：田赛闲置 612 分钟却仍有 3 个项目排不下。
             int slotsInPool = Math.max(1, intVal(pool.get("slots"), 1));
             int windowCount = Math.max(1, intVal(pool.get("windowCount"), 1));
-            int blocks = Math.max(1, slotsInPool * windowCount);
             int capacityPerWindow = Math.max(1, supply / slotsInPool / windowCount);
-            long wasteBudget = (long) blocks * floorMinutes;   // 每块尾部最多浪费一个执行下限
-            // ① 总量口径：供给扣掉间隔与打包余量后能承载多少「时长」
-            double kSum = (supply - (long) unitsInPool * interval - wasteBudget) / (double) totalRaw;
-            // ② 整块口径（U26/B23）：项目时间是编排的原子单位，每个项目必须**整块**落地，
-            //    于是问题就是「把 n 个整块装进 blocks 个容量 blockUsable 的箱子」——典型的装箱问题。
-            //    这里二分搜索**最大的、仍然装得下**的 k：既保住整块语义，又不会像
-            //    「任意两块都塞得下」那种充分条件那样过度压缩（实测 0.438 vs 实得 0.55+，
-            //    前者会出现「压到 44% 却还闲置 40% 容量」的自相矛盾）。
-            int blockUsable = Math.max(MIN_DURATION, capacityPerWindow - interval);
+            // 二分搜索的上界取「纯总量口径」：供给扣掉项目间隔后还能承载多少时长。
+            // 真正的可行性判定交给 greedyPacks——它已经模拟了块尾碎片与槽位并行，
+            // 不必再额外预留一份「打包余量」（两者同时用会重复扣减、导致过度压缩）。
+            double kSum = (supply - (long) unitsInPool * interval) / (double) totalRaw;
+            // 项目时间是编排的原子单位（U26/B23）：每个项目必须**整块**落地，于是这是装箱问题。
+            // 这里二分搜索「最大的、仍然装得下」的 k：既保住整块语义，又不过度压缩
+            // （「任意两块都塞得下」那种充分条件实测压到 43.8% 却还闲置 40% 容量，自相矛盾）。
             double hi = Math.min(1.0, kSum);
             double lo = 0.05;
             double k = lo;
@@ -975,10 +989,9 @@ public class ScheduleService {
                 int idx = 0;
                 for (Unit u : units) {
                     if (u.participants <= 0 || u.track != isTrack) continue;
-                    int fl = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
-                    probeDur[idx++] = Math.max(fl, (int) Math.floor(u.rawDuration * mid));
+                    probeDur[idx++] = Math.max(MIN_DURATION, (int) Math.floor(u.rawDuration * mid));
                 }
-                if (packsIntoBlocks(probeDur, blocks, blockUsable)) {
+                if (greedyPacks(probeDur, slotsInPool, windowCount, capacityPerWindow, interval)) {
                     k = mid;
                     lo = mid;
                 } else {
@@ -987,10 +1000,11 @@ public class ScheduleService {
             }
             for (Unit u : units) {
                 if (u.participants <= 0 || u.track != isTrack) continue;
-                // 缩放下限 = min(单轮默认时长, 真实估算)：再挤也不该把一个大项压到比单轮用时还短，
-                // 那已经不是「压缩」而是「不可执行」。真实估算本身就不足者不受影响。
-                int floor = Math.max(MIN_DURATION, Math.min(floorMinutes, u.rawDuration));
-                int scaled = Math.max(floor, (int) Math.floor(u.rawDuration * k));
+                // 缩放下限 = MIN_DURATION：再挤也不该把项目压到毫无意义的几分钟。
+                // 注意**不能用** defaultDurationMinutes 当下限——它的语义是「默认时长」，
+                // 夹具/用户把它设大（如 600 = 不封顶）时会把下限顶到原始时长，
+                // 使等比缩放完全失效（实测：k 被迫掉到 0.05、项目反而排不下）。
+                int scaled = Math.max(MIN_DURATION, (int) Math.floor(u.rawDuration * k));
                 int target = u.explicitMaxDuration > 0 ? Math.min(scaled, u.explicitMaxDuration) : scaled;
                 u.duration = Math.min(u.duration, Math.max(MIN_DURATION, target));
             }
@@ -999,23 +1013,43 @@ public class ScheduleService {
     }
 
     /**
-     * 整块装箱可行性（U26/B23）：把 durations 整块装进 blocks 个容量为 blockUsable 的箱子。
+     * 模拟**真实放置策略**的整块装箱可行性（U27/B24）。
      *
-     * <p>用「按大小递减 + 最满的可装块」(best-fit decreasing)——经典装箱近似算法。
-     * n 只有几十个单元，O(n²) 的代价可忽略；比「任意两块都塞得下」这类充分条件精确得多，
-     * 能避免过度压缩（否则会出现「压到 44% 却还闲置 40% 容量」的自相矛盾）。</p>
+     * <p><b>预判口径必须与放置口径一致</b>——这是本方法存在的唯一理由。实际放置是按项目顺序，
+     * 对每个单元取「窗口靠前 → 起点靠前 → 槽位号小」的**首次适应(first-fit)**，且槽位之间并行。
+     * 早先版本用理想 FFD 预判，结果是「预判装得下、实际却丢了一个项目」——口径不一致的典型。
+     * 这里按同一套贪心规则逐块推算，二者同源，预判才对实际有约束力。</p>
+     *
+     * @param durations      各单元时长（严格按放置顺序）
+     * @param slots          该池并发槽位数
+     * @param windowCount    时段数
+     * @param windowCapacity 单个时段可用分钟（同池内各时段同长）
+     * @param interval       项目间最小间隔
+     * @return 全部单元都能整块放下则为 true
      */
-    private static boolean packsIntoBlocks(long[] durations, int blocks, int blockUsable) {
-        long[] sorted = durations.clone();
-        Arrays.sort(sorted);
-        long[] bin = new long[blocks];
-        for (int i = sorted.length - 1; i >= 0; i--) {          // 从最大块开始装
-            int best = -1;
-            for (int b = 0; b < blocks; b++) {
-                if (bin[b] + sorted[i] <= blockUsable && (best < 0 || bin[b] > bin[best])) best = b;
+    private static boolean greedyPacks(long[] durations, int slots, int windowCount,
+                                       int windowCapacity, int interval) {
+        int slotCount = Math.max(1, slots);
+        int[] used = new int[slotCount * Math.max(1, windowCount)];
+        for (long d : durations) {
+            int dur = (int) d;
+            int bestIdx = -1;
+            int bestStart = Integer.MAX_VALUE;
+            for (int wi = 0; wi < windowCount; wi++) {
+                for (int si = 0; si < slotCount; si++) {
+                    int idx = wi * slotCount + si;
+                    int u = used[idx];
+                    int gap = u == 0 ? 0 : interval;
+                    if (u + gap + dur > windowCapacity) continue;          // 整块放不下
+                    int start = wi * 1440 + u + gap;                       // 绝对分钟，跨天可比
+                    if (start < bestStart || (start == bestStart && idx < bestIdx)) {
+                        bestStart = start;
+                        bestIdx = idx;
+                    }
+                }
             }
-            if (best < 0) return false;                          // 没箱子装得下 → 该 k 不可行
-            bin[best] += sorted[i];
+            if (bestIdx < 0) return false;                                 // 没有任何块装得下
+            used[bestIdx] += (used[bestIdx] == 0 ? 0 : interval) + dur;
         }
         return true;
     }
