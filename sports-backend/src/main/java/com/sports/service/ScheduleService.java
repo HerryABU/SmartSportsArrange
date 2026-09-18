@@ -221,13 +221,29 @@ public class ScheduleService {
         List<String> autoArrangeFails = new ArrayList<>();
         int[] orderCounter = {1};
         Set<Integer> done = new HashSet<>();
+        // U22/B19：先算好「确实有已审核报名的项目」，供下面区分两种「0 参与」：
+        //   ① 项目整体无报名（数据的真问题，值得告警）；
+        //   ② event.gradeGroup 缺失时按「年级 × 项目」笛卡尔积展开出的跨年级空单元
+        //      （项目本就不该在该年级进行，属正常，静默跳过，否则几十条噪声淹没真正的业务告警）。
+        Set<Long> eventsWithRegs = new HashSet<>();
+        for (Event ev : eventRepository.findByIsEnabledTrueOrderBySortOrderAsc()) {
+            if (countParticipants(ev.getId(), null) > 0) eventsWithRegs.add(ev.getId());
+        }
+        // U23/B20：兼项冲突规避的运行状态。
+        // busy = 运动员 → 已占用时间段（绝对分钟 = 天×1440 + 当日分钟），放置时据此避让；
+        // conflictStat = {零冲突放置的单元数, 残余冲突条数}，随结果返回，便于核对「到底规避掉多少」。
+        Map<Long, List<int[]>> busy = new HashMap<>();
+        int[] conflictStat = {0, 0};
 
         for (int i = 0; i < units.size(); i++) {
             if (done.contains(i)) continue;
             Unit u = units.get(i);
             if (u.participants <= 0) {
-                warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
-                        u.event.getName(), u.grade == null ? "不分年级" : u.grade));
+                // U22/B19：只有项目「整体无报名」才告警；跨年级空单元（本就不该在该年级进行）静默跳过
+                if (!eventsWithRegs.contains(u.event.getId())) {
+                    warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                            u.event.getName(), u.grade == null ? "不分年级" : u.grade));
+                }
                 done.add(i);
                 continue;
             }
@@ -239,7 +255,7 @@ public class ScheduleService {
             if (group == null) {
                 // 普通单元：占用并发池中最空闲的一个槽位
                 placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        saved, warnings, orderCounter, autoArrangeFails);
+                        saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat);
                 autoArrangeOk += u.arranged;
                 done.add(i);
             } else {
@@ -251,8 +267,11 @@ public class ScheduleService {
                     if (v.track || !sameGrade(v.grade, u.grade)) continue;
                     if (!group.equals(event2Group.get(v.event.getId()))) continue;
                     if (v.participants <= 0) {
-                        warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
-                                v.event.getName(), v.grade == null ? "不分年级" : v.grade));
+                        // U22/B19：同上——只有项目整体无报名才告警，跨年级空单元静默跳过
+                        if (!eventsWithRegs.contains(v.event.getId())) {
+                            warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                                    v.event.getName(), v.grade == null ? "不分年级" : v.grade));
+                        }
                         done.add(j);
                         continue;
                     }
@@ -267,7 +286,7 @@ public class ScheduleService {
                             fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
                 }
                 placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        group, saved, warnings, orderCounter, autoArrangeFails);
+                        group, saved, warnings, orderCounter, autoArrangeFails, busy);
                 for (Integer idx : batch) {
                     autoArrangeOk += units.get(idx).arranged;
                     done.add(idx);
@@ -278,6 +297,8 @@ public class ScheduleService {
         log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}位并发, 田赛{}位并发, 田赛分组{}组",
                 saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
                 trackSlots, fieldSlots, event2Group.values().stream().distinct().count());
+        log.info("兼项冲突规避: 零冲突放置 {} 个单元, 残余冲突 {} 条（缓冲 {} 分钟）",
+                conflictStat[0], conflictStat[1], ConflictService.CONFLICT_BUFFER_MIN);
 
         // B01/U01/B17：自动编排重建了整张赛程表，需把「已二次编排」的决赛条目补回来。
         // 否则在二次编排之后重跑自动编排，径赛决赛条目会被整体抹掉——
@@ -339,6 +360,13 @@ public class ScheduleService {
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         // B01/U01/B17：本次自动编排补回的决赛赛程条目数（0 = 无需补，赛程表已与编排一致）
         result.put("restoredFinalScheduleRows", restoredFinals);
+        // U23/B20：兼项冲突规避成效——排程阶段主动避让的结果，与事后 detectConflicts 的清单互为印证
+        Map<String, Object> avoidance = new LinkedHashMap<>();
+        avoidance.put("conflictFreeUnits", conflictStat[0]);
+        avoidance.put("residualConflicts", conflictStat[1]);
+        avoidance.put("unitsPlaced", conflictStat[0] + (conflictStat[1] > 0 ? 1 : 0));
+        avoidance.put("bufferMinutes", ConflictService.CONFLICT_BUFFER_MIN);
+        result.put("conflictAvoidance", avoidance);
         // B16/U20：业务级成功判定——不止看 failed:0，还要看业务告警
         // （兼项冲突、严重压缩、时间窗溢出等 warnings 任一非空即视为未完全成功）
         boolean businessOk = warnings.isEmpty() && autoArrangeFails.isEmpty();
@@ -350,20 +378,122 @@ public class ScheduleService {
 
     // ==================== 放置（并发池） ====================
 
-    /** 普通单元：占用池中最空闲的槽位，并登记赛程行（径赛顺带自动道次编排） */
+    /**
+     * 普通单元：在池中挑选**兼项冲突最少、其次最靠前**的位置，再登记赛程行（径赛顺带自动道次编排）。
+     *
+     * <p>U23/B20：旧实现只做「最早可用」放置（`pickSlot` + `Cursor.place`），完全不看运动员兼项，
+     * 排完再让 {@link ConflictService#detectConflicts()} 报出上百处冲突——那是**事后报错**，
+     * 不是**事前规避**。现在改为冲突感知放置：若把本项目放在某时间点会让参赛运动员与已排项目
+     * 撞车（时间重叠，或间隔不足 {@link ConflictService#CONFLICT_BUFFER_MIN} 分钟），
+     * 就改用同一并发池内其它更合适的时段/槽位；当所有候选都躲不开时，才落到**冲突最少**的
+     * 位置，并把残余冲突如实计数上报（不粉饰）。</p>
+     *
+     * <p>注意：候选里的第一个（最早的）与旧实现完全相同，因此「零冲突时行为不变」，
+     * 只有真的会撞车时才发生位移——改动是可解释、可回归的。</p>
+     */
     private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval, int minInterval,
                           double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
-                          int[] orderCounter, List<String> autoArrangeFails) {
-        int slot = pool.pickSlot();
+                          int[] orderCounter, List<String> autoArrangeFails,
+                          Map<Long, List<int[]>> busy, int[] conflictStat) {
         int interval = Math.max(intervalOf(u, defaultInterval), minInterval);
-        Slot placed = pool.cursors.get(slot).place(windows, u.duration, interval);
-        if (placed == null) {
+        Cand best = findBestSlot(u, pool, windows, interval, busy);
+        if (best == null) {
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
             return;
         }
-        saveSchedule(u, placed, pool.venueOf.get(slot), saved, orderCounter, autoArrangeFails,
-                warnings, compressionWarnRatio);
+        Cursor cursor = pool.cursors.get(best.slotIdx);
+        Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, u.duration);
+        if (probe == null) {   // 理论上不会发生（findBestSlot 已校验容量）
+            warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
+                    u.grade == null ? "不分年级" : u.grade));
+            return;
+        }
+        if (best.conflicts == 0) conflictStat[0]++;
+        else conflictStat[1] += best.conflicts;
+        saveSchedule(u, probe.slot, pool.venueOf.get(best.slotIdx), saved, orderCounter, autoArrangeFails,
+                warnings, compressionWarnRatio, busy);
+    }
+
+    /** 候选位置：某槽位 × 某窗口 × 某起点，及把该单元放在此处的兼项冲突条数 */
+    private static class Cand {
+        final int slotIdx;
+        final int windowIdx;
+        final int startMinute;
+        final int conflicts;
+
+        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts) {
+            this.slotIdx = slotIdx;
+            this.windowIdx = windowIdx;
+            this.startMinute = startMinute;
+            this.conflicts = conflicts;
+        }
+    }
+
+    /**
+     * 在池的各槽位内扫描候选起点，返回排序最优者：
+     * <b>冲突数最少 → 日期/时段最早 → 起点最早 → 槽位号最小</b>。
+     *
+     * <p>同槽位内的候选按 {@code interval} 步进枚举（而非只取「最早可用」这一个点），
+     * 这样才能为了避让兼项冲突而主动后移若干分钟；容量边界与 {@link Cursor#place} 保持一致
+     * （首项不留前置间隔，后续项留 interval）。</p>
+     *
+     * @return 最优候选；该池在剩余时段内完全放不下时返回 null
+     */
+    private Cand findBestSlot(Unit u, Pool pool, List<Window> windows, int interval,
+                              Map<Long, List<int[]>> busy) {
+        Cand best = null;
+        for (int si = 0; si < pool.cursors.size(); si++) {
+            Cursor c = pool.cursors.get(si);
+            for (int wi = c.windowIdx; wi < windows.size(); wi++) {
+                Window w = windows.get(wi);
+                int floor = (wi == c.windowIdx) ? c.used : 0;   // 不倒退到该槽位已用满的时段之前
+                for (int used = floor; used + u.duration <= w.capacity; used += interval) {
+                    int gap = used == 0 ? 0 : interval;         // 与 Cursor.place 的段前间隔口径一致
+                    if (used + gap + u.duration > w.capacity) break;
+                    int start = w.startMinute + used + gap;
+                    int n = countConflicts(u.athleteIds, w.day, start, u.duration, busy);
+                    Cand cand = new Cand(si, wi, start, n);
+                    if (beats(cand, best)) best = cand;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 候选排序：冲突少者优；冲突相同则窗口靠前、起点靠前、槽位号小者优 */
+    private static boolean beats(Cand a, Cand b) {
+        if (b == null) return true;
+        if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
+        if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
+        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
+        return a.slotIdx < b.slotIdx;
+    }
+
+    /**
+     * 把单元放到「第 day 天 startMinute 起、持续 duration 分钟」会撞上多少条已排项目。
+     *
+     * <p>与 {@link ConflictService#detectConflicts()} <b>同口径</b>：必须是同一天，且两段
+     * 区间重叠、或间隔小于 {@link ConflictService#CONFLICT_BUFFER_MIN} 分钟才计一次。
+     * 口径一致是硬要求——否则「排时以为不冲突、检出来又冲突」。</p>
+     *
+     * @param busy 运动员 → 已占用时间段（绝对分钟 = 天 × 1440 + 当日分钟）
+     */
+    private static int countConflicts(Set<Long> athleteIds, int day, int startMinute, int duration,
+                                      Map<Long, List<int[]>> busy) {
+        if (athleteIds == null || athleteIds.isEmpty() || busy == null || busy.isEmpty()) return 0;
+        int absStart = day * 1440 + startMinute;
+        int absEnd = absStart + duration;
+        int n = 0;
+        for (Long aid : athleteIds) {
+            List<int[]> spans = busy.get(aid);
+            if (spans == null) continue;
+            for (int[] p : spans) {
+                int gap = Math.max(absStart - p[1], p[0] - absEnd);   // 对称间隔
+                if (gap < ConflictService.CONFLICT_BUFFER_MIN) n++;
+            }
+        }
+        return n;
     }
 
     /**
@@ -376,7 +506,8 @@ public class ScheduleService {
     private void placeBatch(List<Integer> batch, List<Unit> units, List<Pool> unitPools, List<Window> windows,
                             int defaultInterval, int minInterval, double compressionWarnRatio, String group,
                             List<EventSchedule> saved, List<String> warnings,
-                            int[] orderCounter, List<String> autoArrangeFails) {
+                            int[] orderCounter, List<String> autoArrangeFails,
+                            Map<Long, List<int[]>> busy) {
         int maxSlots = 1;
         for (Pool p : unitPools) maxSlots = Math.max(maxSlots, p.slots);
         for (int from = 0; from < batch.size(); from += maxSlots) {
@@ -433,7 +564,7 @@ public class ScheduleService {
                     continue;
                 }
                 saveSchedule(u, probe.slot, p.venueOf.get(Math.min(k, p.venueOf.size() - 1)),
-                        saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio);
+                        saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy);
             }
             if (!sameStart) {
                 warnings.add(String.format("田赛分组「%s」部分项目未能同时开始（并发位或时段容量不足），已按各自最早时段顺延", group));
@@ -453,7 +584,8 @@ public class ScheduleService {
     /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
     private void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails,
-                              List<String> warnings, double compressionWarnRatio) {
+                              List<String> warnings, double compressionWarnRatio,
+                              Map<Long, List<int[]>> busy) {
         boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
         EventSchedule s = EventSchedule.builder()
                 .event(u.event)
@@ -481,6 +613,15 @@ public class ScheduleService {
         }
         saved.add(scheduleRepository.save(s));
 
+        // U23/B20：登记本单元占用的时间段，供后续单元做兼项冲突规避（绝对分钟便于跨天比较）
+        if (!u.athleteIds.isEmpty()) {
+            int absStart = placed.window.day * 1440 + placed.startMinute;
+            int[] span = {absStart, absStart + u.duration};
+            for (Long aid : u.athleteIds) {
+                busy.computeIfAbsent(aid, k -> new ArrayList<>()).add(span);
+            }
+        }
+
         if (u.track && u.participants > 0) {
             u.arranged = autoArrangeFor(u, autoArrangeFails);
         }
@@ -501,16 +642,16 @@ public class ScheduleService {
         int lanes = concurrencyOf(e);
         String round = Boolean.TRUE.equals(e.getNeedHeats())
                 ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
-        List<String> genders = new ArrayList<>();
-        String gl = e.getGenderLimit();
-        if ("女子组".equals(gl)) {
-            genders.add("F");
-        } else if ("男子组".equals(gl)) {
-            genders.add("M");
-        } else { // 混合/未指定：男女各排一版
-            genders.add("M");
-            genders.add("F");
-        }
+        // U22/B19 根因修复：性别组必须从「真实已审核报名」推导，不能只看 event.genderLimit。
+        // 现实中 genderLimit 常为空（项目名写着「男子组/女子组」，但该字段没落库/导入时缺失），
+        // 旧实现此时会退回「男女各排一版」：男子项目去排 F 组时，
+        // registrationRepository 查无报名 → arrange 抛「没有符合条件的已审核报名记录」。
+        // 该异常虽被下面的 try/catch 吞掉，却已把外层 autoSchedule 的 @Transactional 事务
+        // 标记为 rollback-only，提交时抛 UnexpectedRollbackException → 整个自动编排接口 500，
+        // 且整张赛程表被回滚（event_schedule 一行不剩）。
+        // 正确口径与 batchArrange 一致：按报名中实际出现的性别逐组编排；没有报名的性别直接跳过，
+        // 既不是失败也不产生告警。
+        List<String> genders = approvedGenders(e.getId(), u.grade);
         int ok = 0;
         for (String g : genders) {
             try {
@@ -519,7 +660,7 @@ public class ScheduleService {
                 ok++;
             } catch (Exception ex) {
                 arrFails.add(String.format("%s（%s %s）：%s", e.getName(), u.grade,
-                        "M".equals(g) ? "男子" : "女子",
+                        genderLabel(g),
                         ex.getMessage() == null ? ex.toString() : ex.getMessage()));
             }
         }
@@ -527,6 +668,36 @@ public class ScheduleService {
             log.info("自动道次编排: event={}({}), grade={}, genders={}, round={}", e.getName(), e.getId(), u.grade, genders, round);
         }
         return ok;
+    }
+
+    /**
+     * 该项目在指定年级下「已审核报名」里实际出现的性别（原值，通常为 M/F），去重后排序。
+     *
+     * <p>U22/B19：这是自动道次编排的正确驱动源——{@code event.genderLimit} 只是「限制」，
+     * 缺省（null）代表「不限制」，并不代表「一定男女都有人报名」。只有报名里真的出现过的性别
+     * 才应该去调 {@code arrange}，否则会触发「没有符合条件的已审核报名记录」并毒化外层事务。</p>
+     *
+     * @param grade null/空 = 不限年级（取该项目全部报名）
+     * @return 实际存在的性别列表；无报名时返回空列表
+     */
+    private List<String> approvedGenders(Long eventId, String grade) {
+        List<String> out = new ArrayList<>();
+        for (Registration r : approvedRegs(eventId, grade)) {
+            var a = r.getAthlete();
+            if (a == null || a.getGender() == null) continue;
+            String g = a.getGender().trim();
+            if (!g.isEmpty() && !out.contains(g)) out.add(g);
+        }
+        out.sort(Comparator.naturalOrder());
+        return out;
+    }
+
+    /** 性别原值 → 中文标签（用于告警文案） */
+    private static String genderLabel(String g) {
+        if (g == null) return "未知";
+        if ("M".equalsIgnoreCase(g) || "男".equals(g)) return "男子";
+        if ("F".equalsIgnoreCase(g) || "女".equals(g)) return "女子";
+        return g;
     }
 
     // ==================== 赛程单元构建 ====================
@@ -599,7 +770,8 @@ public class ScheduleService {
         for (Unit u : units) {
             Event e = u.event;
             boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
-            int count = countParticipants(e.getId(), u.grade);
+            List<Registration> regs = approvedRegs(e.getId(), u.grade);
+            int count = regs.size();
             int concurrency = concurrencyOf(e);
 
             int entrants = count;
@@ -614,6 +786,12 @@ public class ScheduleService {
             u.participants = count;
             u.heats = isTrack ? rounds : 0;
             u.rounds = rounds;
+            // U23/B20：记录参赛者，供兼项冲突规避（与 participants 同一次查询，口径必然一致）
+            for (Registration r : regs) {
+                if (r.getAthlete() != null && r.getAthlete().getId() != null) {
+                    u.athleteIds.add(r.getAthlete().getId());
+                }
+            }
             u.rawDuration = Math.max(MIN_DURATION, rounds * (isTrack ? heatMinutes : fieldPerAthlete));
 
             int cap = e.getMaxDurationMinutes() != null ? e.getMaxDurationMinutes() : defaultDuration;
@@ -695,17 +873,29 @@ public class ScheduleService {
         return out;
     }
 
-    private int countParticipants(Long eventId, String grade) {
+    /**
+     * 该 (项目, 年级) 的「已审核报名」——本类查询报名的<b>唯一入口</b>。
+     *
+     * <p>U23/B20：以前 countParticipants / approvedGenders / 空单元判定各自查一遍报名，
+     * 口径容易漂移（一处滤年级、一处不滤）。统一到这里之后，「人数、参赛者集合、性别集合」
+     * 三者都由同一次查询派生，必然互相自洽。</p>
+     *
+     * @param grade null/空 = 不限年级（取该项目全部已审核报名）
+     */
+    private List<Registration> approvedRegs(Long eventId, String grade) {
         try {
             List<Registration> regs = registrationRepository.findApprovedByEventId(eventId);
-            if (grade == null || grade.isBlank()) return regs.size();
-            return (int) regs.stream()
-                    .filter(r -> r.getAthlete() != null
-                            && Grades.same(grade, r.getAthlete().getGrade()))
-                    .count();
+            if (grade == null || grade.isBlank()) return regs;
+            return regs.stream()
+                    .filter(r -> r.getAthlete() != null && Grades.same(grade, r.getAthlete().getGrade()))
+                    .collect(Collectors.toList());
         } catch (Exception ex) {
-            return 0;
+            return List.of();
         }
+    }
+
+    private int countParticipants(Long eventId, String grade) {
+        return approvedRegs(eventId, grade).size();
     }
 
     // ==================== 时间窗 ====================
@@ -987,6 +1177,13 @@ public class ScheduleService {
         int heats;            // 径赛组数
         int rounds;           // 总轮次（径赛=组数、田赛=批次数）
         int arranged;         // 径赛自动道次编排成功的性别组数
+        /**
+         * 本单元的参赛运动员（已审核报名）。
+         *
+         * <p>U23/B20：兼项冲突规避的关键输入——放置时据此判断「把该项目排在这个时间点，
+         * 会不会和该运动员已排的其它项目撞车」。</p>
+         */
+        final Set<Long> athleteIds = new HashSet<>();
 
         Unit(Event event, String grade) {
             this.event = event;

@@ -47,8 +47,13 @@ public class ConflictService {
     private final EventScheduleRepository eventScheduleRepository;
     private final AthleteRepository athleteRepository;
 
-    /** 相邻项目「结束-开始」间隔小于该值（分钟）也视为冲突 */
-    private static final int CONFLICT_BUFFER_MIN = 15;
+    /**
+     * 相邻项目「结束-开始」间隔小于该值（分钟）也视为冲突。
+     *
+     * <p>U23/B20：改为 public —— 排程端（{@link ScheduleService}）要**事前规避**兼项冲突，
+     * 必须与检测端用同一个缓冲口径，否则「排的时候觉得不冲突、检出来又冲突」。</p>
+     */
+    public static final int CONFLICT_BUFFER_MIN = 15;
 
     public static final String SEVERITY_BLOCKER = "严重";
     public static final String SEVERITY_WARN = "一般";
