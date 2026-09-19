@@ -1,7 +1,9 @@
 package com.sports.common;
 
+import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Properties;
 
 /**
  * 导出文件命名统一（U11 / B13）：在文件名中带上「阶段 + 版本 + 生成时间」，
@@ -12,18 +14,44 @@ public final class ExportNaming {
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     /**
-     * 兜底版本号（H2 修复：原 "2.5.0" 与当前 v2.6.8 冲突，导致 IDE 内运行 / 未配 manifest 时
-     * 所有导出文件名带 _v2.5.0，与 README 标题对不上）。
-     * 必须与 pom.xml 的 <version> 保持同步；正常打包时会被 jar 清单的 Implementation-Version 覆盖。
+     * 终极兜底版本号（仅当既无 jar 清单、又无 pom.properties 时才命中，例如裸 classpath 直接跑 class）。
+     * <p><b>不再作为主同步点</b>：打包后版本优先取 Maven 自动生成的
+     * {@code META-INF/maven/com.sports/sports/pom.properties}（始终与 pom.xml 的 {@code <version>}
+     * 一致，无需手动维护），其次取 jar 清单 Implementation-Version。本常量只是最后一道防线。</p>
      */
     private static final String FALLBACK_VERSION = "2.6.8";
 
+    /** pom.properties 资源路径（Maven 打包时由 pom <version> 自动生成） */
+    private static final String POM_PROPERTIES =
+            "META-INF/maven/com.sports/sports/pom.properties";
+
     private ExportNaming() {}
 
-    /** 应用版本：优先取打包清单 Implementation-Version，回退到 FALLBACK_VERSION（须与 pom 同步） */
+    /**
+     * 应用版本，按优先级：
+     * 1) jar 清单 Implementation-Version（正常打包得到）；
+     * 2) Maven 生成的 pom.properties 的 version（与 pom.xml 始终同步，消除手动同步遗漏）；
+     * 3) FALLBACK_VERSION（仅裸 classpath 运行等极端场景）。
+     */
     public static String appVersion() {
         String v = ExportNaming.class.getPackage().getImplementationVersion();
+        if (v == null || v.isBlank()) {
+            v = readPomVersion();
+        }
         return (v != null && !v.isBlank()) ? v : FALLBACK_VERSION;
+    }
+
+    /** 读取 Maven 自动生成的 pom.properties 中的 version（与 pom.xml 同步，无需手动维护） */
+    private static String readPomVersion() {
+        try (InputStream in = ExportNaming.class.getClassLoader()
+                .getResourceAsStream(POM_PROPERTIES)) {
+            if (in == null) return null;
+            Properties p = new Properties();
+            p.load(in);
+            return p.getProperty("version");
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /** 生成时间戳 yyyyMMdd-HHmmss */
