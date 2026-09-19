@@ -11,10 +11,10 @@ import com.sports.repository.ResultRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -58,6 +58,27 @@ class ScoreDataListenerTest {
         return m;
     }
 
+    /** L3 批处理：invoke 只累积到 batch，需在 doAfterAllAnalysed 里 flush 才落库。
+     *  saveAll 拿到的是 batch 的活引用、flush 随后会清空它，故在 answer 内即时拷贝内容，
+     *  避免抓到被清空的引用。返回本次落库的所有 Result。 */
+    @SuppressWarnings("unchecked")
+    private List<Result> flushAndGetSaved(ScoreDataListener l) {
+        List<Result> captured = new ArrayList<>();
+        when(resultRepository.saveAll(anyList())).thenAnswer(inv -> {
+            List<Result> arg = inv.getArgument(0);
+            captured.addAll(arg);
+            return new ArrayList<>(arg);
+        });
+        // doAfterAllAnalysed 不读取 context，传 null 即可（避免 ctx() 桩被 Mockito 严格模式判为多余）
+        l.doAfterAllAnalysed(null);
+        return captured;
+    }
+
+    /** 便捷重载：针对测试默认 listener 字段 */
+    private List<Result> flushAndGetSaved() {
+        return flushAndGetSaved(listener);
+    }
+
     private void stubBasics() {
         Event e = Event.builder().id(1L).code("M100").name("100米").build();
         when(eventRepository.findByCode("M100")).thenReturn(Optional.of(e));
@@ -74,42 +95,45 @@ class ScoreDataListenerTest {
     @Test
     void import_dnfTokenSetsNonFinishStatus() {
         stubBasics();
-        ArgumentCaptor<Result> cap = ArgumentCaptor.forClass(Result.class);
-        when(resultRepository.save(cap.capture())).thenAnswer(inv -> inv.getArgument(0));
 
         listener.invoke(model("DNF"), ctx());
+        List<Result> saved = flushAndGetSaved();
 
-        assertEquals("dnf", cap.getValue().getStatus(), "DNF 应标记为非完赛状态");
-        assertNull(cap.getValue().getTimeSeconds(), "非完赛不应有成绩秒数");
+        assertEquals(1, saved.size());
+        assertEquals("dnf", saved.get(0).getStatus(), "DNF 应标记为非完赛状态");
+        assertNull(saved.get(0).getTimeSeconds(), "非完赛不应有成绩秒数");
         assertEquals(0, listener.getErrorCount(), "合法非完赛标记不应计入错误");
     }
 
-    /** R-2：DNS / DSQ 同样应被识别（大小写不敏感） */
+    /** R-2：DNS / DSQ 同样应被识别（大小写不敏感）。
+     *  每个 token 用独立监听器，避免「同一运动员同项目不同成绩」被导入内冲突判定拦截（那是另一个关注点）。 */
     @Test
     void import_dnsAndDsqTokensRecognized() {
-        stubBasics();
-        ArgumentCaptor<Result> cap = ArgumentCaptor.forClass(Result.class);
-        when(resultRepository.save(cap.capture())).thenAnswer(inv -> inv.getArgument(0));
-
-        listener.invoke(model("dns"), ctx());
-        listener.invoke(model("DSQ"), ctx());
-
-        List<Result> saved = cap.getAllValues();
-        assertEquals("dns", saved.get(0).getStatus());
-        assertEquals("dsq", saved.get(1).getStatus());
+        String[] tokens = {"dns", "DSQ"};
+        String[] statuses = {"dns", "dsq"};
+        for (int i = 0; i < tokens.length; i++) {
+            ScoreDataListener l = new ScoreDataListener(resultRepository, eventRepository,
+                    athleteRepository, arrangementRepository);
+            stubBasics();
+            l.invoke(model(tokens[i]), ctx());
+            List<Result> saved = flushAndGetSaved(l);
+            assertEquals(0, l.getErrorCount(), "合法非完赛标记不应报错: " + tokens[i]);
+            assertEquals(1, saved.size());
+            assertEquals(statuses[i], saved.get(0).getStatus());
+        }
     }
 
     /** 回归：正常数值成绩仍按 valid 落库且 timeSeconds 正确解析 */
     @Test
     void import_numericTimeStaysValid() {
         stubBasics();
-        ArgumentCaptor<Result> cap = ArgumentCaptor.forClass(Result.class);
-        when(resultRepository.save(cap.capture())).thenAnswer(inv -> inv.getArgument(0));
 
         listener.invoke(model("12.34"), ctx());
+        List<Result> saved = flushAndGetSaved();
 
-        assertEquals("valid", cap.getValue().getStatus());
-        assertEquals(12.34, cap.getValue().getTimeSeconds(), 0.001);
+        assertEquals(1, saved.size());
+        assertEquals("valid", saved.get(0).getStatus());
+        assertEquals(12.34, saved.get(0).getTimeSeconds(), 0.001);
         assertEquals(0, listener.getErrorCount());
     }
 
@@ -140,21 +164,23 @@ class ScoreDataListenerTest {
         assertEquals(0, listener.getSuccessCount());
     }
 
-    /** R-3：边界值（>0 的正整数秒、恰好 100000 秒上限）应被正常接受为 valid 成绩 */
+    /** R-3：边界值（>0 的正整数秒、恰好 100000 秒上限）应被正常接受为 valid 成绩。
+     *  注意：同一运动员+项目导入不同成绩会被「导入内冲突判定」拦截（那是另一个关注点），
+     *  故这里每个边界值用独立监听器，隔离「时间接受」这一行为本身。 */
     @Test
     void import_boundaryTimeAccepted() {
-        stubBasics();
-        ArgumentCaptor<Result> cap = ArgumentCaptor.forClass(Result.class);
-        when(resultRepository.save(cap.capture())).thenAnswer(inv -> inv.getArgument(0));
-
-        listener.invoke(model("0.01"), ctx());
-        listener.invoke(model("100000"), ctx());
-        listener.invoke(model("99999.99"), ctx());
-
-        assertEquals(0, listener.getErrorCount(), "合法边界时间不应报错");
-        assertEquals(3, listener.getSuccessCount());
-        List<Result> saved = cap.getAllValues();
-        assertEquals(0.01, saved.get(0).getTimeSeconds(), 0.0001);
-        assertEquals(100000.0, saved.get(1).getTimeSeconds(), 0.0001);
+        String[] times = {"0.01", "100000", "99999.99"};
+        double[] expected = {0.01, 100000.0, 99999.99};
+        for (int i = 0; i < times.length; i++) {
+            ScoreDataListener l = new ScoreDataListener(resultRepository, eventRepository,
+                    athleteRepository, arrangementRepository);
+            stubBasics();
+            l.invoke(model(times[i]), ctx());
+            List<Result> saved = flushAndGetSaved(l);
+            assertEquals(0, l.getErrorCount(), "合法边界时间不应报错: " + times[i]);
+            assertEquals(1, l.getSuccessCount(), "边界时间应成功落库: " + times[i]);
+            assertEquals(1, saved.size());
+            assertEquals(expected[i], saved.get(0).getTimeSeconds(), 0.0001, "边界时间解析值错误: " + times[i]);
+        }
     }
 }
