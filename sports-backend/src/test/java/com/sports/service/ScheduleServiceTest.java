@@ -10,6 +10,7 @@ import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.verify.ScheduleVerifier;
 import org.junit.jupiter.api.BeforeEach;
@@ -66,6 +67,9 @@ class ScheduleServiceTest {
 
     /** LNS 精修的桩：本测试类验证编排主流程与降级路径，精修逻辑由 LnsImprover 自己的测试覆盖 */
     @Mock private LnsImprover lnsImprover;
+
+    /** 遗传算法的桩：GA 逻辑由 GeneticAlgorithmTest 独立覆盖，这里只保证注入不空 */
+    @Mock private GeneticAlgorithm geneticAlgorithm;
 
     @InjectMocks private ScheduleService scheduleService;
 

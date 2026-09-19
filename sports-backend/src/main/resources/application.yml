@@ -114,6 +114,15 @@ sports:
     lns-rounds: 2
     # LNS 每轮时间预算（毫秒）
     lns-round-millis: 700
+    # 遗传算法（GA）种群大小：< 2 = 关闭。GA 让好解之间繁殖（交叉重组好的落位模式、
+    # 变异扰动坏的），比「多起点波次各跑各的」探索得更全局。
+    ga-population: 6
+    # GA 代数
+    ga-generations: 2
+    # GA 变异概率（0..1）
+    ga-mutation-rate: 0.15
+    # GA 初始种群里每个「多样化个体」的求解时间预算（毫秒）
+    ga-individual-millis: 300
 
 # ======================== 日志 ===========================================
 logging:

@@ -13,6 +13,7 @@ import com.sports.repository.VenueRepository;
 import com.sports.schedule.opt.Placement;
 import com.sports.schedule.opt.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
+import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.verify.ScheduleVerifier;
@@ -86,6 +87,11 @@ public class ScheduleService {
     private final LowerBoundEstimator lowerBoundEstimator;
     /** 大邻域搜索精修：破坏一块（年级/窗口/最忙运动员）→ 只重建这一块 → 只接受更好的 */
     private final LnsImprover lnsImprover;
+    /**
+     * 遗传算法：种群 + 交叉 + 变异，在算法组合层出解后做一次全局种群探索。
+     * 与「多起点波次」的区别是解之间会繁殖——好的落位模式被交叉重组，而不是各自为战。
+     */
+    private final GeneticAlgorithm geneticAlgorithm;
 
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
@@ -93,6 +99,19 @@ public class ScheduleService {
     /** LNS 每轮时间预算（毫秒） */
     @Value("${sports.schedule.lns-round-millis:700}")
     private long lnsRoundMillis;
+
+    /** 遗传算法种群大小（&lt;2 = 关闭 GA） */
+    @Value("${sports.schedule.ga-population:6}")
+    private int gaPopulation;
+    /** 遗传算法代数 */
+    @Value("${sports.schedule.ga-generations:2}")
+    private int gaGenerations;
+    /** 遗传算法变异概率（0..1） */
+    @Value("${sports.schedule.ga-mutation-rate:0.15}")
+    private double gaMutationRate;
+    /** 遗传算法初始种群里每个「多样化个体」的求解时间预算（毫秒） */
+    @Value("${sports.schedule.ga-individual-millis:300}")
+    private long gaIndividualMillis;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
     private static final int MIN_DURATION = 10;
@@ -652,7 +671,32 @@ public class ScheduleService {
         SchedulePlan solvedPlan = scheduleOptimizer.solveWithPortfolio(problem, features).orElse(null);
         if (solvedPlan == null) return;
 
-        // ④b **大邻域搜索精修（LNS）**：破坏一块 → 只重建这一块 → 只接受更好的。
+        // ④b **遗传算法（GA）**：种群 + 交叉 + 变异，全局并行探索。
+        //     与多起点波次的区别：波次是「各跑各的、跑完比大小」，GA 让好解之间繁殖——
+        //     好的落位模式被交叉重组、坏的被变异扰动，能组合出任何单个起点都到不了的结构。
+        try {
+            if (gaPopulation >= 2 && gaGenerations >= 1) {
+                SchedulePlan before = solvedPlan;
+                Optional<SchedulePlan> evolved = geneticAlgorithm.evolve(
+                        before, gaPopulation, gaGenerations,
+                        java.time.Duration.ofMillis(Math.max(200, gaIndividualMillis)),
+                        gaMutationRate);
+                if (evolved.isPresent()) {
+                    solvedPlan = evolved.get();
+                    if (portfolioInfo != null) {
+                        portfolioInfo.put("ga", "已启用：种群 " + gaPopulation + "、" + gaGenerations + " 代");
+                        portfolioInfo.put("gaScore", String.format("%s → %s",
+                                before.getScore(), solvedPlan.getScore()));
+                    }
+                } else if (portfolioInfo != null) {
+                    portfolioInfo.put("ga", "种群进化后无改进（初始解已足够好）");
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("遗传算法失败（保留算法组合层的结果）: {}", ex.toString());
+        }
+
+        // ④c **大邻域搜索精修（LNS）**：破坏一块 → 只重建这一块 → 只接受更好的。
         //     与上游的区别在粒度：局部搜索一次动一个项目，LNS 一次拔出「一个年级 / 一个时段窗口 /
         //     某个最忙运动员的全部项目」，在子空间里重新优化，其余部分用 @PlanningPin 锁定不动。
         //     因此每轮代价很小，能在同样预算里做很多次真正触到"根"的调整。
