@@ -153,18 +153,16 @@ public class ResultService {
                     double score = scoringTable.getOrDefault(rank, 0.0);
                     result.setScore(score);
 
-                    // 破纪录加分
-                    if (recordBonusEnabled && event.getRecord() != null) {
-                        try {
-                            double recordTime = parseTimeToSeconds(event.getRecord());
-                            if (result.getTimeSeconds() < recordTime) {
-                                result.setIsRecord(true);
-                                result.setScore(result.getScore() + recordBonus);
-                            }
-                        } catch (NumberFormatException ignored) {
-                            // 记录格式无法解析，跳过
-                        }
+                // 破纪录加分
+                if (recordBonusEnabled && event.getRecord() != null) {
+                    // parseTimeToSeconds 解析失败返回 null（不再返回 MAX_VALUE）：
+                    // 避免出现「未解析出的记录被当成无穷大、所有成绩都被误判破纪录并加 bonus」的隐患
+                    Double recordTime = parseTimeToSeconds(event.getRecord());
+                    if (recordTime != null && result.getTimeSeconds() < recordTime) {
+                        result.setIsRecord(true);
+                        result.setScore(result.getScore() + recordBonus);
                     }
+                }
 
                     // 参与分（未进入积分名次者给基础分）
                     if (participationEnabled && result.getScore() <= 0) {
@@ -654,9 +652,13 @@ public class ResultService {
         }
     }
 
-    private double parseTimeToSeconds(String time) {
-        Double result = parseTime(time);
-        return result != null ? result : Double.MAX_VALUE;
+    /**
+     * 解析时间字符串为秒数；解析失败返回 {@code null}。
+     * <p>注意：早期实现返回 {@code Double.MAX_VALUE}，会在破纪录判定等环节被当成「无穷大记录」，
+     * 导致所有有效成绩都被误判为破纪录。现改为返回 null，调用方须做 null 判断。</p>
+     */
+    private Double parseTimeToSeconds(String time) {
+        return parseTime(time);
     }
 
     /**
