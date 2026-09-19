@@ -41,6 +41,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static com.sports.schedule.support.ScheduleSupport.*;
+import com.sports.schedule.core.*;
 
 /**
  * 项目赛程编排服务（项目编排）
@@ -131,10 +132,7 @@ public class ScheduleService {
     @Value("${sports.schedule.ga-individual-millis:300}")
     private long gaIndividualMillis;
 
-    /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
-    private static final int MIN_DURATION = 10;
     /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
-    private static final double MIN_DURATION_RATIO = 0.35;
 
     // ==================== 自动编排 ====================
 
@@ -534,7 +532,7 @@ public class ScheduleService {
         Map<String, Object> verification;
         try {
             verification = scheduleVerifier.verify(collectVerifyRows(saved, event2Group),
-                    collectVerifyExpected(units), dailyCapacityOf(windows)).toMap();
+                    collectVerifyExpected(units), SchedulePlacementMath.dailyCapacityOf(windows)).toMap();
             int blockers = intVal(verification.get("blockerCount"), 0);
             int warnCount = intVal(verification.get("warningCount"), 0);
             if (blockers > 0) {
@@ -629,7 +627,7 @@ public class ScheduleService {
         }
         int dailyCapacity = 0;
         try {
-            dailyCapacity = dailyCapacityOf(buildWindows(cfg));
+            dailyCapacity = SchedulePlacementMath.dailyCapacityOf(buildWindows(cfg));
         } catch (Exception ex) {
             log.warn("自检读取时段配置失败，将跳过容量利用率计算: {}", ex.getMessage());
         }
@@ -685,7 +683,7 @@ public class ScheduleService {
 
         Map<String, List<Placement>> rangeByPool = new LinkedHashMap<>();
         for (Pool p : unitPool.values()) {
-            rangeByPool.computeIfAbsent(p.label, k -> placementsOf(p, windows, unitInterval));
+            rangeByPool.computeIfAbsent(p.label, k -> SchedulePlacementMath.placementsOf(p, windows, unitInterval));
         }
 
         // ② 适配为规则层公共 DTO（不让 ScheduleService 的私有内部类泄漏出服务层）
@@ -697,7 +695,7 @@ public class ScheduleService {
             if (pool == null) continue;
             List<Placement> range = rangeByPool.get(pool.label);
             List<Placement> cands = new ArrayList<>();
-            int floor = minDurationOf(u);
+            int floor = SchedulePlacementMath.minDurationOf(u);
             for (Placement p : range) {
                 if (p.getMaxDuration() >= floor) cands.add(p);
             }
@@ -706,8 +704,8 @@ public class ScheduleService {
             unitByKey.put(key, u);
             ruleUnits.add(new RuleUnit(key, u.event.getId(), u.event.getName(), u.grade, u.track,
                     pool.label, u.track ? null : event2Group.get(u.event.getId()),
-                    Math.max(intervalOf(u, unitInterval), 1), u.rawDuration, floor,
-                    sortedAthletes(u), cands));
+                    Math.max(SchedulePlacementMath.intervalOf(u, unitInterval), 1), u.rawDuration, floor,
+                    SchedulePlacementMath.sortedAthletes(u), cands));
         }
         if (ruleUnits.isEmpty()) return;
 
@@ -766,7 +764,7 @@ public class ScheduleService {
         // ② 位置值域按池生成一次并复用（同池单元共享同一批候选位置）
         Map<String, List<Placement>> rangeByPool = new LinkedHashMap<>();
         for (Pool p : unitPool.values()) {
-            rangeByPool.computeIfAbsent(p.label, k -> placementsOf(p, windows, unitInterval));
+            rangeByPool.computeIfAbsent(p.label, k -> SchedulePlacementMath.placementsOf(p, windows, unitInterval));
         }
 
         // ③ 组装计划实体：每个单元只暴露「自己池里、且放得下其时长下限」的位置
@@ -775,7 +773,7 @@ public class ScheduleService {
             Unit u = units.get(i);
             Pool pool = unitPool.get(u);
             if (pool == null) continue;
-            int floor = minDurationOf(u);
+            int floor = SchedulePlacementMath.minDurationOf(u);
             List<Placement> cands = new ArrayList<>();
             for (Placement p : rangeByPool.get(pool.label)) {
                 if (p.getMaxDuration() >= floor) cands.add(p);
@@ -783,7 +781,7 @@ public class ScheduleService {
             if (cands.isEmpty()) continue;   // 该池整块放不下 → 交给贪心如实报「排不下」
             optUnits.add(new ScheduleUnit("u" + i, u.event.getId(), u.event.getName(), u.grade, u.track,
                     pool.label, u.track ? null : event2Group.get(u.event.getId()),
-                    unitInterval, u.rawDuration, floor, sortedAthletes(u), durationChoicesOf(u), cands));
+                    unitInterval, u.rawDuration, floor, SchedulePlacementMath.sortedAthletes(u), SchedulePlacementMath.durationChoicesOf(u), cands));
         }
         if (optUnits.isEmpty()) return;
 
@@ -876,7 +874,7 @@ public class ScheduleService {
             applied++;
         }
         solverStat[0] = applied;
-        solverStat[1] = countResidualClashes(solvedPlacement);
+        solverStat[1] = SchedulePlacementMath.countResidualClashes(solvedPlacement);
     }
 
     /**
@@ -896,7 +894,7 @@ public class ScheduleService {
         if (!pool.cursors.get(p.getSlotIdx()).reserve(p.getWindowIdx(), rel, u.duration, interval)) {
             return false;
         }
-        int n = countConflicts(u.athleteIds, w.day, p.getStartMinute(), u.duration, busy);
+        int n = SchedulePlacementMath.countConflicts(u.athleteIds, w.day, p.getStartMinute(), u.duration, busy);
         if (n == 0) conflictStat[0]++; else conflictStat[1] += n;
         saveSchedule(u, new Slot(w, p.getStartMinute()), pool.venueOf.get(p.getSlotIdx()),
                 saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy);
@@ -904,91 +902,23 @@ public class ScheduleService {
     }
 
     /** 生成某并发池的全部候选位置：槽位 × 时段窗口 × 起点档位（按 unitInterval 步进） */
-    private static List<Placement> placementsOf(Pool pool, List<Window> windows, int gridStep) {
-        int step = Math.max(1, gridStep);
-        List<Placement> out = new ArrayList<>();
-        for (int si = 0; si < pool.slots; si++) {
-            String venue = pool.venueOf.get(si);
-            for (int wi = 0; wi < windows.size(); wi++) {
-                Window w = windows.get(wi);
-                for (int off = 0; off + MIN_DURATION <= w.capacity; off += step) {
-                    out.add(new Placement(pool.label, si, wi, w.day, w.date, w.slotName, venue,
-                            w.startMinute + off, w.startMinute, w.capacity));
-                }
-            }
-        }
-        return out;
-    }
 
     /** 项目时长下限：再挤也不该把一个大项压到不足真实用时的 35%（那已不是「压缩」而是「不可执行」） */
-    private static int minDurationOf(Unit u) {
-        return Math.max(MIN_DURATION, (int) Math.round(u.rawDuration * MIN_DURATION_RATIO));
-    }
 
     /** 候选时长档位（降序）：从真实用时按 5% 递减到下限，供求解器逐项目权衡「保真」与「排得下」 */
-    private static List<Integer> durationChoicesOf(Unit u) {
-        int raw = u.rawDuration;
-        int floor = minDurationOf(u);
-        LinkedHashSet<Integer> set = new LinkedHashSet<>();
-        for (int pct = 100; pct >= 35; pct -= 5) {
-            int v = (int) Math.round(raw * pct / 100.0);
-            if (v >= floor) set.add(v);
-        }
-        set.add(floor);
-        List<Integer> out = new ArrayList<>(set);
-        out.sort(Comparator.reverseOrder());
-        return out;
-    }
 
     /** 参赛运动员 id 升序数组（升序是为了让兼项判定能用双指针求交） */
-    private static long[] sortedAthletes(Unit u) {
-        long[] arr = new long[u.athleteIds.size()];
-        int i = 0;
-        for (Long id : u.athleteIds) arr[i++] = id;
-        Arrays.sort(arr);
-        return arr;
-    }
 
     /** 求解结果的残余兼项冲突数（与检测端同口径）；与 solverStat 一起进日志，便于核对「到底规避掉多少」 */
-    private int countResidualClashes(Map<Unit, Placement> solved) {
-        List<Unit> placed = new ArrayList<>();
-        for (Map.Entry<Unit, Placement> e : solved.entrySet()) {
-            if (e.getKey().participants > 0) placed.add(e.getKey());
-        }
-        int n = 0;
-        for (int i = 0; i < placed.size(); i++) {
-            for (int j = i + 1; j < placed.size(); j++) {
-                Unit a = placed.get(i);
-                Unit b = placed.get(j);
-                if (!sharesAthlete(a, b)) continue;
-                int aS = solved.get(a).getAbsoluteStartMinute();
-                int bS = solved.get(b).getAbsoluteStartMinute();
-                if (aS < bS + b.duration + ConflictService.CONFLICT_BUFFER_MIN
-                        && bS < aS + a.duration + ConflictService.CONFLICT_BUFFER_MIN) {
-                    n++;
-                }
-            }
-        }
-        return n;
-    }
 
     /** 两个单元是否有共同运动员（小集合驱动，避免全量遍历） */
-    private static boolean sharesAthlete(Unit a, Unit b) {
-        if (a.athleteIds.isEmpty() || b.athleteIds.isEmpty()) return false;
-        Set<Long> small = a.athleteIds.size() <= b.athleteIds.size() ? a.athleteIds : b.athleteIds;
-        Set<Long> big = small == a.athleteIds ? b.athleteIds : a.athleteIds;
-        for (Long id : small) {
-            if (big.contains(id)) return true;
-        }
-        return false;
-    }
 
     private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval, int minInterval,
                           double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
                           int[] orderCounter, List<String> autoArrangeFails,
                           Map<Long, List<int[]>> busy, int[] conflictStat,
                           Map<Unit, Placement> solved) {
-        int interval = Math.max(intervalOf(u, defaultInterval), minInterval);
+        int interval = Math.max(SchedulePlacementMath.intervalOf(u, defaultInterval), minInterval);
         // U28/B25：优先采用约束求解结果（求解器已联合决定「位置 + 时长」）。
         // 落位失败（该位置已被占用）或该单元没有解时才回退贪心——两条路径都经过同一个 Cursor
         // 记账，因此后续单元的可用空间判断始终是准确的。
@@ -998,7 +928,7 @@ public class ScheduleService {
                         autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
             return;
         }
-        Cand best = findBestSlot(u, pool, windows, interval, busy);
+        Cand best = SchedulePlacementMath.findBestSlot(u, pool, windows, interval, busy);
         if (best == null) {
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
@@ -1018,113 +948,6 @@ public class ScheduleService {
         else conflictStat[1] += best.conflicts;
         saveSchedule(u, probe.slot, pool.venueOf.get(best.slotIdx), saved, orderCounter, autoArrangeFails,
                 warnings, compressionWarnRatio, busy);
-    }
-
-    /**
-     * 候选位置：某槽位 × 某窗口 × 某起点，及把该单元放在此处的兼项冲突条数。
-     *
-     * <p>U26/B23：候选**只包含「整块放得下」的位置**——项目时间是编排的原子单位，
-     * 一个项目必须完整占住它自己的时长，不能按旁边剩多少空间临时改小。</p>
-     */
-    private static class Cand {
-        final int slotIdx;
-        final int windowIdx;
-        final int startMinute;
-        final int conflicts;
-
-        Cand(int slotIdx, int windowIdx, int startMinute, int conflicts) {
-            this.slotIdx = slotIdx;
-            this.windowIdx = windowIdx;
-            this.startMinute = startMinute;
-            this.conflicts = conflicts;
-        }
-    }
-
-    /**
-     * 在池的各槽位内扫描候选起点，返回排序最优者：
-     * <b>冲突数最少 → 日期/时段最早 → 起点最早 → 槽位号最小</b>。
-     *
-     * <p>同槽位内的候选按 {@code interval} 步进枚举（而非只取「最早可用」这一个点），
-     * 这样才能为了避让兼项冲突而主动后移若干分钟；容量边界与 {@link Cursor#place} 保持一致
-     * （首项不留前置间隔，后续项留 interval）。</p>
-     *
-     * @return 最优候选；该池在剩余时段内完全放不下时返回 null
-     */
-    private Cand findBestSlot(Unit u, Pool pool, List<Window> windows, int interval,
-                              Map<Long, List<int[]>> busy) {
-        Cand best = null;
-        for (int si = 0; si < pool.cursors.size(); si++) {
-            Cursor c = pool.cursors.get(si);
-            // U25/B22：扫描**所有**窗口（含已部分占用的早先窗口），而不是只从游标当前位置往后，
-            // 这样早先窗口剩下的 60~90 分钟碎片也能派上用场，不必整块闲置。
-            for (int wi = 0; wi < windows.size(); wi++) {
-                Window w = windows.get(wi);
-                int base = c.usedAt(wi);
-                int gap = base == 0 ? 0 : interval;             // 与 Cursor.place 的段前间隔口径一致
-                // U26/B23：项目时间 = 编排的原子单位——只考虑「整块放得下」的位置，
-                // 不按剩余空间临时改小时长（那会让项目时长取决于旁边恰好剩多少，现场无法据此布置）。
-                if (base + gap + u.duration > w.capacity) continue;
-                // 默认贴着该窗口的已用前沿开始（最早、不留空档）；只有当「后移」能真正减少
-                // 兼项冲突时才后移——不为填尾巴而人为制造空档。
-                int start = w.startMinute + base + gap;
-                int n = countConflicts(u.athleteIds, w.day, start, u.duration, busy);
-                for (int off = base + gap + interval; n > 0 && off + u.duration <= w.capacity; off += interval) {
-                    int s2 = w.startMinute + off;
-                    int n2 = countConflicts(u.athleteIds, w.day, s2, u.duration, busy);
-                    if (n2 < n) {
-                        n = n2;
-                        start = s2;
-                    }
-                }
-                Cand cand = new Cand(si, wi, start, n);
-                if (beats(cand, best)) best = cand;
-            }
-        }
-        return best;
-    }
-
-    /**
-     * 候选排序：**冲突少者优先**（尽量避开兼项）→ 窗口靠前 → 起点靠前 → 槽位号小。
-     *
-     * <p>U26/B23：不再有「是否缩短」这一维——项目时长是固定的编排单位，候选里全是能整块放下的位置。</p>
-     *
-     * <p>U27/B24：这里**刻意不做 best-fit**。槽位是**并行**资源（不同场地同时开赛），
-     * 若为了「贴合」而把后面的项目塞进同一槽位的尾巴，就会出现「两个田赛没能同时开赛」，
-     * 白白浪费并行位、还把赛程拉长（回归用例 `fieldSlotsAllowParallelProjects` 正是守这一点）。
-     * 「填满已有块」的收益改由**预判口径与放置口径一致**来保证：见 {@link #greedyPacks}。</p>
-     */
-    private static boolean beats(Cand a, Cand b) {
-        if (b == null) return true;
-        if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
-        if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
-        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
-        return a.slotIdx < b.slotIdx;
-    }
-
-    /**
-     * 把单元放到「第 day 天 startMinute 起、持续 duration 分钟」会撞上多少条已排项目。
-     *
-     * <p>与 {@link ConflictService#detectConflicts()} <b>同口径</b>：必须是同一天，且两段
-     * 区间重叠、或间隔小于 {@link ConflictService#CONFLICT_BUFFER_MIN} 分钟才计一次。
-     * 口径一致是硬要求——否则「排时以为不冲突、检出来又冲突」。</p>
-     *
-     * @param busy 运动员 → 已占用时间段（绝对分钟 = 天 × 1440 + 当日分钟）
-     */
-    private static int countConflicts(Set<Long> athleteIds, int day, int startMinute, int duration,
-                                      Map<Long, List<int[]>> busy) {
-        if (athleteIds == null || athleteIds.isEmpty() || busy == null || busy.isEmpty()) return 0;
-        int absStart = day * 1440 + startMinute;
-        int absEnd = absStart + duration;
-        int n = 0;
-        for (Long aid : athleteIds) {
-            List<int[]> spans = busy.get(aid);
-            if (spans == null) continue;
-            for (int[] p : spans) {
-                int gap = Math.max(absStart - p[1], p[0] - absEnd);   // 对称间隔
-                if (gap < ConflictService.CONFLICT_BUFFER_MIN) n++;
-            }
-        }
-        return n;
     }
 
     /**
@@ -1151,7 +974,7 @@ public class ScheduleService {
                 for (int k = 0; k < batch.size(); k++) {
                     Unit su = units.get(batch.get(k));
                     Pool sp = unitPools.get(k);
-                    int iv = Math.max(intervalOf(su, defaultInterval), minInterval);
+                    int iv = Math.max(SchedulePlacementMath.intervalOf(su, defaultInterval), minInterval);
                     if (!applySolved(su, sp, solved.get(su), windows, iv, saved, warnings, orderCounter,
                             autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
                         placeOne(su, sp, windows, defaultInterval, minInterval, compressionWarnRatio,
@@ -1169,7 +992,7 @@ public class ScheduleService {
             // 起始窗口下界：各参与槽位当前窗口的最大值（不倒退到已用尽的时段之前）
             int minWindow = 0;
             for (int k = 0; k < wave.size(); k++) {
-                Cursor c = cursorOf(unitPools.get(k), k);
+                Cursor c = SchedulePlacementMath.cursorOf(unitPools.get(k), k);
                 minWindow = Math.max(minWindow, c.windowIdx);
             }
 
@@ -1178,8 +1001,8 @@ public class ScheduleService {
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
                 Pool p = unitPools.get(k);
-                earliest.add(cursorOf(p, k).probe(windows, u.duration,
-                        Math.max(intervalOf(u, defaultInterval), minInterval), minWindow));
+                earliest.add(SchedulePlacementMath.cursorOf(p, k).probe(windows, u.duration,
+                        Math.max(SchedulePlacementMath.intervalOf(u, defaultInterval), minInterval), minWindow));
             }
 
             // ② 共同起点 = 最晚的可用窗口 + 该窗口内最晚的可用起点
@@ -1203,7 +1026,7 @@ public class ScheduleService {
             for (int k = 0; k < wave.size(); k++) {
                 Unit u = units.get(wave.get(k));
                 Pool p = unitPools.get(k);
-                Cursor cursor = cursorOf(p, k);
+                Cursor cursor = SchedulePlacementMath.cursorOf(p, k);
                 Probe probe = cursor.placeAt(windows, targetWindow, commonStart, u.duration);
                 if (probe == null) {
                     sameStart = false;
@@ -1226,13 +1049,6 @@ public class ScheduleService {
     }
 
     /** 单元在所属池内的游标：多单元共用同池时依次占用不同槽位 */
-    private static Cursor cursorOf(Pool pool, int unitIdx) {
-        return pool.cursors.get(unitIdx % pool.cursors.size());
-    }
-
-    private static int intervalOf(Unit u, int defaultInterval) {
-        return u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
-    }
 
     /**
      * 占道冲突告警：实体占用跑道的项目（真实径赛 flag=true 或 占道但用田赛法 occupiesTrack=true）
@@ -1247,7 +1063,7 @@ public class ScheduleService {
             if (e == null || s.getDurationMinutes() == null) continue;
             boolean occupiesTrack = Boolean.TRUE.equals(e.getTrack()) || Boolean.TRUE.equals(e.getOccupiesTrack());
             if (!occupiesTrack) continue;
-            int start = parseHHmm(s.getStartTime());
+            int start = SchedulePlacementMath.parseHHmm(s.getStartTime());
             if (start < 0) continue;
             int absStart = (s.getDay() != null ? (s.getDay() - 1) : 0) * 1440 + start;
             spans.add(new long[]{absStart, absStart + s.getDurationMinutes()});
@@ -1268,13 +1084,6 @@ public class ScheduleService {
             warnings.add(String.format("占道冲突告警：以下占用跑道的项目时间重叠（跑道被同时占用，需错开）：%s",
                     String.join("；", clashes)));
         }
-    }
-
-    private static int parseHHmm(String s) {
-        if (s == null) return -1;
-        String[] p = s.split(":");
-        if (p.length < 2) return -1;
-        try { return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]); } catch (NumberFormatException e) { return -1; }
     }
 
     /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
@@ -1359,7 +1168,7 @@ public class ScheduleService {
                 ok++;
             } catch (Exception ex) {
                 arrFails.add(String.format("%s（%s %s）：%s", e.getName(), u.grade,
-                        genderLabel(g),
+                        SchedulePlacementMath.genderLabel(g),
                         ex.getMessage() == null ? ex.toString() : ex.getMessage()));
             }
         }
@@ -1392,12 +1201,6 @@ public class ScheduleService {
     }
 
     /** 性别原值 → 中文标签（用于告警文案） */
-    private static String genderLabel(String g) {
-        if (g == null) return "未知";
-        if ("M".equalsIgnoreCase(g) || "男".equals(g)) return "男子";
-        if ("F".equalsIgnoreCase(g) || "女".equals(g)) return "女子";
-        return g;
-    }
 
     // ==================== 赛程单元构建 ====================
 
@@ -1508,7 +1311,7 @@ public class ScheduleService {
                     ? e.getPerBatchMinutes()
                     : (isTrack ? heatMinutes : fieldPerAthlete);
             int estimated = rounds * perUnit;
-            u.rawDuration = Math.max(MIN_DURATION, estimated > 0 ? estimated : defaultDuration);
+            u.rawDuration = Math.max(SchedulePlacementMath.MIN_DURATION, estimated > 0 ? estimated : defaultDuration);
 
             // U24/B21：首选时长 = min(真实估算, 项目显式上限)；未配上限就用真实估算。
             // 旧写法把 defaultDurationMinutes(30) 当上限，与「当天有多少时间」无关——
@@ -1590,7 +1393,7 @@ public class ScheduleService {
      * 也让 compressionReport 里的百分比有统一的物理含义（该池被压缩到的比例）。</p>
      *
      * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限固定为
-     * {@link #MIN_DURATION}——**不可**拿 defaultDurationMinutes 当下限，那是「默认时长」而非
+     * {@link #SchedulePlacementMath.MIN_DURATION}——**不可**拿 defaultDurationMinutes 当下限，那是「默认时长」而非
      * 「最小时长」，设大时会顶住缩放、使其完全失效。</p>
      */
     private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility, int interval) {
@@ -1629,9 +1432,9 @@ public class ScheduleService {
                 int idx = 0;
                 for (Unit u : units) {
                     if (u.participants <= 0 || u.track != isTrack) continue;
-                    probeDur[idx++] = Math.max(MIN_DURATION, (int) Math.floor(u.rawDuration * mid));
+                    probeDur[idx++] = Math.max(SchedulePlacementMath.MIN_DURATION, (int) Math.floor(u.rawDuration * mid));
                 }
-                if (greedyPacks(probeDur, slotsInPool, windowCount, capacityPerWindow, interval)) {
+                if (SchedulePlacementMath.greedyPacks(probeDur, slotsInPool, windowCount, capacityPerWindow, interval)) {
                     k = mid;
                     lo = mid;
                 } else {
@@ -1640,58 +1443,16 @@ public class ScheduleService {
             }
             for (Unit u : units) {
                 if (u.participants <= 0 || u.track != isTrack) continue;
-                // 缩放下限 = MIN_DURATION：再挤也不该把项目压到毫无意义的几分钟。
+                // 缩放下限 = SchedulePlacementMath.MIN_DURATION：再挤也不该把项目压到毫无意义的几分钟。
                 // 注意**不能用** defaultDurationMinutes 当下限——它的语义是「默认时长」，
                 // 夹具/用户把它设大（如 600 = 不封顶）时会把下限顶到原始时长，
                 // 使等比缩放完全失效（实测：k 被迫掉到 0.05、项目反而排不下）。
-                int scaled = Math.max(MIN_DURATION, (int) Math.floor(u.rawDuration * k));
+                int scaled = Math.max(SchedulePlacementMath.MIN_DURATION, (int) Math.floor(u.rawDuration * k));
                 int target = u.explicitMaxDuration > 0 ? Math.min(scaled, u.explicitMaxDuration) : scaled;
-                u.duration = Math.min(u.duration, Math.max(MIN_DURATION, target));
+                u.duration = Math.min(u.duration, Math.max(SchedulePlacementMath.MIN_DURATION, target));
             }
             pool.put("scalePercent", Math.round(k * 1000.0) / 10.0);
         }
-    }
-
-    /**
-     * 模拟**真实放置策略**的整块装箱可行性（U27/B24）。
-     *
-     * <p><b>预判口径必须与放置口径一致</b>——这是本方法存在的唯一理由。实际放置是按项目顺序，
-     * 对每个单元取「窗口靠前 → 起点靠前 → 槽位号小」的**首次适应(first-fit)**，且槽位之间并行。
-     * 早先版本用理想 FFD 预判，结果是「预判装得下、实际却丢了一个项目」——口径不一致的典型。
-     * 这里按同一套贪心规则逐块推算，二者同源，预判才对实际有约束力。</p>
-     *
-     * @param durations      各单元时长（严格按放置顺序）
-     * @param slots          该池并发槽位数
-     * @param windowCount    时段数
-     * @param windowCapacity 单个时段可用分钟（同池内各时段同长）
-     * @param interval       项目间最小间隔
-     * @return 全部单元都能整块放下则为 true
-     */
-    private static boolean greedyPacks(long[] durations, int slots, int windowCount,
-                                       int windowCapacity, int interval) {
-        int slotCount = Math.max(1, slots);
-        int[] used = new int[slotCount * Math.max(1, windowCount)];
-        for (long d : durations) {
-            int dur = (int) d;
-            int bestIdx = -1;
-            int bestStart = Integer.MAX_VALUE;
-            for (int wi = 0; wi < windowCount; wi++) {
-                for (int si = 0; si < slotCount; si++) {
-                    int idx = wi * slotCount + si;
-                    int u = used[idx];
-                    int gap = u == 0 ? 0 : interval;
-                    if (u + gap + dur > windowCapacity) continue;          // 整块放不下
-                    int start = wi * 1440 + u + gap;                       // 绝对分钟，跨天可比
-                    if (start < bestStart || (start == bestStart && idx < bestIdx)) {
-                        bestStart = start;
-                        bestIdx = idx;
-                    }
-                }
-            }
-            if (bestIdx < 0) return false;                                 // 没有任何块装得下
-            used[bestIdx] += (used[bestIdx] == 0 ? 0 : interval) + dur;
-        }
-        return true;
     }
 
     /**
@@ -1801,7 +1562,7 @@ public class ScheduleService {
         Map<Long, String> oldRoundByEvent = new HashMap<>();
         for (EventSchedule old : scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc()) {
             if (old.getEvent() == null || old.getRound() == null || old.getRound().isBlank()) continue;
-            oldRoundByKey.putIfAbsent(roundKey(old.getEvent().getId(), old.getGrade(),
+            oldRoundByKey.putIfAbsent(SchedulePlacementMath.roundKey(old.getEvent().getId(), old.getGrade(),
                     old.getStartTime(), old.getVenue()), old.getRound());
             oldRoundByEvent.putIfAbsent(old.getEvent().getId(), old.getRound());
         }
@@ -1855,19 +1616,12 @@ public class ScheduleService {
                                      Map<Long, String> oldRoundByEvent) {
         Object raw = item.get("round");
         if (raw != null && !String.valueOf(raw).isBlank()) return String.valueOf(raw).trim();
-        String byKey = oldRoundByKey.get(roundKey(event.getId(), grade, startTime, venue));
+        String byKey = oldRoundByKey.get(SchedulePlacementMath.roundKey(event.getId(), grade, startTime, venue));
         if (byKey != null) return byKey;
         String byEvent = oldRoundByEvent.get(event.getId());
         if (byEvent != null) return byEvent;
         return Boolean.TRUE.equals(event.getNeedHeats())
                 ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
-    }
-
-    private static String roundKey(Long eventId, String grade, String startTime, String venue) {
-        return (eventId == null ? "" : eventId)
-                + "|" + (grade == null ? "" : grade.trim())
-                + "|" + (startTime == null ? "" : startTime.trim())
-                + "|" + (venue == null ? "" : venue.trim());
     }
 
     public void clear() {
@@ -2039,228 +1793,6 @@ public class ScheduleService {
         return cfg;
     }
 
-    // ==================== 内部类 ====================
-
-    /** 一个赛程单元 = 项目 × 年级 */
-    private static class Unit {
-        Event event;
-        String grade;
-        boolean track;        // 是否径赛
-        int concurrency = 1;  // 项目内并发人数（径赛=道次/每组人数；田赛=工位数）
-        int duration;
-        int rawDuration;
-        int explicitMaxDuration;   // 项目显式配置的时长上限（0 = 未配置；仅此时才允许按时长封顶）
-        int participants;
-        int heats;            // 径赛组数
-        int rounds;           // 总轮次（径赛=组数、田赛=批次数）
-        int arranged;         // 径赛自动道次编排成功的性别组数
-        /**
-         * 本单元的参赛运动员（已审核报名）。
-         *
-         * <p>U23/B20：兼项冲突规避的关键输入——放置时据此判断「把该项目排在这个时间点，
-         * 会不会和该运动员已排的其它项目撞车」。</p>
-         */
-        final Set<Long> athleteIds = new HashSet<>();
-
-        Unit(Event event, String grade) {
-            this.event = event;
-            this.grade = grade;
-        }
-    }
-
-    /** 并发位池：slots 个并发槽位，槽位与场地一一对应（场地不足则复用） */
-    private static class Pool {
-        final String label;
-        final int slots;
-        final List<Cursor> cursors = new ArrayList<>();
-        final List<String> venueOf = new ArrayList<>();
-        final boolean venueShortage;
-
-        Pool(String label, int slots, List<String> venueNames) {
-            this.label = label;
-            this.slots = Math.max(1, slots);
-            this.venueShortage = venueNames.size() < this.slots;
-            for (int i = 0; i < this.slots; i++) {
-                cursors.add(new Cursor());
-                venueOf.add(venueNames.isEmpty()
-                        ? "田径场"
-                        : venueNames.get(i % venueNames.size()));
-            }
-        }
-
-        /** 选当前推进最靠前（最空闲）的槽位 */
-        int pickSlot() {
-            int best = 0;
-            for (int i = 1; i < cursors.size(); i++) {
-                if (cursors.get(i).aheadOf(cursors.get(best))) best = i;
-            }
-            return best;
-        }
-    }
-
-    /** 一个时段窗口（第几天 + 该天的某个时段） */
-    private static class Window {
-        int day;
-        String date;
-        String slotName;
-        int startMinute;   // 该时段起点（分钟，自 00:00 起算）
-        int capacity;      // 该时段可用分钟数
-
-        Window(int day, String date, String slotName, int startMinute, int capacity) {
-            this.day = day;
-            this.date = date;
-            this.slotName = slotName;
-            this.startMinute = startMinute;
-            this.capacity = capacity;
-        }
-    }
-
-    /** 放置结果 */
-    private static class Slot {
-        Window window;
-        int startMinute;
-
-        Slot(Window window, int startMinute) {
-            this.window = window;
-            this.startMinute = startMinute;
-        }
-    }
-
-    /** 探测结果（只读，不修改游标状态）：给出某槽位最早可放位置 */
-    private static class Probe {
-        final int windowIdx;
-        final Slot slot;
-
-        Probe(int windowIdx, Slot slot) {
-            this.windowIdx = windowIdx;
-            this.slot = slot;
-        }
-    }
-
-    /**
-     * 场地时间游标：**逐窗口记账**（每个窗口各自的已用分钟），而不是只记「当前推进到哪」。
-     *
-     * <p>U25/B22：旧实现是「单向传送带」——只有 {@code windowIdx} + {@code used} 两个标量，
-     * 一旦推进到后面的窗口，前面窗口的剩余空间就<b>再也回不去</b>。实测（SMOKE_SEED=20260918）：
-     * 田赛 1680 分钟容量只用了 1068 分钟、闲置 612 分钟（大多是早先窗口 60~90 分钟的碎片），
-     * 却仍有 3 个项目「排不下」——宁可整块闲置也不回填，是典型的死算法。</p>
-     *
-     * <p>改为按窗口记账后，放置可以回填任意窗口的剩余空间，打包浪费从「整块闲置」降到
-     * 「每块至多浪费 floorDuration」，容量利用率显著提升。</p>
-     */
-    private static class Cursor {
-        int windowIdx = 0;      // 已推进到的窗口（仅供参考/田赛分组的「不倒退」下界）
-        int used = 0;           // windowIdx 窗口内的已用分钟（含间隔）
-        final Map<Integer, Integer> usedByWindow = new HashMap<>();
-
-        /**
-         * 该窗口内已占用的时间段（相对窗口起点的 {@code [start, end)} 列表，按 start 升序）。
-         *
-         * <p>U28/B25：从「只记一个前沿」升级为「记区间集合」。约束求解器给出的位置是
-         * <b>乱序</b>的（完全可能先排 10:00 的、再排 08:00 的空档），只靠单一前沿判断会把
-         * 合法位置误判为冲突，导致求解结果大面积落位失败。区间集合同时让「能回填任意空隙」
-         * 从口头约定变成可判定的事实。</p>
-         */
-        final Map<Integer, List<int[]>> occupied = new HashMap<>();
-
-        /** 某窗口已用分钟（含该项目的前置间隔） */
-        int usedAt(int wi) {
-            return usedByWindow.getOrDefault(wi, 0);
-        }
-
-        /** 记下「第 wi 个窗口的 [startRel, endRel) 已被占用」，并同步推进标记 */
-        private void mark(int wi, int startRel, int endRel) {
-            List<int[]> list = occupied.computeIfAbsent(wi, k -> new ArrayList<>());
-            list.add(new int[]{startRel, endRel});
-            list.sort(Comparator.comparingInt(iv -> iv[0]));
-            usedByWindow.merge(wi, endRel, Math::max);
-            if (wi >= windowIdx) {
-                windowIdx = wi;
-                used = usedByWindow.getOrDefault(wi, 0);
-            }
-        }
-
-        /** 该区间是否与该窗口已有占用冲突（含段前间隔；interval 取 0 即纯重叠判定） */
-        private boolean conflict(int wi, int startRel, int endRel, int interval) {
-            for (int[] iv : occupied.getOrDefault(wi, List.of())) {
-                if (startRel < iv[1] + interval && iv[0] < endRel + interval) return true;
-            }
-            return false;
-        }
-
-        /**
-         * 预定一段区间（供约束求解结果落位使用）。
-         *
-         * <p>与 {@link #placeAt} 的关键区别是<b>不做「不得早于前沿」的顺位假设</b>：求解器可能先给出
-         * 靠后的位置、再给出靠前的空档——这正是「回填空隙」应有的能力。仍然严格校验区间不重叠，
-         * 所以放开顺位不会产生重叠赛程。</p>
-         *
-         * @return 预定成功；该区间与已有占用冲突时返回 false（调用方应回退贪心放置）
-         */
-        boolean reserve(int wi, int startRel, int duration, int interval) {
-            if (wi < 0 || startRel < 0) return false;
-            int endRel = startRel + duration;
-            if (conflict(wi, startRel, endRel, interval)) return false;
-            mark(wi, startRel, endRel);
-            return true;
-        }
-
-        /** 放进最早的「还放得下」窗口（回填允许）；都放不下返回 null */
-        Slot place(List<Window> windows, int duration, int interval) {
-            return place(windows, duration, interval, 0);
-        }
-
-        /** 同上，但起点不早于 minWindowIdx 号窗口（用于田赛分组：同组落在同一天起） */
-        Slot place(List<Window> windows, int duration, int interval, int minWindowIdx) {
-            for (int wi = Math.max(0, minWindowIdx); wi < windows.size(); wi++) {
-                Window w = windows.get(wi);
-                int u = usedAt(wi);
-                int gap = u == 0 ? 0 : interval;     // 段前间隔：除窗口起点外，项目之间留间隔
-                if (u + gap + duration <= w.capacity) {
-                    mark(wi, u + gap, u + gap + duration);
-                    return new Slot(w, w.startMinute + u + gap);
-                }
-            }
-            return null;
-        }
-
-        /** 探测最早可放位置（只读，不记账）；起点不早于 minWindowIdx 号窗口 */
-        Probe probe(List<Window> windows, int duration, int interval, int minWindowIdx) {
-            for (int wi = Math.max(0, minWindowIdx); wi < windows.size(); wi++) {
-                Window w = windows.get(wi);
-                int u = usedAt(wi);
-                int gap = u == 0 ? 0 : interval;
-                if (u + gap + duration <= w.capacity) {
-                    return new Probe(wi, new Slot(w, w.startMinute + u + gap));
-                }
-            }
-            return null;
-        }
-
-        /**
-         * 在指定窗口、指定起点放置；越界 / 与该窗口已有占用重叠则返回 null。
-         * 用于田赛分组/捆绑组：把同组项目强制落到同一 (窗口, 起点) 以实现同时开赛。
-         * 允许「回填」——只要起点不在已有占用的前沿之前。
-         */
-        Probe placeAt(List<Window> windows, int wi, int startMinute, int duration) {
-            if (wi < 0 || wi >= windows.size()) return null;
-            Window w = windows.get(wi);
-            int rel = startMinute - w.startMinute;      // 相对窗口起点的偏移
-            if (rel < 0) return null;
-            if (rel + duration > w.capacity) return null;
-            int u = usedAt(wi);
-            if (u > 0 && rel < u) return null;          // 不许压到已占用区间上
-            mark(wi, rel, rel + duration);
-            return new Probe(wi, new Slot(w, startMinute));
-        }
-
-        /** 比较推进程度：窗口更靠前、或同窗口已用时间更短的更"空闲" */
-        boolean aheadOf(Cursor other) {
-            if (windowIdx != other.windowIdx) return windowIdx < other.windowIdx;
-            return used < other.used;
-        }
-    }
-
     // ==================== U29/B26：自检数据装配 ====================
 
     /**
@@ -2325,7 +1857,7 @@ public class ScheduleService {
         for (Unit u : units) {
             if (u.participants <= 0) continue;
             items.add(new LowerBoundEstimator.Item(u.track ? "径赛" : "田赛",
-                    u.rawDuration, Math.max(1, intervalOf(u, 5)), u.athleteIds));
+                    u.rawDuration, Math.max(1, SchedulePlacementMath.intervalOf(u, 5)), u.athleteIds));
         }
 
         Set<Integer> days = new HashSet<>();
@@ -2335,19 +1867,8 @@ public class ScheduleService {
         for (EventSchedule s : saved) {
             given += Math.max(0, parseMinute(s.getEndTime()) - parseMinute(s.getStartTime()));
         }
-        return lowerBoundEstimator.assess(items, slotsByPool, dailyCapacityOf(windows),
+        return lowerBoundEstimator.assess(items, slotsByPool, SchedulePlacementMath.dailyCapacityOf(windows),
                 days.size(), given);
-    }
-
-    /** 单日可用分钟总数（各天取最大值：各天时段配置通常一致，取最大避免低估容量而误报利用率） */
-    private static int dailyCapacityOf(List<Window> windows) {
-        Map<Integer, Integer> byDay = new LinkedHashMap<>();
-        for (Window w : windows) byDay.merge(w.day, w.capacity, Integer::sum);
-        int max = 0;
-        for (Integer v : byDay.values()) {
-            if (v != null && v > max) max = v;
-        }
-        return max;
     }
 
     /**
