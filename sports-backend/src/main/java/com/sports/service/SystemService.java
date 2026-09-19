@@ -31,6 +31,7 @@ public class SystemService {
     private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final DataSource dataSource;
+    private final GradeService gradeService;
 
     /** 获取全部配置 */
     @Transactional(readOnly = true)
@@ -155,70 +156,30 @@ public class SystemService {
         }
     }
 
-    /** 获取年级列表 */
+    // ==================== 年级管理（委托 GradeService，M1 拆分）====================
+
+    /** 获取年级列表（委托 GradeService） */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> getGrades() {
-        SystemConfig config = systemConfigRepository.findByConfigKey("grades")
-                .orElse(null);
-        if (config == null || config.getConfigValue() == null) {
-            return getDefaultGrades();
-        }
-        try {
-            return objectMapper.readValue(config.getConfigValue(),
-                    new TypeReference<List<Map<String, Object>>>() {});
-        } catch (Exception e) {
-            return getDefaultGrades();
-        }
+        return gradeService.getGrades();
     }
 
-    /** 新增年级 */
+    /** 新增年级（委托 GradeService） */
+    @Transactional
     public Map<String, Object> addGrade(Map<String, Object> body) {
-        List<Map<String, Object>> grades = getGrades();
-        long maxId = grades.stream().mapToLong(g -> ((Number) g.getOrDefault("id", 0L)).longValue()).max().orElse(0);
-        body.put("id", maxId + 1);
-        grades.add(body);
-        saveGrades(grades);
-        return body;
+        return gradeService.addGrade(body);
     }
 
-    /** 编辑年级 */
+    /** 编辑年级（委托 GradeService） */
+    @Transactional
     public Map<String, Object> editGrade(Long id, Map<String, Object> body) {
-        List<Map<String, Object>> grades = getGrades();
-        for (Map<String, Object> g : grades) {
-            if (id.equals(((Number) g.get("id")).longValue())) {
-                g.putAll(body);
-                saveGrades(grades);
-                return g;
-            }
-        }
-        throw new RuntimeException("年级不存在: " + id);
+        return gradeService.editGrade(id, body);
     }
 
-    /** 删除年级 */
+    /** 删除年级（委托 GradeService） */
+    @Transactional
     public void deleteGrade(Long id) {
-        List<Map<String, Object>> grades = getGrades();
-        grades.removeIf(g -> id.equals(((Number) g.get("id")).longValue()));
-        saveGrades(grades);
-    }
-
-    private void saveGrades(List<Map<String, Object>> grades) {
-        SystemConfig config = systemConfigRepository.findByConfigKey("grades")
-                .orElse(SystemConfig.builder().configKey("grades").build());
-        try {
-            config.setConfigValue(objectMapper.writeValueAsString(grades));
-        } catch (Exception e) {
-            log.error("保存年级失败", e);
-        }
-        config.setUpdatedAt(LocalDateTime.now());
-        systemConfigRepository.save(config);
-    }
-
-    private List<Map<String, Object>> getDefaultGrades() {
-        return new ArrayList<>(List.of(
-                Map.of("id", 1L, "name", "高一年级", "sortOrder", 1),
-                Map.of("id", 2L, "name", "高二年级", "sortOrder", 2),
-                Map.of("id", 3L, "name", "高三年级", "sortOrder", 3)
-        ));
+        gradeService.deleteGrade(id);
     }
 
     /**
@@ -468,15 +429,7 @@ public class SystemService {
      */
     @Transactional(readOnly = true)
     public List<String> getGradeOrder() {
-        List<Map<String, Object>> grades = getGrades();
-        List<Map<String, Object>> sorted = new ArrayList<>(grades);
-        sorted.sort(Comparator.comparingInt(g -> intOf(g.get("sortOrder"), Integer.MAX_VALUE)));
-        List<String> names = new ArrayList<>();
-        for (Map<String, Object> g : sorted) {
-            String n = strOf(g.get("name"), null);
-            if (n != null && !n.isBlank()) names.add(n);
-        }
-        return names;
+        return gradeService.getGradeOrder();
     }
 
     private Map<String, Object> defaultMeetSchedule() {
