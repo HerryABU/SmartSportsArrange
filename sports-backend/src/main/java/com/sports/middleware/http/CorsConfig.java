@@ -1,4 +1,4 @@
-package com.sports.config;
+package com.sports.middleware.http;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

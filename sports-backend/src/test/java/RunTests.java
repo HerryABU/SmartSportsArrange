@@ -8,7 +8,7 @@ import java.io.PrintWriter;
 public class RunTests {
     public static void main(String[] args) {
         String[] classes = {
-            "com.sports.security.JwtUtilTest",
+            "com.sports.security.jwt.JwtUtilTest",
             "com.sports.service.NumberRuleServiceTest",
             "com.sports.service.RegistrationServiceTest",
             "com.sports.service.ArrangementServiceTest",

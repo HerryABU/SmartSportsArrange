@@ -1,6 +1,6 @@
-package com.sports.config;
+package com.sports.security.config;
 
-import com.sports.security.JwtAuthenticationFilter;
+import com.sports.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

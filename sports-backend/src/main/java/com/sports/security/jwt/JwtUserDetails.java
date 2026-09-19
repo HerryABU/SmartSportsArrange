@@ -1,4 +1,4 @@
-package com.sports.security;
+package com.sports.security.jwt;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;

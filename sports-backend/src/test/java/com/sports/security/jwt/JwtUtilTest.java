@@ -1,4 +1,4 @@
-package com.sports.security;
+package com.sports.security.jwt;
 
 import io.jsonwebtoken.JwtException;
 import org.junit.jupiter.api.Test;

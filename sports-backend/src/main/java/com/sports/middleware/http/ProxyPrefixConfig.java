@@ -1,4 +1,4 @@
-package com.sports.config;
+package com.sports.middleware.http;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

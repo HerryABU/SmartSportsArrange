@@ -3,7 +3,7 @@ package com.sports.controller;
 import com.sports.common.ApiResponse;
 import com.sports.entity.*;
 import com.sports.repository.*;
-import com.sports.security.JwtUserDetails;
+import com.sports.security.jwt.JwtUserDetails;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;

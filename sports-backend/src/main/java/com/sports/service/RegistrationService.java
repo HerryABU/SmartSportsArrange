@@ -3,7 +3,7 @@ package com.sports.service;
 import com.sports.entity.*;
 import com.sports.repository.*;
 import com.alibaba.excel.EasyExcel;
-import com.sports.security.JwtUserDetails;
+import com.sports.security.jwt.JwtUserDetails;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;

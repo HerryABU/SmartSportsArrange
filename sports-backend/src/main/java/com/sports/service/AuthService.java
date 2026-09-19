@@ -4,7 +4,7 @@ import com.sports.dto.LoginRequest;
 import com.sports.dto.LoginResponse;
 import com.sports.entity.User;
 import com.sports.repository.UserRepository;
-import com.sports.security.JwtUtil;
+import com.sports.security.jwt.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.BadCredentialsException;
