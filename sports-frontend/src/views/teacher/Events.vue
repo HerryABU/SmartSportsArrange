@@ -128,6 +128,16 @@
       <el-table-column prop="gender" label="性别" width="100" align="center" />
       <el-table-column prop="gradeGroup" label="年级组" width="120" align="center" />
       <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />
+      <el-table-column label="调度标记" width="180" align="center">
+        <template #default="{ row }">
+          <span v-if="!row.funSports && !row.cooperative && !row.occupiesTrack" class="txt-muted">—</span>
+          <template v-else>
+            <el-tag v-if="row.funSports" size="small" effect="plain" type="success">趣味</el-tag>
+            <el-tag v-if="row.cooperative" size="small" effect="plain" type="primary">合作</el-tag>
+            <el-tag v-if="row.occupiesTrack" size="small" effect="plain" type="warning">占道</el-tag>
+          </template>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="100" align="center">
         <template #default="{ row }">
           <el-switch
@@ -356,6 +366,41 @@
             style="width: 100%"
           />
         </el-form-item>
+
+        <!-- ===== 趣味 / 合作 / 占道 调度开关 ===== -->
+        <el-form-item label="趣味运动会">
+          <el-switch v-model="formData.funSports" active-text="是(特殊田赛)" inactive-text="否" />
+          <div class="form-tip">趣味项目作为「特殊田赛」处理：不占道次、走田赛并行逻辑（含球赛等集体趣味项目）</div>
+        </el-form-item>
+        <el-form-item label="小组合作">
+          <el-switch v-model="formData.cooperative" active-text="是(合并同批)" inactive-text="否" />
+          <div class="form-tip">开启后，该项目与同年级同合作组其他项目自动合并到同一时段并行进行</div>
+        </el-form-item>
+        <el-form-item label="占跑道用田赛法">
+          <el-switch v-model="formData.occupiesTrack" active-text="是(需错开径赛)" inactive-text="否" />
+          <div class="form-tip">该项目虽用田赛方法（不占道次、并行），但实体占用跑道，必须与真实径赛在时间上错开，避免跑道冲突</div>
+        </el-form-item>
+        <el-form-item label="每班人数限制" prop="maxPerClass">
+          <el-input-number
+            v-model="formData.maxPerClass"
+            :min="0"
+            :max="999"
+            placeholder="0=不限制"
+            style="width: 100%"
+          />
+          <div class="form-tip">该项目每个班级最多可报名人数（0 或不填表示不限制）</div>
+        </el-form-item>
+        <el-form-item label="每批所需时间(分)" prop="perBatchMinutes">
+          <el-input-number
+            v-model="formData.perBatchMinutes"
+            :min="1"
+            :max="600"
+            placeholder="覆盖全局每批耗时"
+            style="width: 100%"
+          />
+          <div class="form-tip">一组/一批同时上场所需时间，覆盖全局 heatMinutes / fieldPerAthleteMinutes 估算</div>
+        </el-form-item>
+
         <el-form-item label="排序号" prop="sortOrder">
           <el-input-number
             v-model="formData.sortOrder"
@@ -673,6 +718,11 @@ const formData = reactive<EventItem>({
   maxPerHeat: 8,
   refereesPerGroup: undefined,
   drawLots: false,
+  funSports: false,
+  cooperative: false,
+  occupiesTrack: false,
+  maxPerClass: undefined,
+  perBatchMinutes: undefined,
 })
 
 const formRules: FormRules = {
@@ -879,6 +929,11 @@ function resetFormData() {
   formData.maxPerHeat = 8
   formData.refereesPerGroup = undefined
   formData.drawLots = false
+  formData.funSports = false
+  formData.cooperative = false
+  formData.occupiesTrack = false
+  formData.maxPerClass = undefined
+  formData.perBatchMinutes = undefined
 }
 
 // 组装提交体：径赛/田赛 自动联动 道次
@@ -926,6 +981,11 @@ function fillFormFromRow(row: EventItem) {
   formData.maxPerHeat = row.maxPerHeat ?? (isTrack ? (row.laneCount ?? 8) : 1)
   formData.refereesPerGroup = row.refereesPerGroup ?? undefined
   formData.drawLots = row.drawLots === true
+  formData.funSports = row.funSports === true
+  formData.cooperative = row.cooperative === true
+  formData.occupiesTrack = row.occupiesTrack === true
+  formData.maxPerClass = row.maxPerClass ?? undefined
+  formData.perBatchMinutes = row.perBatchMinutes ?? undefined
 }
 
 function onEventTypeChange(val: string) {
@@ -1374,6 +1434,8 @@ onMounted(() => {
   line-height: 1.4;
   margin-top: 2px;
 }
+
+.txt-muted { color: #c0c4cc; }
 
 /* ===== 批量操作条 ===== */
 .batch-bar {
