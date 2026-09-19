@@ -61,6 +61,13 @@ public class ProxyPrefixConfig {
                 return;
             }
             boolean isApi = stripped.equals("/api") || stripped.startsWith("/api/");
+            // M7 修复：/assets/** 无条件剥离（不论文件是否存在）。目标缺失时由 SpaFallbackConfig 的
+            // /assets/** handler 返回 404，避免「旧资源文件名消失 + 缓存旧 index.html」时返回 HTML 导致前端难排查。
+            boolean isAssets = stripped.startsWith("/assets/");
+            if (isAssets) {
+                filterChain.doFilter(new StrippedRequestWrapper(request, stripped), response);
+                return;
+            }
             if (!isApi && !existsStaticResource(stripped)) {
                 // 不是 API 也不是静态资源（即 SPA 前端路由，如 /sportmg/login），原样放行
                 filterChain.doFilter(request, response);
@@ -109,6 +116,21 @@ public class ProxyPrefixConfig {
         @Override
         public String getServletPath() {
             return strippedPath;
+        }
+
+        /**
+         * M6 修复：补齐 Servlet 规范不变量 getRequestURI() == getContextPath() + getServletPath() + getPathInfo()。
+         * 剥离帽子后的世界没有 servlet context path，故返回 ""；整条剥离路径作为 servletPath，pathInfo 为空。
+         * （当前嵌入式容器 contextPath 默认 ""，内部署形态不触发；补上以避免外置 Tomcat + context path 时出错）
+         */
+        @Override
+        public String getContextPath() {
+            return "";
+        }
+
+        @Override
+        public String getPathInfo() {
+            return null;
         }
     }
 
