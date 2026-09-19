@@ -146,7 +146,7 @@ public class BackupService {
             pw.println("-- Database backup: " + LocalDateTime.now());
             for (String t : tables) {
                 try (Statement st = conn.createStatement();
-                     ResultSet rs = st.executeQuery("SELECT * FROM " + quote + t + quote)) {
+                     ResultSet rs = st.executeQuery("SELECT * FROM " + quoteIdent(t, quote))) {
                     ResultSetMetaData rsmd = rs.getMetaData();
                     int colCount = rsmd.getColumnCount();
                     while (rs.next()) {
@@ -154,10 +154,10 @@ public class BackupService {
                         StringBuilder vals = new StringBuilder();
                         for (int i = 1; i <= colCount; i++) {
                             if (i > 1) { cols.append(", "); vals.append(", "); }
-                            cols.append(quote).append(rsmd.getColumnName(i)).append(quote);
+                            cols.append(quoteIdent(rsmd.getColumnName(i), quote));
                             vals.append(sqlLiteral(rs.getObject(i)));
                         }
-                        pw.println("INSERT INTO " + quote + t + quote
+                        pw.println("INSERT INTO " + quoteIdent(t, quote)
                                 + " (" + cols + ") VALUES (" + vals + ");");
                     }
                 }
@@ -169,6 +169,12 @@ public class BackupService {
         if (v == null) return "NULL";
         if (v instanceof Number || v instanceof Boolean) return String.valueOf(v);
         return "'" + String.valueOf(v).replace("'", "''") + "'";
+    }
+
+    /** 标识符转义（H4 修复）：用 quote 包裹，并将名称内部的 quote 字符重复一次（SQL 标准转义） */
+    private String quoteIdent(String id, String quote) {
+        if (id == null) return quote + quote;
+        return quote + id.replace(quote, quote + quote) + quote;
     }
 
     private String detectType(String url) {
