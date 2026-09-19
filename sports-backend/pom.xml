@@ -21,7 +21,21 @@
 		<jjwt.version>0.12.6</jjwt.version>
 		<easyexcel.version>4.0.3</easyexcel.version>
 		<springdoc.version>2.8.5</springdoc.version>
+		<!-- Timefold Solver：约束求解引擎（Apache-2.0，纯 Java 无 native 依赖） -->
+		<timefold.version>2.6.0</timefold.version>
 	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>ai.timefold.solver</groupId>
+				<artifactId>timefold-solver-bom</artifactId>
+				<version>${timefold.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<dependencies>
 		<!-- Spring Boot Starters -->
@@ -120,6 +134,17 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
+		</dependency>
+
+		<!--
+		  Timefold Solver：约束求解引擎（构造启发式 + 禁忌搜索 / 迟接受 / 模拟退火）。
+		  用于赛程自动编排——把「项目落位 + 项目时长 + 兼项避让」放到同一个目标函数下联合优化。
+		  许可证 Apache-2.0，与本项目 AGPL-3.0 兼容；纯 Java 实现，不含 native 库，
+		  因此可安全打进 Spring Boot fat jar 并跨平台运行。
+		-->
+		<dependency>
+			<groupId>ai.timefold.solver</groupId>
+			<artifactId>timefold-solver-core</artifactId>
 		</dependency>
 
 		<!-- Lombok -->
