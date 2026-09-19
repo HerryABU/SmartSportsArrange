@@ -110,34 +110,42 @@ public final class AlgorithmPortfolio {
      * 贪心或单一邻域从一个起点出发陷进去，另一个起点可能根本不经过那个坑。</p>
      */
     public static List<Plan> planFor(Features f, long totalBudgetMillis) {
-        List<Plan> plans = new ArrayList<>();
         long budget = Math.max(800, totalBudgetMillis);
-        long perPlan = Math.max(600, budget / 3);
         long seed = 20260918L;
 
         if (f == null || f.unitCount() == 0) {
-            plans.add(new Plan("默认（无项目可排）", LocalSearchType.TABU_SEARCH, seed, perPlan));
-            return plans;
+            // 无项目可排：预算全部给默认方案（本就是唯一方案）
+            return List.of(new Plan("默认（无项目可排）", LocalSearchType.TABU_SEARCH, seed, budget));
         }
 
+        // ① 先把候选方案（算法 + 种子）列出来，暂不分配预算
+        List<Plan> drafted = new ArrayList<>();
         if (f.tensionRatio() >= 1.0) {
             // 容量客观不足：局部最优陷阱极深（很容易停在「一半项目被压缩」的解上），
             // 必须允许暂时变差才跳得出来
-            plans.add(new Plan("模拟退火 SA（容量紧张：允许暂时变差，跳出局部最优）",
-                    LocalSearchType.SIMULATED_ANNEALING, seed, perPlan));
-            plans.add(new Plan("迟接受 LateAcceptance（容量紧张：接受与历史最优持平的解）",
-                    LocalSearchType.LATE_ACCEPTANCE, seed + 1, perPlan));
+            drafted.add(new Plan("模拟退火 SA（容量紧张：允许暂时变差，跳出局部最优）",
+                    LocalSearchType.SIMULATED_ANNEALING, seed, 0));
+            drafted.add(new Plan("迟接受 LateAcceptance（容量紧张：接受与历史最优持平的解）",
+                    LocalSearchType.LATE_ACCEPTANCE, seed + 1, 0));
         } else {
-            plans.add(new Plan("禁忌搜索 TabuSearch（容量宽裕：记住走过的路，避免循环）",
-                    LocalSearchType.TABU_SEARCH, seed, perPlan));
-            plans.add(new Plan("迟接受 LateAcceptance（容量宽裕：稳步改进）",
-                    LocalSearchType.LATE_ACCEPTANCE, seed + 1, perPlan));
+            drafted.add(new Plan("禁忌搜索 TabuSearch（容量宽裕：记住走过的路，避免循环）",
+                    LocalSearchType.TABU_SEARCH, seed, 0));
+            drafted.add(new Plan("迟接受 LateAcceptance（容量宽裕：稳步改进）",
+                    LocalSearchType.LATE_ACCEPTANCE, seed + 1, 0));
         }
 
         if (f.multiEventAthleteRatio() >= 0.15) {
             // 兼项密集：一次移动会牵动多个运动员的连锁约束，单一邻域容易被卡住
-            plans.add(new Plan("多样化迟接受 DiversifiedLA（兼项密集：多邻域探索）",
-                    LocalSearchType.DIVERSIFIED_LATE_ACCEPTANCE, seed + 2, perPlan));
+            drafted.add(new Plan("多样化迟接受 DiversifiedLA（兼项密集：多邻域探索）",
+                    LocalSearchType.DIVERSIFIED_LATE_ACCEPTANCE, seed + 2, 0));
+        }
+
+        // ② 再按实际方案数均分预算（取代原先写死的 /3：方案数变化时不会再出现
+        // 「某一方案被砍时间、或多出方案共享同一份被低估的预算」的不公平分配）
+        long perPlan = Math.max(600, budget / Math.max(1, drafted.size()));
+        List<Plan> plans = new ArrayList<>(drafted.size());
+        for (Plan p : drafted) {
+            plans.add(new Plan(p.name(), p.type(), p.seed(), perPlan));
         }
         return plans;
     }
