@@ -1,0 +1,29 @@
+#!/bin/sh
+# SmartSportsArrange 提交前单测门禁（H1）
+#
+# 目的：拦住明显的回归——编译不过、关键路径单测挂。
+# 作用域：编排(arrange)/排名(ranking)/导入(import)/校验(verify) 等核心纯逻辑单测。
+# 跳过（仅紧急时）：git commit --no-verify
+#
+# 安装：执行 scripts/install-git-hooks.sh（或手动 cp .githooks/pre-commit .git/hooks/）
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT/sports-backend"
+
+if [ -f mvnw ]; then
+  MVN="./mvnw"
+else
+  MVN="mvn"
+fi
+
+LOG="/tmp/sports_precommit.log"
+echo "[pre-commit] 编译并运行关键路径单测（mvn test）…"
+# -o 走离线（依赖已缓存）；首次或从干净克隆开始可去掉 -o
+"$MVN" -o -q test > "$LOG" 2>&1 || {
+  echo "[pre-commit] 单测失败，提交已中止。详情见 $LOG"
+  tail -60 "$LOG"
+  exit 1
+}
+
+echo "[pre-commit] 单测通过，继续提交。"
