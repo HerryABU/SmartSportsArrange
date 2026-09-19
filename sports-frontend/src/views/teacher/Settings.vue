@@ -515,6 +515,9 @@
             <div v-else>
               <el-progress :percentage="migration.progress || 0"
                            :status="migration.status === 'failed' ? 'exception' : (migration.status === 'completed' ? 'success' : '')" />
+              <div v-if="migration.rowsTotal" style="margin:8px 0;color:#606266">
+                已迁移数据 <b>{{ migration.rowsDone || 0 }}</b> / {{ migration.rowsTotal }} 行（{{ rowProgressPercent }}%）
+              </div>
               <div style="margin:12px 0;color:#606266">当前步骤：{{ migration.step || '准备中…' }}</div>
               <div class="migration-log" v-if="migration.logs && migration.logs.length">
                 <div v-for="(l, i) in migration.logs" :key="i" class="log-line">{{ l }}</div>
@@ -796,7 +799,11 @@ const testing = ref(false)
 const testResult = reactive({ ok: false, message: '' })
 const startingMigration = ref(false)
 const migrating = ref(false)
-const migration = reactive({ status: '', progress: 0, step: '', message: '', logs: [] })
+const migration = reactive({ status: '', progress: 0, step: '', message: '', logs: [], rowsDone: 0, rowsTotal: 0 })
+const rowProgressPercent = computed(() => {
+  if (!migration.rowsTotal) return 0
+  return Math.round(100 * (migration.rowsDone || 0) / migration.rowsTotal)
+})
 let progressTimer = null
 
 async function fetchDbMigrationInfo() {
@@ -830,6 +837,8 @@ async function startMigration() {
     migrating.value = true
     migration.status = 'running'
     migration.progress = 0
+    migration.rowsDone = 0
+    migration.rowsTotal = 0
     migration.logs = []
     migration.message = ''
     pollProgress(res.taskId)
@@ -846,6 +855,8 @@ function pollProgress(taskId) {
       migration.step = res.step || ''
       migration.message = res.message || ''
       migration.logs = res.logs || []
+      migration.rowsDone = res.rowsDone || 0
+      migration.rowsTotal = res.rowsTotal || 0
       if (res.status === 'completed' || res.status === 'failed' || res.status === 'not_found') {
         clearInterval(progressTimer)
         progressTimer = null
