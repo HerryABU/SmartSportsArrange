@@ -8,17 +8,47 @@
           <span class="hint">先配置运动会日期/时段/年级顺序，再一键生成赛程（径赛串行、田赛并行）</span>
         </div>
         <div class="toolbar-right">
+          <!-- U39/B36：规则模式 / 优化模式 切换（三级求解梯度的最低层 vs 全链路求解） -->
+          <el-tooltip placement="top" effect="light">
+            <template #content>
+              <div style="max-width: 320px; line-height: 1.7">
+                <b>规则模式</b>：确定性规则编排（蛇形分组 + 固定分道 + 时间栅格顺序放置），毫秒级出结果、完全可复现、参数透明可解释——与豪杰/索美同级<br/>
+                <b>优化模式</b>：Timefold 约束求解 + 遗传算法 + 大邻域搜索，权衡兼项冲突与场地利用率，秒级出更优方案——本项目独有<br/>
+                两种模式都经过同一套自检（场地重叠 / 赶场 / 漏排）与下界 gap 评估
+              </div>
+            </template>
+            <el-radio-group v-model="arrangeMode" size="default" class="mode-switch" @change="onArrangeModeChange">
+              <el-radio-button value="rule">规则模式</el-radio-button>
+              <el-radio-button value="optimize">优化模式</el-radio-button>
+            </el-radio-group>
+          </el-tooltip>
           <el-button :icon="Setting" @click="openMeetConfig">运动会日程配置</el-button>
-          <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">一键编排赛程</el-button>
+          <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">
+            {{ arrangeMode === 'rule' ? '按规则编排' : '一键编排赛程' }}
+          </el-button>
           <el-button type="success" :icon="Download" @click="exportSheet" :disabled="!items.length">导出赛程表</el-button>
           <el-button type="warning" :icon="RefreshLeft" @click="clearAll" :disabled="!items.length">清空</el-button>
         </div>
       </div>
     </el-card>
 
-    <el-alert type="info" show-icon :closable="false"
-      title="编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自日程配置，可每天不同。"
-      style="border-radius: 10px" />
+    <el-alert type="info" show-icon :closable="false" style="border-radius: 10px">
+      <template #title>
+        编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；
+        径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自日程配置，可每天不同。
+      </template>
+      <div v-if="lastArrangeMode" style="margin-top: 4px">
+        <el-tag size="small" :type="lastArrangeMode === 'rule' ? 'warning' : 'success'" effect="plain">
+          当前赛程由「{{ lastArrangeMode === 'rule' ? '规则模式' : '优化模式' }}」生成
+          <template v-if="lastArrangeMode === 'rule' && lastRuleInfo">
+            · 耗时 {{ lastRuleInfo.elapsedMillis }}ms · 残余兼项冲突 {{ lastRuleInfo.residualConflicts }} 处
+          </template>
+        </el-tag>
+        <span v-if="lastArrangeMode === 'rule'" style="margin-left: 8px; font-size: 12px; color: #909399">
+          想要更优的兼项规避与场地利用率？切换「优化模式」重新编排
+        </span>
+      </div>
+    </el-alert>
 
     <!-- 空态 -->
     <el-card v-if="!items.length" shadow="never" class="empty-card">
@@ -390,6 +420,16 @@ const showConfigDialog = ref(false)
 const editingId = ref(null)
 // 年级出场顺序是否自定义（false=跟随系统设置·年级管理的 sortOrder，保存时回传空数组避免冻结）
 const useCustomOrder = ref(false)
+// U39/B36：编排模式（rule=规则模式，确定性毫秒级；optimize=优化模式，Timefold+GA+LNS）。
+// 记忆到 localStorage：用户上次的选择在下次登录后保持，避免误用不期望的模式
+const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
+function onArrangeModeChange() {
+  localStorage.setItem('spt.arrangeMode', arrangeMode.value)
+}
+// 最近一次编排的模式回显（来自后端结果，防止前后端认知漂移）
+const lastArrangeMode = ref('')
+// 最近一次规则编排的观测信息（algorithmPortfolio.rule）
+const lastRuleInfo = ref(null)
 
 // 场地：名称 + 编码（并数上限取决于场地数量）
 const defaultVenueList = () => ([
@@ -735,11 +775,15 @@ async function exportConflicts() {
 }
 
 // ==================== 一键编排（赛程 + 自动道次） ====================
+// U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize/缺省=优化模式（向后兼容）
 async function doAutoSchedule() {
   arranging.value = true
   try {
-    const res = await request.post('/schedule/auto', {})
+    const res = await request.post('/schedule/auto', { mode: arrangeMode.value })
     items.value = res.items || []
+    // 模式回显（以服务端为准）
+    lastArrangeMode.value = res.mode || arrangeMode.value
+    lastRuleInfo.value = res.algorithmPortfolio?.rule || null
     // B06/U05：编排响应本身已带 conflicts，直接用，省一次往返
     applyConflicts({ summary: null, list: res.conflicts })
     if (res.conflicts) {
@@ -754,10 +798,16 @@ async function doAutoSchedule() {
     if (auto) {
       autoTip = `；已自动生成道次编排 ${auto.ok} 个（性别组）${auto.failed ? '，' + auto.failed + ' 个失败' : ''}`
     }
+    const modeTag = lastArrangeMode.value === 'rule' ? '【规则模式】' : '【优化模式】'
+    let ruleTip = ''
+    if (lastArrangeMode.value === 'rule' && lastRuleInfo.value) {
+      ruleTip = `（耗时 ${lastRuleInfo.value.elapsedMillis}ms` +
+        (lastRuleInfo.value.unplaced > 0 ? `，${lastRuleInfo.value.unplaced} 个单元排不下已告警` : '') + '）'
+    }
     if (res.warnings && res.warnings.length) {
-      ElMessage.warning('编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip)
+      ElMessage.warning(modeTag + '编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip + ruleTip)
     } else {
-      ElMessage.success('赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip)
+      ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip)
     }
     if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
   } catch (e) {
@@ -815,7 +865,8 @@ onMounted(() => { fetchList(); fetchEvents() })
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .toolbar-left { display: flex; align-items: center; gap: 12px; }
 .toolbar-right { display: flex; gap: 8px; flex-wrap: wrap; }
-.hint { font-size: 12px; color: #909399; }
+.mode-switch { margin-right: 4px; }
+.mode-switch :deep(.el-radio-button__inner) { font-weight: 600; }
 .empty-card { border-radius: 12px; }
 .day-card { border-radius: 12px; }
 .day-header { display: flex; align-items: center; gap: 10px; }
