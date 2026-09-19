@@ -6,6 +6,7 @@ import com.sports.repository.UserRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +29,10 @@ public class UserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final ExcelService excelService;
+
+    /** 默认密码（可配置：sports.default-password，缺省 123456）。重置/创建/导入未指定密码时使用 */
+    @Value("${sports.default-password:123456}")
+    private String defaultPassword;
 
     /** 列出所有用户 */
     @Transactional(readOnly = true)
@@ -52,7 +57,7 @@ public class UserService {
         User user = new User();
         user.setUsername(username.trim());
         user.setPassword(passwordEncoder.encode(
-                body.get("password") != null ? (String) body.get("password") : "123456"));
+                body.get("password") != null ? (String) body.get("password") : defaultPassword));
         user.setName((String) body.getOrDefault("realName", body.get("name")));
         user.setPhone((String) body.get("phone"));
         user.setRole(mapRole((String) body.getOrDefault("role", "TEACHER")));
@@ -99,7 +104,7 @@ public class UserService {
     public void resetPassword(Long id) {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("用户不存在: " + id));
-        user.setPassword(passwordEncoder.encode("123456"));
+        user.setPassword(passwordEncoder.encode(defaultPassword));
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
         log.info("重置密码成功: {}", user.getUsername());
@@ -119,7 +124,7 @@ public class UserService {
                 rowNum++;
                 try {
                     String username = row.getOrDefault(0, "");
-                    String password = row.getOrDefault(1, "123456");
+                    String password = row.getOrDefault(1, defaultPassword);
                     String realName = row.getOrDefault(2, "");
                     String role = row.getOrDefault(3, "TEACHER");
                     String phone = row.getOrDefault(4, "");
@@ -137,7 +142,7 @@ public class UserService {
                     } else {
                         User user = new User();
                         user.setUsername(username.trim());
-                        user.setPassword(passwordEncoder.encode(password.isBlank() ? "123456" : password.trim()));
+                        user.setPassword(passwordEncoder.encode(password.isBlank() ? defaultPassword : password.trim()));
                         user.setName(realName.isBlank() ? null : realName.trim());
                         user.setRole(mapRole(role.isBlank() ? "TEACHER" : role.trim()));
                         user.setPhone(phone.isBlank() ? null : phone.trim());
@@ -188,7 +193,7 @@ public class UserService {
             User user = new User();
             user.setUsername(username.trim());
             user.setPassword(passwordEncoder.encode(
-                    u.get("password") != null ? u.get("password") : "123456"));
+                    u.get("password") != null ? u.get("password") : defaultPassword));
             user.setName(u.getOrDefault("realName", u.get("name")));
             user.setRole(mapRole(u.getOrDefault("role", "TEACHER")));
             user.setPhone(u.get("phone"));

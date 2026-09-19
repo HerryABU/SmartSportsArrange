@@ -10,6 +10,7 @@ import com.sports.repository.UserRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,8 +39,9 @@ public class RefereeService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
-    /** 裁判账号默认密码 */
-    private static final String DEFAULT_PASSWORD = "123456";
+    /** 裁判账号默认密码（可配置：sports.default-password，缺省 123456） */
+    @Value("${sports.default-password:123456}")
+    private String defaultPassword;
     /** 裁判登录账号角色 */
     private static final String REFEREE_ROLE = "ROLE_REFEREE";
 
@@ -54,8 +56,8 @@ public class RefereeService {
                 .orElseThrow(() -> new RuntimeException("裁判不存在: " + refereeId));
 
         String password = body != null && body.get("password") != null
-                ? String.valueOf(body.get("password")).trim() : DEFAULT_PASSWORD;
-        if (password.isBlank()) password = DEFAULT_PASSWORD;
+                ? String.valueOf(body.get("password")).trim() : defaultPassword;
+        if (password.isBlank()) password = defaultPassword;
 
         String requested = body != null && body.get("username") != null
                 ? String.valueOf(body.get("username")).trim() : null;
