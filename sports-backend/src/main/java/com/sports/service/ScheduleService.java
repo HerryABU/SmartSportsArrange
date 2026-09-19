@@ -13,6 +13,7 @@ import com.sports.repository.VenueRepository;
 import com.sports.schedule.opt.Placement;
 import com.sports.schedule.opt.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
+import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.schedule.verify.ScheduleViolation;
@@ -21,6 +22,7 @@ import com.sports.schedule.opt.ScheduleUnit;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -82,6 +84,15 @@ public class ScheduleService {
      * 与校验器（判对错）正交——一个判「能不能用」，一个判「还有多好」。
      */
     private final LowerBoundEstimator lowerBoundEstimator;
+    /** 大邻域搜索精修：破坏一块（年级/窗口/最忙运动员）→ 只重建这一块 → 只接受更好的 */
+    private final LnsImprover lnsImprover;
+
+    /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
+    @Value("${sports.schedule.lns-rounds:2}")
+    private int lnsRounds;
+    /** LNS 每轮时间预算（毫秒） */
+    @Value("${sports.schedule.lns-round-millis:700}")
+    private long lnsRoundMillis;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
     private static final int MIN_DURATION = 10;
@@ -640,6 +651,32 @@ public class ScheduleService {
         }
         SchedulePlan solvedPlan = scheduleOptimizer.solveWithPortfolio(problem, features).orElse(null);
         if (solvedPlan == null) return;
+
+        // ④b **大邻域搜索精修（LNS）**：破坏一块 → 只重建这一块 → 只接受更好的。
+        //     与上游的区别在粒度：局部搜索一次动一个项目，LNS 一次拔出「一个年级 / 一个时段窗口 /
+        //     某个最忙运动员的全部项目」，在子空间里重新优化，其余部分用 @PlanningPin 锁定不动。
+        //     因此每轮代价很小，能在同样预算里做很多次真正触到"根"的调整。
+        try {
+            if (lnsRounds > 0) {
+                int rounds = Math.min(lnsRounds, 20);
+                long perRound = Math.max(200, lnsRoundMillis);
+                SchedulePlan before = solvedPlan;
+                Optional<SchedulePlan> improved =
+                        lnsImprover.improve(before, rounds, java.time.Duration.ofMillis(perRound));
+                if (improved.isPresent()) {
+                    solvedPlan = improved.get();
+                    if (portfolioInfo != null) {
+                        portfolioInfo.put("lns", "已启用：破坏-重建 " + rounds + " 轮，每轮 " + perRound + "ms");
+                        portfolioInfo.put("lnsScore", String.format("%s → %s",
+                                before.getScore(), solvedPlan.getScore()));
+                    }
+                } else if (portfolioInfo != null) {
+                    portfolioInfo.put("lns", rounds + " 轮未改进（当前解已局部稳定）");
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("LNS 精修失败（保留算法组合层的结果）: {}", ex.toString());
+        }
 
         // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是
         //    真正落地的时长，而不是「预计要压多少」。

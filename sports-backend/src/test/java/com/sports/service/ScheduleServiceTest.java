@@ -10,6 +10,7 @@ import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.verify.ScheduleVerifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,9 @@ class ScheduleServiceTest {
      * （那边有对抗性扫描用例）。这里给一个「无违规」的桩即可。
      */
     @Mock private ScheduleVerifier scheduleVerifier;
+
+    /** LNS 精修的桩：本测试类验证编排主流程与降级路径，精修逻辑由 LnsImprover 自己的测试覆盖 */
+    @Mock private LnsImprover lnsImprover;
 
     @InjectMocks private ScheduleService scheduleService;
 

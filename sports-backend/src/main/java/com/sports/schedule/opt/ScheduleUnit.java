@@ -1,6 +1,7 @@
 package com.sports.schedule.opt;
 
 import ai.timefold.solver.core.api.domain.entity.PlanningEntity;
+import ai.timefold.solver.core.api.domain.entity.PlanningPin;
 import ai.timefold.solver.core.api.domain.common.PlanningId;
 import ai.timefold.solver.core.api.domain.valuerange.ValueRangeProvider;
 import ai.timefold.solver.core.api.domain.variable.PlanningVariable;
@@ -90,6 +91,18 @@ public class ScheduleUnit {
     @Setter
     @PlanningVariable(valueRangeProviderRefs = "durationRange")
     private Integer duration;
+
+    /**
+     * 锁定标记：被锁定的实体在本次求解中<b>不参与任何移动</b>。
+     *
+     * <p>大邻域搜索（LNS）靠它实现「只重排被破坏的那一块，其余原地不动」——
+     * 这正是 LNS 与「整体重排」的根本区别：破坏一小部分解、只重建这一部分，
+     * 因此能在有限时间内做很多次局部探索，而不是每次推倒重来。</p>
+     */
+    @Setter
+    @Getter
+    @PlanningPin
+    private boolean pinned;
 
     public ScheduleUnit(String key, Long eventId, String eventName, String grade, boolean track,
                         String poolLabel, String groupKey, int interval, int rawDuration, int minDuration,
