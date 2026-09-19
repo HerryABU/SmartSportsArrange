@@ -12,6 +12,7 @@ import com.sports.repository.ArrangementRepository;
 import com.sports.repository.VenueRepository;
 import com.sports.schedule.opt.Placement;
 import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.schedule.verify.ScheduleViolation;
 import com.sports.schedule.opt.SchedulePlan;
@@ -75,6 +76,11 @@ public class ScheduleService {
      * 用一套<b>与求解器无关的独立实现</b>再查一遍真实赛程表。</p>
      */
     private final ScheduleVerifier scheduleVerifier;
+    /**
+     * 理论下界评估器：没有最优解可比对时，用它回答「还剩多少改进空间」。
+     * 与校验器（判对错）正交——一个判「能不能用」，一个判「还有多好」。
+     */
+    private final LowerBoundEstimator lowerBoundEstimator;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
     private static final int MIN_DURATION = 10;
@@ -462,6 +468,15 @@ public class ScheduleService {
             verification.put("error", "自检执行失败：" + ex.getMessage());
         }
         result.put("verification", verification);
+
+        // ===== U31/B28：理论下界评估（竞赛算法思维：从「感觉优化了」到「知道离最优多远」）=====
+        // 自检回答「方案能不能用」，下界回答「还有多少改进空间」——两者正交，缺一不可。
+        try {
+            result.put("lowerBound",
+                    assessLowerBound(units, windows, saved, trackSlots, fieldSlots).toMap());
+        } catch (Exception ex) {
+            log.warn("下界评估失败（不影响编排结果）: {}", ex.getMessage());
+        }
 
         // B16/U20：业务级成功判定——不止看 failed:0，还要看业务告警
         // （兼项冲突、严重压缩、时间窗溢出、自检未通过等 warnings 任一非空即视为未完全成功）
@@ -1981,6 +1996,38 @@ public class ScheduleService {
                     u.event.getName(), u.grade, u.rawDuration));
         }
         return list;
+    }
+
+    /**
+     * 理论下界评估（U31/B28）。
+     *
+     * <p>并发位按「径赛 / 田赛」两类聚合：项目级专用池（defaultVenueCode 绑定）较少见，
+     * 为一个保守估计去主循环里额外维护 Unit→Pool 映射并不划算——下界本就允许偏松，
+     * 偏松只会让 gap 看起来更小，不会把不可行说成可行（方向是安全的）。</p>
+     */
+    private LowerBoundEstimator.Assessment assessLowerBound(List<Unit> units, List<Window> windows,
+                                                            List<EventSchedule> saved,
+                                                            int trackSlots, int fieldSlots) {
+        Map<String, Integer> slotsByPool = new LinkedHashMap<>();
+        slotsByPool.put("径赛", Math.max(1, trackSlots));
+        slotsByPool.put("田赛", Math.max(1, fieldSlots));
+
+        List<LowerBoundEstimator.Item> items = new ArrayList<>();
+        for (Unit u : units) {
+            if (u.participants <= 0) continue;
+            items.add(new LowerBoundEstimator.Item(u.track ? "径赛" : "田赛",
+                    u.rawDuration, Math.max(1, intervalOf(u, 5)), u.athleteIds));
+        }
+
+        Set<Integer> days = new HashSet<>();
+        for (Window w : windows) days.add(w.day);
+
+        int given = 0;
+        for (EventSchedule s : saved) {
+            given += Math.max(0, parseMinute(s.getEndTime()) - parseMinute(s.getStartTime()));
+        }
+        return lowerBoundEstimator.assess(items, slotsByPool, dailyCapacityOf(windows),
+                days.size(), given);
     }
 
     /** 单日可用分钟总数（各天取最大值：各天时段配置通常一致，取最大避免低估容量而误报利用率） */
