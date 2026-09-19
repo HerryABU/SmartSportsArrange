@@ -143,6 +143,22 @@ public class ScheduleUnit {
         return durationChoices;
     }
 
+    /**
+     * 深拷贝本单元（值相同的全新实例）。
+     *
+     * <p>供遗传算法（交叉/变异）、大邻域搜索（每轮破坏前克隆）使用——必须拷贝，
+     * 否则破坏/变异会直接毁掉当前最优解。位置对象（Placement）与运动员数组、
+     * 候选列表在构造后只读，可安全共享引用。</p>
+     */
+    public ScheduleUnit copy() {
+        ScheduleUnit c = new ScheduleUnit(key, eventId, eventName, grade, track, poolLabel, groupKey,
+                interval, rawDuration, minDuration, athletes, durationChoices, candidatePlacements);
+        c.setPlacement(placement);
+        c.setDuration(duration);
+        c.setPinned(pinned);
+        return c;
+    }
+
     public boolean isPlaced() {
         return placement != null && duration != null;
     }

@@ -9,6 +9,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -51,5 +52,20 @@ public class SchedulePlan {
     public SchedulePlan(List<Placement> placements, List<ScheduleUnit> units) {
         this.placements = placements;
         this.units = units;
+    }
+
+    /**
+     * 深拷贝整个方案：实体逐个拷贝，位置（问题事实）共享引用。
+     *
+     * <p>遗传算法与 LNS 都靠它「先拷贝再改动」，保证原始解不被破坏。</p>
+     */
+    public SchedulePlan deepCopy() {
+        List<ScheduleUnit> copies = new ArrayList<>(units.size());
+        for (ScheduleUnit u : units) {
+            copies.add(u.copy());
+        }
+        SchedulePlan p = new SchedulePlan(placements, copies);
+        p.setScore(score);
+        return p;
     }
 }

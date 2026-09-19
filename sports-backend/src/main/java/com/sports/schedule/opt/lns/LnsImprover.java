@@ -146,17 +146,12 @@ public class LnsImprover {
      * 位置对象（Placement）是问题事实，可以安全共享引用。
      */
     private static SchedulePlan cloneForRound(SchedulePlan src) {
-        List<ScheduleUnit> copies = new ArrayList<>(src.getUnits().size());
-        for (ScheduleUnit u : src.getUnits()) {
-            ScheduleUnit c = new ScheduleUnit(u.getKey(), u.getEventId(), u.getEventName(), u.getGrade(),
-                    u.isTrack(), u.getPoolLabel(), u.getGroupKey(), u.getInterval(), u.getRawDuration(),
-                    u.getMinDuration(), u.getAthletes(), u.getDurationChoices(), u.getCandidatePlacements());
-            c.setPlacement(u.getPlacement());
-            c.setDuration(u.getDuration());
-            c.setPinned(false);
-            copies.add(c);
+        SchedulePlan copy = src.deepCopy();
+        // 克隆出的实体可能继承了上一轮的锁定标记，这里一律复位，由 destroyAndRepair 重新决定锁谁
+        for (ScheduleUnit u : copy.getUnits()) {
+            u.setPinned(false);
         }
-        return new SchedulePlan(src.getPlacements(), copies);
+        return copy;
     }
 
     private record DestroyResult(SchedulePlan solved, String neighborhood) {

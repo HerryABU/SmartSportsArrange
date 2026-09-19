@@ -1,10 +1,14 @@
 package com.sports.schedule.opt;
 
+import ai.timefold.solver.core.api.score.HardMediumSoftScore;
+import ai.timefold.solver.core.api.solver.SolutionManager;
 import ai.timefold.solver.core.api.solver.Solver;
 import ai.timefold.solver.core.api.solver.SolverFactory;
 import ai.timefold.solver.core.config.constructionheuristic.ConstructionHeuristicPhaseConfig;
 import ai.timefold.solver.core.config.localsearch.LocalSearchPhaseConfig;
 import ai.timefold.solver.core.config.localsearch.LocalSearchType;
+import ai.timefold.solver.core.config.localsearch.decider.acceptor.AcceptorType;
+import ai.timefold.solver.core.config.localsearch.decider.acceptor.LocalSearchAcceptorConfig;
 import ai.timefold.solver.core.config.solver.EnvironmentMode;
 import ai.timefold.solver.core.config.solver.SolverConfig;
 import ai.timefold.solver.core.config.solver.termination.TerminationConfig;
@@ -139,8 +143,48 @@ public class ScheduleOptimizer {
                         // 构造启发式：先得到一个合法可行解（不做任何改进）
                         new ConstructionHeuristicPhaseConfig(),
                         // 局部搜索：算法由算法选择层决定（禁忌搜索 / 模拟退火 / 迟接受 …）
-                        new LocalSearchPhaseConfig().withLocalSearchType(type))
+                        localSearchPhase(type))
                 .withTerminationConfig(new TerminationConfig().withSpentLimit(budget));
+    }
+
+    /**
+     * 按元启发式类型构造局部搜索阶段，并补齐各接受器<b>必需的参数</b>。
+     *
+     * <p>Timefold 的 {@code withLocalSearchType(...)} 只设置「用哪种接受器」，不会替你把
+     * 该接受器的关键参数填好——模拟退火缺起始温度、迟接受缺窗口大小都会在求解启动期抛
+     * {@code IllegalArgumentException}，导致该候选算法<b>静默失败并降级回贪心</b>（症状隐蔽）。
+     * 所以这里显式补齐。</p>
+     *
+     * <p>注意 Timefold 规定 {@code localSearchType} 与 {@code acceptorConfig} <b>二选一</b>：
+     * 一旦显式给了 acceptorConfig，就不能再设 localSearchType（会直接报「must not be
+     * configured together」）。因此需要自定义参数的算法走 acceptorConfig 分支（在
+     * acceptorTypeList 里声明接受器类型），其余走 localSearchType 分支。</p>
+     *
+     * <p>模拟退火起始温度取 {@code 1000soft}（非负的「能容忍多差」的幅度）：只允许「软分变差」
+     * 的移动（约等于一次移动可能造成的软分损失），硬分与中分绝不放松——既跳得出局部最优，
+     * 又不会接受一个不可行或新增兼项冲突的解。</p>
+     */
+    private LocalSearchPhaseConfig localSearchPhase(LocalSearchType type) {
+        switch (type) {
+            case SIMULATED_ANNEALING:
+                return new LocalSearchPhaseConfig().withAcceptorConfig(
+                        new LocalSearchAcceptorConfig()
+                                .withAcceptorTypeList(List.of(AcceptorType.SIMULATED_ANNEALING))
+                                .withSimulatedAnnealingStartingTemperature("0hard/0medium/1000soft"));
+            case LATE_ACCEPTANCE:
+                return new LocalSearchPhaseConfig().withAcceptorConfig(
+                        new LocalSearchAcceptorConfig()
+                                .withAcceptorTypeList(List.of(AcceptorType.LATE_ACCEPTANCE))
+                                .withLateAcceptanceSize(400));
+            case DIVERSIFIED_LATE_ACCEPTANCE:
+                return new LocalSearchPhaseConfig().withAcceptorConfig(
+                        new LocalSearchAcceptorConfig()
+                                .withAcceptorTypeList(List.of(AcceptorType.DIVERSIFIED_LATE_ACCEPTANCE))
+                                .withLateAcceptanceSize(400));
+            default:
+                // 禁忌搜索 / 爬山等：withLocalSearchType 已生成可用的默认接受器配置，无需额外参数
+                return new LocalSearchPhaseConfig().withLocalSearchType(type);
+        }
     }
 
     private static long countUnassigned(SchedulePlan plan) {
@@ -163,4 +207,22 @@ public class ScheduleOptimizer {
         }
         return n;
     }
+
+    /**
+     * 评分器：<b>不求解、只对给定方案计算评分</b>（供遗传算法在交叉/变异后快速评估个体）。
+     *
+     * <p>它与 {@link #solve} 的区别：solve 是「构造 + 局部搜索」的完整流程，代价高；
+     * 而 GA 每一代要评估几十个个体，逐个跑完整求解会爆炸。评分器只跑一遍约束流，
+     * 直接得到该个体的 {@link HardMediumSoftScore}，把算力留给真正的搜索。</p>
+     *
+     * <p>懒加载 + 缓存：评分器背后的 ScoreDirectorFactory 创建一次后线程安全复用。</p>
+     */
+    public SolutionManager<SchedulePlan, HardMediumSoftScore> solutionManager() {
+        if (solutionManager == null) {
+            solutionManager = SolutionManager.create(SolverFactory.create(config(defaultBudget)));
+        }
+        return solutionManager;
+    }
+
+    private volatile SolutionManager<SchedulePlan, HardMediumSoftScore> solutionManager;
 }
