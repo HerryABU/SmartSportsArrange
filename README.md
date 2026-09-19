@@ -8,6 +8,7 @@
 
 - ⚙️ **零配置建站**：首次启动进入可视化安装向导（参考 WordPress / Discuz 体验），配置站点、数据库、管理员账号后即装即用
 - 🔀 **数据库热迁移**：SQLite ↔ MySQL 在线切换，**全程无需重启服务**
+- 🧮 **三级求解梯度**：规则模式（确定性规则引擎，毫秒级） ↔ 优化模式（Timefold 约束求解 + GA + LNS），前端一键切换，**向下完全兼容竞品规则、向上独占求解能力**
 - 🧠 **智能编排引擎**：贪心 + 局部优化算法自动分组分道，规则完全可配置
 - 🌐 **反向代理 / 内网穿透友好**：前端采用 hash 路由（`/#/...`），服务器永远只收到 `/` 或 `/sportmg/`，**cpolar / ngrok 子域隧道、nginx 子路径帽子均开箱即用**，无需任何重写规则，彻底规避深链刷新白屏
 - 📊 **全流程 Excel 化**：名单 / 项目 / 报名 / 成绩 全部支持模板导入导出，秩序册 / 成绩册 / 报表一键生成
@@ -252,6 +253,29 @@ JAR 启动时自动检测终端编码（Windows GBK / Linux UTF-8 / Mac UTF-8）
 
 ### 8. 智能编排 ⭐ 核心
 
+#### 8.0 三级求解梯度（算法架构）
+
+编排引擎按「问题复杂度 → 求解能力」分为三级，逐级向上增强、向下兼容：
+
+| 级别 | 引擎 | 耗时 | 特性 |
+|------|------|------|------|
+| L1 规则模式 | `com.sports.schedule.rule`：`SnakeGrouping`（蛇形分组）+ `FixedLaneAssignment`（固定分道）+ `RuleBasedScheduler`（确定性 first-fit 时间编排） | **毫秒级** | 完全确定（同输入必同输出）、参数透明可解释、可穷举验证——竞品（豪杰/索美）的能力边界 |
+| L2 启发式 | 贪心 + 冲突感知放置 + 匈牙利精确分道（`HungarianAssignment`） | 秒级 | 兜底与快速通道 |
+| L3 优化模式 | Timefold 约束求解 + 遗传算法（GA）+ 大邻域搜索（LNS）+ 算法组合调度 | 秒级（可配预算） | 全局权衡兼项冲突/场地利用率/时长保真，带理论下界 gap 评估 |
+
+**前端切换**：教师「项目编排」页顶部提供「规则模式 / 优化模式」单选按钮（选择记忆于 `localStorage`）。
+**API 切换**：`POST /api/schedule/auto`，请求体 `mode` 字段——`"rule"` = 规则模式，缺省/`"optimize"` = 优化模式（完全向后兼容）。可选规则参数：`ruleLanePolicy`（`registration`/`performance`）、`ruleAdvanceCount`（晋级人数）、`ruleConflictBufferMinutes`（兼项缓冲）、`ruleConflictCheckEnabled`。
+
+**关键设计**——规则模式不是「另一套系统」，而是同一管线的最低层：
+1. **同源候选**：规则与求解使用同一「池解析 + 候选位置栅格」口径（`placementsOf`），两种模式产出可互替；
+2. **同一自检**：规则模式的结果同样过 `ScheduleVerifier` 独立自检（场地重叠/赶场/漏排），规则不是法外之地；
+3. **同一下界**：规则模式的结果同样计算理论下界 gap，用户能看到「规则解离最优还有多远」，据此判断要不要切优化模式；
+4. **规则是兜底**：求解失败/超时零副作用回退（git log「求解失败零副作用降级」），规则层正是这个降级链的最底层。
+
+> 📖 数学边界：L1 的蛇形分组在「组大小为偶数」时各 Group 种子强度**精确相等**（`balanceScore=0`，24人×3组经典模式），奇数大小受结构上界约束（测试固化）；但这只是「规则能做到的」——NP 难的兼项规避与场地权衡必须交给 L2/L3，这正是「重工程软件」与「电子化表单工具」的物种差异：**前者可以向下兼容后者，后者无法向上兼容前者**。
+
+#### 8.1 组次×道次编排（智能编排）
+
 ```
 Step 1: 获取已审核报名运动员 → 按班级分组
 Step 2: 计算组数 = ceil(总人数 / 项目内并发人数)
@@ -285,6 +309,11 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 ### 9. 项目编排（赛程编排）
 
 将比赛项目自动调度到「天 × 时段 × 场地」时间表，**模型为「1~n 并发位」**（已废弃早期「串行/并行」开关）：
+
+**编排模式切换（规则 / 优化）** 🎚️：工具栏「规则模式 / 优化模式」单选按钮——
+- **规则模式**：确定性 first-fit（项目顺序 → 时间栅格 → 场地槽位），毫秒级、完全可复现、结果透明；响应含 `algorithmPortfolio.rule {placed, unplaced, residualConflicts, elapsedMillis, ...}` 观测信息
+- **优化模式**（默认）：Timefold 求解 + GA 进化 + LNS 精修 + 算法组合调度，权衡兼项冲突 / 场地利用率 / 压缩保真，附理论下界 gap
+- 两模式共用同一套并发位模型、自检（`/api/schedule/verify`）、下界评估与冲突检测；切换零副作用，随时可换回
 
 | 概念 | 配置项 | 说明 |
 |------|--------|------|
@@ -643,7 +672,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | GET | `/api/schedule` | — | 已认证 | 查看当前赛程 |
-| POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库） | 已认证 | 按「并发位」模型自动编排赛程（详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)） |
+| POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库）；**`mode`**：`"rule"` 规则模式 / 缺省 `"optimize"` 优化模式；规则模式可选 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictBufferMinutes` / `ruleConflictCheckEnabled` | 已认证 | 按「并发位」模型自动编排赛程（双模式详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)）；响应含 `mode`（实际使用的模式）与 `algorithmPortfolio.rule`（规则模式观测信息） |
 | POST | `/api/schedule/save` | Body items[] | 已认证 | 手动保存赛程（整体替换） |
 | DELETE | `/api/schedule` | — | 已认证 | 清空赛程 |
 | GET | `/api/schedule/export` | — | 已认证 | 导出赛程（Excel，含「项目内并发」列） |
@@ -1042,7 +1071,8 @@ location /sportmg/ {
 │                     后端服务层                            │
 │              Spring Boot 3.4 / Java 21                   │
 │   Spring MVC │ Spring Security │ Spring Data JPA │ AOP   │
-│   编排算法 │ 赛程调度 │ 排名积分 │ EasyExcel │ 热迁移      │
+│   编排算法（规则模式 + Timefold/GA/LNS 优化） │ 赛程调度 │
+│   排名积分 │ EasyExcel │ 热迁移                          │
 └──────────────────────────┬───────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────┐
