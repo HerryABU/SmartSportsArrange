@@ -105,12 +105,50 @@ public class ProxyPrefixConfig {
         @Override
         public StringBuffer getRequestURL() {
             HttpServletRequest req = (HttpServletRequest) getRequest();
-            StringBuffer url = new StringBuffer(req.getScheme()).append("://").append(req.getServerName());
-            int port = req.getServerPort();
+            // 反向代理下用 X-Forwarded-* 还原客户端实际看到的协议/主机/端口，
+            // 否则会拼出内网地址（如 http://127.0.0.1:8080），导致回调/绝对链接出错。
+            String scheme = firstHeaderValue(req, "X-Forwarded-Proto", req.getScheme());
+            String host;
+            int port;
+            String hostHeader = req.getHeader("X-Forwarded-Host");
+            if (hostHeader != null && !hostHeader.isBlank()) {
+                // 可能带端口（host:port），也可能逗号分隔多跳代理（取第一个）
+                String first = hostHeader.split(",")[0].trim();
+                int lastBracket = first.lastIndexOf(']'); // 跳过 IPv6 地址里的冒号
+                int colon = first.lastIndexOf(':');
+                if (colon > lastBracket) {
+                    host = first.substring(0, colon);
+                    port = parsePort(first.substring(colon + 1), req.getServerPort());
+                } else {
+                    host = first;
+                    port = parsePort(req.getHeader("X-Forwarded-Port"), req.getServerPort());
+                }
+            } else {
+                host = req.getServerName();
+                port = req.getServerPort();
+            }
+            StringBuffer url = new StringBuffer(scheme).append("://").append(host);
             if (port > 0 && port != 80 && port != 443) {
                 url.append(':').append(port);
             }
             return url.append(strippedPath);
+        }
+
+        /** 取转发头首个值（多跳代理用逗号分隔，取最外层），缺失回退 fallback */
+        private static String firstHeaderValue(HttpServletRequest req, String name, String fallback) {
+            String v = req.getHeader(name);
+            if (v == null || v.isBlank()) return fallback;
+            return v.split(",")[0].trim();
+        }
+
+        private static int parsePort(String s, int fallback) {
+            if (s == null || s.isBlank()) return fallback;
+            try {
+                int p = Integer.parseInt(s.trim());
+                return p > 0 ? p : fallback;
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
         }
 
         @Override
