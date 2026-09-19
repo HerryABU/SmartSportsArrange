@@ -595,6 +595,54 @@ public class RegistrationService {
     }
 
     /**
+     * 批量通过（原子性）：在单个事务内逐条审批，保证「要么全部提交、要么因底层故障整体回滚」。
+     * <p>单项因业务校验（如记录不存在、班主任无权限）失败时仅计入 failures，不中断其余项；
+     * 但若发生底层持久化异常，整个事务回滚，避免「前面已提交、后面没执行」的部分成功脏数据。</p>
+     */
+    public Map<String, Object> batchApprove(List<Long> ids) {
+        int success = 0;
+        List<Map<String, Object>> failures = new ArrayList<>();
+        for (Long id : ids) {
+            try {
+                approve(id, null);
+                success++;
+            } catch (Exception e) {
+                failures.add(Map.of("id", id,
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            }
+        }
+        log.info("批量通过: total={}, success={}, failed={}", ids.size(), success, failures.size());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", success);
+        result.put("total", ids.size());
+        result.put("failed", failures.size());
+        result.put("failures", failures);
+        return result;
+    }
+
+    /** 批量拒绝（原子性，语义同 {@link #batchApprove}） */
+    public Map<String, Object> batchReject(List<Long> ids) {
+        int success = 0;
+        List<Map<String, Object>> failures = new ArrayList<>();
+        for (Long id : ids) {
+            try {
+                reject(id);
+                success++;
+            } catch (Exception e) {
+                failures.add(Map.of("id", id,
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            }
+        }
+        log.info("批量拒绝: total={}, success={}, failed={}", ids.size(), success, failures.size());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", success);
+        result.put("total", ids.size());
+        result.put("failed", failures.size());
+        result.put("failures", failures);
+        return result;
+    }
+
+    /**
      * 一键全部通过：把「当前筛选范围」内全部 pending 一次性置为 approved（仅体育老师/管理员）。
      * eventId/classId 为空表示不限该项；班主任账号会直接拒绝（无审核权）。
      */

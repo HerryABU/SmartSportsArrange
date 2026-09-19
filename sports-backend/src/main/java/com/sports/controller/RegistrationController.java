@@ -92,10 +92,10 @@ public class RegistrationController {
     public ApiResponse<?> batchApprove(@RequestBody Map<String, List<Long>> request) {
         List<Long> ids = request.get("ids");
         log.info("批量通过报名: count={}", ids != null ? ids.size() : 0);
-        if (ids != null) {
-            for (Long id : ids) registrationService.approve(id, null);
+        if (ids == null || ids.isEmpty()) {
+            return ApiResponse.success("批量通过成功", Map.of("success", 0, "total", 0, "failed", 0, "failures", List.of()));
         }
-        return ApiResponse.success("批量通过成功", null);
+        return ApiResponse.success("批量通过成功", registrationService.batchApprove(ids));
     }
 
     /** 一键全部通过（当前筛选范围：eventId/classId 可空，仅处理 pending） */
@@ -119,10 +119,10 @@ public class RegistrationController {
     public ApiResponse<?> batchReject(@RequestBody Map<String, List<Long>> request) {
         List<Long> ids = request.get("ids");
         log.info("批量拒绝报名: count={}", ids != null ? ids.size() : 0);
-        if (ids != null) {
-            for (Long id : ids) registrationService.reject(id);
+        if (ids == null || ids.isEmpty()) {
+            return ApiResponse.success("批量拒绝成功", Map.of("success", 0, "total", 0, "failed", 0, "failures", List.of()));
         }
-        return ApiResponse.success("批量拒绝成功", null);
+        return ApiResponse.success("批量拒绝成功", registrationService.batchReject(ids));
     }
 
     @GetMapping("/statistics")
