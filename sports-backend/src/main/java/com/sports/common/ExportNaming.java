@@ -12,11 +12,11 @@ public final class ExportNaming {
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     /**
-     * 兜底版本号（H2 修复：原 "2.5.0" 与当前 v2.6.5 冲突，导致 IDE 内运行 / 未配 manifest 时
+     * 兜底版本号（H2 修复：原 "2.5.0" 与当前 v2.6.8 冲突，导致 IDE 内运行 / 未配 manifest 时
      * 所有导出文件名带 _v2.5.0，与 README 标题对不上）。
      * 必须与 pom.xml 的 <version> 保持同步；正常打包时会被 jar 清单的 Implementation-Version 覆盖。
      */
-    private static final String FALLBACK_VERSION = "2.6.5";
+    private static final String FALLBACK_VERSION = "2.6.8";
 
     private ExportNaming() {}
 
