@@ -66,9 +66,43 @@ import com.sports.schedule.core.*;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 @Transactional
 public class ScheduleService {
+    public ScheduleService(EventScheduleRepository scheduleRepository,
+                            EventRepository eventRepository,
+                            RegistrationRepository registrationRepository,
+                            ArrangementRepository arrangementRepository,
+                            ArrangementService arrangementService,
+                            SystemService systemService,
+                            ConflictService conflictService,
+                            VenueRepository venueRepository,
+                            ScheduleOptimizer scheduleOptimizer,
+                            ScheduleVerifier scheduleVerifier,
+                            LowerBoundEstimator lowerBoundEstimator,
+                            LnsImprover lnsImprover,
+                            GeneticAlgorithm geneticAlgorithm,
+                            ScheduleCollaborationService collaborationService,
+                            RuleBasedScheduler ruleBasedScheduler,
+                            AuditService auditService) {
+        this.scheduleRepository = scheduleRepository;
+        this.eventRepository = eventRepository;
+        this.registrationRepository = registrationRepository;
+        this.arrangementRepository = arrangementRepository;
+        this.arrangementService = arrangementService;
+        this.systemService = systemService;
+        this.conflictService = conflictService;
+        this.venueRepository = venueRepository;
+        this.scheduleOptimizer = scheduleOptimizer;
+        this.scheduleVerifier = scheduleVerifier;
+        this.lowerBoundEstimator = lowerBoundEstimator;
+        this.lnsImprover = lnsImprover;
+        this.geneticAlgorithm = geneticAlgorithm;
+        this.collaborationService = collaborationService;
+        this.ruleBasedScheduler = ruleBasedScheduler;
+        this.auditService = auditService;
+        this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
+    }
+
 
     private final EventScheduleRepository scheduleRepository;
     private final EventRepository eventRepository;
@@ -112,6 +146,8 @@ public class ScheduleService {
     /** 操作审计（M5 修复：赛程编排高层操作此前无审计，破坏性操作 clear 无留痕） */
     private final AuditService auditService;
 
+    private final ScheduleBuildComponent buildComponent;
+
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
     private int lnsRounds;
@@ -144,7 +180,7 @@ public class ScheduleService {
      *                 defaultDurationMinutes / defaultIntervalMinutes / venues
      */
     public Map<String, Object> autoSchedule(Map<String, Object> override) {
-        Map<String, Object> cfg = mergeConfig(override);
+        Map<String, Object> cfg = buildComponent.mergeConfig(override);
 
         List<String> gradeOrder = strList(cfg.get("gradeOrder"));
         // 并发位数：1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目
@@ -210,12 +246,12 @@ public class ScheduleService {
         Map<Long, String> event2Group = parseFieldGroups(cfg.get("fieldGroups"));
 
         // 时间窗：按 (天, 时段) 顺序铺开
-        List<Window> windows = buildWindows(cfg);
+        List<Window> windows = buildComponent.buildWindows(cfg);
         if (windows.isEmpty()) {
             throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
         }
 
-        List<Unit> units = buildUnits(gradeOrder, eventOrder);
+        List<Unit> units = buildComponent.buildUnits(gradeOrder, eventOrder);
         // B05/U06 根因修复：venue.parallelMax 是「该场地同一时刻能并行几个**项目**」，
         // 与「一个项目内同时下场几个**运动员**」是两个正交的量。
         // 旧实现把 parallelMax 当成项目内并发人数传下去，主跑道 parallelMax=1 时
@@ -223,7 +259,7 @@ public class ScheduleService {
         // 再被 maxDurationMinutes 硬压到 20 分钟，现场时间估算彻底失真（B05 的 144→20）。
         // 正确的约束路径：parallelMax → 并发池槽位数（trackSlots/fieldSlots/专用池，已在上面处理），
         // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
-        estimateDurations(units, heatMinutes, fieldPerAthlete, defaultDuration);
+        buildComponent.estimateDurations(units, heatMinutes, fieldPerAthlete, defaultDuration);
 
         // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
         // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
@@ -335,7 +371,7 @@ public class ScheduleService {
         //      （项目本就不该在该年级进行，属正常，静默跳过，否则几十条噪声淹没真正的业务告警）。
         Set<Long> eventsWithRegs = new HashSet<>();
         for (Event ev : eventRepository.findByIsEnabledTrueOrderBySortOrderAsc()) {
-            if (countParticipants(ev.getId(), null) > 0) eventsWithRegs.add(ev.getId());
+            if (buildComponent.countParticipants(ev.getId(), null) > 0) eventsWithRegs.add(ev.getId());
         }
         // U23/B20：兼项冲突规避的运行状态。
         // busy = 运动员 → 已占用时间段（绝对分钟 = 天×1440 + 当日分钟），放置时据此避让；
@@ -356,7 +392,7 @@ public class ScheduleService {
                 continue;
             }
 
-            Pool pool = resolvePool(u, trackPool, fieldPool, mainVenueCode,
+            Pool pool = buildComponent.resolvePool(u, trackPool, fieldPool, mainVenueCode,
                     fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots);
             // 分组：田赛或「小组合作」项目按 event2Group 分组（合作项目哪怕是径赛也并入同组并行）
             String group = event2Group.get(u.event.getId());
@@ -392,7 +428,7 @@ public class ScheduleService {
                 // 场地输出取各自池的场地名；时间协调跨池进行（同一时刻同时开赛）。
                 List<Pool> unitPools = new ArrayList<>();
                 for (Integer idx : batch) {
-                    unitPools.add(resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
+                    unitPools.add(buildComponent.resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
                             fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
                 }
                 placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
@@ -593,7 +629,7 @@ public class ScheduleService {
      */
     @Transactional(readOnly = true)
     public Map<String, Object> verifyCurrentSchedule() {
-        Map<String, Object> cfg = mergeConfig(null);
+        Map<String, Object> cfg = buildComponent.mergeConfig(null);
         Map<Long, String> groupCfg = parseFieldGroups(cfg.get("fieldGroups"));
         List<EventSchedule> rows = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
         List<ScheduleVerifier.Row> verifyRows = new ArrayList<>();
@@ -604,7 +640,7 @@ public class ScheduleService {
             if (e == null || e.getId() == null) continue;
             Set<Long> athletes = new LinkedHashSet<>();
             Map<Long, String> names = new LinkedHashMap<>();
-            for (Registration reg : approvedRegs(e.getId(), s.getGrade())) {
+            for (Registration reg : buildComponent.approvedRegs(e.getId(), s.getGrade())) {
                 if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
                 Long aid = reg.getAthlete().getId();
                 athletes.add(aid);
@@ -627,7 +663,7 @@ public class ScheduleService {
         }
         int dailyCapacity = 0;
         try {
-            dailyCapacity = SchedulePlacementMath.dailyCapacityOf(buildWindows(cfg));
+            dailyCapacity = SchedulePlacementMath.dailyCapacityOf(buildComponent.buildWindows(cfg));
         } catch (Exception ex) {
             log.warn("自检读取时段配置失败，将跳过容量利用率计算: {}", ex.getMessage());
         }
@@ -676,7 +712,7 @@ public class ScheduleService {
         Map<Unit, Pool> unitPool = new IdentityHashMap<>();
         for (Unit u : units) {
             if (u.participants <= 0) continue;
-            unitPool.put(u, resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
+            unitPool.put(u, buildComponent.resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
                     codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
         }
         if (unitPool.isEmpty()) return;
@@ -756,7 +792,7 @@ public class ScheduleService {
         Map<Unit, Pool> unitPool = new IdentityHashMap<>();
         for (Unit u : units) {
             if (u.participants <= 0) continue;
-            unitPool.put(u, resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
+            unitPool.put(u, buildComponent.resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
                     codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
         }
         if (unitPool.isEmpty()) return;
@@ -1159,7 +1195,7 @@ public class ScheduleService {
         // 且整张赛程表被回滚（event_schedule 一行不剩）。
         // 正确口径与 batchArrange 一致：按报名中实际出现的性别逐组编排；没有报名的性别直接跳过，
         // 既不是失败也不产生告警。
-        List<String> genders = approvedGenders(e.getId(), u.grade);
+        List<String> genders = buildComponent.approvedGenders(e.getId(), u.grade);
         int ok = 0;
         for (String g : genders) {
             try {
@@ -1178,184 +1214,22 @@ public class ScheduleService {
         return ok;
     }
 
-    /**
-     * 该项目在指定年级下「已审核报名」里实际出现的性别（原值，通常为 M/F），去重后排序。
-     *
-     * <p>U22/B19：这是自动道次编排的正确驱动源——{@code event.genderLimit} 只是「限制」，
-     * 缺省（null）代表「不限制」，并不代表「一定男女都有人报名」。只有报名里真的出现过的性别
-     * 才应该去调 {@code arrange}，否则会触发「没有符合条件的已审核报名记录」并毒化外层事务。</p>
-     *
-     * @param grade null/空 = 不限年级（取该项目全部报名）
-     * @return 实际存在的性别列表；无报名时返回空列表
-     */
-    private List<String> approvedGenders(Long eventId, String grade) {
-        List<String> out = new ArrayList<>();
-        for (Registration r : approvedRegs(eventId, grade)) {
-            var a = r.getAthlete();
-            if (a == null || a.getGender() == null) continue;
-            String g = a.getGender().trim();
-            if (!g.isEmpty() && !out.contains(g)) out.add(g);
-        }
-        out.sort(Comparator.naturalOrder());
-        return out;
-    }
 
     /** 性别原值 → 中文标签（用于告警文案） */
 
     // ==================== 赛程单元构建 ====================
 
-    /**
-     * 按「年级顺序 → 项目顺序」展开赛程单元。
-     *
-     * <p>项目顺序：自定义 eventOrder（eventId 有序列表，田赛+径赛混排）优先；
-     * 未列入的项目保持项目排序号（sortOrder）相对顺序追加在后（稳定排序）。</p>
-     * 年级顺序来自配置；event.gradeGroup 非空时该项目只属于对应年级。
-     */
-    private List<Unit> buildUnits(List<String> gradeOrder, List<Long> eventOrder) {
-        List<Event> events = orderedEvents(eventOrder);
-
-        List<Unit> units = new ArrayList<>();
-        if (gradeOrder.isEmpty()) {
-            for (Event e : events) units.add(new Unit(e, null));
-            return units;
-        }
-
-        for (String grade : gradeOrder) {
-            for (Event e : events) {
-                String gg = e.getGradeGroup();
-                if (gg != null && !gg.isBlank() && !Grades.same(gg, grade)) continue;
-                units.add(new Unit(e, grade));
-            }
-        }
-        return units;
-    }
 
     /** 按自定义顺序（eventOrder）重排项目；未列入者按原 sortOrder 保持相对顺序（稳定排序） */
-    private List<Event> orderedEvents(List<Long> eventOrder) {
-        List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
-        if (eventOrder == null || eventOrder.isEmpty()) return events;
-        Map<Long, Integer> pos = new HashMap<>();
-        for (int i = 0; i < eventOrder.size(); i++) pos.put(eventOrder.get(i), i);
-        List<Event> list = new ArrayList<>(events);
-        list.sort(Comparator.comparingInt(e -> pos.getOrDefault(e.getId(), Integer.MAX_VALUE)));
-        return list;
-    }
 
 
-    /**
-     * 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算）。
-     *
-     * <p>U24/B21：时长以<b>真实估算</b>为准，只受项目<b>显式配置</b>的 maxDurationMinutes 约束；
-     * 不再拿 defaultDurationMinutes 当上限一刀切。能否排下由 {@link #fitDurationsToPools}
-     * 按各并发池的真实可用容量等比缩放决定（并如实上报缺口与所需并发位）。</p>
-     */
-    private void estimateDurations(List<Unit> units,
-                                   int heatMinutes, int fieldPerAthlete, int defaultDuration) {
-        for (Unit u : units) {
-            Event e = u.event;
-            // 田赛方法判定：① 本身 flag=false(田赛)；② 趣味运动会(特殊田赛，含球赛)；
-            // ③ 占用跑道但用田赛法。三者均走田赛并行逻辑（不占道次）。
-            boolean trackFlag = !Boolean.FALSE.equals(e.getTrack());
-            boolean fieldMethod = !trackFlag
-                    || Boolean.TRUE.equals(e.getFunSports())
-                    || Boolean.TRUE.equals(e.getOccupiesTrack());
-            boolean isTrack = !fieldMethod;
-            List<Registration> regs = approvedRegs(e.getId(), u.grade);
-            int count = regs.size();
-            int concurrency = ScheduleAnalysisMath.concurrencyOf(e);
-
-            int entrants = count;
-            if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
-                entrants = (int) Math.ceil((double) count / e.getTeamMembers());
-            }
-            // 轮次 = ceil(参赛单元 / 项目内并发人数)
-            int rounds = Math.max(1, (int) Math.ceil((double) entrants / Math.max(1, concurrency)));
-
-            u.track = isTrack;
-            u.concurrency = concurrency;
-            u.participants = count;
-            u.heats = isTrack ? rounds : 0;
-            u.rounds = rounds;
-            // U23/B20：记录参赛者，供兼项冲突规避（与 participants 同一次查询，口径必然一致）
-            for (Registration r : regs) {
-                if (r.getAthlete() != null && r.getAthlete().getId() != null) {
-                    u.athleteIds.add(r.getAthlete().getId());
-                }
-            }
-            // 单轮/每批用时：项目显式「每批所需时间(分)」优先；否则径赛回退 heatMinutes、田赛回退 fieldPerAthlete
-            int perUnit = (e.getPerBatchMinutes() != null && e.getPerBatchMinutes() > 0)
-                    ? e.getPerBatchMinutes()
-                    : (isTrack ? heatMinutes : fieldPerAthlete);
-            int estimated = rounds * perUnit;
-            u.rawDuration = Math.max(SchedulePlacementMath.MIN_DURATION, estimated > 0 ? estimated : defaultDuration);
-
-            // U24/B21：首选时长 = min(真实估算, 项目显式上限)；未配上限就用真实估算。
-            // 旧写法把 defaultDurationMinutes(30) 当上限，与「当天有多少时间」无关——
-            // 44 人跳远需 198 分钟也被砍成 30 分钟，18 个项目无一例外「全压缩」，
-            // 排出来的表看着整齐、现场根本跑不完。真正排不下的部分改由容量等比缩放处理。
-            u.explicitMaxDuration = e.getMaxDurationMinutes() != null && e.getMaxDurationMinutes() > 0
-                    ? e.getMaxDurationMinutes() : 0;
-            u.duration = u.explicitMaxDuration > 0
-                    ? Math.min(u.rawDuration, u.explicitMaxDuration)
-                    : u.rawDuration;
-        }
-    }
 
 
-    /**
-     * 该 (项目, 年级) 的「已审核报名」——本类查询报名的<b>唯一入口</b>。
-     *
-     * <p>U23/B20：以前 countParticipants / approvedGenders / 空单元判定各自查一遍报名，
-     * 口径容易漂移（一处滤年级、一处不滤）。统一到这里之后，「人数、参赛者集合、性别集合」
-     * 三者都由同一次查询派生，必然互相自洽。</p>
-     *
-     * @param grade null/空 = 不限年级（取该项目全部已审核报名）
-     */
-    private List<Registration> approvedRegs(Long eventId, String grade) {
-        try {
-            List<Registration> regs = registrationRepository.findApprovedByEventId(eventId);
-            if (grade == null || grade.isBlank()) return regs;
-            return regs.stream()
-                    .filter(r -> r.getAthlete() != null && Grades.same(grade, r.getAthlete().getGrade()))
-                    .collect(Collectors.toList());
-        } catch (Exception ex) {
-            return List.of();
-        }
-    }
 
-    private int countParticipants(Long eventId, String grade) {
-        return approvedRegs(eventId, grade).size();
-    }
 
     // ==================== 时间窗 ====================
 
     /** 把 dayConfigs 铺开成有序的时间窗列表 */
-    private List<Window> buildWindows(Map<String, Object> cfg) {
-        String startDate = str(cfg.get("startDate"), null);
-        List<Map<String, Object>> dayConfigs = castList(cfg.get("dayConfigs"));
-        List<Window> windows = new ArrayList<>();
-
-        for (Map<String, Object> dc : dayConfigs) {
-            int day = intVal(dc.get("day"), windows.size() + 1);
-            String date = str(dc.get("date"), null);
-            if ((date == null || date.isBlank()) && startDate != null && !startDate.isBlank()) {
-                date = shiftDate(startDate, day - 1);
-            }
-            List<Map<String, Object>> slots = castList(dc.get("slots"));
-            if (slots.isEmpty()) continue;
-
-            for (Map<String, Object> sl : slots) {
-                String start = str(sl.get("start"), "08:00");
-                String end = str(sl.get("end"), "11:30");
-                int s = parseHhMm(start);
-                int e = parseHhMm(end);
-                if (e <= s) continue;
-                windows.add(new Window(day, date, str(sl.get("name"), str(sl.get("key"), "上午")), s, e - s));
-            }
-        }
-        windows.sort(Comparator.comparingInt(w -> w.day));
-        return windows;
-    }
 
     // ==================== 查询 / 手动调整 / 清空 ====================
 
@@ -1592,27 +1466,6 @@ public class ScheduleService {
     // ==================== 配置合并 ====================
 
     /** 以已保存的 meet_schedule 为底，用请求参数覆盖（不落库） */
-    private Map<String, Object> mergeConfig(Map<String, Object> override) {
-        Map<String, Object> cfg = new LinkedHashMap<>(systemService.getMeetSchedule());
-        if (override != null) {
-            for (Map.Entry<String, Object> e : override.entrySet()) {
-                if (e.getValue() != null) cfg.put(e.getKey(), e.getValue());
-            }
-        }
-        if (cfg.get("gradeOrder") == null || strList(cfg.get("gradeOrder")).isEmpty()) {
-            cfg.put("gradeOrder", systemService.getGradeOrder());
-        }
-        // 日期跟随 startDate 重算，避免手工改动后日期错位
-        String startDate = str(cfg.get("startDate"), null);
-        if (startDate != null && !startDate.isBlank()) {
-            List<Map<String, Object>> dayConfigs = castList(cfg.get("dayConfigs"));
-            for (Map<String, Object> dc : dayConfigs) {
-                dc.put("date", shiftDate(startDate, intVal(dc.get("day"), 1) - 1));
-            }
-            cfg.put("dayConfigs", dayConfigs);
-        }
-        return cfg;
-    }
 
     // ==================== U29/B26：自检数据装配 ====================
 
@@ -1631,7 +1484,7 @@ public class ScheduleService {
             if (e == null || e.getId() == null) continue;
             Set<Long> athletes = new LinkedHashSet<>();
             Map<Long, String> names = new LinkedHashMap<>();
-            for (Registration reg : approvedRegs(e.getId(), s.getGrade())) {
+            for (Registration reg : buildComponent.approvedRegs(e.getId(), s.getGrade())) {
                 if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
                 Long aid = reg.getAthlete().getId();
                 athletes.add(aid);
@@ -1692,33 +1545,4 @@ public class ScheduleService {
                 days.size(), given);
     }
 
-    /**
-     * 解析单元应使用哪个并发池：
-     * <ul>
-     *   <li>未指定场地编码 → 按类别回退默认池（径赛主池 / 田赛池）；</li>
-     *   <li>指定了编码且与主径赛场地相同 → 主径赛池；</li>
-     *   <li>指定了田赛场地编码 → 该田赛场地的独立池（并发位数=fieldSlots）；</li>
-     *   <li>指定了其它新场地编码（如游泳馆）→ 建立独立 1 位并发池，与主/田赛池并行（即「同排」）。</li>
-     * </ul>
-     * 同一编码的专用池只创建一次（缓存于 dedicatedPools）。
-     */
-    private Pool resolvePool(Unit u, Pool trackPool, Pool fieldPool,
-                            String mainVenueCode, Set<String> fieldVenueCodes,
-                            Map<String, String> codeToName, Map<String, Integer> codeToParallelMax,
-                            Map<String, Pool> dedicatedPools,
-                            int trackSlots, int fieldSlots) {
-        String code = u.event.getDefaultVenueCode();
-        if (code == null || code.isBlank()) return u.track ? trackPool : fieldPool;
-        code = code.trim();
-        if (dedicatedPools.containsKey(code)) return dedicatedPools.get(code);
-        if (code.equals(mainVenueCode)) return trackPool;
-        // 场地名优先级：Event.defaultVenue（表格2「场地」列）> 场地表按编码反查 > 编码本身
-        String name = (u.event.getDefaultVenue() != null && !u.event.getDefaultVenue().isBlank())
-                ? u.event.getDefaultVenue().trim()
-                : codeToName.getOrDefault(code, code);
-        int slots = fieldVenueCodes.contains(code) ? fieldSlots : codeToParallelMax.getOrDefault(code, 1);
-        Pool p = new Pool("场地-" + code, slots, java.util.List.of(name));
-        dedicatedPools.put(code, p);
-        return p;
-    }
 }
