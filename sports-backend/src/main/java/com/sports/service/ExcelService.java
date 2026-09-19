@@ -627,6 +627,20 @@ public class ExcelService {
                     boolean dup = Boolean.TRUE.equals(event.getTeam())
                             ? registrationRepository.existsByAthleteIdAndEventIdAndTeamTag(athlete.getId(), event.getId(), teamTag)
                             : registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId());
+                    // 每班人数限制：项目自带 maxPerClass 优先（未设定则不限制）
+                    if (event.getMaxPerClass() != null && event.getMaxPerClass() > 0
+                            && athlete.getClassInfo() != null) {
+                        long classCnt = registrationRepository.countByClassAndEvent(
+                                athlete.getClassInfo().getId(), event.getId());
+                        if (classCnt >= event.getMaxPerClass()) {
+                            Map<String, Object> e2 = new LinkedHashMap<>();
+                            e2.put("row", i + 1);
+                            e2.put("message", "项目「" + event.getName() + "」本班已达每班人数限制("
+                                    + event.getMaxPerClass() + "人)");
+                            errors.add(e2);
+                            continue;
+                        }
+                    }
                     if (!dup) {
                         Registration reg = Registration.builder()
                                 .athlete(athlete).event(event).status("approved")

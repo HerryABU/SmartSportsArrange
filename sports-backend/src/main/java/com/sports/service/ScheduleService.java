@@ -241,6 +241,13 @@ public class ScheduleService {
                 event2Group.put(u.event.getId(), "捆绑组" + bg.trim().toUpperCase());
             }
         }
+        // 小组合作项目：归入同一「合作组」，与同年级同组项目合并到同一时段并行进行
+        // （径赛/田赛皆可，含趣味；真正并行的还是各自场地池，这里只负责「同时开赛」协调）
+        for (Unit u : units) {
+            if (Boolean.TRUE.equals(u.event.getCooperative())) {
+                event2Group.put(u.event.getId(), "合作组");
+            }
+        }
 
         // 资源池：按类别分配并发位。径赛用主场地；田赛只用 type=field 的场地（不足则复用并告警）；
         // pool/other 类型（游泳馆等）不参与田赛轮询，只能被项目 defaultVenueCode 显式绑定。
@@ -349,7 +356,8 @@ public class ScheduleService {
 
             Pool pool = resolvePool(u, trackPool, fieldPool, mainVenueCode,
                     fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots);
-            String group = u.track ? null : event2Group.get(u.event.getId());
+            // 分组：田赛或「小组合作」项目按 event2Group 分组（合作项目哪怕是径赛也并入同组并行）
+            String group = event2Group.get(u.event.getId());
 
             if (group == null) {
                 // 普通单元：占用并发池中最空闲的一个槽位
@@ -363,7 +371,8 @@ public class ScheduleService {
                 for (int j = i; j < units.size(); j++) {
                     if (done.contains(j)) continue;
                     Unit v = units.get(j);
-                    if (v.track || !sameGrade(v.grade, u.grade)) continue;
+                    // 同组并行：同年级 + 同组；合作项目允许径赛/田赛混合（场地池各自解析，仅时间协调）
+                    if (!sameGrade(v.grade, u.grade)) continue;
                     if (!group.equals(event2Group.get(v.event.getId()))) continue;
                     if (v.participants <= 0) {
                         // U22/B19：同上——只有项目整体无报名才告警，跨年级空单元静默跳过
@@ -424,7 +433,16 @@ public class ScheduleService {
                             + "完整清单见 conflicts 字段或 GET /api/arrange/conflicts/export",
                     conflicts.size(), severeConflicts, worst.get("athleteName"),
                     worst.get("windowA"), worst.get("windowB")));
+            // 教师已设定出场顺序（eventOrder）时，残余兼项冲突很可能是「顺序锁死」导致无法避让，
+            // 明确提示：建议删掉冲突学生项目或调整其编排顺序。
+            if (eventOrder != null && !eventOrder.isEmpty() && severeConflicts > 0) {
+                warnings.add(String.format("已按教师设定顺序编排，仍余 %d 处严重兼项冲突：可在班主任报名处删除冲突学生的某项目，"
+                        + "或放宽教师顺序设定后重排。", severeConflicts));
+            }
         }
+
+        // 占道冲突告警：真实径赛 与「占道但用田赛法」的项目都实体占用跑道，彼此时间不得重叠，否则跑道被同时占用需错开。
+        warnTrackOccupancy(warnings, saved);
 
         // U24/B21：放置完成后统计「真正落地的时长 vs 真实估算」——此时 u.duration 已含
         // 容量等比缩放与就剩余空间缩短两部分，报告因而与赛程表逐行对得上。
@@ -1204,6 +1222,49 @@ public class ScheduleService {
         return u.event.getIntervalMinutes() != null ? u.event.getIntervalMinutes() : defaultInterval;
     }
 
+    /**
+     * 占道冲突告警：实体占用跑道的项目（真实径赛 flag=true 或 占道但用田赛法 occupiesTrack=true）
+     * 彼此时间不得重叠——否则跑道被同时占用。趣味运动会(funSports)走田赛并行逻辑、不占道，可正常与径赛并行。
+     * 这里只做告警（不擅自挪动位置），把「哪些项目在何时撞了跑道」如实列清，由编排者错开。
+     */
+    private void warnTrackOccupancy(List<String> warnings, List<EventSchedule> saved) {
+        List<long[]> spans = new ArrayList<>();
+        List<EventSchedule> items = new ArrayList<>();
+        for (EventSchedule s : saved) {
+            Event e = s.getEvent();
+            if (e == null || s.getDurationMinutes() == null) continue;
+            boolean occupiesTrack = Boolean.TRUE.equals(e.getTrack()) || Boolean.TRUE.equals(e.getOccupiesTrack());
+            if (!occupiesTrack) continue;
+            int start = parseHHmm(s.getStartTime());
+            if (start < 0) continue;
+            int absStart = (s.getDay() != null ? (s.getDay() - 1) : 0) * 1440 + start;
+            spans.add(new long[]{absStart, absStart + s.getDurationMinutes()});
+            items.add(s);
+        }
+        List<String> clashes = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            for (int j = i + 1; j < items.size(); j++) {
+                long[] a = spans.get(i), b = spans.get(j);
+                if (a[0] < b[1] && b[0] < a[1]) {
+                    clashes.add(String.format("「%s」(%s %s) 与「%s」(%s %s)",
+                            items.get(i).getEvent().getName(), items.get(i).getScheduleDate(), items.get(i).getStartTime(),
+                            items.get(j).getEvent().getName(), items.get(j).getScheduleDate(), items.get(j).getStartTime()));
+                }
+            }
+        }
+        if (!clashes.isEmpty()) {
+            warnings.add(String.format("占道冲突告警：以下占用跑道的项目时间重叠（跑道被同时占用，需错开）：%s",
+                    String.join("；", clashes)));
+        }
+    }
+
+    private static int parseHHmm(String s) {
+        if (s == null) return -1;
+        String[] p = s.split(":");
+        if (p.length < 2) return -1;
+        try { return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]); } catch (NumberFormatException e) { return -1; }
+    }
+
     /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
     private void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails,
@@ -1401,7 +1462,13 @@ public class ScheduleService {
                                    int heatMinutes, int fieldPerAthlete, int defaultDuration) {
         for (Unit u : units) {
             Event e = u.event;
-            boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
+            // 田赛方法判定：① 本身 flag=false(田赛)；② 趣味运动会(特殊田赛，含球赛)；
+            // ③ 占用跑道但用田赛法。三者均走田赛并行逻辑（不占道次）。
+            boolean trackFlag = !Boolean.FALSE.equals(e.getTrack());
+            boolean fieldMethod = !trackFlag
+                    || Boolean.TRUE.equals(e.getFunSports())
+                    || Boolean.TRUE.equals(e.getOccupiesTrack());
+            boolean isTrack = !fieldMethod;
             List<Registration> regs = approvedRegs(e.getId(), u.grade);
             int count = regs.size();
             int concurrency = concurrencyOf(e);
@@ -1424,8 +1491,10 @@ public class ScheduleService {
                     u.athleteIds.add(r.getAthlete().getId());
                 }
             }
-            // 单轮用时未配置（0）时退回「项目默认时长」，保证任何配置下都能得到一个正数估算
-            int perUnit = isTrack ? heatMinutes : fieldPerAthlete;
+            // 单轮/每批用时：项目显式「每批所需时间(分)」优先；否则径赛回退 heatMinutes、田赛回退 fieldPerAthlete
+            int perUnit = (e.getPerBatchMinutes() != null && e.getPerBatchMinutes() > 0)
+                    ? e.getPerBatchMinutes()
+                    : (isTrack ? heatMinutes : fieldPerAthlete);
             int estimated = rounds * perUnit;
             u.rawDuration = Math.max(MIN_DURATION, estimated > 0 ? estimated : defaultDuration);
 

@@ -348,12 +348,14 @@ public class ClassTeacherController {
         if (athleteRegCount >= maxPerAthlete)
             throw new RuntimeException("该运动员已报满" + maxPerAthlete + "项");
 
-        // 每班每项最多N人（体育老师可配置，默认3）
-        int maxPerClassEvent = getConfigInt("maxAthletesPerEvent", 3);
+        // 每班每项最多N人：项目自带「每班人数限制」优先，否则回退体育老师可配置项（默认3）
+        int globalCap = getConfigInt("maxAthletesPerEvent", 3);
+        int classCap = (event.getMaxPerClass() != null && event.getMaxPerClass() > 0)
+                ? event.getMaxPerClass() : globalCap;
         long classEventCount = registrationRepository.countByClassAndEvent(
                 athlete.getClassInfo().getId(), eventId);
-        if (classEventCount >= maxPerClassEvent)
-            throw new RuntimeException("该班级本项目报名已达上限(" + maxPerClassEvent + "人)");
+        if (classEventCount >= classCap)
+            throw new RuntimeException("该班级本项目报名已达上限(" + classCap + "人)");
 
         // 重复报名（团队项目按「运动员×项目×团队标识号」区分不同队伍）
         String teamTag = body.get("teamTag") != null ? String.valueOf(body.get("teamTag")).trim() : "";

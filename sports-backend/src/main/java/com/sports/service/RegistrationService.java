@@ -306,6 +306,16 @@ public class RegistrationService {
                     errors.add(err(rowNum, "性别不符合项目「" + event.getName() + "」要求"));
                     continue;
                 }
+                // 每班人数限制：项目自带 maxPerClass 优先（未设定则不限制，回退全局上限）
+                if (event.getMaxPerClass() != null && event.getMaxPerClass() > 0) {
+                    long classCnt = registrationRepository.countByClassAndEvent(
+                            classInfo.getId(), event.getId());
+                    if (classCnt >= event.getMaxPerClass()) {
+                        errors.add(err(rowNum, "项目「" + event.getName() + "」本班已达每班人数限制("
+                                + event.getMaxPerClass() + "人)"));
+                        continue;
+                    }
+                }
 
                 int teamCount = parseIntSafe(teamText, 0);
                 boolean isTeam = teamTag != null || teamCount > 0;
