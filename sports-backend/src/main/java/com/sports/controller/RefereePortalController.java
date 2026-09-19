@@ -1,6 +1,7 @@
 package com.sports.controller;
 
 import com.sports.common.ApiResponse;
+import com.sports.common.BusinessException;
 import com.sports.security.jwt.JwtUserDetails;
 import com.sports.service.ArrangementService;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +37,6 @@ public class RefereePortalController {
         if (auth != null && auth.getPrincipal() instanceof JwtUserDetails userDetails) {
             return userDetails.getUserId();
         }
-        throw new RuntimeException("未获取到当前登录用户");
+        throw BusinessException.unauthorized("未登录或登录已过期");
     }
 }
