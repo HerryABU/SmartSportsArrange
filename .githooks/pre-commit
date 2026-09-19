@@ -2,28 +2,56 @@
 # SmartSportsArrange 提交前单测门禁（H1）
 #
 # 目的：拦住明显的回归——编译不过、关键路径单测挂。
-# 作用域：编排(arrange)/排名(ranking)/导入(import)/校验(verify) 等核心纯逻辑单测。
+# 作用域：编排(arrange)/排名(ranking)/导入(import)/校验(verify) 等核心纯逻辑单测（即 `mvn test` 全量）。
 # 跳过（仅紧急时）：git commit --no-verify
 #
 # 安装：执行 scripts/install-git-hooks.sh（或手动 cp .githooks/pre-commit .git/hooks/）
+#
+# 注意：本机 ./mvnw 在 Git Bash 下会因 classworlds 失败，故优先用 wrapper 缓存的 mvn.cmd
+#      （经 PowerShell 调用，Git Bash 直接跑 .cmd 批处理会失败）。
 set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT/sports-backend"
 
-if [ -f mvnw ]; then
-  MVN="./mvnw"
-else
+# 解析可用的 Maven 命令：优先 PATH 上的 mvn，其次 wrapper 缓存的 mvn.cmd（hash 子目录名不固定）
+MVN=""
+if command -v mvn >/dev/null 2>&1; then
   MVN="mvn"
+else
+  MVN_CMD=$(ls "$HOME/.m2/wrapper/dists"/apache-maven-3.9.16/*/bin/mvn.cmd 2>/dev/null | head -n 1)
+  if [ -n "$MVN_CMD" ]; then
+    MVN="$MVN_CMD"
+  fi
+fi
+
+if [ -z "$MVN" ]; then
+  echo "[pre-commit] 未找到可用的 Maven（PATH 无 mvn，也无 wrapper 缓存的 mvn.cmd），跳過测试门禁。"
+  echo "[pre-commit] 请本地补齐 Maven 后重试，或使用 git commit --no-verify 跳过。"
+  exit 0
 fi
 
 LOG="/tmp/sports_precommit.log"
-echo "[pre-commit] 编译并运行关键路径单测（mvn test）…"
-# -o 走离线（依赖已缓存）；首次或从干净克隆开始可去掉 -o
-"$MVN" -o -q test > "$LOG" 2>&1 || {
-  echo "[pre-commit] 单测失败，提交已中止。详情见 $LOG"
-  tail -60 "$LOG"
-  exit 1
-}
+echo "[pre-commit] 编译并运行单测（mvn -o test）…"
+
+if [ "$MVN" = "mvn" ]; then
+  "$MVN" -o -q test > "$LOG" 2>&1 || {
+    echo "[pre-commit] 单测失败，提交已中止。详情见 $LOG"
+    tail -60 "$LOG"
+    exit 1
+  }
+else
+  # mvn.cmd 必须经 PowerShell 调用（Git Bash 直接跑 .cmd 批处理会失败）；
+  # 且需把 Git Bash 风格路径 /c/... 转成 Windows 路径 C:\...，否则 PowerShell 无法识别。
+  MVN_WIN=$(cygpath -w "$MVN" 2>/dev/null || echo "$MVN")
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
+    if (-not \$env:JAVA_HOME) { \$env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.10.7-hotspot' }
+    & '$MVN_WIN' -o test
+  " > "$LOG" 2>&1 || {
+    echo "[pre-commit] 单测失败，提交已中止。详情见 $LOG"
+    tail -60 "$LOG"
+    exit 1
+  }
+fi
 
 echo "[pre-commit] 单测通过，继续提交。"
