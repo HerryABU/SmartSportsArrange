@@ -41,6 +41,21 @@ public class ScheduleController {
         return ApiResponse.success("赛程保存成功", scheduleService.save(items != null ? items : List.of()));
     }
 
+    /**
+     * 赛程自检（内置裁判）。
+     *
+     * <p>对「当前库里的赛程表」做一次独立校验：按真实场地查重叠、按运动员查赶场、
+     * 查时间自洽性与被压过头的时长，并附上「最忙的运动员 / 最紧张的场地」这两个对抗性聚焦结果
+     * 与「实际比对了多少对」的审计计数。</p>
+     *
+     * <p>这是人机对抗循环的入口：编排人员手动调整后随时调用，立刻知道这次调整破坏了什么。
+     * 返回的 violations 带类型码与严重级别，前端可据此高亮到具体行。</p>
+     */
+    @GetMapping("/verify")
+    public ApiResponse<?> verify() {
+        return ApiResponse.success(scheduleService.verifyCurrentSchedule());
+    }
+
     /** 清空赛程 */
     @DeleteMapping
     public ApiResponse<?> clear() {

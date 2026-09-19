@@ -366,7 +366,7 @@ public class ArrangementService {
                 resolveLanes(event), null, ROUND_FINAL, qualifiers, lockedFinals);
 
         // 正式赛二次编排：把决赛作为独立赛程条目排入赛程表（预赛条目之后顺延），秩序册时间表随之体现
-        EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size());
+        EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size(), qualifiers);
 
         log.info("预赛淘汰计算完成: eventId={}, grade={}, gender={}, 报名{}人, 晋级{}人 (取前{})",
                 eventId, grade, gender, prelims.size(), qualifiers.size(), quota);
@@ -403,7 +403,112 @@ public class ArrangementService {
      * <p>幂等：重算同一性别时先删该性别旧的决赛条目再重建；不同性别顺延不重叠。
      * 找不到预赛赛程条目（未跑第一次编排）时跳过并返回 null。</p>
      */
-    private EventSchedule appendFinalScheduleRow(Event event, String grade, String gender, int qualifierCount) {
+    /**
+     * 把决赛起点顺延到「该场地该天」第一个放得下的空隙。
+     *
+     * <p>旧实现只保证「不与自己项目的预赛、另一性别决赛重叠」，完全没有看同场地其它项目的占用，
+     * 于是决赛常被钉在「预赛结束 + 间隔」这个点上、撞进别人正在进行的时段
+     * （实测一天内产生 4 处真实重叠）。</p>
+     *
+     * <p>算法是「迭代顺延」：反复把所有冲突行的结束时刻抬成新起点，直到不再冲突。
+     * 单天单场地只有几十行，O(n²) 代价可忽略；比一次性扫描更不容易漏掉连锁冲突。</p>
+     *
+     * @return 调整后的起点（自 00:00 起的分钟）
+     */
+    /** 兼项赶场缓冲（分钟）：与 ConflictService、ScheduleConstraintProvider 保持同口径 */
+    private static final int ATHLETE_BUFFER_MIN = 15;
+
+    private int avoidVenueClash(int startMin, int duration, EventSchedule prelim, int interval,
+                                Set<Long> qualifierIds) {
+        if (prelim.getDay() == null) return startMin;
+        List<EventSchedule> sameDayRows;
+        try {
+            sameDayRows = eventScheduleRepository.findByDayOrderBySortOrderAscStartTimeAsc(prelim.getDay());
+        } catch (Exception ex) {
+            log.warn("查询同日赛程失败，决赛可能与既有项目重叠: {}", ex.getMessage());
+            return startMin;
+        }
+        // 预取「同一天每一行」的参赛者集合（按 项目|年级 缓存，避免反复查报名表）
+        Map<String, Set<Long>> athletesOfRow = new HashMap<>();
+        for (EventSchedule r : sameDayRows) {
+            if (r.getEvent() == null || r.getEvent().getId() == null) continue;
+            athletesOfRow.put(rowAthleteKey(r), athletesOfEvent(r.getEvent().getId(), r.getGrade()));
+        }
+        int cursor = startMin;
+        boolean moved = true;
+        while (moved) {
+            moved = false;
+            for (EventSchedule r : sameDayRows) {
+                if (r == prelim) continue;
+                int s = parseHhMm(r.getStartTime());
+                int e = parseHhMm(r.getEndTime());
+                if (s <= 0 || e <= s) continue;
+
+                // ① 场地冲突：同场地且区间（含段前间隔）相交
+                boolean venueClash = prelim.getVenue() != null
+                        && Objects.equals(prelim.getVenue(), r.getVenue())
+                        && cursor < e + interval && s < cursor + duration + interval;
+
+                // ② 运动员冲突：晋级者在这一行的项目里也有人兼报，且两场之间赶不上。
+                //    这是 U29/B26 补的第二刀——第一刀只避场地，实测仍留下 7 处兼项冲突
+                //    （例如「高一女子组跳远 14:00-17:30」与「高一女子组100米决赛 16:23-16:33」）。
+                boolean athleteClash = false;
+                if (!qualifierIds.isEmpty()) {
+                    Set<Long> other = athletesOfRow.get(rowAthleteKey(r));
+                    if (other != null && sharesAny(qualifierIds, other)
+                            && cursor < e + ATHLETE_BUFFER_MIN && s < cursor + duration + ATHLETE_BUFFER_MIN) {
+                        athleteClash = true;
+                    }
+                }
+
+                if (venueClash || athleteClash) {
+                    cursor = Math.max(cursor, e + interval);
+                    moved = true;
+                }
+            }
+        }
+        return cursor;
+    }
+
+    private static String rowAthleteKey(EventSchedule r) {
+        Long eid = r.getEvent() == null ? null : r.getEvent().getId();
+        return eid + "|" + (r.getGrade() == null ? "" : r.getGrade());
+    }
+
+    /** 两个运动员集合是否有交集（小集合驱动） */
+    private static boolean sharesAny(Set<Long> a, Set<Long> b) {
+        if (a.isEmpty() || b.isEmpty()) return false;
+        Set<Long> small = a.size() <= b.size() ? a : b;
+        Set<Long> big = small == a ? b : a;
+        for (Long id : small) {
+            if (big.contains(id)) return true;
+        }
+        return false;
+    }
+
+    /** 某项目某年级已审核报名的运动员 id 集合（决赛顺延时的兼项避让依据） */
+    private Set<Long> athletesOfEvent(Long eventId, String grade) {
+        Set<Long> ids = new LinkedHashSet<>();
+        try {
+            for (Registration reg : registrationRepository.findApprovedByEventId(eventId)) {
+                if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
+                // 年级必须用 Grades.same 比较：库里存「高一」、赛程行里可能是「高一年级」，
+                // 直接用 equals 会让过滤条件永远成立 → 一个人都查不到 → 避让逻辑静默失效
+                // （实测表现：决赛仍撞进跳远时段，兼项冲突不降反增）。
+                if (grade != null && !grade.isBlank() && reg.getAthlete().getGrade() != null
+                        && !Grades.same(grade, reg.getAthlete().getGrade())) {
+                    continue;
+                }
+                ids.add(reg.getAthlete().getId());
+            }
+        } catch (Exception ignored) {
+            // 查不到报名就退化为「只避场地」——总比整个补回失败要好
+        }
+        return ids;
+    }
+
+    private EventSchedule appendFinalScheduleRow(Event event, String grade, String gender, int qualifierCount,
+                                                 List<Arrangement> group) {
         try {
             List<EventSchedule> rows = eventScheduleRepository.findByEventIdAndGrade(event.getId(), grade);
             EventSchedule prelim = rows.stream()
@@ -448,6 +553,18 @@ public class ArrangementService {
                 if (stale.contains(r)) continue;   // 本性别旧条目已删，不得作为顺延基准
                 startMin = Math.max(startMin, parseHhMm(r.getEndTime()) + interval);
             }
+            // U29/B26：还必须避开「同场地同一天」其它项目的占用。
+            // 旧实现只保证「不与自己项目的预赛、另一性别决赛重叠」，完全没看同场地其它项目，
+            // 于是决赛被钉死在「预赛结束 + 间隔」这个点上，直接撞进别人的比赛时段——
+            // 实测一天内产生 4 处真实的场地时间重叠（由独立校验器 ScheduleVerifier 抓出）。
+            // 晋级者的 id 集合：顺延时不仅不能撞场地，也不能让这些运动员撞上自己的其它项目
+            Set<Long> qualifierIds = new LinkedHashSet<>();
+            for (Arrangement a : group) {
+                if (a.getAthlete() != null && a.getAthlete().getId() != null) {
+                    qualifierIds.add(a.getAthlete().getId());
+                }
+            }
+            startMin = avoidVenueClash(startMin, duration, prelim, interval, qualifierIds);
 
             EventSchedule fin = EventSchedule.builder()
                     .event(event)
@@ -517,7 +634,7 @@ public class ArrangementService {
         for (List<Arrangement> g : groups.values()) {
             Arrangement head = g.get(0);
             EventSchedule row = appendFinalScheduleRow(head.getEvent(), head.getGrade(),
-                    head.getGender(), g.size());
+                    head.getGender(), g.size(), g);
             if (row != null) restored++;
         }
         if (restored > 0) {

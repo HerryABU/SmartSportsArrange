@@ -9,6 +9,8 @@ import com.sports.repository.VenueRepository;
 import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
+import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.schedule.verify.ScheduleVerifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +31,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
 
 /**
@@ -48,6 +51,17 @@ class ScheduleServiceTest {
     @Mock private SystemService systemService;
     @Mock private VenueRepository venueRepository;
     @Mock private ConflictService conflictService;
+    /**
+     * 约束求解器 mock：本测试类验证的是**贪心兜底路径**（求解器返回空 → 完整走原有贪心），
+     * 因此这里保持默认 stub（Optional 返回空）即可，不引入真实求解耗时。
+     */
+    @Mock private ScheduleOptimizer scheduleOptimizer;
+
+    /**
+     * 校验器 mock：本类验证的是<b>编排主流程</b>，校验逻辑本身由 ScheduleVerifierTest 独立覆盖
+     * （那边有对抗性扫描用例）。这里给一个「无违规」的桩即可。
+     */
+    @Mock private ScheduleVerifier scheduleVerifier;
 
     @InjectMocks private ScheduleService scheduleService;
 
@@ -64,6 +78,8 @@ class ScheduleServiceTest {
         });
         when(scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc())
                 .thenAnswer(inv -> new ArrayList<>(saved));
+        when(scheduleVerifier.verify(any(), any(), anyInt()))
+                .thenReturn(new ScheduleVerifier.Result(true, 0, 0, List.of(), List.of(), null, null));
     }
 
     // ==================== 夹具 ====================

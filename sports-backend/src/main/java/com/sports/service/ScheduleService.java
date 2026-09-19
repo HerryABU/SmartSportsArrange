@@ -10,6 +10,12 @@ import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.repository.ArrangementRepository;
 import com.sports.repository.VenueRepository;
+import com.sports.schedule.opt.Placement;
+import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.schedule.verify.ScheduleVerifier;
+import com.sports.schedule.verify.ScheduleViolation;
+import com.sports.schedule.opt.SchedulePlan;
+import com.sports.schedule.opt.ScheduleUnit;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,9 +66,20 @@ public class ScheduleService {
     private final SystemService systemService;
     private final ConflictService conflictService;
     private final VenueRepository venueRepository;
+    /** 约束求解器（Timefold）。求解失败/超时时自动降级为贪心编排 */
+    private final ScheduleOptimizer scheduleOptimizer;
+    /**
+     * 独立校验器（自检的「裁判」）。
+     *
+     * <p>编排是 NP 难问题，没有外部标准答案——所以必须自己怀疑自己：本类在落库之后，
+     * 用一套<b>与求解器无关的独立实现</b>再查一遍真实赛程表。</p>
+     */
+    private final ScheduleVerifier scheduleVerifier;
 
     /** 单个项目最短占用时间（分钟），避免 0 人报名时挤成一团 */
     private static final int MIN_DURATION = 10;
+    /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
+    private static final double MIN_DURATION_RATIO = 0.35;
 
     // ==================== 自动编排 ====================
 
@@ -219,6 +236,20 @@ public class ScheduleService {
 
         scheduleRepository.deleteAllSchedules();
 
+        // ===== U28/B25：约束求解（Timefold）=====
+        // 在落库之前先把「谁排在哪个并发位的哪一刻、每个项目分到多少分钟」整体求出来。
+        // 「求解」与「持久化」解耦的好处：求解失败或超时（solvedPlacement 为空）时零副作用回退贪心，
+        // 接口在任何情况下都能给出方案。
+        Map<Unit, Placement> solvedPlacement = new IdentityHashMap<>();
+        int[] solverStat = {0, 0};   // {采用求解结果的项目数, 求解后的残余兼项冲突数}
+        fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
+                fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
+                windows, event2Group, unitInterval, solvedPlacement, solverStat);
+        if (solverStat[0] > 0) {
+            log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",
+                    solverStat[0], solverStat[1]);
+        }
+
         int autoArrangeOk = 0;
         List<String> autoArrangeFails = new ArrayList<>();
         int[] orderCounter = {1};
@@ -257,7 +288,7 @@ public class ScheduleService {
             if (group == null) {
                 // 普通单元：占用并发池中最空闲的一个槽位
                 placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat);
+                        saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, solvedPlacement);
                 autoArrangeOk += u.arranged;
                 done.add(i);
             } else {
@@ -288,7 +319,7 @@ public class ScheduleService {
                             fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
                 }
                 placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        group, saved, warnings, orderCounter, autoArrangeFails, busy);
+                        group, saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, solvedPlacement);
                 for (Integer idx : batch) {
                     autoArrangeOk += units.get(idx).arranged;
                     done.add(idx);
@@ -402,13 +433,100 @@ public class ScheduleService {
         avoidance.put("unitsPlaced", conflictStat[0] + (conflictStat[1] > 0 ? 1 : 0));
         avoidance.put("bufferMinutes", ConflictService.CONFLICT_BUFFER_MIN);
         result.put("conflictAvoidance", avoidance);
+        // ===== U29/B26：独立自检（内置裁判）=====
+        // 求解器与贪心都是「生产者」，它们的输出不能自己证明自己。这里用一个**独立实现**的校验器
+        // 对「落库之后的真实赛程表」再查一遍：
+        //   · 按**真实场地**查重叠——求解器是按「并发位（槽位）」判的，两套映射不一致时只有这里查得出；
+        //   · 按**运动员**查赶场（含 15 分钟缓冲）；
+        //   · 查被**静默丢弃**的项目（排错看得见，漏排要到比赛当天才发现）；
+        //   · 查被压过头的时长、时间自洽性。
+        // 自检失败不影响编排结果，但**绝不静默**：有阻塞级问题必须写进 warnings 让人看见。
+        Map<String, Object> verification;
+        try {
+            verification = scheduleVerifier.verify(collectVerifyRows(saved, event2Group),
+                    collectVerifyExpected(units), dailyCapacityOf(windows)).toMap();
+            int blockers = intVal(verification.get("blockerCount"), 0);
+            int warnCount = intVal(verification.get("warningCount"), 0);
+            if (blockers > 0) {
+                warnings.add(String.format("⚠️ 自检未通过：按真实场地/运动员复核后仍有 %d 条阻塞级问题（%s）；"
+                                + "完整清单见 verification.violations",
+                        blockers, firstViolationBrief(verification)));
+            } else if (warnCount > 0) {
+                warnings.add(String.format("自检通过（无阻塞级问题），但有 %d 条告警级提示；"
+                        + "完整清单见 verification.violations", warnCount));
+            }
+        } catch (Exception ex) {
+            log.warn("赛程自检执行失败（编排结果仍可用，但请人工复核）", ex);
+            verification = new LinkedHashMap<>();
+            verification.put("hardOk", false);
+            verification.put("error", "自检执行失败：" + ex.getMessage());
+        }
+        result.put("verification", verification);
+
         // B16/U20：业务级成功判定——不止看 failed:0，还要看业务告警
-        // （兼项冲突、严重压缩、时间窗溢出等 warnings 任一非空即视为未完全成功）
+        // （兼项冲突、严重压缩、时间窗溢出、自检未通过等 warnings 任一非空即视为未完全成功）
         boolean businessOk = warnings.isEmpty() && autoArrangeFails.isEmpty();
         result.put("businessOk", businessOk);
         result.put("success", businessOk);
         result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
         return result;
+    }
+
+    /**
+     * 对「当前库里的赛程表」做自检——供前端在人工调整之后随时复查。
+     *
+     * <p>这是<b>人机对抗循环</b>的接口：编排人员拖一个项目，系统立刻告诉他这个调整破坏了什么。
+     * 与 {@link #autoSchedule} 内部的自检共用同一套判定，但入口独立、不依赖任何编排参数，
+     * 因此可以在任何时刻（包括纯手工编辑之后）调用。</p>
+     *
+     * <p>与编排期自检的差别：本入口读不到「编排意图」，因此不做「编排表里有、赛程表里没有」这类
+     * 覆盖性检查——它的结论是「这份赛程表<b>自身</b>是否自洽」，而不是「是否覆盖了全部项目」。</p>
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> verifyCurrentSchedule() {
+        Map<String, Object> cfg = mergeConfig(null);
+        Map<Long, String> groupCfg = parseFieldGroups(cfg.get("fieldGroups"));
+        List<EventSchedule> rows = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
+        List<ScheduleVerifier.Row> verifyRows = new ArrayList<>();
+        List<ScheduleVerifier.Expected> expected = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (EventSchedule s : rows) {
+            Event e = s.getEvent();
+            if (e == null || e.getId() == null) continue;
+            Set<Long> athletes = new LinkedHashSet<>();
+            Map<Long, String> names = new LinkedHashMap<>();
+            for (Registration reg : approvedRegs(e.getId(), s.getGrade())) {
+                if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
+                Long aid = reg.getAthlete().getId();
+                athletes.add(aid);
+                names.put(aid, reg.getAthlete().getName());
+            }
+            int start = parseMinute(s.getStartTime());
+            int end = parseMinute(s.getEndTime());
+            String group = groupCfg.get(e.getId());
+            verifyRows.add(new ScheduleVerifier.Row(e.getId(), e.getName(), s.getGrade(),
+                    s.getDay() == null ? 0 : s.getDay(), s.getScheduleDate(), s.getTimeSlot(),
+                    start, end, s.getVenue(),
+                    group == null ? null : group + "@" + (s.getGrade() == null ? "" : s.getGrade()),
+                    athletes, names));
+            String key = ScheduleVerifier.keyOf(e.getId(), s.getGrade());
+            if (seen.add(key)) {
+                // rawDuration 传 0 = 「真实用时未知」：本入口读不到编排意图，
+                // 因此跳过「压缩比 / 时长下限」两项检查，只做自洽性校验。
+                expected.add(new ScheduleVerifier.Expected(key, e.getName(), s.getGrade(), 0));
+            }
+        }
+        int dailyCapacity = 0;
+        try {
+            dailyCapacity = dailyCapacityOf(buildWindows(cfg));
+        } catch (Exception ex) {
+            log.warn("自检读取时段配置失败，将跳过容量利用率计算: {}", ex.getMessage());
+        }
+        Map<String, Object> out = scheduleVerifier.verify(verifyRows, expected, dailyCapacity).toMap();
+        out.put("basis", "current-table-only");
+        out.put("note", "本入口只校验「当前赛程表自身是否自洽」（不检查项目覆盖性与压缩比）；"
+                + "完整校验请调用 POST /api/schedule/auto");
+        return out;
     }
 
     // ==================== 放置（并发池） ====================
@@ -426,11 +544,204 @@ public class ScheduleService {
      * <p>注意：候选里的第一个（最早的）与旧实现完全相同，因此「零冲突时行为不变」，
      * 只有真的会撞车时才发生位移——改动是可解释、可回归的。</p>
      */
+    /**
+     * 用约束求解器求出全局编排方案（每个项目的落位 + 时长）。
+     *
+     * <p>求解结果只写回 {@code solvedPlacement}（并把求解器选定的时长写回 {@code unit.duration}），
+     * 真正的落库仍由主循环统一完成——「求解」与「持久化」解耦，求解失败时零副作用回退贪心。</p>
+     *
+     * @param solverStat 出参：[0] = 采用解的项目数，[1] = 求解后的残余兼项冲突数
+     */
+    private void fillSolvedFromSolver(List<Unit> units, Pool trackPool, Pool fieldPool,
+                                      Map<String, Pool> dedicatedPools, String mainVenueCode,
+                                      Set<String> fieldVenueCodes, Map<String, String> codeToName,
+                                      Map<String, Integer> codeToParallelMax,
+                                      int trackSlots, int fieldSlots, List<Window> windows,
+                                      Map<Long, String> event2Group, int unitInterval,
+                                      Map<Unit, Placement> solvedPlacement, int[] solverStat) {
+        if (scheduleOptimizer == null) return;
+
+        // ① 预解析每个单元所属的并发池。与主循环调用同一个方法、同一顺序，
+        //    因此主循环再次解析必然得到同一个池，不会出现「解落在别的池」。
+        Map<Unit, Pool> unitPool = new IdentityHashMap<>();
+        for (Unit u : units) {
+            if (u.participants <= 0) continue;
+            unitPool.put(u, resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
+                    codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
+        }
+        if (unitPool.isEmpty()) return;
+
+        // ② 位置值域按池生成一次并复用（同池单元共享同一批候选位置）
+        Map<String, List<Placement>> rangeByPool = new LinkedHashMap<>();
+        for (Pool p : unitPool.values()) {
+            rangeByPool.computeIfAbsent(p.label, k -> placementsOf(p, windows, unitInterval));
+        }
+
+        // ③ 组装计划实体：每个单元只暴露「自己池里、且放得下其时长下限」的位置
+        List<ScheduleUnit> optUnits = new ArrayList<>();
+        for (int i = 0; i < units.size(); i++) {
+            Unit u = units.get(i);
+            Pool pool = unitPool.get(u);
+            if (pool == null) continue;
+            int floor = minDurationOf(u);
+            List<Placement> cands = new ArrayList<>();
+            for (Placement p : rangeByPool.get(pool.label)) {
+                if (p.getMaxDuration() >= floor) cands.add(p);
+            }
+            if (cands.isEmpty()) continue;   // 该池整块放不下 → 交给贪心如实报「排不下」
+            optUnits.add(new ScheduleUnit("u" + i, u.event.getId(), u.event.getName(), u.grade, u.track,
+                    pool.label, u.track ? null : event2Group.get(u.event.getId()),
+                    unitInterval, u.rawDuration, floor, sortedAthletes(u), durationChoicesOf(u), cands));
+        }
+        if (optUnits.isEmpty()) return;
+
+        List<Placement> allPlacements = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (List<Placement> list : rangeByPool.values()) {
+            for (Placement p : list) {
+                if (seen.add(p.getId())) allPlacements.add(p);
+            }
+        }
+
+        // ④ 求解（失败/超时返回空 → 静默降级贪心，接口照常出方案）
+        SchedulePlan solvedPlan = scheduleOptimizer
+                .solve(new SchedulePlan(allPlacements, optUnits)).orElse(null);
+        if (solvedPlan == null) return;
+
+        // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是
+        //    真正落地的时长，而不是「预计要压多少」。
+        int applied = 0;
+        for (ScheduleUnit su : solvedPlan.getUnits()) {
+            if (!su.isPlaced()) continue;
+            int idx = Integer.parseInt(su.getKey().substring(1));
+            Unit u = units.get(idx);
+            solvedPlacement.put(u, su.getPlacement());
+            u.duration = su.getDuration();
+            applied++;
+        }
+        solverStat[0] = applied;
+        solverStat[1] = countResidualClashes(solvedPlacement);
+    }
+
+    /**
+     * 把一个求解结果落到赛程表：预定区间（允许回填空隙）+ 登记赛程行（径赛顺带道次编排）。
+     *
+     * @return 落位是否成功；越界或与已有赛程冲突时返回 false（调用方回退贪心放置）
+     */
+    private boolean applySolved(Unit u, Pool pool, Placement p, List<Window> windows, int interval,
+                                List<EventSchedule> saved, List<String> warnings, int[] orderCounter,
+                                List<String> autoArrangeFails, double compressionWarnRatio,
+                                Map<Long, List<int[]>> busy, int[] conflictStat) {
+        if (p.getWindowIdx() < 0 || p.getWindowIdx() >= windows.size()) return false;
+        if (p.getSlotIdx() < 0 || p.getSlotIdx() >= pool.cursors.size()) return false;
+        Window w = windows.get(p.getWindowIdx());
+        int rel = p.getStartMinute() - w.startMinute;
+        if (rel < 0 || rel + u.duration > w.capacity) return false;
+        if (!pool.cursors.get(p.getSlotIdx()).reserve(p.getWindowIdx(), rel, u.duration, interval)) {
+            return false;
+        }
+        int n = countConflicts(u.athleteIds, w.day, p.getStartMinute(), u.duration, busy);
+        if (n == 0) conflictStat[0]++; else conflictStat[1] += n;
+        saveSchedule(u, new Slot(w, p.getStartMinute()), pool.venueOf.get(p.getSlotIdx()),
+                saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy);
+        return true;
+    }
+
+    /** 生成某并发池的全部候选位置：槽位 × 时段窗口 × 起点档位（按 unitInterval 步进） */
+    private static List<Placement> placementsOf(Pool pool, List<Window> windows, int gridStep) {
+        int step = Math.max(1, gridStep);
+        List<Placement> out = new ArrayList<>();
+        for (int si = 0; si < pool.slots; si++) {
+            String venue = pool.venueOf.get(si);
+            for (int wi = 0; wi < windows.size(); wi++) {
+                Window w = windows.get(wi);
+                for (int off = 0; off + MIN_DURATION <= w.capacity; off += step) {
+                    out.add(new Placement(pool.label, si, wi, w.day, w.date, w.slotName, venue,
+                            w.startMinute + off, w.startMinute, w.capacity));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 项目时长下限：再挤也不该把一个大项压到不足真实用时的 35%（那已不是「压缩」而是「不可执行」） */
+    private static int minDurationOf(Unit u) {
+        return Math.max(MIN_DURATION, (int) Math.round(u.rawDuration * MIN_DURATION_RATIO));
+    }
+
+    /** 候选时长档位（降序）：从真实用时按 5% 递减到下限，供求解器逐项目权衡「保真」与「排得下」 */
+    private static List<Integer> durationChoicesOf(Unit u) {
+        int raw = u.rawDuration;
+        int floor = minDurationOf(u);
+        LinkedHashSet<Integer> set = new LinkedHashSet<>();
+        for (int pct = 100; pct >= 35; pct -= 5) {
+            int v = (int) Math.round(raw * pct / 100.0);
+            if (v >= floor) set.add(v);
+        }
+        set.add(floor);
+        List<Integer> out = new ArrayList<>(set);
+        out.sort(Comparator.reverseOrder());
+        return out;
+    }
+
+    /** 参赛运动员 id 升序数组（升序是为了让兼项判定能用双指针求交） */
+    private static long[] sortedAthletes(Unit u) {
+        long[] arr = new long[u.athleteIds.size()];
+        int i = 0;
+        for (Long id : u.athleteIds) arr[i++] = id;
+        Arrays.sort(arr);
+        return arr;
+    }
+
+    /** 求解结果的残余兼项冲突数（与检测端同口径）；与 solverStat 一起进日志，便于核对「到底规避掉多少」 */
+    private int countResidualClashes(Map<Unit, Placement> solved) {
+        List<Unit> placed = new ArrayList<>();
+        for (Map.Entry<Unit, Placement> e : solved.entrySet()) {
+            if (e.getKey().participants > 0) placed.add(e.getKey());
+        }
+        int n = 0;
+        for (int i = 0; i < placed.size(); i++) {
+            for (int j = i + 1; j < placed.size(); j++) {
+                Unit a = placed.get(i);
+                Unit b = placed.get(j);
+                if (!sharesAthlete(a, b)) continue;
+                int aS = solved.get(a).getAbsoluteStartMinute();
+                int bS = solved.get(b).getAbsoluteStartMinute();
+                if (aS < bS + b.duration + ConflictService.CONFLICT_BUFFER_MIN
+                        && bS < aS + a.duration + ConflictService.CONFLICT_BUFFER_MIN) {
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
+    /** 两个单元是否有共同运动员（小集合驱动，避免全量遍历） */
+    private static boolean sharesAthlete(Unit a, Unit b) {
+        if (a.athleteIds.isEmpty() || b.athleteIds.isEmpty()) return false;
+        Set<Long> small = a.athleteIds.size() <= b.athleteIds.size() ? a.athleteIds : b.athleteIds;
+        Set<Long> big = small == a.athleteIds ? b.athleteIds : a.athleteIds;
+        for (Long id : small) {
+            if (big.contains(id)) return true;
+        }
+        return false;
+    }
+
     private void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval, int minInterval,
                           double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
                           int[] orderCounter, List<String> autoArrangeFails,
-                          Map<Long, List<int[]>> busy, int[] conflictStat) {
+                          Map<Long, List<int[]>> busy, int[] conflictStat,
+                          Map<Unit, Placement> solved) {
         int interval = Math.max(intervalOf(u, defaultInterval), minInterval);
+        // U28/B25：优先采用约束求解结果（求解器已联合决定「位置 + 时长」）。
+        // 落位失败（该位置已被占用）或该单元没有解时才回退贪心——两条路径都经过同一个 Cursor
+        // 记账，因此后续单元的可用空间判断始终是准确的。
+        Placement fixed = solved == null ? null : solved.get(u);
+        if (fixed != null && fixed.getPoolLabel().equals(pool.label)
+                && applySolved(u, pool, fixed, windows, interval, saved, warnings, orderCounter,
+                        autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
+            return;
+        }
         Cand best = findBestSlot(u, pool, windows, interval, busy);
         if (best == null) {
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
@@ -571,7 +882,29 @@ public class ScheduleService {
                             int defaultInterval, int minInterval, double compressionWarnRatio, String group,
                             List<EventSchedule> saved, List<String> warnings,
                             int[] orderCounter, List<String> autoArrangeFails,
-                            Map<Long, List<int[]>> busy) {
+                            Map<Long, List<int[]>> busy, int[] conflictStat, Map<Unit, Placement> solved) {
+        // U28/B25：组内单元全部拿到求解结果时直接按解落库——「同组同时开赛」由求解器的硬约束
+        // 保证（同 groupKey 必须落在同一天同一分钟），无需再做波次编排。个别落位失败只回退该单元，
+        // 不牵连整组。
+        if (solved != null && !batch.isEmpty()) {
+            boolean allSolved = true;
+            for (Integer idx : batch) {
+                if (!solved.containsKey(units.get(idx))) { allSolved = false; break; }
+            }
+            if (allSolved) {
+                for (int k = 0; k < batch.size(); k++) {
+                    Unit su = units.get(batch.get(k));
+                    Pool sp = unitPools.get(k);
+                    int iv = Math.max(intervalOf(su, defaultInterval), minInterval);
+                    if (!applySolved(su, sp, solved.get(su), windows, iv, saved, warnings, orderCounter,
+                            autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
+                        placeOne(su, sp, windows, defaultInterval, minInterval, compressionWarnRatio,
+                                saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, null);
+                    }
+                }
+                return;
+            }
+        }
         int maxSlots = 1;
         for (Pool p : unitPools) maxSlots = Math.max(maxSlots, p.slots);
         for (int from = 0; from < batch.size(); from += maxSlots) {
@@ -1484,18 +1817,56 @@ public class ScheduleService {
         int used = 0;           // windowIdx 窗口内的已用分钟（含间隔）
         final Map<Integer, Integer> usedByWindow = new HashMap<>();
 
+        /**
+         * 该窗口内已占用的时间段（相对窗口起点的 {@code [start, end)} 列表，按 start 升序）。
+         *
+         * <p>U28/B25：从「只记一个前沿」升级为「记区间集合」。约束求解器给出的位置是
+         * <b>乱序</b>的（完全可能先排 10:00 的、再排 08:00 的空档），只靠单一前沿判断会把
+         * 合法位置误判为冲突，导致求解结果大面积落位失败。区间集合同时让「能回填任意空隙」
+         * 从口头约定变成可判定的事实。</p>
+         */
+        final Map<Integer, List<int[]>> occupied = new HashMap<>();
+
         /** 某窗口已用分钟（含该项目的前置间隔） */
         int usedAt(int wi) {
             return usedByWindow.getOrDefault(wi, 0);
         }
 
-        /** 记下「第 wi 个窗口用到相对起点 endRel 分钟」，并同步推进标记 */
-        private void mark(int wi, int endRel) {
+        /** 记下「第 wi 个窗口的 [startRel, endRel) 已被占用」，并同步推进标记 */
+        private void mark(int wi, int startRel, int endRel) {
+            List<int[]> list = occupied.computeIfAbsent(wi, k -> new ArrayList<>());
+            list.add(new int[]{startRel, endRel});
+            list.sort(Comparator.comparingInt(iv -> iv[0]));
             usedByWindow.merge(wi, endRel, Math::max);
             if (wi >= windowIdx) {
                 windowIdx = wi;
                 used = usedByWindow.getOrDefault(wi, 0);
             }
+        }
+
+        /** 该区间是否与该窗口已有占用冲突（含段前间隔；interval 取 0 即纯重叠判定） */
+        private boolean conflict(int wi, int startRel, int endRel, int interval) {
+            for (int[] iv : occupied.getOrDefault(wi, List.of())) {
+                if (startRel < iv[1] + interval && iv[0] < endRel + interval) return true;
+            }
+            return false;
+        }
+
+        /**
+         * 预定一段区间（供约束求解结果落位使用）。
+         *
+         * <p>与 {@link #placeAt} 的关键区别是<b>不做「不得早于前沿」的顺位假设</b>：求解器可能先给出
+         * 靠后的位置、再给出靠前的空档——这正是「回填空隙」应有的能力。仍然严格校验区间不重叠，
+         * 所以放开顺位不会产生重叠赛程。</p>
+         *
+         * @return 预定成功；该区间与已有占用冲突时返回 false（调用方应回退贪心放置）
+         */
+        boolean reserve(int wi, int startRel, int duration, int interval) {
+            if (wi < 0 || startRel < 0) return false;
+            int endRel = startRel + duration;
+            if (conflict(wi, startRel, endRel, interval)) return false;
+            mark(wi, startRel, endRel);
+            return true;
         }
 
         /** 放进最早的「还放得下」窗口（回填允许）；都放不下返回 null */
@@ -1510,7 +1881,7 @@ public class ScheduleService {
                 int u = usedAt(wi);
                 int gap = u == 0 ? 0 : interval;     // 段前间隔：除窗口起点外，项目之间留间隔
                 if (u + gap + duration <= w.capacity) {
-                    mark(wi, u + gap + duration);
+                    mark(wi, u + gap, u + gap + duration);
                     return new Slot(w, w.startMinute + u + gap);
                 }
             }
@@ -1543,7 +1914,7 @@ public class ScheduleService {
             if (rel + duration > w.capacity) return null;
             int u = usedAt(wi);
             if (u > 0 && rel < u) return null;          // 不许压到已占用区间上
-            mark(wi, rel + duration);
+            mark(wi, rel, rel + duration);
             return new Probe(wi, new Slot(w, startMinute));
         }
 
@@ -1564,6 +1935,92 @@ public class ScheduleService {
         } catch (Exception e) {
             return 0;
         }
+    }
+
+    // ==================== U29/B26：自检数据装配 ====================
+
+    /**
+     * 把落库后的赛程行转成校验视图。
+     *
+     * <p>刻意取<b>持久化之后的真实数据</b>（场地映射、时长回写都已完成），而不是求解器内存里的解：
+     * 从「解」到「赛程表」之间要经过落库、场地映射、时长写回，任何一步出错求解器都看不见，
+     * 只有对最终产物复核才查得出来。</p>
+     */
+    private List<ScheduleVerifier.Row> collectVerifyRows(List<EventSchedule> saved,
+                                                         Map<Long, String> event2Group) {
+        List<ScheduleVerifier.Row> rows = new ArrayList<>();
+        for (EventSchedule s : saved) {
+            Event e = s.getEvent();
+            if (e == null || e.getId() == null) continue;
+            Set<Long> athletes = new LinkedHashSet<>();
+            Map<Long, String> names = new LinkedHashMap<>();
+            for (Registration reg : approvedRegs(e.getId(), s.getGrade())) {
+                if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
+                Long aid = reg.getAthlete().getId();
+                athletes.add(aid);
+                names.put(aid, reg.getAthlete().getName());
+            }
+            String group = event2Group.get(e.getId());
+            String groupKey = group == null ? null
+                    : group + "@" + (s.getGrade() == null ? "" : s.getGrade());
+            rows.add(new ScheduleVerifier.Row(e.getId(), e.getName(), s.getGrade(),
+                    s.getDay() == null ? 0 : s.getDay(), s.getScheduleDate(), s.getTimeSlot(),
+                    parseMinute(s.getStartTime()), parseMinute(s.getEndTime()), s.getVenue(),
+                    groupKey, athletes, names));
+        }
+        return rows;
+    }
+
+    /** 编排表里「应该有」的单元：用于发现被静默丢弃的项目，并算出真实压缩比 */
+    private List<ScheduleVerifier.Expected> collectVerifyExpected(List<Unit> units) {
+        List<ScheduleVerifier.Expected> list = new ArrayList<>();
+        for (Unit u : units) {
+            if (u.participants <= 0 || u.event.getId() == null) continue;
+            list.add(new ScheduleVerifier.Expected(
+                    ScheduleVerifier.keyOf(u.event.getId(), u.grade),
+                    u.event.getName(), u.grade, u.rawDuration));
+        }
+        return list;
+    }
+
+    /** 单日可用分钟总数（各天取最大值：各天时段配置通常一致，取最大避免低估容量而误报利用率） */
+    private static int dailyCapacityOf(List<Window> windows) {
+        Map<Integer, Integer> byDay = new LinkedHashMap<>();
+        for (Window w : windows) byDay.merge(w.day, w.capacity, Integer::sum);
+        int max = 0;
+        for (Integer v : byDay.values()) {
+            if (v != null && v > max) max = v;
+        }
+        return max;
+    }
+
+    /** 解析 "HH:mm"（与 {@link #fmt} 互逆）；解析不了就返回 0——不让一行脏数据把整次自检拖崩 */
+    private static int parseMinute(String hhmm) {
+        if (hhmm == null || hhmm.isBlank()) return 0;
+        String t = hhmm.trim();
+        int colon = t.indexOf(':');
+        try {
+            if (colon < 0) return Integer.parseInt(t);
+            int h = Integer.parseInt(t.substring(0, colon));
+            int m = Integer.parseInt(t.substring(colon + 1));
+            return Math.max(0, h * 60 + m);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    /** 摘出第一条阻塞级问题的摘要，用于 warnings 里的一行提示（完整清单走 verification 字段） */
+    @SuppressWarnings("unchecked")
+    private static String firstViolationBrief(Map<String, Object> verification) {
+        Object vs = verification.get("violations");
+        if (!(vs instanceof List<?> list)) return "";
+        for (Object o : list) {
+            if (!(o instanceof Map)) continue;
+            Map<String, Object> m = (Map<String, Object>) o;
+            if (!ScheduleViolation.LEVEL_BLOCKER.equals(String.valueOf(m.get("level")))) continue;
+            return String.valueOf(m.get("subject")) + " → " + String.valueOf(m.get("detail"));
+        }
+        return "";
     }
 
     private static String fmt(int minuteOfDay) {
