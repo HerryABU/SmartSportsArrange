@@ -26,6 +26,11 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     private int successCount = 0;
     private int errorCount = 0;
 
+    // L3 修复：批量落库 + 导入内幂等/冲突判定
+    private final List<Result> batch = new ArrayList<>();
+    private final Map<String, String> seenRawByKey = new HashMap<>();
+    private static final int BATCH_SIZE = 500;
+
     public ScoreDataListener(ResultRepository resultRepository, EventRepository eventRepository,
                              AthleteRepository athleteRepository, ArrangementRepository arrangementRepository) {
         this.resultRepository = resultRepository;
@@ -105,6 +110,23 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 throw new RuntimeException("项目或运动员信息不完整");
             }
 
+            String key = event.getId() + "_" + athlete.getId();
+            String inRaw = model.getRawTime() != null ? model.getRawTime().trim() : "";
+
+            // L3 修复：批量导入性能 + 导入内幂等/冲突判定。原实现逐行 save 且依赖「DB 实时落库」做去重；
+            // 现用内存 seenRawByKey 维护本次导入已处理的 (项目,运动员)→成绩 映射，既支持批量 saveAll，
+            // 又能在文件内做幂等/冲突判定（不依赖未刷盘的批次）。跨导入幂等仍由 DB 查询兜底。
+            if (seenRawByKey.containsKey(key)) {
+                String exRaw = seenRawByKey.get(key);
+                if (exRaw.equals(inRaw)) {
+                    successCount++;
+                    log.info("成绩已存在且一致，跳过（一致性校验幂等）: {} / {}", event.getCode(), athlete.getNumber());
+                    return;
+                }
+                throw new RuntimeException("成绩冲突: 运动员 '" + athlete.getName() + "' 在项目 '"
+                        + event.getName() + "' 已有成绩 " + exRaw + "，导入值 " + inRaw);
+            }
+
             // B02/U02：一致性校验式去重——已存在且成绩一致则跳过（幂等，可作一致性校验），
             // 成绩不一致则明确报冲突，便于审计发现差异。
             Optional<Result> existing = resultRepository
@@ -112,7 +134,6 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             if (existing.isPresent()) {
                 Result ex = existing.get();
                 String exRaw = ex.getRawTime() != null ? ex.getRawTime().trim() : "";
-                String inRaw = model.getRawTime() != null ? model.getRawTime().trim() : "";
                 if (exRaw.equals(inRaw)) {
                     successCount++;
                     log.info("成绩已存在且一致，跳过（一致性校验幂等）: {} / {}", event.getCode(), athlete.getNumber());
@@ -169,8 +190,13 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 } catch (NumberFormatException ignored) {}
             }
 
-            resultRepository.save(result);
+            // L3 修复：批量累积，达到阈值后一次性 saveAll，避免逐条 save 的 N 次写库开销
+            batch.add(result);
+            seenRawByKey.put(key, inRaw);
             successCount++;
+            if (batch.size() >= BATCH_SIZE) {
+                flush();
+            }
 
         } catch (Exception e) {
             errorCount++;
@@ -184,8 +210,17 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
 
     @Override
     public void doAfterAllAnalysed(AnalysisContext context) {
+        flush();
         log.info("成绩导入完成: 成功 {} 条, 失败 {} 条, 跳过(说明/汇总行) {} 条",
                 successCount, errorCount, skipped.size());
+    }
+
+    /** L3 修复：将累积的 Result 批次一次性落库（避免逐条 save 的 N 次写库开销） */
+    private void flush() {
+        if (!batch.isEmpty()) {
+            resultRepository.saveAll(batch);
+            batch.clear();
+        }
     }
 
     public int getSuccessCount() { return successCount; }
