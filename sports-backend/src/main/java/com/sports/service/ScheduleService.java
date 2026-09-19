@@ -230,10 +230,10 @@ public class ScheduleService {
         // 这里在放置之前先算清楚：本项目类别真正需要多少分钟、时段总共能提供多少分钟、
         // 缺口多少，并把每一个被压缩的项目列成表（需求/实给/压缩比/缺口）。
         int unitInterval = Math.max(defaultInterval, minInterval);
-        Map<String, Object> feasibility = assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
+        Map<String, Object> feasibility = ScheduleAnalysisMath.assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
         // U24/B21：先按容量等比适配时长，再进入放置；compressionReport 放到放置之后统计，
         // 这样「就近缩短」的那部分也如实计入（报告反映的是真正落地的时长）。
-        fitDurationsToPools(units, feasibility, unitInterval);
+        ScheduleAnalysisMath.fitDurationsToPools(units, feasibility, unitInterval);
 
         // 项目自带的「并行捆绑组」（表格2 的字母列）优先于配置页分组：
         // 同字母 → 同组 → 安排在同一时段并行；为空则不受限制，由算法自动安排
@@ -448,7 +448,7 @@ public class ScheduleService {
 
         // U24/B21：放置完成后统计「真正落地的时长 vs 真实估算」——此时 u.duration 已含
         // 容量等比缩放与就剩余空间缩短两部分，报告因而与赛程表逐行对得上。
-        List<Map<String, Object>> compressionReport = compressionReport(units);
+        List<Map<String, Object>> compressionReport = ScheduleAnalysisMath.compressionReport(units);
 
         // U27/B24：统计「有报名却没排进去」的单元（按池分）。容量告警必须把这件事一并说清——
         // 只说「已压缩到 55.9%」而不同时说明「仍 N 个排不下」会让人误以为压缩后都排下了。
@@ -1147,7 +1147,7 @@ public class ScheduleService {
      */
     private int autoArrangeFor(Unit u, List<String> arrFails) {
         Event e = u.event;
-        int lanes = concurrencyOf(e);
+        int lanes = ScheduleAnalysisMath.concurrencyOf(e);
         String round = Boolean.TRUE.equals(e.getNeedHeats())
                 ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
         // U22/B19 根因修复：性别组必须从「真实已审核报名」推导，不能只看 event.genderLimit。
@@ -1241,30 +1241,6 @@ public class ScheduleService {
         return list;
     }
 
-    /**
-     * 项目内并发人数（不含任何场地并行上限）：
-     * 显式 concurrency 优先；田赛回退 groupSize（每组工位）；径赛回退 groupSize（泳道）> laneCount > defaultLanes。
-     *
-     * <p>注意：此处<b>刻意不接受</b> venue.parallelMax。场地并行上限约束的是「并发池槽位数」
-     * （见 {@link #autoSchedule} 的 trackSlots/fieldSlots 与 {@link #resolvePool}），
-     * 属于项目之间的并行；把它混进项目内并发会把 8 条跑道压成 1 人/组（B05/U06）。</p>
-     */
-    private int concurrencyOf(Event e) {
-        Integer c = e.getConcurrency();
-        if (c != null && c > 0) return c;
-        if (Boolean.FALSE.equals(e.getTrack())) {
-            // 田赛回退链：显式 groupSize（每组次几人，如田赛工位数）> 1
-            Integer gs = e.getGroupSize();
-            if (gs != null && gs > 0) return gs;
-            return 1;
-        }
-        // 径赛回退链：groupSize（每组次几人/泳道数，如游泳）> 道次数 > 默认道次
-        Integer gs = e.getGroupSize();
-        if (gs != null && gs > 0) return gs;
-        Integer lc = e.getLaneCount();
-        if (lc != null && lc > 0) return lc;
-        return e.getDefaultLanes() != null && e.getDefaultLanes() > 0 ? e.getDefaultLanes() : 8;
-    }
 
     /**
      * 估算每个单元用时：径赛看组数、田赛看轮次（均按项目内并发折算）。
@@ -1286,7 +1262,7 @@ public class ScheduleService {
             boolean isTrack = !fieldMethod;
             List<Registration> regs = approvedRegs(e.getId(), u.grade);
             int count = regs.size();
-            int concurrency = concurrencyOf(e);
+            int concurrency = ScheduleAnalysisMath.concurrencyOf(e);
 
             int entrants = count;
             if (Boolean.TRUE.equals(e.getTeam()) && e.getTeamMembers() != null && e.getTeamMembers() > 0) {
@@ -1325,161 +1301,6 @@ public class ScheduleService {
         }
     }
 
-    /**
-     * B05/U06：时间窗容量可行性预检。
-     *
-     * <p>把「需求」与「供给」分别量化后对比：</p>
-     * <ul>
-     *   <li>需求：按类别（径赛/田赛）汇总各单元<b>未压缩</b>的预计用时 + 项目间间隔；</li>
-     *   <li>供给：该类别的可并发位数（径赛 trackSlots / 田赛 fieldSlots）× 全部时段容量。</li>
-     * </ul>
-     * <p>两者口径统一后给出 {@code deficitMinutes}（缺口）与 {@code affectedEvents}
-     * （被 maxDurationMinutes 压缩的项目）。缺口 &gt; 0 说明即便把所有压缩都用上仍排不完，
-     * 必须增加天数/时段/并发位或削减项目规模——这一点以前完全不可见（B05 的现场跑不完）。</p>
-     */
-    private Map<String, Object> assessFeasibility(List<Unit> units, List<Window> windows,
-                                                  int trackSlots, int fieldSlots, int interval) {
-        int totalCapacity = windows.stream().mapToInt(w -> w.capacity).sum();
-        int trackNeed = 0, trackCount = 0;
-        int fieldNeed = 0, fieldCount = 0;
-        for (Unit u : units) {
-            if (u.participants <= 0) continue;
-            int need = u.rawDuration + interval;   // 含项目间间隔
-            if (u.track) { trackNeed += need; trackCount++; } else { fieldNeed += need; fieldCount++; }
-        }
-
-        Map<String, Object> track = poolFeasibility("径赛", trackNeed, trackCount, totalCapacity, trackSlots, windows.size());
-        Map<String, Object> field = poolFeasibility("田赛", fieldNeed, fieldCount, totalCapacity, fieldSlots, windows.size());
-
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("windowCount", windows.size());
-        m.put("windowCapacityMinutes", totalCapacity);
-        m.put("track", track);
-        m.put("field", field);
-        m.put("feasible", Boolean.TRUE.equals(track.get("feasible")) && Boolean.TRUE.equals(field.get("feasible")));
-        return m;
-    }
-
-    private Map<String, Object> poolFeasibility(String label, int need, int unitCount,
-                                                int totalCapacity, int slots, int windowCount) {
-        int supply = totalCapacity * Math.max(1, slots);
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("label", label);
-        m.put("unitCount", unitCount);
-        m.put("slots", Math.max(1, slots));
-        m.put("windowCount", windowCount);
-        m.put("requiredMinutes", need);
-        m.put("supplyMinutes", supply);
-        m.put("deficitMinutes", Math.max(0, need - supply));
-        m.put("feasible", need <= supply);
-        // U24/B21：给出**可执行**的结论——该池至少要几位并发才排得下（ceil(需求/单个时段容量)）。
-        // 只说「缺口 699 分钟」现场无法落地；说「田赛并发位需 ≥3（当前 2）」才能立刻照做。
-        m.put("requiredSlots", (int) Math.ceil((double) need / Math.max(1, totalCapacity)));
-        return m;
-    }
-
-    /**
-     * U24/B21：把「真实估算时长」按各并发池的可用容量<b>等比公平缩放</b>。
-     *
-     * <p>某池需求 ≤ 供给 → 不压缩，全部保留真实用时；需求 &gt; 供给 → 对该池<b>所有</b>单元
-     * 等比缩放，用二分搜索取「<b>仍然整块装得下</b>的最大 k」：</p>
-     * <ul>
-     *   <li><b>上界</b> = 总量口径 {@code (供给 − 间隔总和) / 原始总需求}；</li>
-     *   <li><b>可行性判定</b> = {@link #greedyPacks}，它<b>模拟真实放置策略</b>（项目顺序 +
-     *       窗口靠前 + 槽位并行 + 块尾碎片）。预判与实际放置同源，才不会出现
-     *       「预判装得下、实际却丢项目」——这正是早先用理想 FFD 预判踩过的坑。</li>
-     * </ul>
-     * <p>「统一等比」而不是「一部分砍到地板、一部分原样排」，结果可解释、可复现，
-     * 也让 compressionReport 里的百分比有统一的物理含义（该池被压缩到的比例）。</p>
-     *
-     * <p>显式配置了 maxDurationMinutes 的项目仍受其上限约束（用户意图优先）；缩放下限固定为
-     * {@link #SchedulePlacementMath.MIN_DURATION}——**不可**拿 defaultDurationMinutes 当下限，那是「默认时长」而非
-     * 「最小时长」，设大时会顶住缩放、使其完全失效。</p>
-     */
-    private void fitDurationsToPools(List<Unit> units, Map<String, Object> feasibility, int interval) {
-        for (String key : List.of("track", "field")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> pool = (Map<String, Object>) feasibility.get(key);
-            if (pool == null) continue;
-            int need = intVal(pool.get("requiredMinutes"), 0);
-            int supply = intVal(pool.get("supplyMinutes"), 0);
-            if (need <= 0 || need <= supply) continue;   // 容量够 → 保留真实用时
-            boolean isTrack = "track".equals(key);
-            long totalRaw = 0;
-            int unitsInPool = 0;
-            for (Unit u : units) {
-                if (u.participants <= 0 || u.track != isTrack) continue;
-                totalRaw += u.rawDuration;
-                unitsInPool++;
-            }
-            if (totalRaw <= 0) continue;
-            int slotsInPool = Math.max(1, intVal(pool.get("slots"), 1));
-            int windowCount = Math.max(1, intVal(pool.get("windowCount"), 1));
-            int capacityPerWindow = Math.max(1, supply / slotsInPool / windowCount);
-            // 二分搜索的上界取「纯总量口径」：供给扣掉项目间隔后还能承载多少时长。
-            // 真正的可行性判定交给 greedyPacks——它已经模拟了块尾碎片与槽位并行，
-            // 不必再额外预留一份「打包余量」（两者同时用会重复扣减、导致过度压缩）。
-            double kSum = (supply - (long) unitsInPool * interval) / (double) totalRaw;
-            // 项目时间是编排的原子单位（U26/B23）：每个项目必须**整块**落地，于是这是装箱问题。
-            // 这里二分搜索「最大的、仍然装得下」的 k：既保住整块语义，又不过度压缩
-            // （「任意两块都塞得下」那种充分条件实测压到 43.8% 却还闲置 40% 容量，自相矛盾）。
-            double hi = Math.min(1.0, kSum);
-            double lo = 0.05;
-            double k = lo;
-            long[] probeDur = new long[unitsInPool];
-            for (int it = 0; it < 24; it++) {              // 24 次足够收敛到 1e-7
-                double mid = (lo + hi) / 2;
-                int idx = 0;
-                for (Unit u : units) {
-                    if (u.participants <= 0 || u.track != isTrack) continue;
-                    probeDur[idx++] = Math.max(SchedulePlacementMath.MIN_DURATION, (int) Math.floor(u.rawDuration * mid));
-                }
-                if (SchedulePlacementMath.greedyPacks(probeDur, slotsInPool, windowCount, capacityPerWindow, interval)) {
-                    k = mid;
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            for (Unit u : units) {
-                if (u.participants <= 0 || u.track != isTrack) continue;
-                // 缩放下限 = SchedulePlacementMath.MIN_DURATION：再挤也不该把项目压到毫无意义的几分钟。
-                // 注意**不能用** defaultDurationMinutes 当下限——它的语义是「默认时长」，
-                // 夹具/用户把它设大（如 600 = 不封顶）时会把下限顶到原始时长，
-                // 使等比缩放完全失效（实测：k 被迫掉到 0.05、项目反而排不下）。
-                int scaled = Math.max(SchedulePlacementMath.MIN_DURATION, (int) Math.floor(u.rawDuration * k));
-                int target = u.explicitMaxDuration > 0 ? Math.min(scaled, u.explicitMaxDuration) : scaled;
-                u.duration = Math.min(u.duration, Math.max(SchedulePlacementMath.MIN_DURATION, target));
-            }
-            pool.put("scalePercent", Math.round(k * 1000.0) / 10.0);
-        }
-    }
-
-    /**
-     * B05/U06：压缩亏损量化——把每个「实际用时 &lt; 未压缩预计用时」的项目列成表，
-     * 输出需求分钟、实给分钟、压缩比与缺口分钟，供现场判断哪一项最危险。
-     */
-    private List<Map<String, Object>> compressionReport(List<Unit> units) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (Unit u : units) {
-            if (u.participants <= 0 || u.duration >= u.rawDuration) continue;
-            Map<String, Object> c = new LinkedHashMap<>();
-            c.put("eventId", u.event.getId());
-            c.put("eventName", u.event.getName());
-            c.put("grade", u.grade);
-            c.put("track", u.track);
-            c.put("participants", u.participants);
-            c.put("concurrency", u.concurrency);
-            c.put("rounds", u.rounds);
-            c.put("requiredMinutes", u.rawDuration);
-            c.put("givenMinutes", u.duration);
-            c.put("deficitMinutes", u.rawDuration - u.duration);
-            c.put("ratioPercent", Math.round(u.duration * 1000.0 / u.rawDuration) / 10.0);
-            out.add(c);
-        }
-        out.sort(Comparator.comparingInt(c -> -intVal(c.get("deficitMinutes"), 0)));
-        return out;
-    }
 
     /**
      * 该 (项目, 年级) 的「已审核报名」——本类查询报名的<b>唯一入口</b>。
@@ -1700,7 +1521,7 @@ public class ScheduleService {
                         e != null ? n(e.getCategory()) : "",
                         isTrack ? "是" : "否",
                         e != null && e.getLaneCount() != null ? String.valueOf(e.getLaneCount()) : "0",
-                        e != null ? String.valueOf(concurrencyOf(e)) : "",
+                        e != null ? String.valueOf(ScheduleAnalysisMath.concurrencyOf(e)) : "",
                         s.getDurationMinutes() != null ? String.valueOf(s.getDurationMinutes()) : ""));
             }
             List<List<String>> head = data.get(0).stream().map(List::of).collect(Collectors.toList());
@@ -1736,7 +1557,7 @@ public class ScheduleService {
             m.put("genderLimit", e != null ? e.getGenderLimit() : "");
             m.put("isTrack", e == null || !Boolean.FALSE.equals(e.getTrack()));
             m.put("laneCount", e != null ? e.getLaneCount() : 0);
-            m.put("concurrency", e != null ? concurrencyOf(e) : 0);
+            m.put("concurrency", e != null ? ScheduleAnalysisMath.concurrencyOf(e) : 0);
             m.put("isTeam", e != null && Boolean.TRUE.equals(e.getTeam()));
             m.put("teamSize", e != null ? e.getTeamMembers() : 0);
             m.put("day", s.getDay());
