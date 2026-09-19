@@ -372,10 +372,12 @@ public class ScheduleService {
         //   ① 项目整体无报名（数据的真问题，值得告警）；
         //   ② event.gradeGroup 缺失时按「年级 × 项目」笛卡尔积展开出的跨年级空单元
         //      （项目本就不该在该年级进行，属正常，静默跳过，否则几十条噪声淹没真正的业务告警）。
-        Set<Long> eventsWithRegs = new HashSet<>();
-        for (Event ev : eventRepository.findByIsEnabledTrueOrderBySortOrderAsc()) {
-            if (buildComponent.countParticipants(ev.getId(), null) > 0) eventsWithRegs.add(ev.getId());
-        }
+        // U22/B19：eventsWithRegs 直接由已构建的 units 推导——estimateDurations 阶段已算出每个单元
+        // 的真实 participants，无需再遍历全部项目并逐项目查一次 countParticipants（N+1 冗余查询）。
+        Set<Long> eventsWithRegs = units.stream()
+                .filter(u -> u.participants > 0)
+                .map(u -> u.event.getId())
+                .collect(Collectors.toSet());
         // U23/B20：兼项冲突规避的运行状态。
         // busy = 运动员 → 已占用时间段（绝对分钟 = 天×1440 + 当日分钟），放置时据此避让；
         // conflictStat = {零冲突放置的单元数, 残余冲突条数}，随结果返回，便于核对「到底规避掉多少」。
