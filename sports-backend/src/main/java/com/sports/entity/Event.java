@@ -193,6 +193,51 @@ public class Event {
     @JsonProperty("maxParticipants")
     private Integer maxParticipants;
 
+    /**
+     * 每班人数限制：该项目每个班级最多可报名的人数（0/null 表示不限制）。
+     * 班主任/教师报名时按班级维度软校验（超出给告警，不硬拦截，避免现场卡死）。
+     */
+    @Column
+    @JsonProperty("maxPerClass")
+    private Integer maxPerClass;
+
+    /**
+     * 项目每批所需时间（分钟）：覆盖全局 heatMinutes / fieldPerAthleteMinutes，
+     * 用于「每批/每组同时上场一批人」的精确时长估算（如趣味项目一组 5 分钟）。
+     * 为空时回退到全局配置。
+     */
+    @Column
+    @JsonProperty("perBatchMinutes")
+    private Integer perBatchMinutes;
+
+    /**
+     * 趣味运动会标记：true 时该项目作为「特殊的田赛」处理——占用田赛并行池、
+     * 不占道次、使用与田赛相同的分组/并行逻辑（含球赛等集体趣味项目）。
+     */
+    @Column
+    @Builder.Default
+    @JsonProperty("funSports")
+    private Boolean funSports = false;
+
+    /**
+     * 小组合作标记：true 时该项目视为「小组合作」项目，编排时与同年级同合作组的其他项目
+     * 自动合并到同一时段并行进行（复用并行捆绑组机制）。
+     */
+    @Column
+    @Builder.Default
+    @JsonProperty("cooperative")
+    private Boolean cooperative = false;
+
+    /**
+     * 占用跑道但使用田赛方法：true 时该项目（多为趣味项目）虽用田赛方法（不占道次、并行），
+     * 但实体占用跑道场地，因此必须与真正的径赛项目在时间上「错开」（互不重叠），
+     * 避免跑道被径赛与趣味项目同时占用。
+     */
+    @Column
+    @Builder.Default
+    @JsonProperty("occupiesTrack")
+    private Boolean occupiesTrack = false;
+
     @Column
     @Builder.Default
     private Integer advanceCount = 8;
