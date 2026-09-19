@@ -153,6 +153,20 @@ public class DatabaseMigrationService {
                     task.log("建表 " + t.name + "（" + t.columns.size() + " 列）");
                 }
 
+                // 4.5 统计待迁移总行数（供行级进度；纯只读 COUNT，不动数据）
+                task.step("统计待迁移行数", 18);
+                long rowsTotal = 0;
+                try (Connection src = dataSource.getConnection()) {
+                    String srcType = detectType(src.getMetaData().getURL());
+                    for (TableDef t : tables) {
+                        try (Statement st = src.createStatement();
+                             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + q(srcType, t.name))) {
+                            if (rs.next()) rowsTotal += rs.getLong(1);
+                        }
+                    }
+                }
+                task.setRowsTotal(rowsTotal);
+
                 // 5. 迁数据
                 try (Connection src = dataSource.getConnection()) {
                     int done = 0;
@@ -161,6 +175,7 @@ public class DatabaseMigrationService {
                         task.step("迁移数据 " + (done + 1) + "/" + tables.size() + "：" + t.name, pct);
                         long rows = copyTableData(src, dst, t, targetType);
                         task.log("迁移表 " + t.name + "：共 " + rows + " 行");
+                        task.addRows(rows);
                         done++;
                     }
                 }
@@ -586,6 +601,8 @@ public class DatabaseMigrationService {
         String message = "";
         int progress = 0;
         int totalTables = 0;
+        long rowsDone = 0;
+        long rowsTotal = 0;
         List<String> logs = Collections.synchronizedList(new ArrayList<>());
         final long startAt = System.currentTimeMillis();
 
@@ -594,6 +611,14 @@ public class DatabaseMigrationService {
         synchronized void step(String s, int p) {
             this.step = s;
             this.progress = Math.max(this.progress, p);
+        }
+        /** 行级进度：迁移前统计总行数，迁移中逐表累加，细化 20-85 区间的进度反馈 */
+        synchronized void setRowsTotal(long t) { this.rowsTotal = t; }
+        synchronized void addRows(long c) {
+            this.rowsDone += c;
+            if (this.rowsTotal > 0) {
+                this.progress = 20 + (int) (65.0 * this.rowsDone / this.rowsTotal);
+            }
         }
         synchronized void log(String msg) {
             logs.add("[" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")) + "] " + msg);
@@ -618,6 +643,8 @@ public class DatabaseMigrationService {
             m.put("step", step);
             m.put("progress", progress);
             m.put("totalTables", totalTables);
+            m.put("rowsDone", rowsDone);
+            m.put("rowsTotal", rowsTotal);
             m.put("message", message);
             m.put("elapsedMs", System.currentTimeMillis() - startAt);
             m.put("logs", new ArrayList<>(logs));
