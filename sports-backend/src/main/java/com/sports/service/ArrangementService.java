@@ -20,6 +20,7 @@ import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.schedule.exact.HungarianAssignment;
+import com.sports.schedule.support.ScheduleSupport;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -443,8 +444,8 @@ public class ArrangementService {
             moved = false;
             for (EventSchedule r : sameDayRows) {
                 if (r == prelim) continue;
-                int s = parseHhMm(r.getStartTime());
-                int e = parseHhMm(r.getEndTime());
+                int s = ScheduleSupport.parseHhMm(r.getStartTime());
+                int e = ScheduleSupport.parseHhMm(r.getEndTime());
                 if (s <= 0 || e <= s) continue;
 
                 // ① 场地冲突：同场地且区间（含段前间隔）相交
@@ -550,11 +551,11 @@ public class ArrangementService {
             if (cap > 0) duration = Math.min(duration, cap);
 
             // 起点 = 预赛结束 与「本项目本年级其他性别的决赛」结束 二者的最大值 + 间隔
-            int startMin = parseHhMm(prelim.getEndTime()) + interval;
+            int startMin = ScheduleSupport.parseHhMm(prelim.getEndTime()) + interval;
             for (EventSchedule r : rows) {
                 if (r == prelim || !ROUND_FINAL.equals(r.getRound())) continue;
                 if (stale.contains(r)) continue;   // 本性别旧条目已删，不得作为顺延基准
-                startMin = Math.max(startMin, parseHhMm(r.getEndTime()) + interval);
+                startMin = Math.max(startMin, ScheduleSupport.parseHhMm(r.getEndTime()) + interval);
             }
             // U29/B26：还必须避开「同场地同一天」其它项目的占用。
             // 旧实现只保证「不与自己项目的预赛、另一性别决赛重叠」，完全没看同场地其它项目，
@@ -575,8 +576,8 @@ public class ArrangementService {
                     .scheduleDate(prelim.getScheduleDate())
                     .grade(grade)
                     .timeSlot(prelim.getTimeSlot())
-                    .startTime(fmtHhMm(startMin))
-                    .endTime(fmtHhMm(startMin + duration))
+                    .startTime(ScheduleSupport.fmt(startMin))
+                    .endTime(ScheduleSupport.fmt(startMin + duration))
                     .venue(prelim.getVenue())
                     .sortOrder((prelim.getSortOrder() != null ? prelim.getSortOrder() : 0) + 1000)
                     .durationMinutes(duration)
@@ -654,20 +655,6 @@ public class ArrangementService {
         return def;
     }
 
-    private static int parseHhMm(String hhmm) {
-        if (hhmm == null || !hhmm.contains(":")) return 0;
-        try {
-            String[] p = hhmm.trim().split(":");
-            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    private static String fmtHhMm(int minuteOfDay) {
-        int m = ((minuteOfDay % 1440) + 1440) % 1440;
-        return String.format("%02d:%02d", m / 60, m % 60);
-    }
 
     /** 查看晋级名单 */
     public List<Map<String, Object>> viewQualifiers(Long eventId, String grade, String gender) {
