@@ -23,15 +23,16 @@ public final class ScheduleSupport {
     private ScheduleSupport() {
     }
 
-    /** 解析 "HH:mm" → 当日分钟；解析不了返回 0（不让一行脏数据拖崩整体） */
+    /**
+     * 解析 "HH:mm" → 当日分钟（与 {@link #fmt} 互逆）；解析不了返回 0。
+     *
+     * <p>本方法是 {@link #parseMinute} 的语义别名：赛程主流程里多处调用它解析起止时间
+     * （必然带冒号），而 {@code parseMinute} 同时兼容裸整数分钟，能力是超集。
+     * 这里直接委托，避免两份「HH:mm → 分钟」实现各写各的、日后逻辑漂移、出现
+     * 一处修一处不修的不一致。</p>
+     */
     public static int parseHhMm(String hhmm) {
-        if (hhmm == null || !hhmm.contains(":")) return 0;
-        try {
-            String[] p = hhmm.trim().split(":");
-            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
-        } catch (Exception e) {
-            return 0;
-        }
+        return parseMinute(hhmm);
     }
 
     /** 解析 "HH:mm"（与 {@link #fmt} 互逆）；解析不了返回 0 */
