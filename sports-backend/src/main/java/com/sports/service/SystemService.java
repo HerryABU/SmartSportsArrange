@@ -2,10 +2,13 @@ package com.sports.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sports.entity.AuditLog;
 import com.sports.entity.SystemConfig;
+import com.sports.repository.AuditLogRepository;
 import com.sports.repository.SystemConfigRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,6 +19,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -24,6 +28,7 @@ import java.util.*;
 public class SystemService {
 
     private final SystemConfigRepository systemConfigRepository;
+    private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final DataSource dataSource;
 
@@ -216,10 +221,28 @@ public class SystemService {
         ));
     }
 
+    /**
+     * 最近操作日志（M3 修复：原为永远返回空的占位实现，前端「系统日志」页恒空）。
+     * <p>现接入 {@code audit_log} 表（由 {@code AuditService.record} 在导入、编排、成绩修改、
+     * 锁定等关键动作时写入），返回最近 50 条，前端系统日志页得以展示真实记录。</p>
+     */
+    @Transactional(readOnly = true)
     public Map<String, Object> getRecentLogs() {
+        List<AuditLog> recent = auditLogRepository.findAllByOrderByCreatedAtDesc(PageRequest.of(0, 50));
+        List<Map<String, Object>> logs = recent.stream().map(a -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", a.getId());
+            m.put("action", a.getAction());
+            m.put("targetType", a.getTargetType());
+            m.put("targetId", a.getTargetId());
+            m.put("detail", a.getDetail());
+            m.put("operator", a.getOperator());
+            m.put("createdAt", a.getCreatedAt());
+            return m;
+        }).collect(Collectors.toList());
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("logs", List.of());
-        result.put("total", 0);
+        result.put("logs", logs);
+        result.put("total", logs.size());
         return result;
     }
 
