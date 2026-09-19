@@ -62,7 +62,7 @@ public class AuthService {
         return LoginResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(86400000L)  // 24小时
+                .expiresIn(jwtUtil.getExpiration())  // M8 修复：从 JwtUtil 读取，与 jwt.expiration 配置同步
                 .user(userInfo)
                 .build();
     }
@@ -101,7 +101,7 @@ public class AuthService {
         return LoginResponse.builder()
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
-                .expiresIn(86400000L)
+                .expiresIn(jwtUtil.getExpiration())  // M8 修复：从 JwtUtil 读取
                 .user(userInfo)
                 .build();
     }

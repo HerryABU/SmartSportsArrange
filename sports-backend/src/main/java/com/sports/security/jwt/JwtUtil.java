@@ -32,6 +32,11 @@ public class JwtUtil {
         this.refreshExpiration = refreshExpiration;
     }
 
+    /** 访问令牌有效期（毫秒），供 AuthService 回传前端，避免与配置脱钩（M8 修复） */
+    public long getExpiration() {
+        return expiration;
+    }
+
     /**
      * 生成访问令牌
      */
