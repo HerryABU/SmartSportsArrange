@@ -58,6 +58,14 @@ public class Registration {
     @Column(length = 50)
     private String teamName;
 
+    /**
+     * 团队标识号：团队项目（接力 / 集体 / 趣味）中同一班级可报多支队伍时的分组标识，
+     * 如"A组"、"B组"。用于区分同一项目同一班级下的不同队伍。非团队赛为空。
+     */
+    @Column(length = 20)
+    @com.fasterxml.jackson.annotation.JsonProperty("teamTag")
+    private String teamTag;
+
     /** 报名来源：onsite=班主任现场报名；offline=后置导入（已报名表导入） */
     @Column(length = 20)
     @Builder.Default

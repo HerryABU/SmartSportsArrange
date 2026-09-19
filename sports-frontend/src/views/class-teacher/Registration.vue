@@ -220,6 +220,11 @@
                 </div>
 
                 <div class="batch-actions">
+                  <template v-if="isTeamEvent(batchEvent)">
+                    <span class="pt-label">团队标识号</span>
+                    <el-input v-model="batchTeamTag" size="small" maxlength="20" placeholder="A组"
+                      style="width: 140px" clearable />
+                  </template>
                   <el-button type="primary" size="large" :loading="batchSubmitting" :disabled="!checkedIds.length"
                     @click="submitBatch">
                     <el-icon><Check /></el-icon> 为 {{ checkedIds.length }} 名同学提交报名
@@ -246,6 +251,12 @@
               <template #default="{ row }">{{ sidOf(row.athleteName) }}</template>
             </el-table-column>
             <el-table-column prop="eventName" label="项目" min-width="140" />
+            <el-table-column label="队伍" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.teamTag" size="small" effect="plain" type="info">{{ row.teamTag }}</el-tag>
+                <span v-else class="txt-muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="类型" width="70" align="center">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.eventType === '径赛' ? 'danger' : 'warning'" effect="plain">
@@ -413,6 +424,14 @@
           @close="unpick(id)">{{ evtNameOf(id) }}</el-tag>
       </div>
 
+      <!-- 团队项目：团队标识号（A组/B组/C组…） -->
+      <div v-if="pickerHasTeamEvent" class="picker-teamtag">
+        <span class="pt-label">团队标识号（团队项目分组，如 A组 / B组）</span>
+        <el-input v-model="pickerTeamTag" size="small" maxlength="20" placeholder="A组"
+          style="width: 140px" clearable />
+        <span class="pt-hint">同一运动员在同一项目同一队伍下重复提交将自动去重</span>
+      </div>
+
       <template #footer>
         <el-button @click="closePicker">关闭</el-button>
         <el-button type="primary" :loading="pickerSubmitting" :disabled="!picker.checked.length"
@@ -528,6 +547,7 @@ const showPicker = ref(false)
 const pickerCat = ref('')
 const pickerKw = ref('')
 const pickerSubmitting = ref(false)
+const pickerTeamTag = ref('')
 const picker = reactive({ athlete: null, checked: [] })
 
 function openPicker(athlete, presetEvent) {
@@ -536,8 +556,17 @@ function openPicker(athlete, presetEvent) {
   picker.checked = presetEvent ? [presetEvent.id] : []
   pickerCat.value = ''
   pickerKw.value = ''
+  pickerTeamTag.value = ''
   showPicker.value = true
 }
+const pickerHasTeamEvent = computed(() => {
+  const a = picker.athlete
+  if (!a) return false
+  return picker.checked.some(id => {
+    const e = events.value.find(x => x.id === id)
+    return !!e && e.isTeam === true
+  })
+})
 function openPickerByName(name) {
   const a = athletes.value.find(x => x.name === name)
   if (a) openPicker(a)
@@ -588,11 +617,12 @@ async function submitPicker() {
   const a = picker.athlete
   if (!a || !picker.checked.length) return
   pickerSubmitting.value = true
+  const teamTag = pickerTeamTag.value.trim() || undefined
   let ok = 0
   const fails = []
   for (const id of picker.checked) {
     try {
-      await request.post('/class-teacher/register', { athleteId: a.id, eventId: id })
+      await request.post('/class-teacher/register', { athleteId: a.id, eventId: id, teamTag })
       ok++
     } catch (e) {
       fails.push(evtNameOf(id) + '：' + (e?.response?.data?.message || e?.message || '失败'))
@@ -614,7 +644,9 @@ const batchEvtCat = ref('')
 const batchKw = ref('')
 const batchSubmitting = ref(false)
 const checkedIds = ref([])
+const batchTeamTag = ref('')
 const batchEvent = computed(() => events.value.find(e => e.id === batchEventId.value) || null)
+function isTeamEvent(evt) { return !!evt && evt.isTeam === true }
 const batchEventOptions = computed(() => {
   const kw = batchEvtKw.value.trim()
   const cat = batchEvtCat.value
@@ -641,7 +673,7 @@ const batchCandidates = computed(() => {
 function batchRegCountOf(evt) {
   return registrations.value.filter(r => r.eventName === evt.name && r.status !== 'withdrawn').length
 }
-watch(batchEventId, () => { checkedIds.value = []; batchKw.value = '' })
+watch(batchEventId, () => { checkedIds.value = []; batchKw.value = ''; batchTeamTag.value = '' })
 function toggleBatchId(id) {
   if (checkedIds.value.includes(id)) {
     checkedIds.value = checkedIds.value.filter(x => x !== id)
@@ -665,11 +697,12 @@ async function submitBatch() {
   if (!batchEvent.value) return
   if (!checkedIds.value.length) { ElMessage.warning('请先勾选学生'); return }
   batchSubmitting.value = true
+  const teamTag = isTeamEvent(batchEvent.value) ? (batchTeamTag.value.trim() || undefined) : undefined
   let ok = 0
   const fails = []
   for (const id of checkedIds.value) {
     try {
-      await request.post('/class-teacher/register', { athleteId: id, eventId: batchEvent.value.id })
+      await request.post('/class-teacher/register', { athleteId: id, eventId: batchEvent.value.id, teamTag })
       ok++
     } catch (e) {
       const a = athletes.value.find(x => x.id === id)
@@ -984,4 +1017,12 @@ onMounted(fetchAll)
 .picker-zone { grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); }
 .picker-empty { grid-column: 1 / -1; color: #94a3b8; text-align: center; padding: 26px 0; }
 .picker-selected { margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: #475569; }
+.picker-teamtag {
+  margin-top: 10px; padding: 10px 12px; border-radius: 12px;
+  background: #f5f3ff; border: 1px solid #ddd6fe;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.pt-label { font-size: 13px; font-weight: 700; color: #5b21b6; white-space: nowrap; }
+.pt-hint { font-size: 11.5px; color: #7c3aed; }
+.txt-muted { color: #cbd5e1; }
 </style>

@@ -210,7 +210,7 @@ public class RegistrationService {
         // 表头探测 → 列索引映射；无法识别时按固定顺序 0..7
         int[] idx = detectColumns(rows);
         int colGrade = idx[0], colClass = idx[1], colName = idx[2], colGender = idx[3],
-                colStudentNo = idx[4], colEvent = idx[5], colTeam = idx[6];
+                colStudentNo = idx[4], colEvent = idx[5], colTeam = idx[6], colTeamTag = idx[7];
 
         int success = 0, skipped = 0, createdAthletes = 0;
         List<Map<String, Object>> errors = new ArrayList<>();
@@ -229,6 +229,8 @@ public class RegistrationService {
                 String genderText = cell(row, colGender);
                 String studentNo = cell(row, colStudentNo);
                 String teamText = cell(row, colTeam);
+                String teamTag = colTeamTag >= 0 ? cell(row, colTeamTag) : "";
+                if (teamTag.isEmpty()) teamTag = null;
 
                 // ---- 定位班级（班主任受限时只允许自己绑定班；体育老师按表内 班级列 解析） ----
                 ClassInfo classInfo = null;
@@ -289,7 +291,14 @@ public class RegistrationService {
                 }
 
                 // ---- 校验 & 建档报名 ----
-                if (registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId())) {
+                // 团队项目按「运动员 + 项目 + 队伍标识」维度去重；普通项目按「运动员 + 项目」维度
+                if (teamTag != null) {
+                    if (registrationRepository.existsByAthleteIdAndEventIdAndTeamTag(
+                            athlete.getId(), event.getId(), teamTag)) {
+                        skipped++; // 同一队伍重复报名，幂等跳过
+                        continue;
+                    }
+                } else if (registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId())) {
                     skipped++; // 重复报名，幂等跳过
                     continue;
                 }
@@ -299,16 +308,28 @@ public class RegistrationService {
                 }
 
                 int teamCount = parseIntSafe(teamText, 0);
-                boolean isTeam = teamCount > 0;
-                int teamNo = isTeam ? nextTeamNo(athlete, event, teamCount) : 0;
-                String teamName = isTeam && classInfo != null
-                        ? classInfo.getName() + " " + teamNo + " 队" : null;
+                boolean isTeam = teamTag != null || teamCount > 0;
+                int teamNo = 0;
+                String teamName = null;
+                if (isTeam) {
+                    if (teamTag != null) {
+                        // 团队标识号显式指定（A组/B组/C组…）：队伍名直接用标识号，队号确定性映射
+                        teamNo = teamNoFromTag(teamTag);
+                        teamName = (classInfo != null ? classInfo.getName() : "")
+                                + " " + teamTag;
+                    } else {
+                        teamNo = nextTeamNo(athlete, event, teamCount);
+                        teamName = classInfo != null
+                                ? classInfo.getName() + " " + teamNo + " 队" : null;
+                    }
+                }
                 Registration reg = Registration.builder()
                         .athlete(athlete)
                         .event(event)
                         .team(isTeam)
                         .teamNo(teamNo)
                         .teamName(teamName)
+                        .teamTag(teamTag)
                         .source(src)
                         .status(status)
                         .registrationTime(LocalDateTime.now())
@@ -422,6 +443,27 @@ public class RegistrationService {
         return teamCount + 1;
     }
 
+    /**
+     * 团队标识号 → 确定性队号。
+     * - 纯数字标识（如 "1"/"2"）→ 用其数值；
+     * - 含数字（如 "A组1"/"第2队"）→ 取首个连续数字段；
+     * - 字母标识（如 "A组"/"B"）→ A→1、B→2、C→3…（不区分大小写）；
+     * - 其他 → 0（由后续逻辑兜底）。
+     */
+    private int teamNoFromTag(String tag) {
+        if (tag == null || tag.isBlank()) return 0;
+        String t = tag.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+").matcher(t);
+        if (m.find()) {
+            try { return Integer.parseInt(m.group()); } catch (NumberFormatException ignored) { }
+        }
+        if (t.length() >= 1) {
+            char c = Character.toUpperCase(t.charAt(0));
+            if (c >= 'A' && c <= 'Z') return c - 'A' + 1;
+        }
+        return 0;
+    }
+
     /** 读取 CSV/Excel 为行（CSV 自动识别 UTF-8/GB18030 等编码） */
     private List<Map<Integer, String>> readRows(InputStream in, String filename) throws IOException {
         List<Map<Integer, String>> rows = new ArrayList<>();
@@ -459,6 +501,11 @@ public class RegistrationService {
             }
             if (map.containsKey("姓名") && (map.containsKey("项目") || map.containsKey("项目名称"))) {
                 String eventKey = map.containsKey("项目") ? "项目" : "项目名称";
+                // 团队标识号（A组/B组/C组…）；按别名匹配，找不到则为 -1
+                int teamTagCol = -1;
+                for (String alias : new String[]{"团队标识号", "队伍标识", "组号", "组别", "队伍", "teamTag", "team"}) {
+                    if (map.containsKey(alias)) { teamTagCol = map.get(alias); break; }
+                }
                 return new int[]{
                         map.getOrDefault("年级", 0),
                         map.getOrDefault("班级", map.getOrDefault("班", 1)),
@@ -467,10 +514,11 @@ public class RegistrationService {
                         map.getOrDefault("学号", map.getOrDefault("学号/账号", 4)),
                         map.get(eventKey),
                         map.getOrDefault("是否团体", map.getOrDefault("数量", map.getOrDefault("团体人数", 6))),
+                        teamTagCol,
                 };
             }
         }
-        return new int[]{0, 1, 2, 3, 4, 5, 6};
+        return new int[]{0, 1, 2, 3, 4, 5, 6, -1};
     }
 
     private static String cell(Map<Integer, String> row, int idx) {

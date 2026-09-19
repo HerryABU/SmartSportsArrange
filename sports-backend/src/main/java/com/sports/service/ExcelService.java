@@ -73,6 +73,7 @@ public class ExcelService {
         COLUMN_ALIASES.put("eventName",    List.of("项目名称","项目","eventName"));
         COLUMN_ALIASES.put("athleteNumber",List.of("运动员号码","号码","运动员编号","athleteNumber"));
         COLUMN_ALIASES.put("athleteName",  List.of("运动员姓名","姓名","运动员","athleteName"));
+        COLUMN_ALIASES.put("teamTag",      List.of("团队标识号","队伍标识","组号","组别标识","teamTag","team"));
         COLUMN_ALIASES.put("rawTime",      List.of("成绩","时间","result","rawTime","比赛成绩","用时"));
         COLUMN_ALIASES.put("heat",         List.of("组别","组","heat","组号","轮次"));
         COLUMN_ALIASES.put("lane",         List.of("道次","道","lane","跑道"));
@@ -160,8 +161,8 @@ public class ExcelService {
             }
             case "registration" -> {
                 fileName = "报名导入模板.xlsx";
-                sheet.add(List.of("项目编码","运动员号码","运动员姓名","年级","班级","备注"));
-                sheet.add(List.of("100M","010101","张三","高一年级","高一1班",""));
+                sheet.add(List.of("项目编码","运动员号码","运动员姓名","年级","班级","团队标识号","备注"));
+                sheet.add(List.of("100M","010101","张三","高一年级","高一1班","A组",""));
             }
             case "class" -> {
                 fileName = "班级导入模板.xlsx";
@@ -234,6 +235,7 @@ public class ExcelService {
             case "registration" -> {
                 notes.add(List.of("项目编码", "须与系统中项目编码一致。"));
                 notes.add(List.of("运动员号码", "填号码布编号或学号。"));
+                notes.add(List.of("团队标识号", "仅团体/趣味接力类项目填写（如 A组、B组、C组）。同一运动员在同一项目同一队伍标识下重复填写将自动去重；不填则按普通项目「一人一项一次」去重。"));
             }
             case "class" -> notes.add(List.of("班级编码", "唯一标识；班主任可填姓名，系统按规则匹配登录账号。"));
             case "user" -> notes.add(List.of("角色", "取值：ADMIN/TEACHER/CLASS_TEACHER/STUDENT/REFEREE（REFEREE=裁判，可登录查看本人执裁安排）。"));
@@ -594,11 +596,26 @@ public class ExcelService {
     public Map<String, Object> importRegistrations(MultipartFile file) {
         log.info("Excel导入报名: {}", file.getOriginalFilename());
         int success = 0;
+        int skipped = 0;
         List<Map<String, Object>> errors = new ArrayList<>();
         try (InputStream in = file.getInputStream()) {
-            List<Map<Integer, String>> rows = EasyExcel.read(in).sheet().headRowNumber(1).doReadSync();
-            for (int i = 0; i < rows.size(); i++) {
-                Map<Integer, String> row = rows.get(i);
+            // 表头 + 数据一起读（headRowNumber(0)），按表头定位「团队标识号」列；
+            // 项目编码 / 运动员号码仍按位置 0/1 兼容旧模板（无团队标识号列时 teamTag 取 null）。
+            List<Map<Integer, String>> all = EasyExcel.read(in).sheet().headRowNumber(0).doReadSync();
+            if (all.isEmpty()) return buildImportResult(success, skipped, errors);
+            Map<Integer, String> header = all.get(0);
+            int teamTagCol = -1;
+            for (Map.Entry<Integer, String> e : header.entrySet()) {
+                if (e.getValue() == null) continue;
+                final String hv = e.getValue().trim();
+                if (COLUMN_ALIASES.getOrDefault("teamTag", List.of()).stream()
+                        .anyMatch(a -> a.equalsIgnoreCase(hv))) {
+                    teamTagCol = e.getKey();
+                    break;
+                }
+            }
+            for (int i = 1; i < all.size(); i++) {
+                Map<Integer, String> row = all.get(i);
                 try {
                     String eventCode = row.getOrDefault(0, "");
                     String athleteNumber = row.getOrDefault(1, "");
@@ -606,17 +623,24 @@ public class ExcelService {
                             .orElseThrow(() -> new RuntimeException("项目编码不存在: " + eventCode));
                     Athlete athlete = athleteRepository.findByNumber(athleteNumber.trim())
                             .orElseThrow(() -> new RuntimeException("号码簿不存在: " + athleteNumber));
-                    if (!registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId())) {
+                    String teamTag = teamTagCol >= 0 ? trimToNull(row.get(teamTagCol)) : null;
+                    boolean dup = Boolean.TRUE.equals(event.getTeam())
+                            ? registrationRepository.existsByAthleteIdAndEventIdAndTeamTag(athlete.getId(), event.getId(), teamTag)
+                            : registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId());
+                    if (!dup) {
                         Registration reg = Registration.builder()
                                 .athlete(athlete).event(event).status("approved")
+                                .team(Boolean.TRUE.equals(event.getTeam())).teamTag(teamTag)
                                 .registrationTime(LocalDateTime.now())
                                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
                         registrationRepository.save(reg);
                         success++;
+                    } else {
+                        skipped++;
                     }
                 } catch (Exception e) {
                     Map<String, Object> err = new LinkedHashMap<>();
-                    err.put("row", i + 2);
+                    err.put("row", i + 1);
                     err.put("message", e.getMessage());
                     errors.add(err);
                 }
@@ -624,9 +648,20 @@ public class ExcelService {
         } catch (IOException e) {
             throw new RuntimeException("读取Excel文件失败: " + e.getMessage());
         }
+        return buildImportResult(success, skipped, errors);
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    private Map<String, Object> buildImportResult(int success, int skipped, List<Map<String, Object>> errors) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("total", success + errors.size());
+        result.put("total", success + skipped + errors.size());
         result.put("success", success);
+        result.put("skipped", skipped);
         result.put("failed", errors.size());
         result.put("errors", errors);
         return result;

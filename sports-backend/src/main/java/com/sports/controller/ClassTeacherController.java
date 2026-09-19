@@ -355,12 +355,21 @@ public class ClassTeacherController {
         if (classEventCount >= maxPerClassEvent)
             throw new RuntimeException("该班级本项目报名已达上限(" + maxPerClassEvent + "人)");
 
-        // 重复报名
-        if (registrationRepository.existsByAthleteIdAndEventId(athleteId, eventId))
+        // 重复报名（团队项目按「运动员×项目×团队标识号」区分不同队伍）
+        String teamTag = body.get("teamTag") != null ? String.valueOf(body.get("teamTag")).trim() : "";
+        if (teamTag.isEmpty()) teamTag = null;
+        boolean isTeamEvent = Boolean.TRUE.equals(event.getTeam());
+        if (isTeamEvent) {
+            if (registrationRepository.existsByAthleteIdAndEventIdAndTeamTag(athleteId, eventId, teamTag))
+                throw new RuntimeException("该运动员已报名此项目的该队伍(" + (teamTag == null ? "默认" : teamTag) + ")");
+        } else if (registrationRepository.existsByAthleteIdAndEventId(athleteId, eventId)) {
             throw new RuntimeException("该运动员已报名此项目");
+        }
 
         Registration reg = Registration.builder()
                 .athlete(athlete).event(event).status("pending").source("onsite")
+                .team(Boolean.TRUE.equals(event.getTeam()))
+                .teamTag(teamTag)
                 .registrationTime(LocalDateTime.now())
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         registrationRepository.save(reg);
@@ -406,6 +415,7 @@ public class ClassTeacherController {
             m.put("eventName", r.getEvent().getName());
             m.put("eventType", r.getEvent().getCategory());
             m.put("status", r.getStatus());
+            m.put("teamTag", r.getTeamTag());
             m.put("createdAt", r.getCreatedAt());
             return m;
         }).collect(Collectors.toList());
@@ -426,7 +436,7 @@ public class ClassTeacherController {
         List<Athlete> athletes = athleteRepository.findByClassInfoId(classId);
 
         List<List<String>> data = new ArrayList<>();
-        data.add(List.of("学号", "姓名", "性别", "报名项目", "项目类型", "状态"));
+        data.add(List.of("学号", "姓名", "性别", "报名项目", "项目类型", "队伍", "状态"));
 
         List<Long> athleteIds = athletes.stream().map(Athlete::getId).toList();
         List<Registration> allRegs = athleteIds.isEmpty() ? List.of()
@@ -451,6 +461,7 @@ public class ClassTeacherController {
                             "M".equals(a.getGender()) ? "男" : "F".equals(a.getGender()) ? "女" : "",
                             r.getEvent().getName(),
                             r.getEvent().getCategory(),
+                            r.getTeamTag() != null ? r.getTeamTag() : "",
                             "withdrawn".equals(r.getStatus()) ? "已取消" : "approved".equals(r.getStatus()) ? "已通过" : "待审核"
                     ));
                 }

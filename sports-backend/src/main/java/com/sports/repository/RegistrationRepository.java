@@ -45,6 +45,8 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
 
     boolean existsByAthleteIdAndEventId(Long athleteId, Long eventId);
 
+    boolean existsByAthleteIdAndEventIdAndTeamTag(Long athleteId, Long eventId, String teamTag);
+
     @Query("SELECT r FROM Registration r WHERE r.athlete.id IN :athleteIds")
     List<Registration> findByAthleteIdIn(@Param("athleteIds") List<Long> athleteIds);
 
