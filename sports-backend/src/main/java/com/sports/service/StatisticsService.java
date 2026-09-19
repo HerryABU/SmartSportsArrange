@@ -65,25 +65,25 @@ public class StatisticsService {
                     ? event.getMaxParticipants().longValue() : 0L, Long::sum);
         }
 
+        // L2 修复：原实现对每个班级都全量扫描 allRegs（O(classes × regs)），年级统计又重复一遍。
+        // 改为一次性按 classId 分组计数，班级与年级统计直接查这张表。
+        Map<Long, Long> countByClass = allRegs.stream()
+                .filter(r -> r.getAthlete() != null && r.getAthlete().getClassInfo() != null)
+                .collect(Collectors.groupingBy(
+                        r -> r.getAthlete().getClassInfo().getId(),
+                        Collectors.counting()));
+
         // 按班级统计
         Map<String, Long> byClass = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
-            List<Registration> classRegs = allRegs.stream()
-                    .filter(r -> r.getAthlete().getClassInfo() != null
-                            && r.getAthlete().getClassInfo().getId().equals(ci.getId()))
-                    .collect(Collectors.toList());
-            byClass.put(ci.getName(), (long) classRegs.size());
+            byClass.put(ci.getName(), countByClass.getOrDefault(ci.getId(), 0L));
         }
 
         // 按年级统计（供报表「各年级参赛人数」）
         Map<String, Long> byGrade = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
             String g = ci.getGrade() != null ? ci.getGrade() : "未分年级";
-            long count = allRegs.stream()
-                    .filter(r -> r.getAthlete().getClassInfo() != null
-                            && r.getAthlete().getClassInfo().getId().equals(ci.getId()))
-                    .count();
-            byGrade.merge(g, count, Long::sum);
+            byGrade.merge(g, countByClass.getOrDefault(ci.getId(), 0L), Long::sum);
         }
 
         // 按状态统计
