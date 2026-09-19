@@ -145,8 +145,11 @@ public class BackupService {
         try (PrintWriter pw = new PrintWriter(sqlFile, "UTF-8")) {
             pw.println("-- Database backup: " + LocalDateTime.now());
             for (String t : tables) {
-                try (Statement st = conn.createStatement();
-                     ResultSet rs = st.executeQuery("SELECT * FROM " + quoteIdent(t, quote))) {
+                try (Statement st = conn.createStatement()) {
+                    // MySQL 大表：设为 Integer.MIN_VALUE 令 JDBC 驱动逐行流式返回，
+                    // 避免把整表行一次性缓冲进客户端内存（OOM 风险）；SQLite 忽略此值。
+                    if ("mysql".equals(type)) st.setFetchSize(Integer.MIN_VALUE);
+                    try (ResultSet rs = st.executeQuery("SELECT * FROM " + quoteIdent(t, quote))) {
                     ResultSetMetaData rsmd = rs.getMetaData();
                     int colCount = rsmd.getColumnCount();
                     while (rs.next()) {
@@ -159,6 +162,7 @@ public class BackupService {
                         }
                         pw.println("INSERT INTO " + quoteIdent(t, quote)
                                 + " (" + cols + ") VALUES (" + vals + ");");
+                    }
                     }
                 }
             }
