@@ -101,6 +101,7 @@ public class ScheduleService {
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
+        this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
     }
 
 
@@ -147,6 +148,8 @@ public class ScheduleService {
     private final AuditService auditService;
 
     private final ScheduleBuildComponent buildComponent;
+
+    private final ScheduleSelfCheckComponent selfCheckComponent;
 
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
@@ -567,8 +570,8 @@ public class ScheduleService {
         // 自检失败不影响编排结果，但**绝不静默**：有阻塞级问题必须写进 warnings 让人看见。
         Map<String, Object> verification;
         try {
-            verification = scheduleVerifier.verify(collectVerifyRows(saved, event2Group),
-                    collectVerifyExpected(units), SchedulePlacementMath.dailyCapacityOf(windows)).toMap();
+            verification = scheduleVerifier.verify(selfCheckComponent.collectVerifyRows(saved, event2Group),
+                    selfCheckComponent.collectVerifyExpected(units), SchedulePlacementMath.dailyCapacityOf(windows)).toMap();
             int blockers = intVal(verification.get("blockerCount"), 0);
             int warnCount = intVal(verification.get("warningCount"), 0);
             if (blockers > 0) {
@@ -593,7 +596,7 @@ public class ScheduleService {
         // 自检回答「方案能不能用」，下界回答「还有多少改进空间」——两者正交，缺一不可。
         try {
             result.put("lowerBound",
-                    assessLowerBound(units, windows, saved, trackSlots, fieldSlots).toMap());
+                    selfCheckComponent.assessLowerBound(units, windows, saved, trackSlots, fieldSlots).toMap());
         } catch (Exception ex) {
             log.warn("下界评估失败（不影响编排结果）: {}", ex.getMessage());
         }
@@ -1229,8 +1232,6 @@ public class ScheduleService {
 
     // ==================== 时间窗 ====================
 
-    /** 把 dayConfigs 铺开成有序的时间窗列表 */
-
     // ==================== 查询 / 手动调整 / 清空 ====================
 
     @Transactional(readOnly = true)
@@ -1463,86 +1464,11 @@ public class ScheduleService {
         return result;
     }
 
-    // ==================== 配置合并 ====================
-
-    /** 以已保存的 meet_schedule 为底，用请求参数覆盖（不落库） */
+    // ==================== 配置合并（mergeConfig 已迁入 ScheduleBuildComponent） ====================
 
     // ==================== U29/B26：自检数据装配 ====================
 
-    /**
-     * 把落库后的赛程行转成校验视图。
-     *
-     * <p>刻意取<b>持久化之后的真实数据</b>（场地映射、时长回写都已完成），而不是求解器内存里的解：
-     * 从「解」到「赛程表」之间要经过落库、场地映射、时长写回，任何一步出错求解器都看不见，
-     * 只有对最终产物复核才查得出来。</p>
-     */
-    private List<ScheduleVerifier.Row> collectVerifyRows(List<EventSchedule> saved,
-                                                         Map<Long, String> event2Group) {
-        List<ScheduleVerifier.Row> rows = new ArrayList<>();
-        for (EventSchedule s : saved) {
-            Event e = s.getEvent();
-            if (e == null || e.getId() == null) continue;
-            Set<Long> athletes = new LinkedHashSet<>();
-            Map<Long, String> names = new LinkedHashMap<>();
-            for (Registration reg : buildComponent.approvedRegs(e.getId(), s.getGrade())) {
-                if (reg.getAthlete() == null || reg.getAthlete().getId() == null) continue;
-                Long aid = reg.getAthlete().getId();
-                athletes.add(aid);
-                names.put(aid, reg.getAthlete().getName());
-            }
-            String group = event2Group.get(e.getId());
-            String groupKey = group == null ? null
-                    : group + "@" + (s.getGrade() == null ? "" : s.getGrade());
-            rows.add(new ScheduleVerifier.Row(e.getId(), e.getName(), s.getGrade(),
-                    s.getDay() == null ? 0 : s.getDay(), s.getScheduleDate(), s.getTimeSlot(),
-                    parseMinute(s.getStartTime()), parseMinute(s.getEndTime()), s.getVenue(),
-                    groupKey, athletes, names));
-        }
-        return rows;
-    }
 
-    /** 编排表里「应该有」的单元：用于发现被静默丢弃的项目，并算出真实压缩比 */
-    private List<ScheduleVerifier.Expected> collectVerifyExpected(List<Unit> units) {
-        List<ScheduleVerifier.Expected> list = new ArrayList<>();
-        for (Unit u : units) {
-            if (u.participants <= 0 || u.event.getId() == null) continue;
-            list.add(new ScheduleVerifier.Expected(
-                    ScheduleVerifier.keyOf(u.event.getId(), u.grade),
-                    u.event.getName(), u.grade, u.rawDuration));
-        }
-        return list;
-    }
 
-    /**
-     * 理论下界评估（U31/B28）。
-     *
-     * <p>并发位按「径赛 / 田赛」两类聚合：项目级专用池（defaultVenueCode 绑定）较少见，
-     * 为一个保守估计去主循环里额外维护 Unit→Pool 映射并不划算——下界本就允许偏松，
-     * 偏松只会让 gap 看起来更小，不会把不可行说成可行（方向是安全的）。</p>
-     */
-    private LowerBoundEstimator.Assessment assessLowerBound(List<Unit> units, List<Window> windows,
-                                                            List<EventSchedule> saved,
-                                                            int trackSlots, int fieldSlots) {
-        Map<String, Integer> slotsByPool = new LinkedHashMap<>();
-        slotsByPool.put("径赛", Math.max(1, trackSlots));
-        slotsByPool.put("田赛", Math.max(1, fieldSlots));
-
-        List<LowerBoundEstimator.Item> items = new ArrayList<>();
-        for (Unit u : units) {
-            if (u.participants <= 0) continue;
-            items.add(new LowerBoundEstimator.Item(u.track ? "径赛" : "田赛",
-                    u.rawDuration, Math.max(1, SchedulePlacementMath.intervalOf(u, 5)), u.athleteIds));
-        }
-
-        Set<Integer> days = new HashSet<>();
-        for (Window w : windows) days.add(w.day);
-
-        int given = 0;
-        for (EventSchedule s : saved) {
-            given += Math.max(0, parseMinute(s.getEndTime()) - parseMinute(s.getStartTime()));
-        }
-        return lowerBoundEstimator.assess(items, slotsByPool, SchedulePlacementMath.dailyCapacityOf(windows),
-                days.size(), given);
-    }
 
 }
