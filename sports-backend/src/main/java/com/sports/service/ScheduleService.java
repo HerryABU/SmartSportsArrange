@@ -1,6 +1,7 @@
 package com.sports.service;
 
 import com.sports.common.Grades;
+import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.Event;
 import com.sports.entity.EventSchedule;
 import com.sports.entity.Registration;
@@ -92,6 +93,8 @@ public class ScheduleService {
      * 与「多起点波次」的区别是解之间会繁殖——好的落位模式被交叉重组，而不是各自为战。
      */
     private final GeneticAlgorithm geneticAlgorithm;
+    /** 协作中心：编排/调整落库后广播版本号，让「开着同一页面的他人」尽早发现改动、冲突提前暴露 */
+    private final ScheduleCollaborationService collaborationService;
 
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
@@ -518,6 +521,8 @@ public class ScheduleService {
         result.put("businessOk", businessOk);
         result.put("success", businessOk);
         result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
+        // 实时协作：落库完成即广播版本号，让开着同一页面的他人尽早刷新、冲突提前暴露
+        collaborationService.notify("schedule", "auto-arranged", "EventSchedule", null);
         return result;
     }
 
@@ -1647,6 +1652,7 @@ public class ScheduleService {
             scheduleRepository.save(s);
         }
         log.info("手动保存赛程: 共{}条（轮次按入参/既有行/needHeats 三级保留）", order - 1);
+        collaborationService.notify("schedule", "edited", "EventSchedule", null);
         return buildResult();
     }
 
@@ -1675,6 +1681,7 @@ public class ScheduleService {
     public void clear() {
         scheduleRepository.deleteAllSchedules();
         log.info("清空项目赛程");
+        collaborationService.notify("schedule", "deleted", "EventSchedule", null);
     }
 
     // ==================== 导出 ====================

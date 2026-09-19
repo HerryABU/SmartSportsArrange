@@ -3,6 +3,7 @@ package com.sports.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.Grades;
+import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.Arrangement;
 import com.sports.entity.ArrangementReservation;
 import com.sports.entity.Athlete;
@@ -59,6 +60,7 @@ public class ArrangementService {
     private final ArrangementReservationRepository arrangementReservationRepository;
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
+    private final ScheduleCollaborationService collaborationService;
 
     private static final ObjectMapper REF_MAPPER = new ObjectMapper();
 
@@ -842,6 +844,8 @@ public class ArrangementService {
         arrangementRepository.saveAll(toSave);
         log.info("编排保存完成: eventId={}, round={}, 共{}组{}名（含人工锁定{}名）, version={}",
                 event.getId(), round, heats, arrangements.size(), lockedRows.size(), version);
+        // 实时协作：道次编排落库即广播，让开着同一项目页面的他人尽早看到分组/道次变化
+        collaborationService.notify("arrangement", "arranged", "Arrangement", event.getId());
 
         // 裁判自动分配：按「组次裁判数量」为每组分别安排（专长优先 + 负载均衡 + 并行组次互不抢占）
         List<String> refereeWarnings = assignReferees(event, grade, gender, round, heats);

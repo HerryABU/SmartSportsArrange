@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.Athlete;
 import com.sports.entity.Event;
 import com.sports.entity.EventSchedule;
@@ -70,6 +71,9 @@ class ScheduleServiceTest {
 
     /** 遗传算法的桩：GA 逻辑由 GeneticAlgorithmTest 独立覆盖，这里只保证注入不空 */
     @Mock private GeneticAlgorithm geneticAlgorithm;
+
+    /** 协作中心的桩：本测试验证编排主流程，实时协作逻辑由 ScheduleCollaborationServiceTest 覆盖 */
+    @Mock private ScheduleCollaborationService collaborationService;
 
     @InjectMocks private ScheduleService scheduleService;
 

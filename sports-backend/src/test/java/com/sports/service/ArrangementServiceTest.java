@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.*;
 import com.sports.repository.ArrangementRepository;
 import com.sports.repository.ArrangementReservationRepository;
@@ -40,6 +41,7 @@ class ArrangementServiceTest {
     @Mock private ArrangementReservationRepository arrangementReservationRepository;
     @Mock private WordOrderBookService wordOrderBookService;
     @Mock private SystemService systemService;
+    @Mock private ScheduleCollaborationService collaborationService;
 
     @InjectMocks private ArrangementService arrangementService;
 
