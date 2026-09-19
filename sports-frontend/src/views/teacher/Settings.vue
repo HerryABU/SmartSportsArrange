@@ -513,20 +513,48 @@
               <el-button @click="step = 0">取消</el-button>
             </div>
             <div v-else>
-              <el-progress :percentage="migration.progress || 0"
-                           :status="migration.status === 'failed' ? 'exception' : (migration.status === 'completed' ? 'success' : '')" />
-              <div v-if="migration.rowsTotal" style="margin:8px 0;color:#606266">
-                已迁移数据 <b>{{ migration.rowsDone || 0 }}</b> / {{ migration.rowsTotal }} 行（{{ rowProgressPercent }}%）
+              <div class="mg-head">
+                <span class="mg-pct"
+                      :class="{ 'is-done': migration.status === 'completed', 'is-fail': migration.status === 'failed' }">
+                  {{ migration.progress || 0 }}%
+                </span>
+                <span class="mg-step">当前步骤：{{ migration.step || '准备中…' }}</span>
               </div>
-              <div style="margin:12px 0;color:#606266">当前步骤：{{ migration.step || '准备中…' }}</div>
-              <div class="migration-log" v-if="migration.logs && migration.logs.length">
+              <el-progress :percentage="migration.progress || 0" :stroke-width="14" :show-text="false"
+                           :status="migration.status === 'failed' ? 'exception' : (migration.status === 'completed' ? 'success' : '')" />
+
+              <div class="mg-stats">
+                <div class="mg-stat">
+                  <span class="mg-k">数据表</span>
+                  <span class="mg-v">{{ migration.totalTables || '—' }}<i>张</i></span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">已迁移数据</span>
+                  <span class="mg-v">{{ migration.rowsDone || 0 }}<i>/ {{ migration.rowsTotal || '—' }} 行 · {{ rowProgressPercent }}%</i></span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">已用时</span>
+                  <span class="mg-v">{{ formatDuration(migration.elapsedMs) }}</span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">预计剩余</span>
+                  <span class="mg-v">{{ etaText }}</span>
+                </div>
+              </div>
+
+              <div class="migration-log" ref="migrationLogEl" v-if="migration.logs && migration.logs.length">
                 <div v-for="(l, i) in migration.logs" :key="i" class="log-line">{{ l }}</div>
               </div>
+
               <el-alert v-if="migration.status === 'completed'" type="success" :closable="false" show-icon
                         :title="migration.message" style="margin-top:12px">
                 <template #default>
                   <p style="margin:0">{{ migration.message }}</p>
-                  <p style="margin:6px 0 0;font-size:12px">请重启应用以切换到新数据库（可运行 <code>.\start.ps1</code> 重启）。</p>
+                  <p style="margin:6px 0 0;font-size:12px">
+                    共迁移 <b>{{ migration.rowsDone || 0 }}</b> 行、<b>{{ migration.totalTables || 0 }}</b> 张表，
+                    耗时 <b>{{ formatDuration(migration.elapsedMs) }}</b>。
+                    请重启应用以切换到新数据库（可运行 <code>.\start.ps1</code> 重启）。
+                  </p>
                 </template>
               </el-alert>
               <el-alert v-if="migration.status === 'failed'" type="error" :closable="false" show-icon
@@ -706,7 +734,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, DocumentCopy, Plus, Delete, Refresh, Download } from '@element-plus/icons-vue'
 import request from '@/utils/request'
@@ -799,10 +827,46 @@ const testing = ref(false)
 const testResult = reactive({ ok: false, message: '' })
 const startingMigration = ref(false)
 const migrating = ref(false)
-const migration = reactive({ status: '', progress: 0, step: '', message: '', logs: [], rowsDone: 0, rowsTotal: 0 })
+const migration = reactive({
+  status: '', progress: 0, step: '', message: '', logs: [],
+  rowsDone: 0, rowsTotal: 0, elapsedMs: 0, totalTables: 0
+})
 const rowProgressPercent = computed(() => {
   if (!migration.rowsTotal) return 0
   return Math.round(100 * (migration.rowsDone || 0) / migration.rowsTotal)
+})
+
+/** 毫秒 → mm:ss（超过一小时则 h:mm:ss） */
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor((ms || 0) / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
+}
+
+/** 按「已迁移行/总行数」与已用时线性外推剩余时间；样本不足时返回 null */
+const etaMs = computed(() => {
+  const done = migration.rowsDone || 0
+  const total = migration.rowsTotal || 0
+  const elapsed = migration.elapsedMs || 0
+  if (!done || !total || done >= total || elapsed <= 0) return null
+  return Math.round(elapsed * (total - done) / done)
+})
+const etaText = computed(() => {
+  if (migration.status === 'completed') return '已完成'
+  if (migration.status === 'failed') return '—'
+  const ms = etaMs.value
+  return ms == null ? '估算中…' : formatDuration(ms)
+})
+
+/** 迁移日志自动滚到最新一行，省去长迁移里用户手动翻到底 */
+const migrationLogEl = ref(null)
+watch(() => migration.logs.length, async () => {
+  await nextTick()
+  const el = migrationLogEl.value
+  if (el) el.scrollTop = el.scrollHeight
 })
 let progressTimer = null
 
@@ -839,6 +903,8 @@ async function startMigration() {
     migration.progress = 0
     migration.rowsDone = 0
     migration.rowsTotal = 0
+    migration.elapsedMs = 0
+    migration.totalTables = 0
     migration.logs = []
     migration.message = ''
     pollProgress(res.taskId)
@@ -857,6 +923,8 @@ function pollProgress(taskId) {
       migration.logs = res.logs || []
       migration.rowsDone = res.rowsDone || 0
       migration.rowsTotal = res.rowsTotal || 0
+      migration.elapsedMs = res.elapsedMs || 0
+      migration.totalTables = res.totalTables || 0
       if (res.status === 'completed' || res.status === 'failed' || res.status === 'not_found') {
         clearInterval(progressTimer)
         progressTimer = null
@@ -1513,6 +1581,17 @@ onBeforeUnmount(() => {
 .target-name { font-size:16px; font-weight:700; color:#303133; margin-bottom:8px; }
 .target-desc { font-size:12px; color:#909399; line-height:1.6; }
 .migration-log { max-height:260px; overflow-y:auto; background:#0f172a; color:#a5f3fc; border-radius:8px; padding:12px 14px; font-family:Consolas,Monaco,monospace; font-size:12px; margin-top:12px; }
+/* 迁移执行中：进度表头 + 四项统计卡 */
+.mg-head { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+.mg-pct { font-size:26px; font-weight:600; color:#303133; line-height:1; }
+.mg-pct.is-done { color:#67c23a; }
+.mg-pct.is-fail { color:#f56c6c; }
+.mg-step { flex:1; color:#606266; font-size:13px; }
+.mg-stats { display:flex; flex-wrap:wrap; gap:10px; margin:14px 0 0; }
+.mg-stat { flex:1 1 150px; min-width:150px; background:#f5f7fa; border:1px solid #ebeef5; border-radius:8px; padding:10px 12px; }
+.mg-k { display:block; color:#909399; font-size:12px; margin-bottom:6px; }
+.mg-v { display:block; color:#303133; font-size:17px; font-weight:600; line-height:1.2; }
+.mg-v i { display:block; font-style:normal; font-size:11px; font-weight:400; color:#909399; margin-top:4px; }
 .log-line { line-height:1.7; white-space:pre-wrap; word-break:break-all; }
 @media(max-width:768px) {
   .settings-page { height:auto; overflow:visible; }
