@@ -577,13 +577,9 @@ public class ScheduleService {
         // 在 SQLite 单写者场景下会与外层事务锁冲突（SQLITE_BUSY → 外层被标 rollback-only →
         // UnexpectedRollbackException，端点返回非 success）。改为事务提交后（afterCommit）再写审计，
         // 复用 M3 SetupService 的同步模式，彻底规避锁竞争；且只有外层事务成功提交才记录审计。
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
-                        "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size());
-            }
-        });
+        // 若当前无活动事务（如单测直接调用编排方法），则直接落审计——record 自身 REQUIRES_NEW，不依赖外层事务。
+        auditAfterCommit(() -> auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
+                "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size()));
         return result;
     }
 
@@ -1845,14 +1841,10 @@ public class ScheduleService {
         }
         log.info("手动保存赛程: 共{}条（轮次按入参/既有行/needHeats 三级保留）", order - 1);
         collaborationService.notify("schedule", "edited", "EventSchedule", null);
-        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争
+        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争；
+        // 无活动事务时（单测直调）直接落审计。
         final int savedCount = order - 1;
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                auditService.record("SCHEDULE_SAVE", "SCHEDULE", null, "手动保存赛程 " + savedCount + " 条");
-            }
-        });
+        auditAfterCommit(() -> auditService.record("SCHEDULE_SAVE", "SCHEDULE", null, "手动保存赛程 " + savedCount + " 条"));
         return buildResult();
     }
 
@@ -1882,13 +1874,29 @@ public class ScheduleService {
         scheduleRepository.deleteAllSchedules();
         log.info("清空项目赛程");
         collaborationService.notify("schedule", "deleted", "EventSchedule", null);
-        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程");
-            }
-        });
+        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争；
+        // 无活动事务时（单测直调）直接落审计。
+        auditAfterCommit(() -> auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程"));
+    }
+
+    /**
+     * M5 配套：审计写入优先走 afterCommit（规避 SQLite 单写者锁竞争）；
+     * 若当前无活动事务（如单测直接调用编排方法），则直接落审计——
+     * {@code auditService.record} 自身是 REQUIRES_NEW，不依赖外层事务。
+     */
+    private void auditAfterCommit(Runnable recordTask) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    recordTask.run();
+                }
+            });
+        } else if (auditService != null) {
+            // 无活动事务且审计服务已注入（生产常态）时直接落审计；
+            // 单测若未装配 auditService 则跳过，不因此抛 NPE。
+            recordTask.run();
+        }
     }
 
     // ==================== 导出 ====================
