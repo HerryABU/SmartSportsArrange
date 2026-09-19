@@ -29,6 +29,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -570,9 +572,18 @@ public class ScheduleService {
         result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
         // 实时协作：落库完成即广播版本号，让开着同一页面的他人尽早刷新、冲突提前暴露
         collaborationService.notify("schedule", "auto-arranged", "EventSchedule", null);
-        // M5 修复：与 ArrangementController 对齐，高层赛程编排也留审计
-        auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
-                "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size());
+        // M5 修复：与 ArrangementController 对齐，高层赛程编排也留审计。
+        // 关键：auditService.record 使用 REQUIRES_NEW，在外层 @Transactional 事务内直接调用，
+        // 在 SQLite 单写者场景下会与外层事务锁冲突（SQLITE_BUSY → 外层被标 rollback-only →
+        // UnexpectedRollbackException，端点返回非 success）。改为事务提交后（afterCommit）再写审计，
+        // 复用 M3 SetupService 的同步模式，彻底规避锁竞争；且只有外层事务成功提交才记录审计。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
+                        "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size());
+            }
+        });
         return result;
     }
 
@@ -1834,7 +1845,14 @@ public class ScheduleService {
         }
         log.info("手动保存赛程: 共{}条（轮次按入参/既有行/needHeats 三级保留）", order - 1);
         collaborationService.notify("schedule", "edited", "EventSchedule", null);
-        auditService.record("SCHEDULE_SAVE", "SCHEDULE", null, "手动保存赛程 " + (order - 1) + " 条");
+        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争
+        final int savedCount = order - 1;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                auditService.record("SCHEDULE_SAVE", "SCHEDULE", null, "手动保存赛程 " + savedCount + " 条");
+            }
+        });
         return buildResult();
     }
 
@@ -1864,7 +1882,13 @@ public class ScheduleService {
         scheduleRepository.deleteAllSchedules();
         log.info("清空项目赛程");
         collaborationService.notify("schedule", "deleted", "EventSchedule", null);
-        auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程");
+        // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程");
+            }
+        });
     }
 
     // ==================== 导出 ====================
