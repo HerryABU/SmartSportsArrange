@@ -13,6 +13,7 @@ import com.sports.repository.VenueRepository;
 import com.sports.schedule.opt.Placement;
 import com.sports.schedule.opt.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
+import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.schedule.verify.ScheduleViolation;
 import com.sports.schedule.opt.SchedulePlan;
@@ -248,9 +249,10 @@ public class ScheduleService {
         // 接口在任何情况下都能给出方案。
         Map<Unit, Placement> solvedPlacement = new IdentityHashMap<>();
         int[] solverStat = {0, 0};   // {采用求解结果的项目数, 求解后的残余兼项冲突数}
+        Map<String, Object> portfolioInfo = new LinkedHashMap<>();   // 算法选择的可观测信息
         fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
                 fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
-                windows, event2Group, unitInterval, solvedPlacement, solverStat);
+                windows, event2Group, unitInterval, solvedPlacement, solverStat, portfolioInfo);
         if (solverStat[0] > 0) {
             log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",
                     solverStat[0], solverStat[1]);
@@ -468,6 +470,8 @@ public class ScheduleService {
             verification.put("error", "自检执行失败：" + ex.getMessage());
         }
         result.put("verification", verification);
+        // 算法组合调度过程（可观测）：实例特征 → 候选算法 → 胜出者
+        result.put("algorithmPortfolio", portfolioInfo);
 
         // ===== U31/B28：理论下界评估（竞赛算法思维：从「感觉优化了」到「知道离最优多远」）=====
         // 自检回答「方案能不能用」，下界回答「还有多少改进空间」——两者正交，缺一不可。
@@ -573,7 +577,8 @@ public class ScheduleService {
                                       Map<String, Integer> codeToParallelMax,
                                       int trackSlots, int fieldSlots, List<Window> windows,
                                       Map<Long, String> event2Group, int unitInterval,
-                                      Map<Unit, Placement> solvedPlacement, int[] solverStat) {
+                                      Map<Unit, Placement> solvedPlacement, int[] solverStat,
+                                      Map<String, Object> portfolioInfo) {
         if (scheduleOptimizer == null) return;
 
         // ① 预解析每个单元所属的并发池。与主循环调用同一个方法、同一顺序，
@@ -618,9 +623,22 @@ public class ScheduleService {
             }
         }
 
-        // ④ 求解（失败/超时返回空 → 静默降级贪心，接口照常出方案）
-        SchedulePlan solvedPlan = scheduleOptimizer
-                .solve(new SchedulePlan(allPlacements, optUnits)).orElse(null);
+        // ④ 求解：先提取实例特征，再由算法组合层选出候选算法，波次跑完取最优。
+        //    容量紧张 → 模拟退火/迟接受（允许暂时变差才跳得出「用压缩换时间」的深坑）；
+        //    容量宽裕 → 禁忌搜索（记住走过的路，避免循环）；兼项密集 → 多样化迟接受（多邻域）。
+        SchedulePlan problem = new SchedulePlan(allPlacements, optUnits);
+        AlgorithmPortfolio.Features features = AlgorithmPortfolio.extract(optUnits, allPlacements);
+        if (portfolioInfo != null) {
+            portfolioInfo.put("features", features.toMap());
+            List<String> names = new ArrayList<>();
+            for (AlgorithmPortfolio.Plan p : AlgorithmPortfolio.planFor(features, 1)) {
+                names.add(p.name());
+            }
+            portfolioInfo.put("candidates", names);
+            portfolioInfo.put("basis", "按实例特征（紧张度 / 兼项密度）动态选择；"
+                    + "多算法并行探索后取评分最优者");
+        }
+        SchedulePlan solvedPlan = scheduleOptimizer.solveWithPortfolio(problem, features).orElse(null);
         if (solvedPlan == null) return;
 
         // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是
