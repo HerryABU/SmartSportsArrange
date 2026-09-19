@@ -18,6 +18,7 @@ import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
+import com.sports.schedule.exact.HungarianAssignment;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -1459,32 +1460,35 @@ public class ArrangementService {
                 continue;
             }
 
-            // 非抽签：依道次顺序逐个挑选「当前班在该道次占用最少」的选手落位（对抗式随机平局）
-            for (int l = 0; l < lanes; l++) {
-                if (laneTaken[h][l]) continue;      // 该道已被人工锁定项占用，自动项不得落位
-                Arrangement best = null;
-                int bestScore = Integer.MAX_VALUE;
-                List<Arrangement> tieCands = new ArrayList<>();
-                for (Arrangement cand : inHeat) {
-                    if (cand.getLane() != null) continue;   // 锁定项已有道次，不参与
-                    Long cid = classIdOf(cand.getAthlete());
-                    int score = classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[l];
-                    if (score < bestScore) {
-                        bestScore = score;
-                        tieCands.clear();
-                        tieCands.add(cand);
-                    } else if (score == bestScore) {
-                        tieCands.add(cand);
+            // 非抽签：用匈牙利算法对「组内分道」求精确最优——把运动员→道次建模为最小代价
+            // 分配（代价 = 该班已用该道的次数），一次求出整组最优分道，而非逐道贪心。
+            // 贪心的隐患：先分的班总能抢到「没怎么用过」的道，后分的班被逼到重复道次；
+            // 匈牙利在整组层面同时决定所有道次，代价和严格 ≤ 贪心，且结果确定可复现。
+            List<Arrangement> pending = inHeat.stream()
+                    .filter(a -> a.getLane() == null).collect(Collectors.toList());
+            if (!pending.isEmpty()) {
+                List<Integer> free = new ArrayList<>();
+                for (int l = 0; l < lanes; l++) {
+                    if (!laneTaken[h][l]) free.add(l + 1);
+                }
+                int[] freeLanes = free.stream().mapToInt(Integer::intValue).toArray();
+
+                long[][] cost = new long[pending.size()][freeLanes.length];
+                for (int i = 0; i < pending.size(); i++) {
+                    Long cid = classIdOf(pending.get(i).getAthlete());
+                    int[] use = classLaneUse.computeIfAbsent(cid, k -> new int[lanes]);
+                    for (int j = 0; j < freeLanes.length; j++) {
+                        cost[i][j] = use[freeLanes[j] - 1];
                     }
                 }
-                if (!tieCands.isEmpty()) {
-                    best = rnd != null && tieCands.size() > 1
-                            ? tieCands.get(rnd.nextInt(tieCands.size()))
-                            : tieCands.get(0);
-                    best.setLane(l + 1);
-                    Long cid = classIdOf(best.getAthlete());
-                    classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[l]++;
-                    laneTaken[h][l] = true;
+                int[] laneNos = HungarianAssignment.assignAthletesToLanes(cost, freeLanes);
+                for (int i = 0; i < pending.size(); i++) {
+                    Arrangement a = pending.get(i);
+                    int laneNo = laneNos[i];
+                    a.setLane(laneNo);
+                    laneTaken[h][laneNo - 1] = true;
+                    Long cid = classIdOf(a.getAthlete());
+                    classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[laneNo - 1]++;
                 }
             }
         }
