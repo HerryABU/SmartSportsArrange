@@ -80,6 +80,7 @@ public class SecurityConfig {
                         // ===== 赛程编排（H1 修复越权：学生可写赛程）=====
                         // 读（含 GET）允许 学生/班主任/老师/超管；写（POST/PUT/DELETE，如 save/auto/clear）仅 老师/超管
                         .requestMatchers(HttpMethod.GET, "/api/schedule/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        // 上一行已放行 GET；本行兜底非 GET 的写操作（save/auto/clear），仅老师/超管可写，不覆盖上一行
                         .requestMatchers("/api/schedule/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
                         // ===== 班主任端 =====

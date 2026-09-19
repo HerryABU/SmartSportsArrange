@@ -40,6 +40,9 @@ public class GeneticAlgorithm {
 
     private final ScheduleOptimizer optimizer;
 
+    /** 锦标赛选择中参与比较的候选数（注释曾写「随机挑 k 个」，此处明确 k 的取值） */
+    private static final int TOURNAMENT_SIZE = 2;
+
     /** 一次进化的过程与结果，用于对外解释「种群如何演化」 */
     public record Report(boolean used, int populationSize, int generations, String initialScore,
                          String finalScore, int crossovers, int mutations, List<String> trace) {
@@ -143,7 +146,7 @@ public class GeneticAlgorithm {
     private static SchedulePlan tournament(List<SchedulePlan> population, long seed) {
         Random rnd = new Random(seed);
         SchedulePlan best = population.get(rnd.nextInt(population.size()));
-        for (int i = 1; i < 2; i++) {
+        for (int i = 1; i < TOURNAMENT_SIZE; i++) {
             SchedulePlan c = population.get(rnd.nextInt(population.size()));
             if (c.getScore().compareTo(best.getScore()) > 0) {
                 best = c;

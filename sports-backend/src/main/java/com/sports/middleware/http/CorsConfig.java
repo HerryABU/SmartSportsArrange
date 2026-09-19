@@ -28,11 +28,10 @@ public class CorsConfig {
     @Bean
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
-        // 默认允许的开发/本地来源
+        // 默认允许的开发/本地来源（浏览器不会发送 Origin: http://0.0.0.0，故无需该规则）
         List<String> patterns = new ArrayList<>(List.of(
             "http://localhost:*",      // 前端开发服务器
-            "http://127.0.0.1:*",     // 本地访问
-            "http://0.0.0.0:*"        // 所有本地接口
+            "http://127.0.0.1:*"     // 本地访问
         ));
         // M9 修复：追加可配置的生产/隧道来源
         if (extraOrigins != null && !extraOrigins.isBlank()) {

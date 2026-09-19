@@ -1,7 +1,9 @@
 package com.sports.service;
 
 import com.sports.entity.Arrangement;
+import com.sports.entity.Athlete;
 import com.sports.entity.Event;
+import com.sports.entity.Registration;
 import com.sports.entity.Result;
 import com.sports.repository.ArrangementRepository;
 import com.sports.repository.EventRepository;
@@ -35,12 +37,12 @@ public class ValidationService {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
 
         // 总体口径
-        List<?> approved = registrationRepository.findByStatus("approved");
+        List<Registration> approved = registrationRepository.findByStatus("approved");
         long registrationCount = approved.size();
         Set<Long> regAthletes = approved.stream()
-                .map(a -> ((com.sports.entity.Registration) a).getAthlete())
+                .map(Registration::getAthlete)
                 .filter(Objects::nonNull)
-                .map(com.sports.entity.Athlete::getId)
+                .map(Athlete::getId)
                 .collect(Collectors.toSet());
 
         List<Arrangement> allArr = arrangementRepository.findAll();
