@@ -170,8 +170,10 @@ public class ConflictService {
         int dy = y.getDay() == null ? 1 : y.getDay();
         if (dx != dy) return null; // 不同天，不可能冲突
 
-        int xs = toMin(x.getStartTime()), xe = toMin(x.getEndTime());
-        int ys = toMin(y.getStartTime()), ye = toMin(y.getEndTime());
+        Integer xs = toMin(x.getStartTime()), xe = toMin(x.getEndTime());
+        Integer ys = toMin(y.getStartTime()), ye = toMin(y.getEndTime());
+        if (xs == null || xe == null || ys == null || ye == null)
+            return null; // 时间非法/缺失，无法判定冲突，跳过（与「不同天返回 null」一致）
         if (xe <= xs) xe = xs + 1;   // 容错：结束时间缺失/非法时按 1 分钟处理
         if (ye <= ys) ye = ys + 1;
 
@@ -317,13 +319,21 @@ public class ConflictService {
         return a != null && b != null && a.trim().equals(b.trim());
     }
 
-    private int toMin(String hhmm) {
-        if (hhmm == null || hhmm.isBlank()) return 0;
+    /**
+     * 解析 "HH:mm" → 当日分钟；时间非法或缺失返回 {@code null}（不再返回 0）。
+     *
+     * <p>早期实现返回 0，会被 {@link #gapOf} 当成「午夜 00:00」参与冲突比较，
+     * 使坏数据悄悄引发误报/漏报。现对齐 H2 修复风格：解析失败返回 nullable，
+     * 由调用方显式跳过无法判定冲突的条目。</p>
+     */
+    private Integer toMin(String hhmm) {
+        if (hhmm == null || hhmm.isBlank()) return null;
         String[] p = hhmm.split(":");
+        if (p.length < 2) return null;
         try {
             return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
         } catch (Exception e) {
-            return 0;
+            return null;
         }
     }
 }
