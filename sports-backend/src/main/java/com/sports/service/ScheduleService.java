@@ -106,6 +106,8 @@ public class ScheduleService {
      * 优化模式保持既有 Timefold+GA+LNS 全链路不变。</p>
      */
     private final RuleBasedScheduler ruleBasedScheduler;
+    /** 操作审计（M5 修复：赛程编排高层操作此前无审计，破坏性操作 clear 无留痕） */
+    private final AuditService auditService;
 
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
@@ -568,6 +570,9 @@ public class ScheduleService {
         result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
         // 实时协作：落库完成即广播版本号，让开着同一页面的他人尽早刷新、冲突提前暴露
         collaborationService.notify("schedule", "auto-arranged", "EventSchedule", null);
+        // M5 修复：与 ArrangementController 对齐，高层赛程编排也留审计
+        auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
+                "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size());
         return result;
     }
 
@@ -1829,6 +1834,7 @@ public class ScheduleService {
         }
         log.info("手动保存赛程: 共{}条（轮次按入参/既有行/needHeats 三级保留）", order - 1);
         collaborationService.notify("schedule", "edited", "EventSchedule", null);
+        auditService.record("SCHEDULE_SAVE", "SCHEDULE", null, "手动保存赛程 " + (order - 1) + " 条");
         return buildResult();
     }
 
@@ -1858,6 +1864,7 @@ public class ScheduleService {
         scheduleRepository.deleteAllSchedules();
         log.info("清空项目赛程");
         collaborationService.notify("schedule", "deleted", "EventSchedule", null);
+        auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程");
     }
 
     // ==================== 导出 ====================
