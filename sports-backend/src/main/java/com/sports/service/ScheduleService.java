@@ -17,6 +17,9 @@ import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
+import com.sports.schedule.rule.RuleBasedScheduler;
+import com.sports.schedule.rule.RuleScheduleConfig;
+import com.sports.schedule.rule.RuleUnit;
 import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.schedule.opt.SchedulePlan;
 import com.sports.schedule.opt.ScheduleUnit;
@@ -95,6 +98,14 @@ public class ScheduleService {
     private final GeneticAlgorithm geneticAlgorithm;
     /** 协作中心：编排/调整落库后广播版本号，让「开着同一页面的他人」尽早发现改动、冲突提前暴露 */
     private final ScheduleCollaborationService collaborationService;
+    /**
+     * 规则模式编排器（U39/B36）：三级求解梯度的最低层。
+     *
+     * <p>竞品（豪杰/索美）的「配置参数 → 生成结果」规则引擎的精确实现——确定性 first-fit、
+     * 毫秒级、可复现。用户在前端可切换「规则模式 / 优化模式」：规则模式跳过求解器直接出方案；
+     * 优化模式保持既有 Timefold+GA+LNS 全链路不变。</p>
+     */
+    private final RuleBasedScheduler ruleBasedScheduler;
 
     /** LNS 轮数（0 = 关闭）。每轮都是「破坏-重建」，轮数越多越可能跳出现有局部最优 */
     @Value("${sports.schedule.lns-rounds:2}")
@@ -276,6 +287,13 @@ public class ScheduleService {
 
         scheduleRepository.deleteAllSchedules();
 
+        // ===== 规则模式 / 优化模式分发（U39/B36：三级求解梯度的最低层——竞品规则引擎） =====
+        // RULE（规则模式）：确定性 first-fit 规则编排（蛇形分组 + 固定分道 + 时间栅格 first-fit），
+        //                   毫秒级、可复现、可解释；跳过求解器/GA/LNS，其余（自检/下界/协作/告警）全链路共用。
+        // OPTIMIZE（优化模式，缺省）：既有行为完全不变——Timefold 组合求解 + GA + LNS，
+        //                   规则引擎的解作为求解器的初始解（规则是起点，优化是提升）。
+        RuleScheduleConfig ruleConfig = RuleScheduleConfig.from(override);
+
         // ===== U28/B25：约束求解（Timefold）=====
         // 在落库之前先把「谁排在哪个并发位的哪一刻、每个项目分到多少分钟」整体求出来。
         // 「求解」与「持久化」解耦的好处：求解失败或超时（solvedPlacement 为空）时零副作用回退贪心，
@@ -283,9 +301,16 @@ public class ScheduleService {
         Map<Unit, Placement> solvedPlacement = new IdentityHashMap<>();
         int[] solverStat = {0, 0};   // {采用求解结果的项目数, 求解后的残余兼项冲突数}
         Map<String, Object> portfolioInfo = new LinkedHashMap<>();   // 算法选择的可观测信息
-        fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
-                fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
-                windows, event2Group, unitInterval, solvedPlacement, solverStat, portfolioInfo);
+        portfolioInfo.put("mode", ruleConfig.ruleMode() ? "rule" : "optimize");
+        if (ruleConfig.ruleMode()) {
+            fillSolvedFromRules(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
+                    fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
+                    windows, event2Group, unitInterval, ruleConfig, solvedPlacement, portfolioInfo);
+        } else {
+            fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
+                    fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
+                    windows, event2Group, unitInterval, solvedPlacement, solverStat, portfolioInfo);
+        }
         if (solverStat[0] > 0) {
             log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",
                     solverStat[0], solverStat[1]);
@@ -458,6 +483,8 @@ public class ScheduleService {
 
         Map<String, Object> result = buildResult();
         result.put("warnings", warnings);
+        // U39/B36：本次编排使用的模式（rule=规则模式 / optimize=优化模式），供前端展示与核对
+        result.put("mode", ruleConfig.ruleMode() ? RuleScheduleConfig.MODE_RULE : RuleScheduleConfig.MODE_OPTIMIZE);
         // B06/U05：完整兼项冲突清单（warnings 里只放汇总，避免上百条告警淹没现场）
         result.put("conflicts", conflicts);
         // B05/U06：新增「可行性预检」与「压缩亏损明细」两个结构化字段，让现场能算清缺口
@@ -598,6 +625,86 @@ public class ScheduleService {
      * <p>注意：候选里的第一个（最早的）与旧实现完全相同，因此「零冲突时行为不变」，
      * 只有真的会撞车时才发生位移——改动是可解释、可回归的。</p>
      */
+    /**
+     * 规则模式编排（U39/B36）：把单元适配成 {@link RuleUnit}，交给确定性规则编排器出方案。
+     *
+     * <p>与 {@link #fillSolvedFromSolver} 完全对称：同样只写回 {@code solvedPlacement}
+     * （及 {@code unit.duration}），真正的落库仍由主循环统一完成——「规则」与「持久化」解耦，
+     * 规则排不下的单元由主循环贪心兜底，接口在任何情况下都能给出方案。</p>
+     *
+     * <p>组次/道次级规则（蛇形分组、固定分道）在 {@code saveSchedule → autoArrangeFor} 的既有管线
+     * 中生效，本方法只负责「时间线」级别（哪个项目、哪天、哪个时段、哪刻开始、多长时间）。</p>
+     */
+    private void fillSolvedFromRules(List<Unit> units, Pool trackPool, Pool fieldPool,
+                                     Map<String, Pool> dedicatedPools, String mainVenueCode,
+                                     Set<String> fieldVenueCodes, Map<String, String> codeToName,
+                                     Map<String, Integer> codeToParallelMax,
+                                     int trackSlots, int fieldSlots, List<Window> windows,
+                                     Map<Long, String> event2Group, int unitInterval,
+                                     RuleScheduleConfig ruleConfig,
+                                     Map<Unit, Placement> solvedPlacement,
+                                     Map<String, Object> portfolioInfo) {
+        // ① 与求解器完全相同的池解析/候选栅格口径（保证规则解与求解解可互替）
+        Map<Unit, Pool> unitPool = new IdentityHashMap<>();
+        for (Unit u : units) {
+            if (u.participants <= 0) continue;
+            unitPool.put(u, resolvePool(u, trackPool, fieldPool, mainVenueCode, fieldVenueCodes,
+                    codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
+        }
+        if (unitPool.isEmpty()) return;
+
+        Map<String, List<Placement>> rangeByPool = new LinkedHashMap<>();
+        for (Pool p : unitPool.values()) {
+            rangeByPool.computeIfAbsent(p.label, k -> placementsOf(p, windows, unitInterval));
+        }
+
+        // ② 适配为规则层公共 DTO（不让 ScheduleService 的私有内部类泄漏出服务层）
+        List<RuleUnit> ruleUnits = new ArrayList<>();
+        Map<String, Unit> unitByKey = new LinkedHashMap<>();
+        for (int i = 0; i < units.size(); i++) {
+            Unit u = units.get(i);
+            Pool pool = unitPool.get(u);
+            if (pool == null) continue;
+            List<Placement> range = rangeByPool.get(pool.label);
+            List<Placement> cands = new ArrayList<>();
+            int floor = minDurationOf(u);
+            for (Placement p : range) {
+                if (p.getMaxDuration() >= floor) cands.add(p);
+            }
+            if (cands.isEmpty()) continue;   // 该池整块放不下 → 交给贪心如实报「排不下」
+            String key = "u" + i;
+            unitByKey.put(key, u);
+            ruleUnits.add(new RuleUnit(key, u.event.getId(), u.event.getName(), u.grade, u.track,
+                    pool.label, u.track ? null : event2Group.get(u.event.getId()),
+                    Math.max(intervalOf(u, unitInterval), 1), u.rawDuration, floor,
+                    sortedAthletes(u), cands));
+        }
+        if (ruleUnits.isEmpty()) return;
+
+        // ③ 规则编排（确定性、毫秒级）
+        RuleBasedScheduler.RulePlan plan = ruleBasedScheduler.plan(ruleUnits, ruleConfig);
+        for (Map.Entry<String, RuleBasedScheduler.Assignment> e : plan.assignments().entrySet()) {
+            Unit u = unitByKey.get(e.getKey());
+            if (u == null) continue;
+            solvedPlacement.put(u, e.getValue().placement());
+            u.duration = e.getValue().duration();
+        }
+        if (portfolioInfo != null) {
+            portfolioInfo.put("rule", Map.of(
+                    "placed", plan.placedCount(),
+                    "unplaced", plan.unplacedCount(),
+                    "residualConflicts", plan.residualConflicts(),
+                    "elapsedMillis", plan.elapsedMillis(),
+                    "lanePolicy", ruleConfig.lanePolicy().name(),
+                    "advanceCount", ruleConfig.advanceCount(),
+                    "conflictBufferMinutes", ruleConfig.conflictBufferMinutes()));
+            portfolioInfo.put("basis", "规则模式：确定性 first-fit（蛇形分组 + 固定分道 + 时间栅格），"
+                    + "毫秒级可复现；自检与下界评估照常执行");
+        }
+        log.info("规则编排: 排入 {}/{} 个单元, 残余兼项冲突 {} 处, 耗时 {}ms",
+                plan.placedCount(), ruleUnits.size(), plan.residualConflicts(), plan.elapsedMillis());
+    }
+
     /**
      * 用约束求解器求出全局编排方案（每个项目的落位 + 时长）。
      *
