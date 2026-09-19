@@ -15,6 +15,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
@@ -40,6 +42,7 @@ public class RegistrationService {
     private final ClassInfoRepository classInfoRepository;
     private final SystemConfigRepository systemConfigRepository;
     private final NumberRuleService numberRuleService;
+    private final AuditService auditService;
 
     /** 分页查询报名（班主任自动限本人绑定班级，无法越班查询）——返回扁平 VO，含 运动员/班级/年级/项目/类型 等审核列表所需字段 */
     @Transactional(readOnly = true)
@@ -678,7 +681,17 @@ public class RegistrationService {
             log.warn("审核后自动生成号码布失败（已忽略）: {}", ex.getMessage());
         }
         log.info("一键全部通过: eventId={}, classId={}, approved={}", eventId, classId, pendingList.size());
-        return pendingList.size();
+        // L9 修复：补审计（对比 ArrangementController 每条操作均审计）。
+        // 用 afterCommit：外层 @Transactional 提交、释放 SQLite 锁后再写审计，规避 REQUIRES_NEW 锁竞争（同 M5 修复）。
+        int approvedCount = pendingList.size();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                auditService.record("REGISTRATION_APPROVE_ALL", "REGISTRATION", null,
+                        "一键全部通过 eventId=" + eventId + ", classId=" + classId + ", 通过" + approvedCount + "条");
+            }
+        });
+        return approvedCount;
     }
 
     /** 班主任无审核权限时抛错 */
