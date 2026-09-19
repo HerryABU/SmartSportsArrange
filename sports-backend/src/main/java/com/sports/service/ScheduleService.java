@@ -18,7 +18,6 @@ import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.verify.ScheduleVerifier;
-import com.sports.schedule.verify.ScheduleViolation;
 import com.sports.schedule.opt.SchedulePlan;
 import com.sports.schedule.opt.ScheduleUnit;
 import jakarta.servlet.http.HttpServletResponse;
@@ -32,10 +31,11 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static com.sports.schedule.support.ScheduleSupport.*;
 
 /**
  * 项目赛程编排服务（项目编排）
@@ -2046,18 +2046,6 @@ public class ScheduleService {
         }
     }
 
-    // ==================== 工具方法 ====================
-
-    private static int parseHhMm(String hhmm) {
-        if (hhmm == null || !hhmm.contains(":")) return 0;
-        try {
-            String[] p = hhmm.trim().split(":");
-            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
     // ==================== U29/B26：自检数据装配 ====================
 
     /**
@@ -2147,152 +2135,6 @@ public class ScheduleService {
         return max;
     }
 
-    /** 解析 "HH:mm"（与 {@link #fmt} 互逆）；解析不了就返回 0——不让一行脏数据把整次自检拖崩 */
-    private static int parseMinute(String hhmm) {
-        if (hhmm == null || hhmm.isBlank()) return 0;
-        String t = hhmm.trim();
-        int colon = t.indexOf(':');
-        try {
-            if (colon < 0) return Integer.parseInt(t);
-            int h = Integer.parseInt(t.substring(0, colon));
-            int m = Integer.parseInt(t.substring(colon + 1));
-            return Math.max(0, h * 60 + m);
-        } catch (NumberFormatException ex) {
-            return 0;
-        }
-    }
-
-    /** 摘出第一条阻塞级问题的摘要，用于 warnings 里的一行提示（完整清单走 verification 字段） */
-    @SuppressWarnings("unchecked")
-    private static String firstViolationBrief(Map<String, Object> verification) {
-        Object vs = verification.get("violations");
-        if (!(vs instanceof List<?> list)) return "";
-        for (Object o : list) {
-            if (!(o instanceof Map)) continue;
-            Map<String, Object> m = (Map<String, Object>) o;
-            if (!ScheduleViolation.LEVEL_BLOCKER.equals(String.valueOf(m.get("level")))) continue;
-            return String.valueOf(m.get("subject")) + " → " + String.valueOf(m.get("detail"));
-        }
-        return "";
-    }
-
-    private static String fmt(int minuteOfDay) {
-        int m = ((minuteOfDay % 1440) + 1440) % 1440;
-        return String.format("%02d:%02d", m / 60, m % 60);
-    }
-
-    private static String shiftDate(String startDate, int offset) {
-        try {
-            return LocalDate.parse(startDate).plusDays(offset).toString();
-        } catch (Exception e) {
-            return startDate;
-        }
-    }
-
-    private static int intVal(Object v, int def) {
-        if (v instanceof Number n) return n.intValue();
-        if (v != null) {
-            try { return Integer.parseInt(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
-        }
-        return def;
-    }
-
-    /** 读取 double 配置项，解析失败返回默认值（B05/U07：压缩告警阈值） */
-    private static double dblVal(Object v, double def) {
-        if (v instanceof Number n) return n.doubleValue();
-        if (v != null) {
-            try { return Double.parseDouble(String.valueOf(v).trim()); } catch (NumberFormatException ignored) {}
-        }
-        return def;
-    }
-
-    private static String str(Object v, String def) {
-        return v != null && !String.valueOf(v).isBlank() ? String.valueOf(v) : def;
-    }
-
-    private static String n(String s) { return s != null ? s : ""; }
-
-    /** 两个年级是否同一（空 = 不分年级，视为相同） */
-    private static boolean sameGrade(String a, String b) {
-        boolean ea = a == null || a.isBlank();
-        boolean eb = b == null || b.isBlank();
-        if (ea && eb) return true;
-        if (ea || eb) return false;
-        return Grades.same(a, b);
-    }
-
-    /** 解析自定义项目顺序（eventId 列表） */
-    private static List<Long> longList(Object v) {
-        List<Long> out = new ArrayList<>();
-        if (!(v instanceof List<?> list)) return out;
-        for (Object o : list) {
-            Long id = asLong(o);
-            if (id != null) out.add(id);
-        }
-        return out;
-    }
-
-    /** 解析田赛分组 [{name, eventIds:[...]}] → eventId → 组名（同名视为同组） */
-    @SuppressWarnings("unchecked")
-    private static Map<Long, String> parseFieldGroups(Object v) {
-        Map<Long, String> map = new LinkedHashMap<>();
-        if (!(v instanceof List<?> list)) return map;
-        int idx = 0;
-        for (Object o : list) {
-            if (!(o instanceof Map)) continue;
-            Map<String, Object> g = (Map<String, Object>) o;
-            String name = str(g.get("name"), null);
-            if (name == null || name.isBlank()) name = "田赛组" + (++idx);
-            if (!(g.get("eventIds") instanceof List<?> ids)) continue;
-            for (Object idObj : ids) {
-                Long id = asLong(idObj);
-                if (id != null) map.put(id, name);
-            }
-        }
-        return map;
-    }
-
-    /** 解析场地列表：兼容旧字符串数组 ["田径场", …] 与新对象数组 [{name, code}, …] */
-    @SuppressWarnings("unchecked")
-    private static List<String> venueNames(Object v) {
-        List<String> out = new ArrayList<>();
-        if (!(v instanceof List<?> list)) return out;
-        for (Object o : list) {
-            if (o == null) continue;
-            if (o instanceof Map<?, ?> m) {
-                Object name = ((Map<String, Object>) m).get("name");
-                if (name != null && !String.valueOf(name).isBlank()) out.add(String.valueOf(name).trim());
-            } else {
-                String s = String.valueOf(o).trim();
-                if (!s.isEmpty()) out.add(s);
-            }
-        }
-        return out;
-    }
-
-    /** 解析场地列表为完整 {name, code} 对象列表（保留编码，用于按项目级场地编码绑定并发池） */
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> venueListOf(Object v) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        if (!(v instanceof List<?> list)) return out;
-        for (Object o : list) {
-            if (!(o instanceof Map<?, ?> m)) continue;
-            Map<String, Object> mm = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> en : m.entrySet()) mm.put(String.valueOf(en.getKey()), en.getValue());
-            boolean hasName = mm.get("name") != null && !String.valueOf(mm.get("name")).isBlank();
-            boolean hasCode = mm.get("code") != null && !String.valueOf(mm.get("code")).isBlank();
-            if (hasName || hasCode) out.add(mm);
-        }
-        return out;
-    }
-
-    /** 取场地对象的编码（trim 后）；无编码返回 null */
-    private static String codeOf(Map<String, Object> v) {
-        if (v == null) return null;
-        Object code = v.get("code");
-        return code != null && !String.valueOf(code).isBlank() ? String.valueOf(code).trim() : null;
-    }
-
     /**
      * 解析单元应使用哪个并发池：
      * <ul>
@@ -2321,57 +2163,5 @@ public class ScheduleService {
         Pool p = new Pool("场地-" + code, slots, java.util.List.of(name));
         dedicatedPools.put(code, p);
         return p;
-    }
-
-    /** 取某类型的场地子集（type 精确匹配） */
-    private static List<Map<String, Object>> venuesOfType(List<Map<String, Object>> venueList, String type) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (Map<String, Object> v : venueList) {
-            Object t = v.get("type");
-            if (t != null && type.equalsIgnoreCase(String.valueOf(t).trim())) out.add(v);
-        }
-        return out;
-    }
-
-    private static String nameOf(Map<String, Object> v) {
-        Object n = v.get("name");
-        return n != null && !String.valueOf(n).isBlank() ? String.valueOf(n).trim() : codeOf(v);
-    }
-
-    private static Long asLong(Object o) {
-        if (o instanceof Number n) return n.longValue();
-        if (o != null) {
-            try { return Long.parseLong(String.valueOf(o).trim()); } catch (NumberFormatException ignored) {}
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> castList(Object v) {
-        if (!(v instanceof List<?> list)) return new ArrayList<>();
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (Object o : list) {
-            if (o instanceof Map) out.add(new LinkedHashMap<>((Map<String, Object>) o));
-        }
-        return out;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> strList(Object v) {
-        List<String> out = new ArrayList<>();
-        if (v instanceof List<?> list) {
-            for (Object o : list) {
-                if (o == null) continue;
-                String s = String.valueOf(o).trim();
-                if (!s.isEmpty()) out.add(s);
-            }
-            return out;
-        }
-        if (v instanceof String s && !s.isBlank()) {
-            for (String part : s.split("[,，]")) {
-                if (!part.trim().isEmpty()) out.add(part.trim());
-            }
-        }
-        return out;
     }
 }
