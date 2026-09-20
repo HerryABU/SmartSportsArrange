@@ -110,7 +110,8 @@ DSL 不是替代现有算法，而是在算法之上加一层「可编程的编�
 
 ## 九、第一阶段（形态一 · 规则注入）落地进度
 
-> 状态：**执行内核 + 持久化 + REST 已完成并测试通过；编排结果可见；求解器深度注入待续。**
+> 状态：**形态一（规则注入）已完成闭环** —— 内核 / 持久化 / REST / **改写落位** / **Timefold 动态约束** /
+> **前端规则页（积木↔DSL 双模式同步 + 运行面板）** 全部落地并测试通过（版本 2.7.1）；仅剩沙箱加固。
 
 ### 已实现（多文件，遵循「DSL 拆多文件」约束）
 
@@ -152,9 +153,19 @@ if (teamMembers > 1 && heat > 6) { hard += 100; veto }
 - **失败绝不拖垮编排**：脚本异常/超时统一降级为带 error 的结果并并入 `warnings`。
 - 测试：`BuiltinRuleScriptEngineTest 10`、`RuleInjectionServiceTest 4`、`RuleScriptStoreTest 2`、`ArrangementServiceTest 15`，全绿。
 
-### 待续（第二阶段前的收尾）
+### 收尾已完成（2026-09-20，版本 2.7.1）
 
-1. 把注入结果**真正作用于落位选择**（当前为「如实上报 + 硬否决告警」，尚未改写 allocation）；
-2. 与 Timefold 求解器打通（动态 `ConstraintProvider`），真正「注入求解器」；
-3. 前端脚本编辑器 + 试运行面板（代码模式；积木模式属形态四）；
-4. 沙箱加固（JSR-223 引擎级类/方法白名单）。
+1. ✅ **改写落位**：`injectPenalty(运动员,候选组)` 加权惩罚（hard×1000 + medium×10 + soft，veto=哨兵）；
+   蛇形款型 `pickHeatByInjection`、班级均衡款型 `pickAmongCandidates`（人数平局时按惩罚择优，完全平局才随机）。
+   **无脚本时惩罚恒为 0 → 既有编排行为不变。**
+2. ✅ **打通 Timefold**：`RuleInjectionHolder` 静态桥（求解器反射实例化 ConstraintProvider、无法构造注入）+
+   3 条动态约束 `ruleInjectionHard/Medium/Soft`（veto → ≥1 硬分）；热路径按「单元|落位」记忆、脚本变更失效；
+   未配脚本时 `active()=false` → **零评分零开销**。
+3. ✅ **前端**：`/teacher/rules`「规则注入」页 —— 脚本管理 + **积木 ↔ DSL 双模式实时同步**（共享 `utils/ruleDsl.js` 的同一棵 AST）
+   + **运行面板**（上下文 JSON → 试运行 → 命中/增量/错误）；编排结果回显 `ruleInjection`。
+4. ⏳ 沙箱加固（JSR-223 引擎级类/方法白名单）：当前内置路径按构造即沙箱；JSR-223 路径仅受控绑定 + 超时。
+
+### 性能前提（务必保持）
+
+- `RuleScriptEvaluator` 用**共享守护线程池**（每落位一次评估，绝不能每次新建池）；
+- `RuleInjectionService` 缓存脚本列表（save 失效）+ 求解记忆表（避免查库与重复求值）。
