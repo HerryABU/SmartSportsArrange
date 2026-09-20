@@ -75,6 +75,12 @@ const routes = [
         meta: { title: '道次编排' }
       },
       {
+        path: 'rules',
+        name: 'TeacherRuleScripts',
+        component: () => import('@/views/teacher/RuleScripts.vue'),
+        meta: { title: '规则注入' }
+      },
+      {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),

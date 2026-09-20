@@ -20,6 +20,7 @@
         <el-menu-item-group title="② 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="③ 统计排名">
@@ -62,6 +63,7 @@
         <el-menu-item-group title="② 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="③ 统计排名">
