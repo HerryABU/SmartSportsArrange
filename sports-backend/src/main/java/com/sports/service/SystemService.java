@@ -534,6 +534,8 @@ public class SystemService {
         Map<String, Object> def = new LinkedHashMap<>();
         def.put("hard_constraints", new LinkedHashMap<>(Map.of(
                 "ban_cross_grade", true, "gender_separate", true)));
+        // L1「自定义规则」款型（用户选择用哪一款来分组分道）：class / snake / snakeSeed
+        def.put("l1_rule", com.sports.schedule.rule.l1.L1Rule.CLASS.id);
         Map<String, Object> soft = new LinkedHashMap<>();
         soft.put("ban_same_class_same_lane", false);
         soft.put("prefer_diff_heat", true);

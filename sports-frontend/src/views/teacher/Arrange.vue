@@ -638,7 +638,8 @@ async function loadL1Rules() {
   try {
     const rs = await request.get('/arrange/l1-rules')
     l1Rules.value = Array.isArray(rs) ? rs : (rs?.records || [])
-    if (!l1Rules.value.some(r => r.id === arrangeConfig.ruleConfig.l1Rule)) {
+    // 仅在目录非空且不含当前款型时回退默认（目录未就绪时不覆盖，避免冲掉服务端已保存的款型）
+    if (l1Rules.value.length && !l1Rules.value.some(r => r.id === arrangeConfig.ruleConfig.l1Rule)) {
       arrangeConfig.ruleConfig.l1Rule = 'class'
     }
   } catch (e) {
@@ -649,6 +650,25 @@ async function loadL1Rules() {
     ]
   }
 }
+
+// ---- L1 款型持久化：记住上次选的款型 ----
+// 已保存的编排规则快照（写回时合并，避免覆盖其它规则项——后端 saveArrangeRule 是整份替换）
+let savedArrangeRule = null
+async function persistL1Rule(id) {
+  try {
+    const base = savedArrangeRule || (await request.get('/system/arrange-rule')) || {}
+    const body = { ...base, l1_rule: id }
+    await request.put('/system/arrange-rule', body)
+    savedArrangeRule = body
+  } catch (e) {
+    console.error('保存 L1 款型失败', e)
+  }
+}
+watch(() => arrangeConfig.ruleConfig.l1Rule, (id) => {
+  if (!id) return
+  if (savedArrangeRule && savedArrangeRule.l1_rule === id) return // 与已保存一致，无需回写
+  persistL1Rule(id)
+})
 
 // 搜索过滤
 watch(searchKeyword, (val) => {
@@ -691,15 +711,17 @@ onMounted(async () => {
     console.error('加载项目列表失败', e)
   }
 
-  // 加载已保存的编排规则，作为默认编排参数
+  // 加载已保存的编排规则，作为默认编排参数（含 L1 款型 l1_rule —— 记住上次选的款型）
   try {
     const rule = await request.get('/system/arrange-rule')
+    savedArrangeRule = rule || null
     if (rule && rule.soft_constraints) {
       const s = rule.soft_constraints
       if (s.prefer_diff_heat !== undefined) arrangeConfig.ruleConfig.preferDiffHeat = !!s.prefer_diff_heat
       if (s.prefer_diff_lane !== undefined) arrangeConfig.ruleConfig.preferDiffLane = !!s.prefer_diff_lane
       if (s.ban_same_class_same_lane !== undefined) arrangeConfig.ruleConfig.banSameClassSameLane = !!s.ban_same_class_same_lane
     }
+    if (rule && rule.l1_rule) arrangeConfig.ruleConfig.l1Rule = String(rule.l1_rule)
   } catch (e) {
     console.error('加载编排规则失败', e)
   }

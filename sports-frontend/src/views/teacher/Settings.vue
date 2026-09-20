@@ -800,6 +800,9 @@ const numberPreview = ref('')
 
 // 编排规则
 const arrangeRuleForm = reactive({
+  // L1「自定义规则」款型（class/snake/snakeSeed）：此处仅做整份回写时的保留，避免保存其它规则时被清掉；
+  // 款型的选择入口在「道次编排」页（选择后自动持久化到本配置）
+  l1Rule: 'class',
   soft: {
     prefer_diff_heat: true,
     prefer_diff_lane: true,
@@ -1411,6 +1414,7 @@ async function fetchArrangeRule() {
     if (res) {
       if (res.soft_constraints) Object.assign(arrangeRuleForm.soft, res.soft_constraints)
       if (res.algorithm_params) Object.assign(arrangeRuleForm.params, res.algorithm_params)
+      if (res.l1_rule) arrangeRuleForm.l1Rule = String(res.l1_rule)
     }
   } catch (e) { console.error(e) }
 }
@@ -1418,6 +1422,7 @@ async function saveArrangeRule() {
   loading.value = true
   try {
     await request.put('/system/arrange-rule', {
+      l1_rule: arrangeRuleForm.l1Rule,
       soft_constraints: { ...arrangeRuleForm.soft },
       algorithm_params: { ...arrangeRuleForm.params }
     })
