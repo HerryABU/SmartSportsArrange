@@ -1,7 +1,7 @@
 {
   "name": "sports-frontend",
   "private": true,
-  "version": "2.6.8",
+  "version": "2.7.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
