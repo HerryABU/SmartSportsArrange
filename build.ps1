@@ -35,6 +35,17 @@ if (-not $SkipFrontend) {
 
 if (-not $SkipBackend) {
   Write-Host "[2/2] Backend (Maven)..." -ForegroundColor Magenta
+  # 防御性清扫：src/main/resources 下若残留 static_old_*（手工改名或中断的构建留下的旧前端产物），
+  # Maven 会把它们当普通资源原样打进 jar（BOOT-INF/classes/static_old_*/…）——
+  # 既撑大产物，又把垃圾暴露成可访问路径（/static_old_xxxx/…）。打包前一律移出。
+  $resDir = Join-Path $root "sports-backend\src\main\resources"
+  $strays = @(Get-ChildItem -Path $resDir -Directory -Filter "static_old_*" -ErrorAction SilentlyContinue)
+  if ($strays.Count -gt 0) {
+    $trashDir = Join-Path $root "_trash"
+    if (-not (Test-Path $trashDir)) { New-Item -ItemType Directory -Force -Path $trashDir | Out-Null }
+    foreach ($d in $strays) { Move-Item -Force $d.FullName $trashDir -ErrorAction SilentlyContinue }
+    Write-Host "[2/2] 已移出 $($strays.Count) 个残留 static_old_*（否则会被打进 jar）" -ForegroundColor Yellow
+  }
   Set-Location "$root\sports-backend"
   .\mvnw.cmd clean package -DskipTests
   if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Backend failed" -ForegroundColor Red; exit 1 }
