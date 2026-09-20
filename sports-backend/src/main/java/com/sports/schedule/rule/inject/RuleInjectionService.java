@@ -36,13 +36,47 @@ public class RuleInjectionService {
     /** 仅启用脚本的缓存（assess 只用到启用的）。 */
     private volatile List<RuleScript> enabledCache;
 
+    /** 求解热路径的记忆表（key = 单元|落位），上限后整体清空（防无界增长）。 */
+    private final Map<String, RuleOutcome> memo = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MEMO_MAX = 200_000;
+
     public RuleInjectionService(RuleScriptStore store) {
         this.store = store;
         this.evaluator = new RuleScriptEvaluator();
+        // 绑定静态桥：供 Timefold 约束流（反射实例化、无法构造注入）取用
+        RuleInjectionHolder.bind(this);
     }
 
     public RuleScriptEvaluator evaluator() {
         return evaluator;
+    }
+
+    /** 是否存在启用脚本（供约束流零成本短路）。 */
+    public boolean hasEnabledScripts() {
+        if (enabledCache == null) {
+            list();
+        }
+        return enabledCache != null && !enabledCache.isEmpty();
+    }
+
+    /**
+     * 带记忆的评估：Timefold 求解热路径会反复评估同一 (单元, 落位) 组合，
+     * 故按调用方给出的 cacheKey 记忆结果；脚本变更（save）时整体失效。
+     */
+    public RuleOutcome assessCached(String cacheKey, RuleContext context) {
+        if (!hasEnabledScripts() || cacheKey == null) {
+            return assess(context);
+        }
+        RuleOutcome hit = memo.get(cacheKey);
+        if (hit != null) {
+            return hit;
+        }
+        RuleOutcome o = assess(context);
+        if (memo.size() > MEMO_MAX) {
+            memo.clear();
+        }
+        memo.put(cacheKey, o);
+        return o;
     }
 
     /** 全部规则脚本（带缓存）。 */
@@ -78,6 +112,7 @@ public class RuleInjectionService {
         store.save(scripts);
         cache = null;
         enabledCache = null;
+        memo.clear();   // 脚本变更 → 记忆结果失效
         return list();
     }
 

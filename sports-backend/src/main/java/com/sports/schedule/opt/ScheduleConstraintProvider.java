@@ -5,6 +5,13 @@ import ai.timefold.solver.core.api.score.stream.Constraint;
 import ai.timefold.solver.core.api.score.stream.ConstraintFactory;
 import ai.timefold.solver.core.api.score.stream.ConstraintProvider;
 import ai.timefold.solver.core.api.score.stream.Joiners;
+import com.sports.schedule.rule.inject.RuleContext;
+import com.sports.schedule.rule.inject.RuleInjectionHolder;
+import com.sports.schedule.rule.inject.RuleInjectionService;
+import com.sports.schedule.rule.inject.RuleOutcome;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 赛程编排的约束定义（约束流）。
@@ -56,7 +63,98 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 keepRealDuration(cf),
                 preferEarlierDay(cf),
                 preferEarlierStart(cf),
+                // L1 规则注入（形态一）：用户规则片段 → 动态约束。未配置脚本时零成本短路。
+                ruleInjectionHard(cf),
+                ruleInjectionMedium(cf),
+                ruleInjectionSoft(cf),
         };
+    }
+
+    // ==================== L1 规则注入（形态一 → 动态约束） ====================
+
+    /**
+     * 硬：用户规则片段判定的「否决 / 硬违规」。权重取规则累计 hard（veto 记 1）。
+     *
+     * <p>约束名必须 ASCII（见类注释）；规则来自 {@link RuleInjectionHolder}（Spring 绑定），
+     * 无启用脚本时 {@code active()} 为 false，本约束不产生任何评分与开销。</p>
+     */
+    private Constraint ruleInjectionHard(ConstraintFactory cf) {
+        return cf.forEachIncludingUnassigned(ScheduleUnit.class)
+                .filter(u -> u.isPlaced() && RuleInjectionHolder.active())
+                .filter(u -> ruleHard(u) > 0)
+                .penalize(HardMediumSoftScore.ONE_HARD, u -> clamp(ruleHard(u)))
+                .asConstraint("ruleInjectionHard");
+    }
+
+    /** 中：用户规则片段累计的 medium 惩罚。 */
+    private Constraint ruleInjectionMedium(ConstraintFactory cf) {
+        return cf.forEachIncludingUnassigned(ScheduleUnit.class)
+                .filter(u -> u.isPlaced() && RuleInjectionHolder.active())
+                .filter(u -> ruleMedium(u) > 0)
+                .penalize(HardMediumSoftScore.ONE_MEDIUM, u -> clamp(ruleMedium(u)))
+                .asConstraint("ruleInjectionMedium");
+    }
+
+    /** 软：用户规则片段累计的 soft 惩罚。 */
+    private Constraint ruleInjectionSoft(ConstraintFactory cf) {
+        return cf.forEachIncludingUnassigned(ScheduleUnit.class)
+                .filter(u -> u.isPlaced() && RuleInjectionHolder.active())
+                .filter(u -> ruleSoft(u) > 0)
+                .penalize(HardMediumSoftScore.ONE_SOFT, u -> clamp(ruleSoft(u)))
+                .asConstraint("ruleInjectionSoft");
+    }
+
+    private static int clamp(long v) {
+        return (int) Math.max(0, Math.min(Integer.MAX_VALUE, v));
+    }
+
+    static long ruleHard(ScheduleUnit u) {
+        RuleOutcome o = ruleOutcomeOf(u);
+        return o.veto() ? Math.max(1, o.hard()) : o.hard();
+    }
+
+    static long ruleMedium(ScheduleUnit u) {
+        return ruleOutcomeOf(u).medium();
+    }
+
+    static long ruleSoft(ScheduleUnit u) {
+        return ruleOutcomeOf(u).soft();
+    }
+
+    /** 评估单元当前落位下的规则注入结果（按「单元|落位」记忆，避免热路径重复求值）。 */
+    static RuleOutcome ruleOutcomeOf(ScheduleUnit u) {
+        RuleInjectionService svc = RuleInjectionHolder.get();
+        if (svc == null || u == null || !u.isPlaced() || u.getPlacement() == null) {
+            return RuleOutcome.empty();
+        }
+        Placement p = u.getPlacement();
+        String key = u.getKey() + "|" + p.getDay() + "|" + p.getStartMinute() + "|"
+                + p.getPoolLabel() + "|" + u.getDuration();
+        return svc.assessCached(key, ruleContextOf(u));
+    }
+
+    /** 组装规则上下文：约束流可见的字段（事件/年级/场池/落位）——用户规则片段据此判定。 */
+    static RuleContext ruleContextOf(ScheduleUnit u) {
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("id", u.getEventId());
+        ev.put("name", u.getEventName());
+        ev.put("track", u.isTrack());
+        Map<String, Object> pl = new LinkedHashMap<>();
+        Placement p = u.getPlacement();
+        if (p != null) {
+            pl.put("day", p.getDay());
+            pl.put("startMinute", p.getStartMinute());
+            pl.put("poolLabel", p.getPoolLabel());
+        }
+        return RuleContext.builder()
+                .put("event", ev)
+                .put("grade", u.getGrade())
+                .put("track", u.isTrack())
+                .put("poolLabel", u.getPoolLabel())
+                .put("groupKey", u.getGroupKey())
+                .put("duration", u.getDuration())
+                .put("placement", pl)
+                .build();
     }
 
     /** 硬：每个单元都必须落到某个位置上（排不下就得如实报，而不是悄悄丢失） */
