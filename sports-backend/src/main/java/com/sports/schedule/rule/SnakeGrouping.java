@@ -96,6 +96,111 @@ public final class SnakeGrouping {
         return out;
     }
 
+    // ==================== L1：按「年级/班级」顺序的蛇形分组入口 ====================
+    //
+    // 说明（L1 基础层，非 L2/L3 优化层）：
+    //   · 种子蛇形 assign(n, heats)            → 按成绩/种子强度均衡（竞技标准分组）
+    //   · 年级/班级蛇形 assignByGradeClass(...) → 按「年级 → 班级」顺序 S 形分散（本校常规编排）
+    //   · 团体/趣味 assignTeamUnits(...)        → 同班同组号（一整支队伍）不可拆分，整队同组
+    // 三者均为确定性 O(n) 纯函数，输出「每组包含哪些原始位置」，由调用方映射回运动员/道次。
+
+    /**
+     * L1 蛇形分组（按「年级/班级」顺序）—— 个体项目。
+     *
+     * <p>输入为与人数等长的排序键（建议 {@code 年级 + "\u0001" + 班级}）；先按键<b>稳定排序</b>
+     * （同键保持原相对顺序），再对排序后的位置做 S 形分配。效果：同年级/同班级的运动员被
+     * 均匀摊到各组，避免某组被单一班级占满。</p>
+     *
+     * @param gradeClassKeys 与人数等长的排序键（null/空视为空串，排在最前）
+     * @param heats          组数（≥ 1）
+     * @return 每组包含的<b>原始位置</b>列表（长度 = heats，含可能为空的末尾组）
+     */
+    public static List<List<Integer>> assignByGradeClass(List<String> gradeClassKeys, int heats) {
+        if (gradeClassKeys == null) throw new IllegalArgumentException("排序键列表不能为 null");
+        if (heats <= 0) throw new IllegalArgumentException("组数必须 ≥ 1: " + heats);
+        int n = gradeClassKeys.size();
+
+        // 位置 0..n-1 按 (键, 原下标) 稳定升序
+        List<Integer> order = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) order.add(i);
+        order.sort((a, b) -> {
+            int byKey = keyOf(gradeClassKeys.get(a)).compareTo(keyOf(gradeClassKeys.get(b)));
+            return byKey != 0 ? byKey : Integer.compare(a, b);
+        });
+
+        // 槽位蛇形 → 映射回排序后的原始位置
+        List<List<Integer>> slots = assign(n, heats);
+        List<List<Integer>> groups = new ArrayList<>(heats);
+        for (List<Integer> slotGroup : slots) {
+            List<Integer> mapped = new ArrayList<>(slotGroup.size());
+            for (int slot : slotGroup) mapped.add(order.get(slot));
+            groups.add(mapped);
+        }
+        return groups;
+    }
+
+    /**
+     * L1 蛇形分组（按「年级/班级」顺序）—— 团体/趣味项目。
+     *
+     * <p>键相同的条目构成一个<b>不可拆分单元</b>（如同一班级同一组号的一整支接力/趣味队伍），
+     * 整单元的成员必被分到同一组；单元之间再按 S 形分配到各组。调用方应先按
+     * 「年级 → 班级 → 组号」排好序，键建议 {@code 年级 + "\u0001" + 班级 + "\u0001" + 组号}。</p>
+     *
+     * @param unitKeys 与人数等长的单元键（键相同 = 同一支队伍，成员不可拆开）
+     * @param heats    组数（≥ 1）
+     * @return 每组包含的<b>原始位置</b>列表（同一队伍的成员必在同一组）
+     */
+    public static List<List<Integer>> assignTeamUnits(List<String> unitKeys, int heats) {
+        if (unitKeys == null) throw new IllegalArgumentException("单元键列表不能为 null");
+        if (heats <= 0) throw new IllegalArgumentException("组数必须 ≥ 1: " + heats);
+
+        // 按键聚合为单元（LinkedHashMap 保留首次出现顺序 = 调用方的年级/班级/组号序）
+        java.util.Map<String, List<Integer>> unitMembers = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < unitKeys.size(); i++) {
+            unitMembers.computeIfAbsent(keyOf(unitKeys.get(i)), k -> new ArrayList<>()).add(i);
+        }
+
+        // 单元级蛇形 → 展开为成员位置
+        List<List<Integer>> unitSlots = assign(unitMembers.size(), heats);
+        List<List<Integer>> groups = new ArrayList<>(heats);
+        List<List<Integer>> units = new ArrayList<>(unitMembers.values());
+        for (List<Integer> slotGroup : unitSlots) {
+            List<Integer> mapped = new ArrayList<>();
+            for (int unitIdx : slotGroup) mapped.addAll(units.get(unitIdx));
+            groups.add(mapped);
+        }
+        return groups;
+    }
+
+    /**
+     * L1 组内道次分配：把一组内按蛇形顺序排好的运动员依次落到 1..lanes 道；
+     * 第二圈（i/lanes 为奇数）反向，使同班/同批运动员尽量占用不同道次。
+     *
+     * @param heatSize 该组人数（≥ 0）
+     * @param lanes    道次数（≥ 1）
+     * @return 长度 heatSize 的道次号数组（取值 1..lanes）
+     */
+    public static int[] assignLanes(int heatSize, int lanes) {
+        if (heatSize < 0) throw new IllegalArgumentException("人数不能为负: " + heatSize);
+        if (lanes <= 0) throw new IllegalArgumentException("道次数必须 ≥ 1: " + lanes);
+        int[] out = new int[heatSize];
+        boolean leftToRight = true;
+        int pos = 0;
+        while (pos < heatSize) {
+            if (leftToRight) {
+                for (int l = 1; l <= lanes && pos < heatSize; l++) out[pos++] = l;
+            } else {
+                for (int l = lanes; l >= 1 && pos < heatSize; l--) out[pos++] = l;
+            }
+            leftToRight = !leftToRight;
+        }
+        return out;
+    }
+
+    private static String keyOf(String s) {
+        return s == null ? "" : s;
+    }
+
     /**
      * 评估分组均衡度：各组种子位置之和的标准差（越小越均衡，0 = 完美均衡）。
      *

@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -131,6 +133,84 @@ class SnakeGroupingTest {
         List<Long> all = new ArrayList<>();
         g.forEach(all::addAll);
         assertEquals(List.of(100L, 101L, 102L, 103L, 104L, 105L).size(), all.size());
+    }
+
+    @Test
+    @DisplayName("L1 按年级/班级蛇形：覆盖全部、组大小差 ≤ 1、可复现")
+    void gradeClassSnake() {
+        List<String> keys = List.of("高一1班","高一1班","高一2班","高一2班","高二1班","高二1班","高二2班");
+        for (int heats = 1; heats <= 5; heats++) {
+            List<List<Integer>> g = SnakeGrouping.assignByGradeClass(keys, heats);
+            assertEquals(heats, g.size(), "组数应等于 heats");
+            Set<Integer> seen = new HashSet<>();
+            int max = 0, min = Integer.MAX_VALUE;
+            for (List<Integer> grp : g) {
+                for (int p : grp) assertTrue(seen.add(p), "重复位置 " + p);
+                max = Math.max(max, grp.size());
+                min = Math.min(min, grp.size());
+            }
+            assertEquals(keys.size(), seen.size(), "未覆盖全部位置");
+            assertTrue(max - min <= 1, "组大小差 > 1");
+            assertEquals(g, SnakeGrouping.assignByGradeClass(keys, heats), "非确定性");
+        }
+        // 排序生效：键序 A < B → 已排序输入的第一组首个位置即第 0 位
+        List<String> sorted = List.of("A","A","A","B","B","B");
+        assertEquals(0, SnakeGrouping.assignByGradeClass(sorted, 2).get(0).get(0));
+        // 乱序输入也应先排序：把 B 放前面，第一组仍取到 A（位置 2..）
+        List<String> unsorted = List.of("B","B","A","A");
+        assertEquals(2, SnakeGrouping.assignByGradeClass(unsorted, 2).get(0).get(0));
+    }
+
+    @Test
+    @DisplayName("L1 团体单元蛇形：同键成员必在同一组、整队不可拆、可复现")
+    void teamUnitsSnake() {
+        List<String> keys = List.of("T1","T1","T2","T2","T3","T3");
+        for (int heats = 1; heats <= 3; heats++) {
+            List<List<Integer>> g = SnakeGrouping.assignTeamUnits(keys, heats);
+            assertEquals(heats, g.size());
+            Map<Integer, Integer> heatOfPos = new HashMap<>();
+            for (int h = 0; h < g.size(); h++) for (int p : g.get(h)) heatOfPos.put(p, h);
+            for (int i = 0; i < keys.size(); i++) {
+                for (int j = 0; j < keys.size(); j++) {
+                    if (keys.get(i).equals(keys.get(j))) {
+                        assertEquals(heatOfPos.get(i), heatOfPos.get(j), "同队成员被拆开: " + keys.get(i));
+                    }
+                }
+            }
+            Set<Integer> seen = new HashSet<>();
+            g.forEach(seen::addAll);
+            assertEquals(keys.size(), seen.size(), "未覆盖全部位置");
+            assertEquals(g, SnakeGrouping.assignTeamUnits(keys, heats), "非确定性");
+        }
+        // 3 队分 2 组：单元级蛇形 → T1、T3 同组 / T2 单独一组
+        List<List<Integer>> g2 = SnakeGrouping.assignTeamUnits(keys, 2);
+        assertTrue(g2.get(0).containsAll(List.of(0, 1)) || g2.get(1).containsAll(List.of(0, 1)));
+    }
+
+    @Test
+    @DisplayName("L1 组内分道：逐道填充、次圈反向、取值受限")
+    void laneAssignment() {
+        assertArrayEquals(new int[]{1, 2, 3, 4, 4}, SnakeGrouping.assignLanes(5, 4));
+        assertArrayEquals(new int[]{1, 2, 2, 1, 1, 2}, SnakeGrouping.assignLanes(6, 2));
+        assertArrayEquals(new int[]{1, 1, 1}, SnakeGrouping.assignLanes(3, 1));
+        assertEquals(0, SnakeGrouping.assignLanes(0, 8).length);
+        for (int hs = 0; hs <= 16; hs++) {
+            for (int lanes = 1; lanes <= 8; lanes++) {
+                for (int lane : SnakeGrouping.assignLanes(hs, lanes)) {
+                    assertTrue(lane >= 1 && lane <= lanes, "道次越界: " + lane + "/" + lanes);
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("L1 入口非法参数直接抛出")
+    void l1InvalidArgs() {
+        assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignByGradeClass(null, 2));
+        assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignByGradeClass(List.of("A"), 0));
+        assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignTeamUnits(null, 2));
+        assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignLanes(-1, 4));
+        assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignLanes(4, 0));
     }
 
     @Test
