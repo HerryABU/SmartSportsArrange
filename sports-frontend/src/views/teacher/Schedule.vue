@@ -277,18 +277,26 @@
               自定义项目的编排先后顺序（田赛 + 径赛混排，各自在所属并发池内生效）；未列入的项目按项目排序号排在后面。
             </div>
             <div class="order-list">
-              <div v-for="(item, idx) in eventOrderList" :key="item.id" class="order-row">
+              <div class="hint" style="margin-bottom:4px">提示：可直接拖拽行（⠿ 手柄）调整项目顺序，松手后自动按新顺序重新编排并重新检测兼项冲突。</div>
+              <div v-for="(item, idx) in eventOrderList" :key="item.id" class="order-row"
+                   :class="{ 'dragging': dragIndex === idx }"
+                   draggable="true"
+                   @dragstart="onDragStart(idx, $event)"
+                   @dragover.prevent="onDragOver(idx, $event)"
+                   @drop="onDrop(idx)"
+                   @dragend="onDragEnd">
+                <span class="drag-handle" title="拖拽排序">⠿</span>
                 <el-tag size="small" :type="item.isTrack ? 'primary' : 'warning'" effect="plain">
                   {{ item.isTrack ? '径' : '田' }}
                 </el-tag>
                 <span class="order-name">{{ item.name }}</span>
                 <span class="hint">{{ item.gradeGroup || '不分年级' }}</span>
                 <span style="flex:1"></span>
-                <el-button link size="small" :disabled="idx === 0" @click="moveEvent(idx, 0)">置顶</el-button>
-                <el-button link size="small" :disabled="idx === 0" @click="moveEvent(idx, -1)">上移</el-button>
-                <el-button link size="small" :disabled="idx === eventOrderList.length - 1"
+                <el-button link size="small" :disabled="idx === 0 || reordering" @click="moveEvent(idx, 0)">置顶</el-button>
+                <el-button link size="small" :disabled="idx === 0 || reordering" @click="moveEvent(idx, -1)">上移</el-button>
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1 || reordering"
                   @click="moveEvent(idx, 1)">下移</el-button>
-                <el-button link size="small" :disabled="idx === eventOrderList.length - 1"
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1 || reordering"
                   @click="moveEvent(idx, 999)">置底</el-button>
               </div>
               <el-empty v-if="!eventOrderList.length" description="暂无启用项目" :image-size="48" />
@@ -515,6 +523,90 @@ function resetEventOrder() {
   eventOrderList.value = [...allEvents.value].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
 }
 
+// ==================== 拖拽排序（HTML5 原生，无额外依赖）====================
+const dragIndex = ref(-1)
+const reordering = ref(false)
+
+/** 构造运动会日程配置提交体（与「保存」共用，确保拖拽调序提交的字段与手动保存完全一致） */
+function buildMeetSchedulePayload() {
+  const cleanVenues = (meetForm.venues || [])
+    .filter(v => v && String(v.name || '').trim())
+    .map(v => ({ name: String(v.name).trim(), code: String(v.code || '').trim() }))
+  return {
+    meetName: meetForm.meetName,
+    startDate: meetForm.startDate,
+    days: meetForm.dayConfigs.length,
+    dayConfigs: meetForm.dayConfigs,
+    // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
+    gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
+    venues: cleanVenues,
+    trackSlots: meetForm.trackSlots,
+    fieldSlots: meetForm.fieldSlots,
+    // 自定义项目顺序（仅提交当前列表顺序，未列入的项目由后端按排序号追加）
+    eventOrder: eventOrderList.value.map(e => e.id),
+    // 只提交非空分组（组内项目必须同期的田赛）
+    fieldGroups: (meetForm.fieldGroups || [])
+      .filter(g => g.eventIds && g.eventIds.length)
+      .map(g => ({ name: g.name, eventIds: [...g.eventIds] })),
+    defaultDurationMinutes: meetForm.defaultDurationMinutes,
+    defaultIntervalMinutes: meetForm.defaultIntervalMinutes,
+    heatMinutes: meetForm.heatMinutes,
+    fieldPerAthleteMinutes: meetForm.fieldPerAthleteMinutes,
+    // B05/U07：间隔下限 + 压缩告警阈值随配置提交
+    minIntervalMinutes: meetForm.minIntervalMinutes,
+    compressionWarnRatio: meetForm.compressionWarnRatio,
+    // B07/U06：预赛→决赛最小间隔随配置提交
+    finalMinGapMinutes: meetForm.finalMinGapMinutes
+  }
+}
+
+function onDragStart(idx, ev) {
+  dragIndex.value = idx
+  if (ev && ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    ev.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+function onDragOver(idx, ev) {
+  if (ev) ev.preventDefault()
+  if (ev && ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+}
+
+function onDrop(idx) {
+  const from = dragIndex.value
+  dragIndex.value = -1
+  if (from < 0 || from === idx) return
+  const arr = [...eventOrderList.value]
+  const [it] = arr.splice(from, 1)
+  arr.splice(idx, 0, it)
+  eventOrderList.value = arr
+  commitEventOrder()
+}
+
+function onDragEnd() {
+  dragIndex.value = -1
+}
+
+/**
+ * 拖拽落定后：保存新顺序 → 按新顺序重新编排（规则模式，确定性可复现）→ 重新计算兼项冲突。
+ * 与「一键编排」「检测冲突」共用同一套判定，确保人工调序后冲突结果与自动编排一致。
+ */
+async function commitEventOrder() {
+  if (!eventOrderList.value.length) return
+  reordering.value = true
+  try {
+    await request.put('/system/meet-schedule', buildMeetSchedulePayload())
+    await request.post('/schedule/auto', { mode: 'rule' })
+    await loadConflicts()
+    ElMessage.success('顺序已调整，已按新顺序重新编排并检测兼项冲突')
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    reordering.value = false
+  }
+}
+
 function addFieldGroup() {
   meetForm.fieldGroups.push({ name: '田赛组' + (meetForm.fieldGroups.length + 1), eventIds: [] })
 }
@@ -689,32 +781,7 @@ async function saveMeetConfig() {
   }
   savingConfig.value = true
   try {
-    const payload = {
-      meetName: meetForm.meetName,
-      startDate: meetForm.startDate,
-      days: meetForm.dayConfigs.length,
-      dayConfigs: meetForm.dayConfigs,
-      // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
-      gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
-      venues: cleanVenues,
-      trackSlots: meetForm.trackSlots,
-      fieldSlots: meetForm.fieldSlots,
-      // 自定义项目顺序（仅提交当前列表顺序，未列入的项目由后端按排序号追加）
-      eventOrder: eventOrderList.value.map(e => e.id),
-      // 只提交非空分组（组内项目必须同期的田赛）
-      fieldGroups: meetForm.fieldGroups
-        .filter(g => g.eventIds && g.eventIds.length)
-        .map(g => ({ name: g.name, eventIds: [...g.eventIds] })),
-      defaultDurationMinutes: meetForm.defaultDurationMinutes,
-      defaultIntervalMinutes: meetForm.defaultIntervalMinutes,
-      heatMinutes: meetForm.heatMinutes,
-      fieldPerAthleteMinutes: meetForm.fieldPerAthleteMinutes,
-      // B05/U07：间隔下限 + 压缩告警阈值随配置提交
-      minIntervalMinutes: meetForm.minIntervalMinutes,
-      compressionWarnRatio: meetForm.compressionWarnRatio,
-      // B07/U06：预赛→决赛最小间隔随配置提交
-      finalMinGapMinutes: meetForm.finalMinGapMinutes
-    }
+    const payload = buildMeetSchedulePayload()
     await request.put('/system/meet-schedule', payload)
     ElMessage.success('运动会日程配置已保存')
     showConfigDialog.value = false
@@ -912,6 +979,10 @@ onMounted(() => { fetchList(); fetchEvents() })
   background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
 }
 .order-row .order-name { font-size: 14px; color: #303133; font-weight: 500; }
+.order-row { cursor: default; }
+.order-row.dragging { opacity: 0.4; }
+.drag-handle { cursor: grab; color: #909399; user-select: none; font-size: 16px; line-height: 1; }
+.order-row.dragging .drag-handle { cursor: grabbing; }
 .group-row, .venue-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
 }
