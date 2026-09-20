@@ -797,7 +797,7 @@ public class ArrangementService {
         // 对抗式自检：生成 → 独立校验硬约束 → 若违反则以不同随机种子重排，最多 ADVERSARIAL_MAX_ROUNDS 轮
         // 蛇形款型为确定性算法（无随机），单趟生成即可。
         do {
-            placement = allocate(pool, lanes, lockedRows,
+            placement = allocate(event, pool, lanes, lockedRows,
                     (snakeMode || rearrange == 0) ? null : (baseSeed + rearrange), lottery, l1Rule, seedRank);
             hardViolations = validatePlacement(placement, lanes, snakeMode);
             rearrange++;
@@ -965,7 +965,7 @@ public class ArrangementService {
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
 
-        Placement placement = allocate(athletes, lanes, null, null, false, L1Rule.CLASS.id, null);
+        Placement placement = allocate(event, athletes, lanes, null, null, false, L1Rule.CLASS.id, null);
 
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
@@ -1325,7 +1325,7 @@ public class ArrangementService {
      * 因此不会再出现「自动项与人工锁定项同组同道」的重复落位（旧实现只把锁定运动员
      * 排除出池，却没占位，重排后组号从 1 重算，锁定道次可能被新项顶掉）。</p>
      */
-    private Placement allocate(List<Athlete> athletes, int lanes, List<Arrangement> locked,
+    private Placement allocate(Event event, List<Athlete> athletes, int lanes, List<Arrangement> locked,
                                 Long seed, boolean lottery, String l1Rule, Map<Long, Integer> seedRank) {
         int n = athletes.size();
         List<String> warnings = new ArrayList<>();
@@ -1334,7 +1334,7 @@ public class ArrangementService {
 
         // L1「蛇形」款型（蛇形排布 / 种子蛇形）：确定性 S 形分散，不依赖随机、不强制同组不同班
         if (isSnakeRule(l1Rule)) {
-            return allocateSnake(athletes, lanes, locks, warnings, l1Rule, seedRank);
+            return allocateSnake(event, athletes, lanes, locks, warnings, l1Rule, seedRank);
         }
 
         // 按班级分组（班级缺失归为 0）
@@ -1462,10 +1462,8 @@ public class ArrangementService {
                         continue;
                     }
                 } else {
-                    // 对抗式：多个组次人数相同（平局）时，随机挑一个，使重排产生不同布局
-                    bestHeat = rnd != null && candidates.size() > 1
-                            ? candidates.get(rnd.nextInt(candidates.size()))
-                            : candidates.get(0);
+                    // L1 规则注入优先：先取规则惩罚最小的候选；完全平局时才随机（保持对抗式重排能力）
+                    bestHeat = pickAmongCandidates(event, athlete, candidates, heats, rnd);
                 }
                 Arrangement arr = new Arrangement();
                 arr.setAthlete(athlete);
@@ -1562,7 +1560,7 @@ public class ArrangementService {
      * <p>与默认「班级均衡」（同组不同班 + 匈牙利分道）互斥，同属 L1。人工锁定项作为已占位参与：
      * 蛇形目标组满员时环形顺延。</p>
      */
-    private Placement allocateSnake(List<Athlete> athletes, int lanes,
+    private Placement allocateSnake(Event event, List<Athlete> athletes, int lanes,
                                     List<Arrangement> locks, List<String> warnings,
                                     String l1Rule, Map<Long, Integer> seedRank) {
         int total = athletes.size() + locks.size();
@@ -1609,16 +1607,12 @@ public class ArrangementService {
                     .thenComparing(a -> a.getId() == null ? Long.MAX_VALUE : a.getId()));
         }
 
-        // 蛇形目标组 → 入组（目标组满员则环形顺延到其后第一个有空位的组）
+        // 蛇形目标组 → 入组（目标组满员则环形顺延；L1 规则注入可改写选择：见 pickHeatByInjection）
         int[] heatOfPos = SnakeGrouping.heatOf(ordered.size(), heats);
         for (int pos = 0; pos < ordered.size(); pos++) {
             Athlete athlete = ordered.get(pos);
             int target = heatOfPos[pos];
-            int chosen = -1;
-            for (int k = 0; k < heats; k++) {
-                int h = (target + k) % heats;
-                if (occupancy[h] < lanes) { chosen = h; break; }
-            }
+            int chosen = pickHeatByInjection(event, athlete, target, heats, lanes, occupancy);
             if (chosen < 0) {
                 warnings.add("无法为运动员 " + athlete.getName() + " 分配合适的组");
                 continue;
@@ -1679,6 +1673,79 @@ public class ArrangementService {
     private static int seedRankOf(Athlete a, Map<Long, Integer> seedRank) {
         if (a == null || a.getId() == null || seedRank == null) return Integer.MAX_VALUE;
         return seedRank.getOrDefault(a.getId(), Integer.MAX_VALUE);
+    }
+
+    /** 规则注入：否决哨兵惩罚（优选时避开，但无其它可选仍可落位，避免运动员排不下）。 */
+    private static final long RULE_VETO_PENALTY = Long.MAX_VALUE / 4;
+
+    /**
+     * L1 规则注入惩罚：(运动员, 候选组) 评估用户规则片段 → 加权惩罚。
+     * hard 权重最高；veto 返回哨兵值（优选时避开）。**无脚本时恒为 0 → 既有编排行为完全不变**。
+     */
+    private long injectPenalty(Event event, Athlete athlete, int heat1, int heats) {
+        if (ruleInjectionService == null || athlete == null) {
+            return 0L;
+        }
+        RuleOutcome o = ruleInjectionService.assess(ruleContextOf(event, athlete, heat1, null, heats));
+        if (o == null) {
+            return 0L;
+        }
+        if (o.veto()) {
+            return RULE_VETO_PENALTY;
+        }
+        return o.hard() * 1000L + o.medium() * 10L + o.soft();
+    }
+
+    /**
+     * 蛇形款型：在有空位的组中选规则惩罚最小者；平局取离蛇形目标组最近者（保持蛇形语义）。
+     * 被否决（veto）的组仅在无其它可选时兜底，避免运动员排不下。
+     */
+    private int pickHeatByInjection(Event event, Athlete athlete, int target, int heats, int lanes, int[] occupancy) {
+        int best = -1;
+        long bestPenalty = Long.MAX_VALUE;
+        int bestDist = Integer.MAX_VALUE;
+        int fallback = -1;
+        long fallbackPenalty = Long.MAX_VALUE;
+        for (int k = 0; k < heats; k++) {
+            int h = (target + k) % heats;
+            if (occupancy[h] >= lanes) {
+                continue;
+            }
+            long p = injectPenalty(event, athlete, h + 1, heats);
+            if (p >= RULE_VETO_PENALTY) {
+                if (fallback < 0 || p < fallbackPenalty) {
+                    fallback = h;
+                    fallbackPenalty = p;
+                }
+                continue;
+            }
+            if (p < bestPenalty || (p == bestPenalty && k < bestDist)) {
+                best = h;
+                bestPenalty = p;
+                bestDist = k;
+            }
+        }
+        return best >= 0 ? best : fallback;
+    }
+
+    /** 班级均衡款型：在「人数最少」的候选组里再取规则惩罚最小者；完全平局才随机（保留对抗式重排）。 */
+    private int pickAmongCandidates(Event event, Athlete athlete, List<Integer> candidates, int heats, Random rnd) {
+        if (candidates.isEmpty()) {
+            return -1;
+        }
+        long bestPenalty = Long.MAX_VALUE;
+        List<Integer> top = new ArrayList<>();
+        for (int h : candidates) {
+            long p = injectPenalty(event, athlete, h + 1, heats);
+            if (p < bestPenalty) {
+                bestPenalty = p;
+                top.clear();
+                top.add(h);
+            } else if (p == bestPenalty) {
+                top.add(h);
+            }
+        }
+        return (rnd != null && top.size() > 1) ? top.get(rnd.nextInt(top.size())) : top.get(0);
     }
 
     /** 组装「规则注入」上下文（供用户规则片段读取 event / athlete / heat / lane 等字段）。 */

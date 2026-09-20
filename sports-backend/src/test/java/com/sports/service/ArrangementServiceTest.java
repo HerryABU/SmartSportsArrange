@@ -10,7 +10,9 @@ import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.repository.ResultRepository;
+import com.sports.schedule.rule.inject.RuleContext;
 import com.sports.schedule.rule.inject.RuleInjectionService;
+import com.sports.schedule.rule.inject.RuleOutcome;
 import com.sports.schedule.rule.l1.L1Rule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -241,6 +243,43 @@ class ArrangementServiceTest {
         rule.put("snakeGrouping", true);
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
         assertEquals("snake", result.get("l1Rule"));
+    }
+
+    /**
+     * L1 规则注入（形态一）**改写落位**：对某组命中规则惩罚 → 蛇形改投无惩罚的组（能力允许时完全避开）。
+     * 用一条人工锁定项把组数撑到 2，从而具备可选的落位空间。
+     */
+    @Test
+    void arrange_ruleInjection_steersSnakeHeatChoice() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(3).build();
+        List<Registration> regs = new ArrayList<>();
+        regs.add(reg(athlete(1L, "A1", 1L, "高一1班")));
+        regs.add(reg(athlete(2L, "A2", 1L, "高一1班")));
+        stubDirectArrange(event, regs);
+        // 人工锁定项（第 2 组）→ 组数 = max(ceil(3/3)=1, 锁定最大组号 2) = 2
+        Arrangement locked = Arrangement.builder().id(99L).event(event)
+                .athlete(athlete(3L, "A3", 1L, "高一1班"))
+                .heat(2).lane(1).isManual(true).build();
+        when(arrangementRepository.findManualByEventRoundGradeGender(100L, "final", "高一年级", "男"))
+                .thenReturn(List.of(locked));
+
+        // 对「第 1 组」注入 soft 惩罚 → 蛇形目标为第 1 组的 A1 应改投第 2 组
+        when(ruleInjectionService.assess(any())).thenAnswer(inv -> {
+            RuleContext c = inv.getArgument(0);
+            Object heat = c.get("heat");
+            return (heat != null && ((Number) heat).intValue() == 1)
+                    ? RuleOutcome.empty().addSoft(100) : RuleOutcome.empty();
+        });
+
+        Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 3,
+                Map.of("l1Rule", "snake"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ri = (Map<String, Object>) result.get("ruleInjection");
+        assertNotNull(ri);
+        assertEquals(0L, ((Number) ri.get("soft")).longValue(),
+                "规则注入应把运动员改投无惩罚的组（否则会命中第 1 组的 soft=100）");
+        assertEquals(0L, ((Number) ri.get("hard")).longValue());
     }
 
     /** L1「种子蛇形」款型：按成绩/种子名次排序后 S 形分散，组间种子强度均衡、组内道次唯一。 */

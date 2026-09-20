@@ -27,6 +27,15 @@ public class RuleInjectionService {
     private final RuleScriptStore store;
     private final RuleScriptEvaluator evaluator;
 
+    /**
+     * 脚本缓存：编排热路径会高频调用 {@link #assess}，若每次都查库会拖垮编排。
+     * 保存时失效（{@link #save}），因此读多写少的场景下等价于「修改即生效、读取零查库」。
+     */
+    private volatile List<RuleScript> cache;
+
+    /** 仅启用脚本的缓存（assess 只用到启用的）。 */
+    private volatile List<RuleScript> enabledCache;
+
     public RuleInjectionService(RuleScriptStore store) {
         this.store = store;
         this.evaluator = new RuleScriptEvaluator();
@@ -36,12 +45,24 @@ public class RuleInjectionService {
         return evaluator;
     }
 
-    /** 全部规则脚本。 */
+    /** 全部规则脚本（带缓存）。 */
     public List<RuleScript> list() {
-        return store.load();
+        List<RuleScript> c = cache;
+        if (c == null) {
+            c = store.load();
+            cache = c;
+            List<RuleScript> en = new ArrayList<>();
+            for (RuleScript s : c) {
+                if (s != null && s.enabled()) {
+                    en.add(s);
+                }
+            }
+            enabledCache = en;
+        }
+        return c;
     }
 
-    /** 覆盖保存（校验 id 非空且唯一）。 */
+    /** 覆盖保存（校验 id 非空且唯一），保存后使缓存失效。 */
     public List<RuleScript> save(List<RuleScript> scripts) {
         if (scripts != null) {
             Set<String> ids = new HashSet<>();
@@ -55,16 +76,19 @@ public class RuleInjectionService {
             }
         }
         store.save(scripts);
-        return store.load();
+        cache = null;
+        enabledCache = null;
+        return list();
     }
 
     /** 评估全部「启用」脚本并聚合（供编排注入点调用）。 */
     public RuleOutcome assess(RuleContext context) {
+        if (enabledCache == null && cache == null) {
+            list();     // 触发缓存加载
+        }
         RuleOutcome total = RuleOutcome.empty();
-        for (RuleScript s : store.load()) {
-            if (s == null || !s.enabled()) {
-                continue;
-            }
+        List<RuleScript> enabled = enabledCache == null ? List.of() : enabledCache;
+        for (RuleScript s : enabled) {
             total.merge(evaluator.evaluate(s, context));
         }
         return total;

@@ -23,6 +23,17 @@ public class RuleScriptEvaluator {
     private final Map<String, RuleScriptEngine> engines = new LinkedHashMap<>();
     private final long timeoutMillis;
 
+    /**
+     * 共享执行池（守护线程）：脚本评估会进入编排热路径（每条落位一次），
+     * 因此<b>必须复用线程池</b>——每次新建池的开销会让注入拖垮编排。
+     */
+    private final java.util.concurrent.ExecutorService pool =
+            java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "rule-script-eval");
+                t.setDaemon(true);
+                return t;
+            });
+
     public RuleScriptEvaluator() {
         this(DEFAULT_TIMEOUT_MILLIS);
     }
@@ -65,15 +76,11 @@ public class RuleScriptEvaluator {
             // 让引擎自己给出「引擎缺失」的明确错误（如 JSR-223 未引入依赖）
             return engine.evaluate(script, context);
         }
-        ExecutorService ex = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "rule-script-eval");
-            t.setDaemon(true);
-            return t;
-        });
+        Future<RuleOutcome> future = pool.submit(() -> engine.evaluate(script, context));
         try {
-            Future<RuleOutcome> f = ex.submit(() -> engine.evaluate(script, context));
-            return f.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
+            future.cancel(true);
             return RuleOutcome.error("脚本执行超时（>" + timeoutMillis + "ms），已中止");
         } catch (ExecutionException e) {
             Throwable c = e.getCause() != null ? e.getCause() : e;
@@ -81,8 +88,6 @@ public class RuleScriptEvaluator {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return RuleOutcome.error("脚本执行被中断");
-        } finally {
-            ex.shutdownNow();
         }
     }
 }
