@@ -10,6 +10,7 @@ import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.repository.ResultRepository;
+import com.sports.schedule.rule.inject.RuleInjectionService;
 import com.sports.schedule.rule.l1.L1Rule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,6 +46,7 @@ class ArrangementServiceTest {
     @Mock private WordOrderBookService wordOrderBookService;
     @Mock private SystemService systemService;
     @Mock private ScheduleCollaborationService collaborationService;
+    @Mock private RuleInjectionService ruleInjectionService;
 
     @InjectMocks private ArrangementService arrangementService;
 

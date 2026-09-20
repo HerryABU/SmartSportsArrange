@@ -105,3 +105,56 @@ DSL 不是替代现有算法，而是在算法之上加一层「可编程的编�
 
 下一阶段：**伪代码支持，仿效 MC 的自定义编排脚本，得益于 Java 加设计 DSL**。
 从「填参数」升级到「写规则」，从「配置驱动」升级到「脚本驱动」，从「产品」升级到「平台」。
+
+---
+
+## 九、第一阶段（形态一 · 规则注入）落地进度
+
+> 状态：**执行内核 + 持久化 + REST 已完成并测试通过；编排结果可见；求解器深度注入待续。**
+
+### 已实现（多文件，遵循「DSL 拆多文件」约束）
+
+| 文件 | 职责 |
+|---|---|
+| `inject/RuleScript` | 脚本模型：`id / name / engine(builtin\|js\|groovy) / enabled / source` |
+| `inject/RuleContext` | 只读「点路径」上下文（`event.category` / `athlete.className` / `lane`…），沙箱边界 |
+| `inject/RuleOutcome` | 结果：hard/medium/soft 增量 + veto + 触发说明 + error |
+| `inject/RuleScriptEngine` | 引擎抽象——「两条路径」共用 |
+| `inject/builtin/Expr` | 内置伪代码的表达式：词法 + 递归下降解析 + 求值（`|| && !`、比较、括号、字面量、点路径） |
+| `inject/builtin/BuiltinRuleScriptEngine` | 内置伪代码语句：`when <cond> then <actions>` / `if (<cond>) { <actions> }`；动作 `hard/medium/soft += N`、`veto` |
+| `inject/Jsr223RuleScriptEngine` | JSR-223 脚本注入路径（引擎缺失 → 明确错误，不抛异常） |
+| `inject/RuleScriptEvaluator` | 按引擎分派 + **超时保护** + 失败降级 |
+| `inject/RuleScriptStore` | 持久化到 `system_config.rule_scripts`（JSON，脏配置容错） |
+| `inject/RuleInjectionService` | 聚合评估 / 试运行 / 引擎可用性 |
+| `ArrangementService` | 编排后对每条落位评估规则 → 结果新增 `ruleInjection`（hard/medium/soft/veto/hitCount/fired），命中硬否决/硬分时并入 `warnings` |
+
+### 语法示例
+
+```
+# 头注释（# 或 //）
+when event.category == "径赛" && lane <= 2 then soft += 30
+if (teamMembers > 1 && heat > 6) { hard += 100; veto }
+```
+
+### REST
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/arrange/rule-scripts` | 脚本列表 + 各引擎可用性 |
+| PUT | `/api/arrange/rule-scripts` | 覆盖保存（带审计） |
+| POST | `/api/arrange/rule-scripts/test` | 试运行（不落库，实时看命中/增量/错误） |
+
+### 关键工程决策
+
+- **两条路径并存**：`builtin`（零依赖、按构造即沙箱，**今日即可用**）+ `js/groovy`（JSR-223）。
+  因 **Java 21 已移除内置 Nashorn**、离线仓库亦无 Groovy/GraalJS，故 JSR-223 引擎缺失时如实降级
+  （`available()=false` + 明确错误），引入依赖即自动生效——系统在无引擎环境下照常运行。
+- **失败绝不拖垮编排**：脚本异常/超时统一降级为带 error 的结果并并入 `warnings`。
+- 测试：`BuiltinRuleScriptEngineTest 10`、`RuleInjectionServiceTest 4`、`RuleScriptStoreTest 2`、`ArrangementServiceTest 15`，全绿。
+
+### 待续（第二阶段前的收尾）
+
+1. 把注入结果**真正作用于落位选择**（当前为「如实上报 + 硬否决告警」，尚未改写 allocation）；
+2. 与 Timefold 求解器打通（动态 `ConstraintProvider`），真正「注入求解器」；
+3. 前端脚本编辑器 + 试运行面板（代码模式；积木模式属形态四）；
+4. 沙箱加固（JSR-223 引擎级类/方法白名单）。

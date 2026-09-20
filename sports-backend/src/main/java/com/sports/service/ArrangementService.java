@@ -23,6 +23,9 @@ import com.sports.repository.RegistrationRepository;
 import com.sports.repository.ResultRepository;
 import com.sports.schedule.exact.HungarianAssignment;
 import com.sports.schedule.rule.SnakeGrouping;
+import com.sports.schedule.rule.inject.RuleContext;
+import com.sports.schedule.rule.inject.RuleInjectionService;
+import com.sports.schedule.rule.inject.RuleOutcome;
 import com.sports.schedule.rule.l1.L1Rule;
 import com.sports.schedule.support.ScheduleSupport;
 import jakarta.servlet.http.HttpServletResponse;
@@ -68,6 +71,8 @@ public class ArrangementService {
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
     private final ScheduleCollaborationService collaborationService;
+    /** L1 规则注入（形态一）：用户规则片段 → 额外硬否决/软惩罚，编排后如实上报 */
+    private final RuleInjectionService ruleInjectionService;
 
     private static final ObjectMapper REF_MAPPER = new ObjectMapper();
 
@@ -901,6 +906,34 @@ public class ArrangementService {
         result.put("statistics", statistics);
         List<String> allWarnings = new ArrayList<>(placement.warnings);
         allWarnings.addAll(refereeWarnings);
+
+        // L1 规则注入（形态一）：对每条落位评估用户规则片段，聚合后如实上报（不粉饰）
+        RuleOutcome injected = RuleOutcome.empty();
+        for (Arrangement arr : arrangements) {
+            if (arr.getAthlete() == null) {
+                continue;
+            }
+            injected.merge(ruleInjectionService.assess(
+                    ruleContextOf(event, arr.getAthlete(), arr.getHeat(), arr.getLane(), heats)));
+        }
+        Map<String, Object> ruleInjection = new LinkedHashMap<>();
+        ruleInjection.put("hard", injected.hard());
+        ruleInjection.put("medium", injected.medium());
+        ruleInjection.put("soft", injected.soft());
+        ruleInjection.put("veto", injected.veto());
+        ruleInjection.put("hitCount", injected.fired().size());
+        ruleInjection.put("fired", injected.fired().size() > 50
+                ? new ArrayList<>(injected.fired().subList(0, 50)) : injected.fired());
+        if (injected.hasError()) {
+            ruleInjection.put("error", injected.error());
+            allWarnings.add("规则注入异常（已忽略）：" + injected.error());
+        }
+        if (injected.veto() || injected.hard() > 0) {
+            allWarnings.add("规则注入：命中 " + injected.fired().size() + " 条规则（hard=" + injected.hard()
+                    + "，veto=" + injected.veto() + "），请据规则处理");
+        }
+        result.put("ruleInjection", ruleInjection);
+
         result.put("warnings", allWarnings);
         // 对抗式自检报告：本次编排是否满足全部硬约束、重排次数
         Map<String, Object> selfCheck = new LinkedHashMap<>();
@@ -1646,6 +1679,32 @@ public class ArrangementService {
     private static int seedRankOf(Athlete a, Map<Long, Integer> seedRank) {
         if (a == null || a.getId() == null || seedRank == null) return Integer.MAX_VALUE;
         return seedRank.getOrDefault(a.getId(), Integer.MAX_VALUE);
+    }
+
+    /** 组装「规则注入」上下文（供用户规则片段读取 event / athlete / heat / lane 等字段）。 */
+    private RuleContext ruleContextOf(Event event, Athlete athlete, Integer heat, Integer lane, int heats) {
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("category", event.getCategory());
+        ev.put("track", event.getTrack());
+        ev.put("team", event.getTeam());
+        ev.put("teamMembers", event.getTeamMembers());
+        ev.put("concurrency", event.getConcurrency());
+        ev.put("venueCode", event.getDefaultVenueCode());
+        ev.put("gradeGroup", event.getGradeGroup());
+        Map<String, Object> ath = new LinkedHashMap<>();
+        if (athlete != null) {
+            ath.put("id", athlete.getId());
+            ath.put("grade", athlete.getGrade());
+            ath.put("gender", athlete.getGender());
+            ath.put("className", classKeyOf(athlete));
+        }
+        return RuleContext.builder()
+                .put("event", ev)
+                .put("athlete", ath)
+                .put("heat", heat)
+                .put("lane", lane)
+                .put("heats", heats)
+                .build();
     }
 
     /**
