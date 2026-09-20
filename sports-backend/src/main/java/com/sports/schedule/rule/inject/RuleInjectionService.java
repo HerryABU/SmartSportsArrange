@@ -79,12 +79,17 @@ public class RuleInjectionService {
         return o;
     }
 
-    /** 全部规则脚本（带缓存）。 */
+    /**
+     * 全部规则脚本（带缓存）。
+     *
+     * <p>⚠️ 发布顺序很关键：先写 {@code enabledCache}，再写 {@code cache}。这样
+     * 「{@code cache != null} ⟹ {@code enabledCache != null}」是恒真的——读取方一律以
+     * {@code enabledCache} 为判据，就不会出现「缓存已建、启用表还没建」的中间态而<b>误判无规则</b>。</p>
+     */
     public List<RuleScript> list() {
         List<RuleScript> c = cache;
         if (c == null) {
             c = store.load();
-            cache = c;
             List<RuleScript> en = new ArrayList<>();
             for (RuleScript s : c) {
                 if (s != null && s.enabled()) {
@@ -92,6 +97,7 @@ public class RuleInjectionService {
                 }
             }
             enabledCache = en;
+            cache = c;
         }
         return c;
     }
@@ -118,8 +124,11 @@ public class RuleInjectionService {
 
     /** 评估全部「启用」脚本并聚合（供编排注入点调用）。 */
     public RuleOutcome assess(RuleContext context) {
-        if (enabledCache == null && cache == null) {
-            list();     // 触发缓存加载
+        if (enabledCache == null) {
+            // 判据只认 enabledCache：若写成「enabledCache == null && cache == null」，
+            // 并发首个加载线程可能已发布 cache 但未发布 enabledCache，本线程便会跳过加载，
+            // 于是把「有规则」当成「无规则」——规则静默不生效。
+            list();
         }
         RuleOutcome total = RuleOutcome.empty();
         List<RuleScript> enabled = enabledCache == null ? List.of() : enabledCache;

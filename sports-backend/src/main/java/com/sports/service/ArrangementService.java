@@ -1683,7 +1683,7 @@ public class ArrangementService {
      * hard 权重最高；veto 返回哨兵值（优选时避开）。**无脚本时恒为 0 → 既有编排行为完全不变**。
      */
     private long injectPenalty(Event event, Athlete athlete, int heat1, int heats) {
-        if (ruleInjectionService == null || athlete == null) {
+        if (ruleInjectionService == null || athlete == null || event == null) {
             return 0L;
         }
         RuleOutcome o = ruleInjectionService.assess(ruleContextOf(event, athlete, heat1, null, heats));
@@ -1748,9 +1748,18 @@ public class ArrangementService {
         return (rnd != null && top.size() > 1) ? top.get(rnd.nextInt(top.size())) : top.get(0);
     }
 
-    /** 组装「规则注入」上下文（供用户规则片段读取 event / athlete / heat / lane 等字段）。 */
+    /**
+     * 组装「规则注入」上下文（供用户规则片段读取 event / athlete / heat / lane 等字段）。
+     *
+     * <p>⚠️ {@code event.*} 的键与求解侧
+     * {@code ScheduleConstraintProvider#ruleContextOf} <b>保持同集</b>（category/track/team/teamMembers/
+     * concurrency/venueCode/gradeGroup + id/name）——两条路径字段名一旦分叉，同一份规则会出现
+     * 「编排时生效、求解时静默失效」。新增字段请同时改两处。</p>
+     */
     private RuleContext ruleContextOf(Event event, Athlete athlete, Integer heat, Integer lane, int heats) {
         Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("id", event.getId());
+        ev.put("name", event.getName());
         ev.put("category", event.getCategory());
         ev.put("track", event.getTrack());
         ev.put("team", event.getTeam());

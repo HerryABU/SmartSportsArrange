@@ -46,6 +46,16 @@ public class BuiltinRuleScriptEngine implements RuleScriptEngine {
         return true;
     }
 
+    /**
+     * 内置引擎可信：语法里<b>没有循环、没有跳转、没有 IO</b>，条件表达式是纯函数求值，
+     * 输入规模与脚本长度同阶，不可能跑飞 → 直接在主线程求值，免去线程池与超时开销
+     * （热路径逐落位调用，这层开销与「伪超时」风险都不该承担）。
+     */
+    @Override
+    public boolean trusted() {
+        return true;
+    }
+
     @Override
     public RuleOutcome evaluate(RuleScript script, RuleContext ctx) {
         RuleOutcome out = RuleOutcome.empty();

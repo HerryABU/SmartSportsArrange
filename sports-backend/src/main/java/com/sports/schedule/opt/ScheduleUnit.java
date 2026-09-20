@@ -9,6 +9,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 待排的赛程单元（约束求解的「计划实体」）= 项目 × 年级。
@@ -104,9 +105,34 @@ public class ScheduleUnit {
     @PlanningPin
     private boolean pinned;
 
+    /**
+     * 事件的附加属性（供「规则注入」上下文读取，如 category / team / teamMembers / venueCode / gradeGroup…）。
+     *
+     * <p><b>为什么要有它</b>：规则片段的字段是按「事件属性」描述的（如
+     * {@code when event.category == "径赛" then soft += 30}）。编排路径直接持有 Event，字段天然齐备；
+     * 而求解路径只有单元，若不放行这些属性，同一条规则在编排阶段命中、到了求解阶段却
+     * <b>静默永不命中</b>——同一份脚本在两条路径上语义不一致，属实质性缺陷。</p>
+     *
+     * <p><b>为什么是 Map 而不是直接持有 {@link com.sports.entity.Event}</b>：求解域刻意只保留值对象，
+     * 不把 JPA 实体（含懒加载代理）带进 Timefold 的解空间；用 Map 还能让后续 DSL 新增字段
+     * 不必改本类签名。</p>
+     */
+    private Map<String, Object> eventAttrs;
+
     public ScheduleUnit(String key, Long eventId, String eventName, String grade, boolean track,
                         String poolLabel, String groupKey, int interval, int rawDuration, int minDuration,
                         long[] athletes, List<Integer> durationChoices, List<Placement> candidatePlacements) {
+        this(key, eventId, eventName, grade, track, poolLabel, groupKey, interval, rawDuration, minDuration,
+                athletes, durationChoices, candidatePlacements, null);
+    }
+
+    /**
+     * 完整构造：额外携带事件的规则注入属性（见 {@link #eventAttrs}）。
+     */
+    public ScheduleUnit(String key, Long eventId, String eventName, String grade, boolean track,
+                        String poolLabel, String groupKey, int interval, int rawDuration, int minDuration,
+                        long[] athletes, List<Integer> durationChoices, List<Placement> candidatePlacements,
+                        Map<String, Object> eventAttrs) {
         this.key = key;
         this.eventId = eventId;
         this.eventName = eventName;
@@ -120,6 +146,7 @@ public class ScheduleUnit {
         this.athletes = athletes;
         this.durationChoices = durationChoices;
         this.candidatePlacements = candidatePlacements;
+        this.eventAttrs = eventAttrs;
     }
 
     /**
@@ -152,7 +179,7 @@ public class ScheduleUnit {
      */
     public ScheduleUnit copy() {
         ScheduleUnit c = new ScheduleUnit(key, eventId, eventName, grade, track, poolLabel, groupKey,
-                interval, rawDuration, minDuration, athletes, durationChoices, candidatePlacements);
+                interval, rawDuration, minDuration, athletes, durationChoices, candidatePlacements, eventAttrs);
         c.setPlacement(placement);
         c.setDuration(duration);
         c.setPinned(pinned);

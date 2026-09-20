@@ -211,7 +211,8 @@ public class ScheduleSolveComponent {
             if (cands.isEmpty()) continue;   // 该池整块放不下 → 交给贪心如实报「排不下」
             optUnits.add(new ScheduleUnit("u" + i, u.event.getId(), u.event.getName(), u.grade, u.track,
                     pool.label, u.track ? null : event2Group.get(u.event.getId()),
-                    unitInterval, u.rawDuration, floor, SchedulePlacementMath.sortedAthletes(u), SchedulePlacementMath.durationChoicesOf(u), cands));
+                    unitInterval, u.rawDuration, floor, SchedulePlacementMath.sortedAthletes(u), SchedulePlacementMath.durationChoicesOf(u), cands,
+                    ruleEventAttrs(u.event)));
         }
         if (optUnits.isEmpty()) return;
 
@@ -305,5 +306,29 @@ public class ScheduleSolveComponent {
         }
         solverStat[0] = applied;
         solverStat[1] = SchedulePlacementMath.countResidualClashes(solvedPlacement);
+    }
+
+    /**
+     * 规则注入上下文里的 {@code event.*} 字段——键与
+     * {@code ArrangementService#ruleContextOf} <b>逐一对齐</b>。
+     *
+     * <p>两条路径（编排阶段逐落位注入、求解阶段动态约束）若字段名不一致，同一份规则片段
+     * 就会出现「编排时命中、求解时静默不命中」的诡异现象。这里显式对齐，杜绝该缺陷。</p>
+     */
+    private static Map<String, Object> ruleEventAttrs(com.sports.entity.Event e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (e == null) {
+            return m;
+        }
+        m.put("id", e.getId());
+        m.put("name", e.getName());
+        m.put("category", e.getCategory());
+        m.put("track", e.getTrack());
+        m.put("team", e.getTeam());
+        m.put("teamMembers", e.getTeamMembers());
+        m.put("concurrency", e.getConcurrency());
+        m.put("venueCode", e.getDefaultVenueCode());
+        m.put("gradeGroup", e.getGradeGroup());
+        return m;
     }
 }

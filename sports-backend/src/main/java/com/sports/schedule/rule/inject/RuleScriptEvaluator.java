@@ -24,15 +24,17 @@ public class RuleScriptEvaluator {
     private final long timeoutMillis;
 
     /**
-     * 共享执行池（守护线程）：脚本评估会进入编排热路径（每条落位一次），
-     * 因此<b>必须复用线程池</b>——每次新建池的开销会让注入拖垮编排。
+     * 共享执行池（守护线程）：<b>只服务于不可信引擎</b>（JSR-223 用户脚本可能死循环 → 必须可超时）。
+     *
+     * <p>脚本评估会进入编排热路径（每条落位一次），因此<b>必须复用线程池</b>——每次新建池的开销
+     * 会让注入拖垮编排。可信引擎（内置伪代码）见 {@link RuleScriptEngine#trusted()}：直接在
+     * 调用线程求值，不进池。</p>
      */
-    private final java.util.concurrent.ExecutorService pool =
-            java.util.concurrent.Executors.newCachedThreadPool(r -> {
-                Thread t = new Thread(r, "rule-script-eval");
-                t.setDaemon(true);
-                return t;
-            });
+    private final ExecutorService pool = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "rule-script-eval");
+        t.setDaemon(true);
+        return t;
+    });
 
     public RuleScriptEvaluator() {
         this(DEFAULT_TIMEOUT_MILLIS);
@@ -75,6 +77,15 @@ public class RuleScriptEvaluator {
         if (!engine.available()) {
             // 让引擎自己给出「引擎缺失」的明确错误（如 JSR-223 未引入依赖）
             return engine.evaluate(script, context);
+        }
+        if (engine.trusted()) {
+            // 可信引擎：纯函数、不可能跑飞 → 直接求值。刻意不套超时：热路径上
+            // 「排队/调度抖动导致微秒级求值被判超时」会造成规则静默失效（伪超时）。
+            try {
+                return engine.evaluate(script, context);
+            } catch (RuntimeException e) {
+                return RuleOutcome.error("脚本执行异常: " + e.getMessage());
+            }
         }
         Future<RuleOutcome> future = pool.submit(() -> engine.evaluate(script, context));
         try {

@@ -10,7 +10,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
@@ -75,6 +77,50 @@ class RuleDrivenConstraintTest {
         // 被否决的池 → veto 记至少 1 硬分
         ScheduleUnit u3 = unit("u3", "POOL_BAD", 1, 480, 60);
         assertTrue(ScheduleConstraintProvider.ruleHard(u3) >= 1);
+    }
+
+    /** 带事件属性（键与编排路径对齐）的单元——验证规则字段跨路径一致。 */
+    private ScheduleUnit unitWithEvent(String key, String category, int day, int start) {
+        long[] athletes = {1L, 2L};
+        Placement p = new Placement("TRACK", 0, 0, day, "2026-09-20", "上午", "田径场", start, 480, 300);
+        Map<String, Object> attrs = new LinkedHashMap<>();
+        attrs.put("id", 100L);
+        attrs.put("name", "100米");
+        attrs.put("category", category);
+        attrs.put("track", true);
+        attrs.put("team", false);
+        attrs.put("teamMembers", 1);
+        attrs.put("venueCode", "TRACK");
+        ScheduleUnit u = new ScheduleUnit(key, 100L, "100米", "高一年级", true, "TRACK", null,
+                10, 60, 10, athletes, List.of(60), List.of(p), attrs);
+        u.setPlacement(p);
+        u.setDuration(60);
+        return u;
+    }
+
+    @Test
+    @DisplayName("跨路径字段一致：求解侧 event.category 同样可判定（回归防护）")
+    void solverSideSeesEventCategory() {
+        when(store.load()).thenReturn(List.of(
+                RuleScript.builtin("r1", "径赛软罚", "when event.category == \"径赛\" then soft += 30"),
+                RuleScript.builtin("r2", "田赛否决", "when event.category == \"田赛\" then veto")));
+        new RuleInjectionService(store);
+
+        ScheduleUnit track = unitWithEvent("u1", "径赛", 1, 480);
+        assertEquals(30, ScheduleConstraintProvider.ruleSoft(track));
+        assertEquals(0, ScheduleConstraintProvider.ruleHard(track));
+
+        ScheduleUnit field = unitWithEvent("u2", "田赛", 1, 480);
+        assertTrue(ScheduleConstraintProvider.ruleHard(field) >= 1, "田赛应被 veto 记硬分");
+    }
+
+    @Test
+    @DisplayName("无事件属性时上下文仍可组装（兜底 id/name/track，不抛异常）")
+    void contextWorksWithoutEventAttrs() {
+        ScheduleUnit u = unit("u1", "TRACK", 3, 555, 45);
+        assertEquals(100L, ((Number) ScheduleConstraintProvider.ruleContextOf(u).get("event.id")).longValue());
+        assertEquals("100米", ScheduleConstraintProvider.ruleContextOf(u).get("event.name"));
+        assertEquals(Boolean.TRUE, ScheduleConstraintProvider.ruleContextOf(u).get("event.track"));
     }
 
     @Test

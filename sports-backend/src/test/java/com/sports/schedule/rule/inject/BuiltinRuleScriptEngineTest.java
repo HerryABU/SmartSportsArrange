@@ -28,6 +28,21 @@ class BuiltinRuleScriptEngineTest {
     }
 
     @Test
+    @DisplayName("可信引擎：不受超时影响（内置引擎直接求值，不产生「伪超时」）")
+    void trustedEngineNeverTimesOut() {
+        // 极端超时设置（1ms）：内置引擎是可信引擎，直接在主线程求值，
+        // 因此即便超时阈值极小、并高频调用，也不应出现「脚本执行超时」这类降级错误。
+        RuleScriptEvaluator ev = new RuleScriptEvaluator(1L);
+        RuleScript s = RuleScript.builtin("r1", "软罚", "when lane <= 2 then soft += 30");
+        RuleContext c = ctx("event", Map.of("category", "径赛"), "lane", 1);
+        for (int i = 0; i < 500; i++) {
+            RuleOutcome o = ev.evaluate(s, c);
+            assertFalse(o.hasError(), "第 " + i + " 次求值出现降级错误：" + o.error());
+            assertEquals(30, o.soft());
+        }
+    }
+
+    @Test
     @DisplayName("when-then：条件成立 → 软分累加并记录触发")
     void whenThenFires() {
         RuleScript s = RuleScript.builtin("r1", "前2道软罚",

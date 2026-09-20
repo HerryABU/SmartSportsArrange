@@ -133,12 +133,26 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         return svc.assessCached(key, ruleContextOf(u));
     }
 
-    /** 组装规则上下文：约束流可见的字段（事件/年级/场池/落位）——用户规则片段据此判定。 */
+    /**
+     * 组装规则上下文：约束流可见的字段（事件/年级/场池/落位）——用户规则片段据此判定。
+     *
+     * <p>⚠️ {@code event.*} 取自 {@link ScheduleUnit#getEventAttrs()}，其键与
+     * {@code ArrangementService#ruleContextOf} 对齐（category/track/team/teamMembers/venueCode/gradeGroup…）。
+     * 若此处另起一套字段名，同一份脚本在「编排注入」与「求解约束」两条路径上语义就会不一致——
+     * 典型症状是规则在编排时生效、求解时静默失效。</p>
+     *
+     * <p>求解侧按「单元」粒度评估，因此不提供编排侧的 {@code heat}/{@code lane}/{@code athlete.*}
+     * （单元不含单个运动员），需要按运动员/道次判定的规则请用编排侧或改用 {@code placement.*}。</p>
+     */
     static RuleContext ruleContextOf(ScheduleUnit u) {
         Map<String, Object> ev = new LinkedHashMap<>();
-        ev.put("id", u.getEventId());
-        ev.put("name", u.getEventName());
-        ev.put("track", u.isTrack());
+        if (u.getEventAttrs() != null) {
+            ev.putAll(u.getEventAttrs());
+        }
+        // 兜底：即便未携带附加属性，也保证 id/name/track 可按同一组键取到
+        ev.putIfAbsent("id", u.getEventId());
+        ev.putIfAbsent("name", u.getEventName());
+        ev.putIfAbsent("track", u.isTrack());
         Map<String, Object> pl = new LinkedHashMap<>();
         Placement p = u.getPlacement();
         if (p != null) {
