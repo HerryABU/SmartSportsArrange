@@ -9,6 +9,8 @@ import com.sports.repository.EventRepository;
 import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
+import com.sports.repository.ResultRepository;
+import com.sports.schedule.rule.l1.L1Rule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -32,6 +34,7 @@ class ArrangementServiceTest {
 
     @Mock private ArrangementRepository arrangementRepository;
     @Mock private RegistrationRepository registrationRepository;
+    @Mock private ResultRepository resultRepository;
     @Mock private EventRepository eventRepository;
     @Mock private EventScheduleRepository eventScheduleRepository;
     // 服务后续新增的依赖：漏 @Mock 会让 @InjectMocks 注入 null，调用处直接 NPE
@@ -207,7 +210,7 @@ class ArrangementServiceTest {
     /** L1「自定义规则」款型目录：至少含 class/snake 两款且字段齐全（前端据此渲染「选择哪一款」）。 */
     @Test
     void l1RuleCatalog_containsVariants() {
-        List<Map<String, String>> cat = ArrangementService.L1Rule.catalog();
+        List<Map<String, String>> cat = L1Rule.catalog();
         assertTrue(cat.size() >= 2);
         assertTrue(cat.stream().anyMatch(m -> "class".equals(m.get("id"))));
         assertTrue(cat.stream().anyMatch(m -> "snake".equals(m.get("id"))));
@@ -215,9 +218,13 @@ class ArrangementServiceTest {
             assertNotNull(m.get("label"));
             assertNotNull(m.get("description"));
         }
-        // 未知款型回退默认；大小写不敏感
-        assertEquals(ArrangementService.L1Rule.CLASS, ArrangementService.L1Rule.of("不存在"));
-        assertEquals(ArrangementService.L1Rule.SNAKE, ArrangementService.L1Rule.of("SNAKE"));
+        // 未知款型回退默认；大小写不敏感；含种子蛇形
+        assertEquals(L1Rule.CLASS, L1Rule.of("不存在"));
+        assertEquals(L1Rule.SNAKE, L1Rule.of("SNAKE"));
+        assertEquals(L1Rule.SNAKE_SEEDED, L1Rule.of("snakeSeed"));
+        assertTrue(L1Rule.SNAKE.isSnake());
+        assertTrue(L1Rule.SNAKE_SEEDED.isSnake());
+        assertFalse(L1Rule.CLASS.isSnake());
     }
 
     /** 向后兼容：旧布尔 snakeGrouping=true 仍解析为 snake 款型。 */
@@ -232,6 +239,46 @@ class ArrangementServiceTest {
         rule.put("snakeGrouping", true);
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
         assertEquals("snake", result.get("l1Rule"));
+    }
+
+    /** L1「种子蛇形」款型：按成绩/种子名次排序后 S 形分散，组间种子强度均衡、组内道次唯一。 */
+    @Test
+    void arrange_snakeSeeded_ordersBySeedRank() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(2).build();
+        List<Registration> regs = new ArrayList<>();
+        for (int i = 1; i <= 4; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
+        stubDirectArrange(event, regs);
+        // 成绩：id3=11.0(最快) id1=12.0 id2=13.0 id4=14.0 → 种子序 A3,A1,A2,A4
+        when(resultRepository.findValidByEventId(100L)).thenReturn(List.of(
+                Result.builder().event(event).athlete(regs.get(0).getAthlete()).timeSeconds(12.0).status("valid").build(),
+                Result.builder().event(event).athlete(regs.get(1).getAthlete()).timeSeconds(13.0).status("valid").build(),
+                Result.builder().event(event).athlete(regs.get(2).getAthlete()).timeSeconds(11.0).status("valid").build(),
+                Result.builder().event(event).athlete(regs.get(3).getAthlete()).timeSeconds(14.0).status("valid").build()));
+
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("l1Rule", "snakeSeed");
+        Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 2, rule);
+
+        assertEquals("snakeSeed", result.get("l1Rule"));
+        Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
+        assertEquals(4, stats.get("totalAthletes"));
+        assertEquals(2, stats.get("totalHeats"));   // ceil(4/2)
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> heats = (List<Map<String, Object>>) result.get("heats");
+        Set<Long> seen = new HashSet<>();
+        for (Map<String, Object> heat : heats) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lanes = (List<Map<String, Object>>) heat.get("lanes");
+            Set<Integer> laneNos = new HashSet<>();
+            for (Map<String, Object> lane : lanes) {
+                if (lane.get("athleteId") != null) {
+                    seen.add((Long) lane.get("athleteId"));
+                    assertTrue(laneNos.add(((Number) lane.get("lane")).intValue()), "组内道次重复");
+                }
+            }
+        }
+        assertEquals(4, seen.size());
     }
 
     @Test

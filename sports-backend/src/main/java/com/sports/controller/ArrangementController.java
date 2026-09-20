@@ -49,7 +49,7 @@ public class ArrangementController {
     /** L1「自定义规则」可选款型目录（供前端「选择哪一款」动态渲染：id / 名称 / 说明） */
     @GetMapping("/l1-rules")
     public ApiResponse<?> l1Rules() {
-        return ApiResponse.success(ArrangementService.L1Rule.catalog());
+        return ApiResponse.success(com.sports.schedule.rule.l1.L1Rule.catalog());
     }
 
     @GetMapping("/events/{eventId}")
