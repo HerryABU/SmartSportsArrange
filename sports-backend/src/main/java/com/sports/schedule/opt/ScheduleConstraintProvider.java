@@ -183,7 +183,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     }
 
     /** 运动员是否有两个项目赶不上（跨天用绝对分钟比较；口径同 ConflictService） */
-    static boolean athleteClash(ScheduleUnit a, ScheduleUnit b) {
+    public static boolean athleteClash(ScheduleUnit a, ScheduleUnit b) {
         int aS = a.getPlacement().getAbsoluteStartMinute();
         int aE = aS + a.getDuration();
         int bS = b.getPlacement().getAbsoluteStartMinute();
