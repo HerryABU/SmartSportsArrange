@@ -46,6 +46,12 @@ public class ArrangementController {
         return ApiResponse.success(arrangementService.previewArrangement(config));
     }
 
+    /** L1「自定义规则」可选款型目录（供前端「选择哪一款」动态渲染：id / 名称 / 说明） */
+    @GetMapping("/l1-rules")
+    public ApiResponse<?> l1Rules() {
+        return ApiResponse.success(ArrangementService.L1Rule.catalog());
+    }
+
     @GetMapping("/events/{eventId}")
     public ApiResponse<?> viewArrangement(@PathVariable Long eventId) {
         log.info("查看编排结果: eventId={}", eventId);

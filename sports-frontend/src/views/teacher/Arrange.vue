@@ -257,27 +257,24 @@
             <el-icon><Switch /></el-icon>
             编排规则
           </div>
-          <el-form-item label="分组模式（L1）">
-            <el-radio-group v-model="arrangeConfig.ruleConfig.snakeGrouping">
-              <el-radio-button :value="false">班级均衡</el-radio-button>
-              <el-radio-button :value="true">蛇形排布</el-radio-button>
-            </el-radio-group>
-            <span class="rule-desc">
-              蛇形排布：按「年级→班级」排序后 S 形分散到各组（与手动调序同源的确定性模式，不强制同班不同组）；班级均衡＝默认（同组不同班）
-            </span>
+          <el-form-item label="L1 规则款型">
+            <el-select v-model="arrangeConfig.ruleConfig.l1Rule" style="width: 200px">
+              <el-option v-for="r in l1Rules" :key="r.id" :label="r.label" :value="r.id" />
+            </el-select>
+            <span class="rule-desc">{{ l1RuleDesc }}</span>
           </el-form-item>
           <el-form-item label="同班尽量不同组">
             <el-switch v-model="arrangeConfig.ruleConfig.preferDiffHeat" active-color="#13ce66"
-              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
+              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
           </el-form-item>
           <el-form-item label="同班尽量不同道">
             <el-switch v-model="arrangeConfig.ruleConfig.preferDiffLane" active-color="#13ce66"
-              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
+              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
           </el-form-item>
           <el-form-item label="禁止同班同组">
             <el-switch v-model="arrangeConfig.ruleConfig.banSameClassSameLane" active-color="#ff4949"
-              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
-            <span class="rule-desc">严格禁止同一班级在同一组中出现（蛇形排布模式下不适用）</span>
+              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
+            <span class="rule-desc">严格禁止同一班级在同一组中出现（蛇形排布款型下不适用）</span>
           </el-form-item>
         </div>
       </el-form>
@@ -627,10 +624,31 @@ const arrangeConfig = reactive({
     preferDiffHeat: true,
     preferDiffLane: true,
     banSameClassSameLane: true,
-    // L1 分组模式开关：false=班级均衡（默认，同组不同班）；true=蛇形排布（按年级/班级 S 形分散）
-    snakeGrouping: false
+    // L1「自定义规则」款型：class=班级均衡（默认）；snake=蛇形排布。可在「L1 规则款型」下拉里选择。
+    l1Rule: 'class'
   }
 })
+
+// L1 规则款型目录（后端拉取，动态渲染可选项；后端新增款型无需改前端）
+const l1Rules = ref([])
+const l1RuleDesc = computed(
+  () => l1Rules.value.find(r => r.id === arrangeConfig.ruleConfig.l1Rule)?.description || ''
+)
+async function loadL1Rules() {
+  try {
+    const rs = await request.get('/arrange/l1-rules')
+    l1Rules.value = Array.isArray(rs) ? rs : (rs?.records || [])
+    if (!l1Rules.value.some(r => r.id === arrangeConfig.ruleConfig.l1Rule)) {
+      arrangeConfig.ruleConfig.l1Rule = 'class'
+    }
+  } catch (e) {
+    // 拉取失败时保底两款，避免下拉空白
+    l1Rules.value = [
+      { id: 'class', label: '班级均衡', description: '同组不同班，组内按班级错开道次（默认）' },
+      { id: 'snake', label: '蛇形排布', description: '按年级→班级排序后 S 形分散到各组' }
+    ]
+  }
+}
 
 // 搜索过滤
 watch(searchKeyword, (val) => {
@@ -638,6 +656,8 @@ watch(searchKeyword, (val) => {
 })
 
 onMounted(async () => {
+  // L1「自定义规则」款型目录
+  loadL1Rules()
   // 年级列表：来自系统设置·年级管理（不硬编码），默认选第一个
   await loadAutoOrderBook()
   try {

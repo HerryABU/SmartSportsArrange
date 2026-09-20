@@ -88,7 +88,7 @@ public class ArrangementService {
         int lanes = config.containsKey("lanes") ? ((Number) config.get("lanes")).intValue() : 8;
 
         @SuppressWarnings("unchecked")
-        Map<String, Boolean> ruleConfig = (Map<String, Boolean>) config.get("ruleConfig");
+        Map<String, Object> ruleConfig = (Map<String, Object>) config.get("ruleConfig");
         String round = config.containsKey("round") && config.get("round") != null
                 ? String.valueOf(config.get("round")) : null;
 
@@ -672,7 +672,7 @@ public class ArrangementService {
 
     /** 历史兼容入口：自动判断赛次 */
     public Map<String, Object> arrange(Long eventId, String grade, String gender,
-                                        int lanes, Map<String, Boolean> ruleConfig) {
+                                        int lanes, Map<String, Object> ruleConfig) {
         return arrange(eventId, grade, gender, lanes, ruleConfig, null);
     }
 
@@ -683,7 +683,7 @@ public class ArrangementService {
      *              preliminary → 排预赛（全体报名者）；final → 排决赛（仅晋级者或全体）。
      */
     public Map<String, Object> arrange(Long eventId, String grade, String gender,
-                                        int lanes, Map<String, Boolean> ruleConfig, String round) {
+                                        int lanes, Map<String, Object> ruleConfig, String round) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
@@ -759,7 +759,7 @@ public class ArrangementService {
      */
     private Map<String, Object> arrangePool(Event event, List<Athlete> pool,
                                             String grade, String gender, int lanes,
-                                            Map<String, Boolean> ruleConfig, String round,
+                                            Map<String, Object> ruleConfig, String round,
                                             List<Arrangement> qualifierRefs, List<Arrangement> locked) {
         List<Arrangement> lockedRows = locked == null ? List.of() : locked;
         log.info("编排: eventId={}, grade={}, gender={}, lanes={}, round={}, pool={}, locked={}",
@@ -773,9 +773,10 @@ public class ArrangementService {
         }
 
         boolean lottery = Boolean.TRUE.equals(event.getDrawLots());
-        // L1 分组模式：默认「班级均衡」（同组不同班）；ruleConfig.snakeGrouping=true → 「蛇形排布」
-        // （按年级/班级排序后 S 形分散，不强制同组不同班）。二者同属 L1，蛇形为可选模式。
-        boolean snakeMode = isSnakeGrouping(ruleConfig);
+        // L1「自定义规则」款型：名义上 L1 = 自定义规则，用户可选择是哪一款。
+        // 默认 class（班级均衡）；snake（蛇形排布）。取 ruleConfig.l1Rule（款型 id），兼容旧布尔 snakeGrouping。
+        String l1Rule = resolveL1Rule(ruleConfig);
+        boolean snakeMode = L1Rule.SNAKE.id.equals(l1Rule);
         Placement placement;
         List<String> hardViolations;
         int rearrange = 0;
@@ -886,7 +887,8 @@ public class ArrangementService {
         result.put("grade", grade);
         result.put("gender", gender);
         result.put("round", round);
-        result.put("groupingMode", snakeMode ? "snake" : "class");
+        result.put("l1Rule", l1Rule);
+        result.put("groupingMode", l1Rule);
         result.put("heats", heatDetails);
         result.put("statistics", statistics);
         List<String> allWarnings = new ArrayList<>(placement.warnings);
@@ -1597,9 +1599,62 @@ public class ArrangementService {
         return placement;
     }
 
-    /** ruleConfig 是否选择「蛇形排布」模式（L1 可选模式；缺省 false → 班级均衡） */
-    private static boolean isSnakeGrouping(Map<String, Boolean> ruleConfig) {
-        return ruleConfig != null && Boolean.TRUE.equals(ruleConfig.get("snakeGrouping"));
+    /**
+     * L1「自定义规则」可选款型（可扩展）。
+     *
+     * <p>L1 名义上就是「自定义规则」层——用户可选择用哪一款规则来分组分道。
+     * 新增一款规则只需在此加一个枚举值并在 {@code allocate} 里分流；前端通过
+     * {@code GET /api/arrange/l1-rules} 拉取目录动态列出，无需改前端。</p>
+     */
+    public enum L1Rule {
+        /** 默认：同组不同班 + 匈牙利分道（班级均衡） */
+        CLASS("class", "班级均衡", "同组不同班，组内按班级错开道次（默认）"),
+        /** 蛇形排布：按年级/班级排序后 S 形分散到各组（确定性），不强制同组不同班 */
+        SNAKE("snake", "蛇形排布", "按年级→班级排序后 S 形分散到各组，组内道次蛇形落位（确定性）");
+
+        public final String id;
+        public final String label;
+        public final String description;
+
+        L1Rule(String id, String label, String description) {
+            this.id = id;
+            this.label = label;
+            this.description = description;
+        }
+
+        /** 按款型 id 解析（大小写不敏感）；未知/为空一律回退默认 CLASS。 */
+        public static L1Rule of(String id) {
+            if (id != null) {
+                String t = id.trim();
+                for (L1Rule r : values()) if (r.id.equalsIgnoreCase(t)) return r;
+            }
+            return CLASS;
+        }
+
+        /** 款型目录（供前端「选择哪一款」渲染下拉/单选）。 */
+        public static List<Map<String, String>> catalog() {
+            List<Map<String, String>> list = new ArrayList<>();
+            for (L1Rule r : values()) {
+                Map<String, String> m = new LinkedHashMap<>();
+                m.put("id", r.id);
+                m.put("label", r.label);
+                m.put("description", r.description);
+                list.add(m);
+            }
+            return list;
+        }
+    }
+
+    /**
+     * 解析本次编排选用的 L1 规则款型 id：优先 {@code ruleConfig.l1Rule}（款型 id 字符串），
+     * 兼容旧布尔 {@code ruleConfig.snakeGrouping=true} → snake；缺省 → class。
+     */
+    private static String resolveL1Rule(Map<String, Object> ruleConfig) {
+        if (ruleConfig == null) return L1Rule.CLASS.id;
+        Object v = ruleConfig.get("l1Rule");
+        if (v != null && !String.valueOf(v).isBlank()) return L1Rule.of(String.valueOf(v)).id;
+        if (Boolean.TRUE.equals(ruleConfig.get("snakeGrouping"))) return L1Rule.SNAKE.id;
+        return L1Rule.CLASS.id;
     }
 
     private static String nullSafeStr(String s) {

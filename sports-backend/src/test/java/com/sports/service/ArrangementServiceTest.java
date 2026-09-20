@@ -156,10 +156,11 @@ class ArrangementServiceTest {
         for (int i = 4; i <= 6; i++) regs.add(reg(athlete((long) i, "B" + i, 2L, "高一2班")));
         stubDirectArrange(event, regs);
 
-        Map<String, Boolean> rule = new LinkedHashMap<>();
-        rule.put("snakeGrouping", true);
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("l1Rule", "snake");
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
 
+        assertEquals("snake", result.get("l1Rule"));
         assertEquals("snake", result.get("groupingMode"));
         Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
         assertEquals(6, stats.get("totalAthletes"));
@@ -201,6 +202,36 @@ class ArrangementServiceTest {
 
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, null);
         assertEquals("class", result.get("groupingMode"));
+    }
+
+    /** L1「自定义规则」款型目录：至少含 class/snake 两款且字段齐全（前端据此渲染「选择哪一款」）。 */
+    @Test
+    void l1RuleCatalog_containsVariants() {
+        List<Map<String, String>> cat = ArrangementService.L1Rule.catalog();
+        assertTrue(cat.size() >= 2);
+        assertTrue(cat.stream().anyMatch(m -> "class".equals(m.get("id"))));
+        assertTrue(cat.stream().anyMatch(m -> "snake".equals(m.get("id"))));
+        for (Map<String, String> m : cat) {
+            assertNotNull(m.get("label"));
+            assertNotNull(m.get("description"));
+        }
+        // 未知款型回退默认；大小写不敏感
+        assertEquals(ArrangementService.L1Rule.CLASS, ArrangementService.L1Rule.of("不存在"));
+        assertEquals(ArrangementService.L1Rule.SNAKE, ArrangementService.L1Rule.of("SNAKE"));
+    }
+
+    /** 向后兼容：旧布尔 snakeGrouping=true 仍解析为 snake 款型。 */
+    @Test
+    void arrange_legacySnakeFlagStillWorks() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
+        List<Registration> regs = new ArrayList<>();
+        for (int i = 1; i <= 4; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
+        stubDirectArrange(event, regs);
+
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("snakeGrouping", true);
+        Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
+        assertEquals("snake", result.get("l1Rule"));
     }
 
     @Test
