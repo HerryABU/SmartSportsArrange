@@ -8,7 +8,7 @@
           <h3 class="pg-title">规则注入 · 自定义编排规则</h3>
           <p class="pg-desc">
             L1「自定义规则」层 · 形态一：用「积木」或「代码」描述规则片段（两者是同一棵 AST 的两种投影，双向同步），
-            规则会作为**动态约束**注入编排（hard/medium/soft + veto）。
+            规则会作为<b>动态约束</b>注入编排（hard/medium/soft + veto）。
           </p>
         </div>
       </div>
@@ -213,7 +213,7 @@ function select (s) {
   draft.engine = s.engine || 'builtin'
   draft.enabled = s.enabled !== false
   draft.source = s.source || ''
-  syncBlocksFromSource(true)
+  syncBlocksFromSource()
 }
 
 function newScript () {
@@ -259,8 +259,8 @@ async function saveAll () {
   }
 }
 
-/** 代码 → 积木（同步）；unparseable 时给出提示但不阻断代码编辑 */
-function syncBlocksFromSource (silent) {
+/** 代码 → 积木（同步）；解析不了时给出提示但**不阻断**代码编辑，也绝不覆盖已有积木 */
+function syncBlocksFromSource () {
   if (syncing) return
   const parsed = dslToBlocks(draft.source)
   if (parsed) {
@@ -269,8 +269,9 @@ function syncBlocksFromSource (silent) {
     syncing = false
     syncError.value = ''
   } else {
+    // 关键：解析失败时**保留原积木不动**。若此处把「旧积木」当权威，
+    // 用户回到积木模式随手一改就会用旧结构覆盖掉刚写的代码——静默丢数据。
     syncError.value = '当前 DSL 暂不支持积木模式（可用代码模式继续编辑）'
-    if (silent) syncError.value = ''
   }
 }
 
@@ -283,9 +284,26 @@ function syncSourceFromBlocks () {
   syncError.value = ''
 }
 
+/**
+ * 模式切换。
+ *
+ * <p>切到「代码」：什么都不用做——积木模式下源码一直由积木实时生成，已是权威版本。
+ * （早前实现会在切换时从积木回写源码，一旦积木落后于代码就等于把用户刚写的代码抹掉。）</p>
+ *
+ * <p>切到「积木」：先确认当前源码能被积木表达；不能则留在代码模式并提示，
+ * 避免用陈旧的积木结构反向覆盖代码。</p>
+ */
 function onModeChange (m) {
-  if (m === 'blocks') syncBlocksFromSource(true)
-  else syncSourceFromBlocks()
+  if (m !== 'blocks') return
+  const parsed = dslToBlocks(draft.source)
+  if (!parsed) {
+    mode.value = 'code'
+    syncError.value = '当前 DSL 暂不支持积木模式（可用代码模式继续编辑）'
+    ElMessage.warning('该规则超出积木表达能力，已留在代码模式')
+    return
+  }
+  block.value = parsed
+  syncError.value = ''
 }
 
 // 双向同步：积木编辑 → 代码；代码编辑 → 积木
@@ -293,7 +311,7 @@ watch(block, () => {
   if (mode.value === 'blocks') syncSourceFromBlocks()
 }, { deep: true })
 watch(() => draft.source, () => {
-  if (mode.value === 'code') syncBlocksFromSource(true)
+  if (mode.value === 'code') syncBlocksFromSource()
 })
 
 async function runTest () {
