@@ -28,6 +28,7 @@ public class ArrangementController {
     private final ConflictService conflictService;
     private final AuditService auditService;
     private final com.sports.service.SystemService systemService;
+    private final com.sports.schedule.rule.inject.RuleInjectionService ruleInjectionService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/events/{eventId}")
@@ -50,6 +51,44 @@ public class ArrangementController {
     @GetMapping("/l1-rules")
     public ApiResponse<?> l1Rules() {
         return ApiResponse.success(com.sports.schedule.rule.l1.L1Rule.catalog());
+    }
+
+    // ==================== L1 规则注入（形态一：伪代码 / 脚本） ====================
+
+    /** 规则脚本列表 + 各引擎可用性（内置伪代码必然可用；JSR-223 引擎缺失时提示引入依赖）。 */
+    @GetMapping("/rule-scripts")
+    public ApiResponse<?> listRuleScripts() {
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("scripts", ruleInjectionService.list());
+        data.put("engines", ruleInjectionService.engines());
+        return ApiResponse.success(data);
+    }
+
+    /** 覆盖保存规则脚本。body: {scripts:[{id,name,engine,enabled,source}]} */
+    @PutMapping("/rule-scripts")
+    public ApiResponse<?> saveRuleScripts(@RequestBody Map<String, Object> body) {
+        Object raw = body.get("scripts");
+        List<com.sports.schedule.rule.inject.RuleScript> scripts = raw == null
+                ? List.of()
+                : objectMapper.convertValue(raw, new com.fasterxml.jackson.core.type.TypeReference<
+                        List<com.sports.schedule.rule.inject.RuleScript>>() {
+                });
+        List<com.sports.schedule.rule.inject.RuleScript> saved = ruleInjectionService.save(scripts);
+        auditService.record("ARRANGE_RULE_SCRIPTS_SAVE", "SYSTEM", null, "保存规则脚本 " + saved.size() + " 条");
+        log.info("保存规则脚本: {} 条", saved.size());
+        return ApiResponse.success("规则脚本已保存", saved);
+    }
+
+    /** 试运行规则脚本（不落库）。body: {script:{...}, context:{...}} */
+    @PostMapping("/rule-scripts/test")
+    public ApiResponse<?> testRuleScript(@RequestBody Map<String, Object> body) {
+        com.sports.schedule.rule.inject.RuleScript script = objectMapper.convertValue(
+                body.getOrDefault("script", Map.of()), com.sports.schedule.rule.inject.RuleScript.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ctx = body.get("context") instanceof Map
+                ? (Map<String, Object>) body.get("context") : Map.of();
+        return ApiResponse.success(ruleInjectionService.test(script,
+                com.sports.schedule.rule.inject.RuleContext.of(ctx)));
     }
 
     @GetMapping("/events/{eventId}")
