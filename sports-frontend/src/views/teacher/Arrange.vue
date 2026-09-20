@@ -257,15 +257,27 @@
             <el-icon><Switch /></el-icon>
             编排规则
           </div>
+          <el-form-item label="分组模式（L1）">
+            <el-radio-group v-model="arrangeConfig.ruleConfig.snakeGrouping">
+              <el-radio-button :value="false">班级均衡</el-radio-button>
+              <el-radio-button :value="true">蛇形排布</el-radio-button>
+            </el-radio-group>
+            <span class="rule-desc">
+              蛇形排布：按「年级→班级」排序后 S 形分散到各组（与手动调序同源的确定性模式，不强制同班不同组）；班级均衡＝默认（同组不同班）
+            </span>
+          </el-form-item>
           <el-form-item label="同班尽量不同组">
-            <el-switch v-model="arrangeConfig.ruleConfig.preferDiffHeat" active-color="#13ce66" />
+            <el-switch v-model="arrangeConfig.ruleConfig.preferDiffHeat" active-color="#13ce66"
+              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
           </el-form-item>
           <el-form-item label="同班尽量不同道">
-            <el-switch v-model="arrangeConfig.ruleConfig.preferDiffLane" active-color="#13ce66" />
+            <el-switch v-model="arrangeConfig.ruleConfig.preferDiffLane" active-color="#13ce66"
+              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
           </el-form-item>
           <el-form-item label="禁止同班同组">
-            <el-switch v-model="arrangeConfig.ruleConfig.banSameClassSameLane" active-color="#ff4949" />
-            <span class="rule-desc">严格禁止同一班级在同一组中出现</span>
+            <el-switch v-model="arrangeConfig.ruleConfig.banSameClassSameLane" active-color="#ff4949"
+              :disabled="arrangeConfig.ruleConfig.snakeGrouping" />
+            <span class="rule-desc">严格禁止同一班级在同一组中出现（蛇形排布模式下不适用）</span>
           </el-form-item>
         </div>
       </el-form>
@@ -614,7 +626,9 @@ const arrangeConfig = reactive({
   ruleConfig: {
     preferDiffHeat: true,
     preferDiffLane: true,
-    banSameClassSameLane: true
+    banSameClassSameLane: true,
+    // L1 分组模式开关：false=班级均衡（默认，同组不同班）；true=蛇形排布（按年级/班级 S 形分散）
+    snakeGrouping: false
   }
 })
 

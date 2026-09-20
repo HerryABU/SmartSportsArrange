@@ -147,6 +147,62 @@ class ArrangementServiceTest {
         assertEquals(6, seen.size());
     }
 
+    /** L1「蛇形排布」模式：按年级/班级排序 S 形分散，且有意放开「同组不同班」硬约束（自检仍有效）。 */
+    @Test
+    void arrange_snakeMode_usesGradeClassSnakeAndRelaxesSameClassRule() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
+        List<Registration> regs = new ArrayList<>();
+        for (int i = 1; i <= 3; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
+        for (int i = 4; i <= 6; i++) regs.add(reg(athlete((long) i, "B" + i, 2L, "高一2班")));
+        stubDirectArrange(event, regs);
+
+        Map<String, Boolean> rule = new LinkedHashMap<>();
+        rule.put("snakeGrouping", true);
+        Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
+
+        assertEquals("snake", result.get("groupingMode"));
+        Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
+        assertEquals(6, stats.get("totalAthletes"));
+        // 蛇形模式：heats = ceil(6/4)=2（班级均衡模式会因最大单班 3 人抬到 3）
+        assertEquals(2, stats.get("totalHeats"));
+
+        // 自检必须有效：蛇形模式有意跳过「同组不同班」校验，不应报违规
+        @SuppressWarnings("unchecked")
+        Map<String, Object> selfCheck = (Map<String, Object>) result.get("selfCheck");
+        assertEquals(Boolean.TRUE, selfCheck.get("valid"));
+        assertTrue(((List<?>) selfCheck.get("violations")).isEmpty());
+
+        // 每人恰好一次
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> heats = (List<Map<String, Object>>) result.get("heats");
+        Set<Long> seen = new HashSet<>();
+        int placed = 0;
+        for (Map<String, Object> heat : heats) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lanes = (List<Map<String, Object>>) heat.get("lanes");
+            for (Map<String, Object> lane : lanes) {
+                if (lane.get("athleteId") != null) {
+                    placed++;
+                    assertTrue(seen.add((Long) lane.get("athleteId")), "同一运动员被重复分配");
+                }
+            }
+        }
+        assertEquals(6, placed);
+        assertEquals(6, seen.size());
+    }
+
+    /** 缺省（ruleConfig=null）→ 班级均衡模式，结果如实标注 groupingMode=class。 */
+    @Test
+    void arrange_defaultMode_reportsClassGrouping() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
+        List<Registration> regs = new ArrayList<>();
+        for (int i = 1; i <= 4; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
+        stubDirectArrange(event, regs);
+
+        Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, null);
+        assertEquals("class", result.get("groupingMode"));
+    }
+
     @Test
     void arrange_emptyRegistrations_throws() {
         Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();

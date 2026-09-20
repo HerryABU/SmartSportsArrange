@@ -20,6 +20,7 @@ import com.sports.repository.EventScheduleRepository;
 import com.sports.repository.RefereeRepository;
 import com.sports.repository.RegistrationRepository;
 import com.sports.schedule.exact.HungarianAssignment;
+import com.sports.schedule.rule.SnakeGrouping;
 import com.sports.schedule.support.ScheduleSupport;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -772,14 +773,19 @@ public class ArrangementService {
         }
 
         boolean lottery = Boolean.TRUE.equals(event.getDrawLots());
+        // L1 分组模式：默认「班级均衡」（同组不同班）；ruleConfig.snakeGrouping=true → 「蛇形排布」
+        // （按年级/班级排序后 S 形分散，不强制同组不同班）。二者同属 L1，蛇形为可选模式。
+        boolean snakeMode = isSnakeGrouping(ruleConfig);
         Placement placement;
         List<String> hardViolations;
         int rearrange = 0;
         long baseSeed = System.nanoTime();
         // 对抗式自检：生成 → 独立校验硬约束 → 若违反则以不同随机种子重排，最多 ADVERSARIAL_MAX_ROUNDS 轮
+        // 蛇形模式为确定性算法（无随机），单趟生成即可。
         do {
-            placement = allocate(pool, lanes, lockedRows, rearrange == 0 ? null : (baseSeed + rearrange), lottery);
-            hardViolations = validatePlacement(placement, lanes);
+            placement = allocate(pool, lanes, lockedRows,
+                    (snakeMode || rearrange == 0) ? null : (baseSeed + rearrange), lottery, snakeMode);
+            hardViolations = validatePlacement(placement, lanes, snakeMode);
             rearrange++;
         } while (!hardViolations.isEmpty() && rearrange < ADVERSARIAL_MAX_ROUNDS);
         int heats = placement.heats;
@@ -880,6 +886,7 @@ public class ArrangementService {
         result.put("grade", grade);
         result.put("gender", gender);
         result.put("round", round);
+        result.put("groupingMode", snakeMode ? "snake" : "class");
         result.put("heats", heatDetails);
         result.put("statistics", statistics);
         List<String> allWarnings = new ArrayList<>(placement.warnings);
@@ -915,7 +922,7 @@ public class ArrangementService {
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
 
-        Placement placement = allocate(athletes, lanes, null, null, false);
+        Placement placement = allocate(athletes, lanes, null, null, false, false);
 
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
@@ -1276,11 +1283,16 @@ public class ArrangementService {
      * 排除出池，却没占位，重排后组号从 1 重算，锁定道次可能被新项顶掉）。</p>
      */
     private Placement allocate(List<Athlete> athletes, int lanes, List<Arrangement> locked,
-                                Long seed, boolean lottery) {
+                                Long seed, boolean lottery, boolean snakeMode) {
         int n = athletes.size();
         List<String> warnings = new ArrayList<>();
         List<Arrangement> locks = locked == null ? List.of() : locked;
         Random rnd = seed != null ? new Random(seed) : null;
+
+        // L1「蛇形排布」模式：按年级/班级排序后 S 形分散（确定性，不依赖随机/不强制同组不同班）
+        if (snakeMode) {
+            return allocateSnake(athletes, lanes, locks, warnings);
+        }
 
         // 按班级分组（班级缺失归为 0）
         Map<Long, List<Athlete>> byClass = athletes.stream()
@@ -1495,14 +1507,119 @@ public class ArrangementService {
     }
 
     /**
+     * L1「蛇形排布」模式：按「年级 → 班级 → id」确定性排序后，用 {@link SnakeGrouping}
+     * 把运动员 S 形分散到各组（使各组年级/班级分布尽量均衡），组内道次按蛇形次序落位。
+     *
+     * <p>与默认「班级均衡」模式（同组不同班 + 匈牙利分道）互斥，二者同属 L1，由
+     * {@code ruleConfig.snakeGrouping} 选择。人工锁定项作为已占位参与：蛇形目标组满员时环形顺延。</p>
+     */
+    private Placement allocateSnake(List<Athlete> athletes, int lanes,
+                                    List<Arrangement> locks, List<String> warnings) {
+        int total = athletes.size() + locks.size();
+        int minHeats = (int) Math.ceil((double) total / Math.max(1, lanes));
+        int maxLockedHeat = 0;
+        for (Arrangement lock : locks) {
+            maxLockedHeat = Math.max(maxLockedHeat, lock.getHeat() == null ? 0 : lock.getHeat());
+        }
+        int heats = Math.max(Math.max(minHeats, 1), maxLockedHeat);
+
+        int[] occupancy = new int[heats];
+        boolean[][] laneTaken = new boolean[heats][lanes];
+        @SuppressWarnings("unchecked")
+        List<Arrangement>[] matrix = new List[heats];
+        for (int h = 0; h < heats; h++) matrix[h] = new ArrayList<>();
+
+        // 预置人工锁定项（占住其 组/道）
+        for (Arrangement lock : locks) {
+            int hIdx = lock.getHeat() != null ? lock.getHeat() - 1 : 0;
+            if (hIdx < 0 || hIdx >= heats) {
+                warnings.add("人工锁定项组号越界（第" + lock.getHeat() + "组），已跳过占位");
+                continue;
+            }
+            int lane = lock.getLane() != null ? lock.getLane() : 0;
+            if (lane >= 1 && lane <= lanes && laneTaken[hIdx][lane - 1]) {
+                warnings.add(String.format("人工锁定项道次冲突：第%d组第%d道被两条锁定项同时占用", hIdx + 1, lane));
+            }
+            matrix[hIdx].add(lock);
+            occupancy[hIdx]++;
+            if (lane >= 1 && lane <= lanes) laneTaken[hIdx][lane - 1] = true;
+        }
+
+        // 确定性排序：年级 → 班级 → id（蛇形前先按年级/班级排好序）
+        List<Athlete> ordered = new ArrayList<>(athletes);
+        ordered.sort(Comparator.comparing((Athlete a) -> nullSafeStr(a.getGrade()))
+                .thenComparing(ArrangementService::classKeyOf)
+                .thenComparing(a -> a.getId() == null ? Long.MAX_VALUE : a.getId()));
+
+        // 蛇形目标组 → 入组（目标组满员则环形顺延到其后第一个有空位的组）
+        int[] heatOfPos = SnakeGrouping.heatOf(ordered.size(), heats);
+        for (int pos = 0; pos < ordered.size(); pos++) {
+            Athlete athlete = ordered.get(pos);
+            int target = heatOfPos[pos];
+            int chosen = -1;
+            for (int k = 0; k < heats; k++) {
+                int h = (target + k) % heats;
+                if (occupancy[h] < lanes) { chosen = h; break; }
+            }
+            if (chosen < 0) {
+                warnings.add("无法为运动员 " + athlete.getName() + " 分配合适的组");
+                continue;
+            }
+            Arrangement arr = new Arrangement();
+            arr.setAthlete(athlete);
+            matrix[chosen].add(arr);
+            occupancy[chosen]++;
+        }
+
+        // 组内道次：按蛇形偏好落位，跳过被锁定占用的道次
+        for (int h = 0; h < heats; h++) {
+            List<Arrangement> pending = new ArrayList<>();
+            for (Arrangement a : matrix[h]) if (a.getLane() == null) pending.add(a);
+            if (pending.isEmpty()) continue;
+            int[] pref = SnakeGrouping.assignLanes(pending.size(), lanes);
+            for (int i = 0; i < pending.size(); i++) {
+                int lane = pref[i];
+                if (lane >= 1 && lane <= lanes && laneTaken[h][lane - 1]) {
+                    lane = -1;
+                    for (int l = 1; l <= lanes; l++) if (!laneTaken[h][l - 1]) { lane = l; break; }
+                }
+                if (lane < 1) continue;
+                laneTaken[h][lane - 1] = true;
+                pending.get(i).setLane(lane);
+            }
+        }
+
+        Placement placement = new Placement();
+        placement.heats = heats;
+        placement.warnings = warnings;
+        placement.heatsMatrix = new ArrayList<>(heats);
+        for (int h = 0; h < heats; h++) placement.heatsMatrix.add(matrix[h]);
+        return placement;
+    }
+
+    /** ruleConfig 是否选择「蛇形排布」模式（L1 可选模式；缺省 false → 班级均衡） */
+    private static boolean isSnakeGrouping(Map<String, Boolean> ruleConfig) {
+        return ruleConfig != null && Boolean.TRUE.equals(ruleConfig.get("snakeGrouping"));
+    }
+
+    private static String nullSafeStr(String s) {
+        return s == null ? "" : s;
+    }
+
+    private static String classKeyOf(Athlete a) {
+        if (a == null || a.getClassInfo() == null || a.getClassInfo().getName() == null) return "";
+        return a.getClassInfo().getName();
+    }
+
+    /**
      * 对抗式自检（内存态）：校验分配结果的硬约束，返回违反清单（空 = 全部满足）。
      * <ul>
-     *   <li>同一组不能同班（人工锁定项豁免同班校验，但道次唯一仍校验）；</li>
+     *   <li>同一组不能同班（人工锁定项豁免同班校验，但道次唯一仍校验）；蛇形模式下此项有意放开；</li>
      *   <li>道次在 [1, lanes] 且不重复占用。</li>
      * </ul>
      * 软约束（如「同班道次错开」）不在此列，仅作为 warnings 由 allocate 产出。
      */
-    private List<String> validatePlacement(Placement placement, int lanes) {
+    private List<String> validatePlacement(Placement placement, int lanes, boolean snakeMode) {
         List<String> violations = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
             List<Arrangement> in = placement.heatsMatrix.get(h);
@@ -1515,6 +1632,8 @@ public class ArrangementService {
                 } else if (lane != null && !usedLanes.add(lane)) {
                     violations.add(String.format("第%d组道次%d被重复占用", h + 1, lane));
                 }
+                // 蛇形模式不强制「同组不同班」，跳过同班校验
+                if (snakeMode) continue;
                 // 人工锁定项：仅校验道次唯一（同班同组是人工选择，不视为编排错误）
                 if (a.getId() != null && Boolean.TRUE.equals(a.getIsManual())) continue;
                 Long cid = classIdOf(a.getAthlete());
