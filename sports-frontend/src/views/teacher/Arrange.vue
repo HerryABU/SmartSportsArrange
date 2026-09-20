@@ -796,6 +796,14 @@ const executeArrange = async () => {
       ? '，耗时 ' + result.executionTimeMs + 'ms'
       : ''
     ElMessage.success('编排完成！共 ' + (result.statistics?.totalHeats || 0) + ' 组' + timeInfo)
+    // L1 规则注入（形态一）：把命中情况如实反馈（规则已作为动态约束参与编排）
+    if (result.ruleInjection && result.ruleInjection.hitCount > 0) {
+      const ri = result.ruleInjection
+      const msg = `规则注入：命中 ${ri.hitCount} 条（hard=${ri.hard}，medium=${ri.medium}，`
+        + `soft=${ri.soft}，否决=${ri.veto ? '是' : '否'}）`
+      if (ri.veto || ri.hard > 0) ElMessage.warning(msg)
+      else ElMessage.info(msg)
+    }
     // 编排后对抗式自检：后端已在校验不通过时自动重排，此处仅把结果反馈给操作者
     if (result.selfCheck) {
       if (result.selfCheck.valid) {
