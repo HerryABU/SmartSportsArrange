@@ -12,6 +12,7 @@
       <div class="pg-actions">
         <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
         <el-button plain @click="downloadTemplate" :icon="Download">表格2模板</el-button>
+        <el-button plain @click="downloadEventSimpleTemplate" :icon="Download">运动项目表模板</el-button>
         <el-button plain @click="handleExport" :icon="Download">导出Excel</el-button>
         <el-button plain @click="downloadJsonTemplate" :icon="DocumentCopy">JSON模板</el-button>
         <el-button plain @click="handleExportJson" :icon="Download">导出JSON</el-button>
@@ -54,6 +55,18 @@
           style="display:inline-block;margin-left:8px"
         >
           <el-button type="warning" plain><el-icon><Upload /></el-icon> 导入JSON</el-button>
+        </el-upload>
+        <el-upload
+          :action="apiBase() + '/excel/import-with-mapping'"
+          :data="eventSimpleUploadData"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".xlsx,.xls,.csv"
+          :on-success="onEventSimpleImportSuccess"
+          :on-error="onImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="primary" plain><el-icon><Upload /></el-icon> 导入运动项目表</el-button>
         </el-upload>
       </div>
       <div class="toolbar-right">
@@ -774,6 +787,17 @@ async function handleExport() {
 // ---- JSON 导入/导出（全字段往返） ----
 const importJsonUrl = apiBase() + '/events/import/json'
 
+// ---- 运动项目表（7列精简模板）：复用 /excel/import-with-mapping，固定列映射 ----
+// 列序与服务端 getTemplate("eventsimple") 完全一致：0项目代码/1项目名称/2每组人数/
+// 3每批组数/4项目类型/5场地号/6每批所需时间(分)；按此映射即可把模板原样导回，无需用户手动配列
+const eventSimpleUploadData = {
+  type: 'eventsimple',
+  columnMap: JSON.stringify({
+    0: 'eventCode', 1: 'eventName', 2: 'teamMembers', 3: 'concurrency',
+    4: 'category', 5: 'defaultVenueCode', 6: 'perBatchMinutes',
+  }),
+}
+
 function onImportJsonSuccess(res: any) {
   const d = res?.data || res || {}
   const created = d.created ?? 0
@@ -803,6 +827,28 @@ async function downloadJsonTemplate() {
   } catch (e) {
     ElMessage.error(e?.message || '下载 JSON 模板失败')
   }
+}
+
+// ---- 运动项目表（7列）模板下载 + 导入（eventsimple） ----
+async function downloadEventSimpleTemplate() {
+  try {
+    await downloadApi('/excel/template/eventsimple', '运动项目表导入模板.xlsx')
+    ElMessage.success('已下载运动项目表模板（7列精简版）')
+  } catch (e) {
+    ElMessage.error(e?.message || '下载运动项目表模板失败')
+  }
+}
+
+function onEventSimpleImportSuccess(res: any) {
+  const d = res?.data || res || {}
+  const success = d.success || 0
+  const failed = d.failed || 0
+  if (failed > 0) {
+    ElMessage.warning(`运动项目表导入完成：成功 ${success} 条，失败 ${failed} 条（详见服务日志）`)
+  } else {
+    ElMessage.success(`运动项目表导入完成：成功 ${success} 条`)
+  }
+  fetchData()
 }
 
 // ==================== 方法 ====================

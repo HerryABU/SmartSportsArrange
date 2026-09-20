@@ -55,12 +55,17 @@ public final class ExcelColumnMapping {
         COLUMN_ALIASES.put("realName",     List.of("姓名","真实姓名","realName"));
         COLUMN_ALIASES.put("role",         List.of("角色","role","身份"));
         COLUMN_ALIASES.put("phone",        List.of("电话","手机号","手机","phone"));
-        COLUMN_ALIASES.put("category",     List.of("类别","类型","category","项目类别"));
+        COLUMN_ALIASES.put("category",     List.of("类别","类型","项目类型","category","项目类别"));
         COLUMN_ALIASES.put("genderLimit",  List.of("性别限制","性别","genderLimit"));
         COLUMN_ALIASES.put("defaultLanes", List.of("跑道数","道数","lanes","defaultLanes"));
         COLUMN_ALIASES.put("scoringType",  List.of("计分方式","计分规则","scoringType"));
         COLUMN_ALIASES.put("record",       List.of("校纪录","纪录","record"));
         COLUMN_ALIASES.put("refereesPerGroup", List.of("组次裁判数量","每组裁判数","每组次裁判数","裁判人数","裁判数","refereesPerGroup"));
+        // 运动项目表（7列精简模板）专用字段
+        COLUMN_ALIASES.put("teamMembers",      List.of("每组人数","每队人数","团队人数","teamMembers"));
+        COLUMN_ALIASES.put("concurrency",      List.of("每批组数","并发组数","每批同时组数","concurrency"));
+        COLUMN_ALIASES.put("defaultVenueCode", List.of("场地号","场地编码","defaultVenueCode"));
+        COLUMN_ALIASES.put("perBatchMinutes",  List.of("每批所需时间","每批分钟","每批所需分钟","perBatchMinutes"));
     }
 
     private static void initTypeFields() {
@@ -86,6 +91,10 @@ public final class ExcelColumnMapping {
         TYPE_FIELDS.put("event", new LinkedHashMap<>(Map.of(
             "name","项目名称","code","项目编码","category","类别","genderLimit","性别限制",
             "defaultLanes","跑道数","scoringType","计分规则","record","校纪录","refereesPerGroup","组次裁判数量")));
+        // 运动项目表（7列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间
+        TYPE_FIELDS.put("eventsimple", new LinkedHashMap<>(Map.of(
+            "eventCode","项目代码","eventName","项目名称","teamMembers","每组人数","concurrency","每批组数",
+            "category","项目类型","defaultVenueCode","场地号","perBatchMinutes","每批所需时间(分)")));
     }
 
     private ExcelColumnMapping() {

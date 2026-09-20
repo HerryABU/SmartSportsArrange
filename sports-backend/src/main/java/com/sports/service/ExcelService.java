@@ -78,6 +78,16 @@ public class ExcelService {
                 sheet.add(List.of("用户名","密码","姓名","角色","电话"));
                 sheet.add(List.of("teacher01","123456","张老师","TEACHER","13800138000"));
             }
+            case "eventsimple" -> {
+                // 运动项目表（7列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间
+                // 复用 Event 现有字段，不新增列；与「表格2」17列模板互补，面向只需登记基础编排参数的老师
+                fileName = "运动项目表导入模板.xlsx";
+                sheet.add(List.of("项目代码","项目名称","每组人数","每批组数","项目类型","场地号","每批所需时间(分)"));
+                sheet.add(List.of("100M","100米","1","6","径赛","TRACK","20"));
+                sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30"));
+                sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90"));
+                sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300"));
+            }
             case "event" -> {
                 // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
                 // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(1=串行,n=并行)/
@@ -148,6 +158,14 @@ public class ExcelService {
                 notes.add(List.of("每组次几人", "径赛=每组人数即道次，田赛=工位数，游泳=泳道数。"));
                 notes.add(List.of("并行数", "项目内并发人数（1=串行，n=并行）；绑定场地后受该场地并行上限约束。"));
                 notes.add(List.of("捆绑字母", "同字母的田赛项目安排在同一时段并行。"));
+            }
+            case "eventsimple" -> {
+                notes.add(List.of("项目代码", "唯一编码，如 100M；导入后作为项目主键。"));
+                notes.add(List.of("每组人数", "一个组/队的人数：个人项目填 1，4×100 填 4，拔河填 15。>1 自动标记为团体赛。"));
+                notes.add(List.of("每批组数", "同一时刻可并行进行的批次数：1000米6道填6，立定跳远每批4人填4。"));
+                notes.add(List.of("项目类型", "取值：径赛 / 田赛 / 趣味运动会 / 球类；用于推断是否占道次与趣味并行。"));
+                notes.add(List.of("场地号", "场地编码（与全局场地配置 code 对应），如 TRACK / FIELD_A；绑定独立并发池。"));
+                notes.add(List.of("每批所需时间(分)", "一批人同时上场的分钟数，如趣味项目一组5分钟。"));
             }
             default -> notes.add(List.of("说明", "请在下载链接中指定模板类型。"));
         }
@@ -238,6 +256,7 @@ public class ExcelService {
         else if (l.contains("registration")||l.contains("报名")) return "registration";
         else if (l.contains("class")||l.contains("班级")) return "class";
         else if (l.contains("user")||l.contains("用户")) return "user";
+        else if (l.contains("运动项目表")) return "eventsimple";
         else if (l.contains("event")||l.contains("项目")) return "event";
         return "athlete";
     }
@@ -315,6 +334,7 @@ public class ExcelService {
             case "registration" -> processRegistrationRow(values);
             case "class" -> processClassRow(values);
             case "event" -> processEventRow(values);
+            case "eventsimple" -> processEventSimpleRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
     }
@@ -439,6 +459,45 @@ public class ExcelService {
                 .refereesPerGroup(parseIntSafe(v.get("refereesPerGroup"), 0))
                 .isEnabled(true).sortOrder(0).build();
         eventRepository.save(event);
+    }
+
+    /**
+     * 运动项目表（7列精简模板）导入：复用 Event 现有字段，不新增列。
+     * <p>A项目代码→code / B项目名称→name / C每组人数→teamMembers(>1 自动标记团体赛) /
+     * D每批组数→concurrency(径赛同步 laneCount) / E项目类型→category(推断 track/funSports) /
+     * F场地号→defaultVenueCode / G每批所需时间→perBatchMinutes。</p>
+     */
+    private void processEventSimpleRow(Map<String, String> v) {
+        String name = v.get("eventName");
+        String code = v.get("eventCode");
+        if (name == null || code == null) throw new RuntimeException("项目名称和编码不能为空");
+        if (eventRepository.existsByCode(code)) throw new RuntimeException("项目编码已存在: " + code);
+
+        String category = trimToNull(v.get("category"));
+        Integer teamMembers = parseIntSafe(v.get("teamMembers"), 0);
+        Integer concurrency = parseIntSafe(v.get("concurrency"), null);
+        Integer perBatch = parseIntSafe(v.get("perBatchMinutes"), null);
+        String venueCode = trimToNull(v.get("defaultVenueCode"));
+
+        // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味，复用现有字段
+        boolean isTrack = "径赛".equals(category);
+        boolean isFun = "趣味运动会".equals(category);
+        Integer laneCount = isTrack ? (concurrency != null ? concurrency : 8) : 0;
+
+        Event.EventBuilder b = Event.builder()
+                .name(name).code(code)
+                .category(category)
+                .team(teamMembers != null && teamMembers > 1)
+                .teamMembers(teamMembers)
+                .concurrency(concurrency)
+                .perBatchMinutes(perBatch)
+                .defaultVenueCode(venueCode)
+                .laneCount(laneCount)
+                .defaultLanes(laneCount)
+                .isEnabled(true).sortOrder(0);
+        // 项目类型留空时不覆盖 track/funSports 的实体默认值，避免产生无法编排的事件
+        if (category != null) b.track(isTrack).funSports(isFun);
+        eventRepository.save(b.build());
     }
 
     // ==================== 直接导入（兼容旧接口） ====================
