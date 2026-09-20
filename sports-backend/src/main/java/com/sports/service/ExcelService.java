@@ -42,6 +42,7 @@ public class ExcelService {
     private final EventScheduleRepository scheduleRepository;
     private final EventRefereeRepository eventRefereeRepository;
     private final RefereeRepository refereeRepository;
+    private final VenueRepository venueRepository;
 
     // ==================== 模板下载 ====================
 
@@ -87,6 +88,23 @@ public class ExcelService {
                 sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30"));
                 sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90"));
                 sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300"));
+            }
+            case "roster" -> {
+                // 全名单表（5列）：年级/班级/姓名/学号/性别 —— 运动员主数据
+                // 按学号 upsert；班级缺失时按(年级,班级)自动创建
+                fileName = "全名单表导入模板.xlsx";
+                sheet.add(List.of("年级","班级","姓名","学号","性别"));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男"));
+                sheet.add(List.of("高一年级","高一1班","李四","2024002","女"));
+            }
+            case "signup" -> {
+                // 报名表（7列）：年级/班级/姓名/学号/性别/项目/组号
+                // 个人项目严禁填写组号；团体/接力按班级内编 A/B（同一班级同一项目同组号视为一队）
+                fileName = "报名表导入模板.xlsx";
+                sheet.add(List.of("年级","班级","姓名","学号","性别","项目","组号"));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男","100米",""));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男","4×100米接力","A"));
+                sheet.add(List.of("高一年级","高一1班","李四","2024002","女","4×100米接力","B"));
             }
             case "event" -> {
                 // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
@@ -166,6 +184,20 @@ public class ExcelService {
                 notes.add(List.of("项目类型", "取值：径赛 / 田赛 / 趣味运动会 / 球类；用于推断是否占道次与趣味并行。"));
                 notes.add(List.of("场地号", "场地编码（与全局场地配置 code 对应），如 TRACK / FIELD_A；绑定独立并发池。"));
                 notes.add(List.of("每批所需时间(分)", "一批人同时上场的分钟数，如趣味项目一组5分钟。"));
+            }
+            case "roster" -> {
+                notes.add(List.of("年级", "如 高一年级；用于年级分组与统计。"));
+                notes.add(List.of("班级", "班级名称，须与系统中班级名称一致；不存在时按(年级,班级)自动创建。"));
+                notes.add(List.of("姓名", "学生姓名，必填。"));
+                notes.add(List.of("学号", "必填且唯一，按学号 upsert（已存在则更新，不存在则新建）。"));
+                notes.add(List.of("性别", "填 男 / 女。"));
+                notes.add(List.of("号码布", "由系统按号码簿规则批量生成，本表无需填写。"));
+            }
+            case "signup" -> {
+                notes.add(List.of("年级/班级/姓名/学号", "用于定位已存在于「全名单表」的运动员，须与全名单一致。"));
+                notes.add(List.of("项目", "填项目名称或项目编码（如 100米 / 100M / 4×100米接力），须与运动项目表一致。"));
+                notes.add(List.of("组号", "仅团体/接力项目填写（如 A / B）：同一班级同一项目同组号视为同一支队伍；两个 4×100 队分别编 A、B。"));
+                notes.add(List.of("个人项目", "个人项目（非团体）严禁填写组号，填了将报错。"));
             }
             default -> notes.add(List.of("说明", "请在下载链接中指定模板类型。"));
         }
@@ -253,6 +285,8 @@ public class ExcelService {
         if (filename == null) return "athlete";
         String l = filename.toLowerCase();
         if (l.contains("score")||l.contains("成绩")) return "score";
+        else if (l.contains("报名表")) return "signup";
+        else if (l.contains("全名单")||l.contains("名单")) return "roster";
         else if (l.contains("registration")||l.contains("报名")) return "registration";
         else if (l.contains("class")||l.contains("班级")) return "class";
         else if (l.contains("user")||l.contains("用户")) return "user";
@@ -335,6 +369,8 @@ public class ExcelService {
             case "class" -> processClassRow(values);
             case "event" -> processEventRow(values);
             case "eventsimple" -> processEventSimpleRow(values);
+            case "roster" -> processRosterRow(values);
+            case "signup" -> processSignupRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
     }
@@ -479,9 +515,10 @@ public class ExcelService {
         Integer perBatch = parseIntSafe(v.get("perBatchMinutes"), null);
         String venueCode = trimToNull(v.get("defaultVenueCode"));
 
-        // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味，复用现有字段
+        // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味/球类，复用现有字段
         boolean isTrack = "径赛".equals(category);
-        boolean isFun = "趣味运动会".equals(category);
+        // 趣味运动会、球类 复用田赛逻辑（不占道次、并行分组）
+        boolean isFun = "趣味运动会".equals(category) || "球类".equals(category);
         Integer laneCount = isTrack ? (concurrency != null ? concurrency : 8) : 0;
 
         Event.EventBuilder b = Event.builder()
@@ -496,8 +533,118 @@ public class ExcelService {
                 .defaultLanes(laneCount)
                 .isEnabled(true).sortOrder(0);
         // 项目类型留空时不覆盖 track/funSports 的实体默认值，避免产生无法编排的事件
-        if (category != null) b.track(isTrack).funSports(isFun);
+        if (category != null) {
+            b.track(isTrack).funSports(isFun);
+            // 趣味运动会/球类 若被安排在跑道场地(type=track)，则须与真正径赛错开(occupiesTrack)，
+            // 避免跑道被径赛与趣味项目同时占用（用户「趣味运动会占用跑道则错开」规则）
+            if (isFun && venueCode != null) {
+                boolean occ = venueRepository.findByCode(venueCode)
+                        .map(ven -> "track".equalsIgnoreCase(ven.getType()))
+                        .orElse(false);
+                b.occupiesTrack(occ);
+            }
+        }
         eventRepository.save(b.build());
+    }
+
+    // ==================== 全名单表（5列）：年级/班级/姓名/学号/性别 ====================
+
+    /**
+     * 全名单表：运动员主数据导入。按学号(studentId) upsert；
+     * 班级不存在时按(年级,班级)自动创建，便于「全名单 → 报名表」顺次导入。
+     */
+    private void processRosterRow(Map<String, String> v) {
+        String studentId = trimToNull(v.get("studentId"));
+        String name = trimToNull(v.get("name"));
+        if (studentId == null) throw new RuntimeException("学号不能为空");
+        if (name == null) throw new RuntimeException("姓名不能为空");
+
+        String grade = trimToNull(v.get("grade"));
+        String className = trimToNull(v.get("className"));
+        ClassInfo classInfo = null;
+        if (className != null) {
+            classInfo = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
+            if (classInfo == null) classInfo = classInfoRepository.findByName(className).orElse(null);
+            if (classInfo == null) {
+                // 班级缺失：按(年级,班级)自动创建，code 取班级名（唯一），参与状态默认开启
+                String code = className;
+                int dup = 1;
+                while (classInfoRepository.existsByCode(code)) code = className + "_" + (dup++);
+                classInfo = ClassInfo.builder()
+                        .name(className).code(code).grade(grade)
+                        .isParticipating(true).build();
+                classInfo = classInfoRepository.save(classInfo);
+            }
+        }
+
+        String gender = mapGender(v.get("gender"));
+        Athlete athlete = athleteRepository.findByStudentId(studentId).orElse(null);
+        if (athlete == null) {
+            athlete = Athlete.builder()
+                    .name(name).gender(gender).grade(grade).classInfo(classInfo)
+                    .studentId(studentId).status("normal").build();
+        } else {
+            athlete.setName(name);
+            athlete.setGender(gender);
+            athlete.setGrade(grade);
+            athlete.setClassInfo(classInfo);
+            athlete.setStudentId(studentId);
+            athlete.setStatus("normal");
+        }
+        athleteRepository.save(athlete);
+    }
+
+    // ==================== 报名表（7列）：年级/班级/姓名/学号/性别/项目/组号 ====================
+
+    /**
+     * 报名表：按(学号/姓名+班级)定位运动员，按(项目编码/名称)定位项目，写入报名。
+     * 组号→Registration.teamTag：团体/接力项目可按班级内编 A/B 区分不同队伍；
+     * 个人项目(event.team=false)严禁填写组号，否则报错。
+     */
+    private void processSignupRow(Map<String, String> v) {
+        String eventRef = trimToNull(v.get("eventCode"));
+        if (eventRef == null) throw new RuntimeException("项目不能为空（填项目编码或名称）");
+        Event event = eventRepository.findByCode(eventRef.trim())
+                .orElseGet(() -> eventRepository.findByNameAndIsEnabledTrue(eventRef.trim()).orElse(null));
+        if (event == null) throw new RuntimeException("项目不存在: " + eventRef);
+
+        // 定位运动员：优先学号，其次 姓名+班级
+        Athlete athlete = null;
+        String studentId = trimToNull(v.get("studentId"));
+        if (studentId != null) athlete = athleteRepository.findByStudentId(studentId).orElse(null);
+        if (athlete == null) {
+            String name = trimToNull(v.get("name"));
+            String className = trimToNull(v.get("className"));
+            if (name == null) throw new RuntimeException("姓名或学号至少一项用于定位运动员");
+            List<Athlete> cands = athleteRepository.findByName(name);
+            if (className != null) {
+                cands = cands.stream()
+                        .filter(a -> a.getClassInfo() != null && className.equals(a.getClassInfo().getName()))
+                        .collect(java.util.stream.Collectors.toList());
+            }
+            if (cands.isEmpty()) throw new RuntimeException("运动员不存在: " + name + (className != null ? "(" + className + ")" : ""));
+            if (cands.size() > 1) throw new RuntimeException("运动员重名需补充学号以唯一定位: " + name);
+            athlete = cands.get(0);
+        }
+
+        String teamTag = trimToNull(v.get("teamTag"));
+        boolean isTeam = Boolean.TRUE.equals(event.getTeam()) || (event.getTeamMembers() != null && event.getTeamMembers() > 1);
+        if (!isTeam && teamTag != null) {
+            throw new RuntimeException("个人项目严禁填写组号: " + event.getName() + "（" + athlete.getName() + "）");
+        }
+
+        if (registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId()))
+            throw new RuntimeException("该运动员已报名此项目: " + athlete.getName() + " / " + event.getName());
+
+        Registration reg = Registration.builder()
+                .athlete(athlete).event(event)
+                .team(isTeam)
+                .teamTag(teamTag)
+                .status("approved")
+                .source("offline")
+                .registrationTime(LocalDateTime.now())
+                .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
+        registrationRepository.save(reg);
     }
 
     // ==================== 直接导入（兼容旧接口） ====================

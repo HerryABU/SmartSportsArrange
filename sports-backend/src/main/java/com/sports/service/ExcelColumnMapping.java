@@ -37,7 +37,7 @@ public final class ExcelColumnMapping {
         COLUMN_ALIASES.put("emergencyPhone",   List.of("紧急联系电话","联系电话","电话","phone"));
         COLUMN_ALIASES.put("healthStatus",     List.of("健康状况","健康","healthStatus"));
         COLUMN_ALIASES.put("remark",       List.of("备注","remark","说明","描述"));
-        COLUMN_ALIASES.put("eventCode",    List.of("项目编码","项目代码","code","eventCode"));
+        COLUMN_ALIASES.put("eventCode",    List.of("项目编码","项目代码","项目","code","eventCode"));
         COLUMN_ALIASES.put("eventName",    List.of("项目名称","项目","eventName"));
         COLUMN_ALIASES.put("athleteNumber",List.of("运动员号码","号码","运动员编号","athleteNumber"));
         COLUMN_ALIASES.put("athleteName",  List.of("运动员姓名","姓名","运动员","athleteName"));
@@ -95,6 +95,13 @@ public final class ExcelColumnMapping {
         TYPE_FIELDS.put("eventsimple", new LinkedHashMap<>(Map.of(
             "eventCode","项目代码","eventName","项目名称","teamMembers","每组人数","concurrency","每批组数",
             "category","项目类型","defaultVenueCode","场地号","perBatchMinutes","每批所需时间(分)")));
+        // 全名单表（5列）：年级/班级/姓名/学号/性别 —— 运动员主数据，按学号 upsert，班级缺失自动创建
+        TYPE_FIELDS.put("roster", new LinkedHashMap<>(Map.of(
+            "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别")));
+        // 报名表（7列）：年级/班级/姓名/学号/性别/项目/组号 —— 个人项目严禁填组号；团体/接力组号标记 A/B
+        TYPE_FIELDS.put("signup", new LinkedHashMap<>(Map.of(
+            "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别",
+            "eventCode","项目","teamTag","组号")));
     }
 
     private ExcelColumnMapping() {

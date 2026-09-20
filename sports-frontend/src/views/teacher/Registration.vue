@@ -12,6 +12,22 @@
       <div class="pg-actions">
         <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
         <el-button type="success" :icon="Upload" @click="openImportDialog">导入报名表</el-button>
+        <el-button plain @click="downloadSignupTemplate7">报名表模板(7列/含组号)</el-button>
+        <el-upload
+          :action="excelImportUrl"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".xlsx,.xls"
+          :data="signupUploadData"
+          :on-success="onSignupImportSuccess"
+          :on-error="onExcelImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="primary" plain>
+            <el-icon><Upload /></el-icon>
+            导入报名表(7列/含组号)
+          </el-button>
+        </el-upload>
       </div>
     </div>
 
@@ -459,6 +475,38 @@ async function downloadSignupTemplate() {
     await downloadApi('/registrations/template', '报名表模板.xlsx')
   } catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
 }
+
+// ==================== 报名表（7列：年级/班级/姓名/学号/性别/项目/组号）导入 ====================
+// 复用 /excel/import-with-mapping，固定列映射与后端 getTemplate("signup") 列序完全一致。
+// 组号仅团体/接力项目填写：同一班级同一项目同组号视为一队（两个 4×100 分编 A、B）；个人项目严禁填写。
+const excelImportUrl = apiBase() + '/excel/import-with-mapping'
+const uploadToken = localStorage.getItem('token') || ''
+const uploadHeaders = computed(() => ({ Authorization: uploadToken ? `Bearer ${uploadToken}` : '' }))
+const signupUploadData = {
+  type: 'signup',
+  columnMap: JSON.stringify({
+    0: 'grade', 1: 'className', 2: 'name', 3: 'studentId', 4: 'gender', 5: 'eventCode', 6: 'teamTag',
+  }),
+}
+
+async function downloadSignupTemplate7() {
+  try {
+    await downloadApi('/excel/template/signup', '报名表导入模板.xlsx')
+    ElMessage.success('已下载报名表模板（7列，含组号）')
+  } catch (e) { ElMessage.error(e?.message || '下载报名表模板失败') }
+}
+
+function onSignupImportSuccess(res) {
+  const d = res?.data || res || {}
+  const success = d.success || 0
+  const failed = d.failed || 0
+  if (failed > 0) ElMessage.warning(`报名表导入完成：成功 ${success} 条，失败 ${failed} 条（详见服务日志）`)
+  else ElMessage.success(`报名表导入完成：成功 ${success} 条`)
+  fetchData()
+  fetchAllRegistrations()
+}
+
+function onExcelImportError() { ElMessage.error('导入失败，请检查文件格式') }
 
 function onFileChange(e) {
   selectedFile.value = e.target.files?.[0] || null
