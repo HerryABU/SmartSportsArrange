@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.clazz;
 
-import com.sports.entity.ClassInfo;
+import com.sports.entity.clazz.ClassInfo;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;

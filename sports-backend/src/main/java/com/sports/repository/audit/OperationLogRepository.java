@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.audit;
 
-import com.sports.entity.OperationLog;
+import com.sports.entity.audit.OperationLog;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;

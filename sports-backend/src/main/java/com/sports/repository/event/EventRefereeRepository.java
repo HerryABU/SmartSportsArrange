@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.event;
 
-import com.sports.entity.EventReferee;
+import com.sports.entity.event.EventReferee;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

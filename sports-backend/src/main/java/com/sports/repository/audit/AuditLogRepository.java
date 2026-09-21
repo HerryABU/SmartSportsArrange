@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.audit;
 
-import com.sports.entity.AuditLog;
+import com.sports.entity.audit.AuditLog;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;

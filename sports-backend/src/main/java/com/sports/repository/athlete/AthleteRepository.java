@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.athlete;
 
-import com.sports.entity.Athlete;
+import com.sports.entity.athlete.Athlete;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;

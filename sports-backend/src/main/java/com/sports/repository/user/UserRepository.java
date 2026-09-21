@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.user;
 
-import com.sports.entity.User;
+import com.sports.entity.user.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;

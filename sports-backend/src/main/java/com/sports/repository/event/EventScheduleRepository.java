@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.event;
 
-import com.sports.entity.EventSchedule;
+import com.sports.entity.event.EventSchedule;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;

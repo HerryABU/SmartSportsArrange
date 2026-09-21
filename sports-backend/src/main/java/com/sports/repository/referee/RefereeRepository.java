@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.referee;
 
-import com.sports.entity.Referee;
+import com.sports.entity.referee.Referee;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;

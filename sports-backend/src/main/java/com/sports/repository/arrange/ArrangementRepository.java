@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.arrange;
 
-import com.sports.entity.Arrangement;
+import com.sports.entity.arrange.Arrangement;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;

@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.result;
 
-import com.sports.entity.Result;
+import com.sports.entity.result.Result;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;

@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.registration;
 
-import com.sports.entity.Registration;
+import com.sports.entity.registration.Registration;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;

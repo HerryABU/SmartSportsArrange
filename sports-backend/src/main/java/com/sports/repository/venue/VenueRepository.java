@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.venue;
 
-import com.sports.entity.Venue;
+import com.sports.entity.venue.Venue;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

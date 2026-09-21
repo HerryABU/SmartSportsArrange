@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.system;
 
-import com.sports.entity.SystemConfig;
+import com.sports.entity.system.SystemConfig;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

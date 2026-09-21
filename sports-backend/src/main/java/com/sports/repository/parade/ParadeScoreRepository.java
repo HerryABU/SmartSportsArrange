@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.parade;
 
-import com.sports.entity.ParadeScore;
+import com.sports.entity.parade.ParadeScore;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;

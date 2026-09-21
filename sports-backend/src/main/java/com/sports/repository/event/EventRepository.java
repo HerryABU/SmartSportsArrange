@@ -1,6 +1,6 @@
-package com.sports.repository;
+package com.sports.repository.event;
 
-import com.sports.entity.Event;
+import com.sports.entity.event.Event;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
