@@ -1,7 +1,7 @@
 package com.sports.service.excel;
 
-import com.sports.service.ExcelColumnMapping;
-import com.sports.service.ExcelService;
+import com.sports.service.excel.ExcelColumnMapping;
+import com.sports.service.excel.ExcelService;
 
 import java.util.LinkedHashMap;
 import java.util.List;

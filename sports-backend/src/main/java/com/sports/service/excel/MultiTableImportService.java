@@ -2,8 +2,8 @@ package com.sports.service.excel;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sports.service.ExcelColumnMapping;
-import com.sports.service.ExcelService;
+import com.sports.service.excel.ExcelColumnMapping;
+import com.sports.service.excel.ExcelService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
