@@ -172,6 +172,8 @@ async function doInstall() {
     needRestart.value = !!res.needRestart
     // 标记已安装，避免重复进入
     try { localStorage.setItem('setup_done', '1') } catch (e) {}
+    // 标记首次部署完成，登录后自动弹出新手引导
+    try { localStorage.setItem('sp_just_installed', '1') } catch (e) {}
   } catch (e) {
     ElMessage.error(e.message || '安装失败')
   } finally {
@@ -180,10 +182,11 @@ async function doInstall() {
 }
 
 function goLogin() {
-  window.location.href = appBase() + '/login'
+  // hash 模式下跳转登录页（appBase 已含反代帽子前缀，如 /sportmg）
+  window.location.href = appBase() + '/#/login'
 }
 function reloadPage() {
-  window.location.href = appBase() + '/'
+  window.location.href = appBase() + '/#/'
 }
 </script>
 

@@ -58,6 +58,8 @@ public class ResultService {
                     continue;
                 }
 
+                // R-2：DNF/DNS/DSQ 等非完赛标记——命中则标记为非 valid 状态而非静默当有效成绩。
+                String nonFinish = normalizeNonFinishStatus(input.getRawTime());
                 Double timeSeconds = parseTime(input.getRawTime());
 
                 Result result = Result.builder()
@@ -66,9 +68,9 @@ public class ResultService {
                         .heat(heat != null ? heat : arrangement.getHeat())
                         .lane(arrangement.getLane())
                         .rawTime(input.getRawTime())
-                        .timeSeconds(timeSeconds)
+                        .timeSeconds(nonFinish != null ? null : timeSeconds)
                         .windSpeed(input.getWindSpeed())
-                        .status("valid")
+                        .status(nonFinish != null ? nonFinish : "valid")
                         .remark(input.getRemark())
                         .enteredAt(LocalDateTime.now())
                         .createdAt(LocalDateTime.now())
@@ -97,10 +99,14 @@ public class ResultService {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
-        // 获取所有有效成绩，按时间升序排列
+        // 获取所有有效成绩排序：径赛按时间升序（小者优）；田赛（track=false）按距离/高度降序（大者优）
+        boolean higherBetter = Boolean.FALSE.equals(event.getTrack());
+        Comparator<Result> byResult = higherBetter
+                ? Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Comparator.reverseOrder()))
+                : Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo));
         List<Result> validResults = resultRepository.findValidByEventId(eventId).stream()
                 .filter(r -> r.getTimeSeconds() != null)
-                .sorted(Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo)))
+                .sorted(byResult)
                 .collect(Collectors.toList());
 
         if (validResults.isEmpty()) {
@@ -120,53 +126,60 @@ public class ResultService {
         boolean isRelay = "接力".equals(event.getCategory())
                 || (event.getName() != null && event.getName().contains("接力"));
 
-        // 分组处理并列排名：same_rank（同名次并列）/ sequential（顺延）
-        int rank = 1;
-        int i = 0;
-        int n = validResults.size();
-        while (i < n) {
-            int j = i;
-            while (j + 1 < n
-                    && Math.abs(validResults.get(j + 1).getTimeSeconds()
-                            - validResults.get(i).getTimeSeconds()) < 0.001) {
-                j++;
-            }
-            int groupSize = j - i + 1;
-            for (int k = i; k <= j; k++) {
-                Result result = validResults.get(k);
-                result.setTotalRank(rank);
+        // Bug6 修复：排名按「项目+年级」分组——各年级独立排序、独立名次、独立得分
+        Map<String, List<Result>> byGrade = new LinkedHashMap<>();
+        for (Result r : validResults) {
+            byGrade.computeIfAbsent(r.getAthlete().getGrade() == null ? "未知组别" : r.getAthlete().getGrade(),
+                    g -> new ArrayList<>()).add(r);
+        }
 
-                double score = scoringTable.getOrDefault(rank, 0.0);
-                result.setScore(score);
+        for (Map.Entry<String, List<Result>> gentry : byGrade.entrySet()) {
+            List<Result> gradeResults = gentry.getValue(); // 已按成绩排好序
+            int rank = 1;
+            int i = 0;
+            int n = gradeResults.size();
+            while (i < n) {
+                int j = i;
+                while (j + 1 < n
+                        && Math.abs(gradeResults.get(j + 1).getTimeSeconds()
+                                - gradeResults.get(i).getTimeSeconds()) < 0.001) {
+                    j++;
+                }
+                int groupSize = j - i + 1;
+                for (int k = i; k <= j; k++) {
+                    Result result = gradeResults.get(k);
+                    result.setTotalRank(rank);
+
+                    double score = scoringTable.getOrDefault(rank, 0.0);
+                    result.setScore(score);
 
                 // 破纪录加分
                 if (recordBonusEnabled && event.getRecord() != null) {
-                    try {
-                        double recordTime = parseTimeToSeconds(event.getRecord());
-                        if (result.getTimeSeconds() < recordTime) {
-                            result.setIsRecord(true);
-                            result.setScore(result.getScore() + recordBonus);
-                        }
-                    } catch (NumberFormatException ignored) {
-                        // 记录格式无法解析，跳过
+                    // parseTimeToSeconds 解析失败返回 null（不再返回 MAX_VALUE）：
+                    // 避免出现「未解析出的记录被当成无穷大、所有成绩都被误判破纪录并加 bonus」的隐患
+                    Double recordTime = parseTimeToSeconds(event.getRecord());
+                    if (recordTime != null && result.getTimeSeconds() < recordTime) {
+                        result.setIsRecord(true);
+                        result.setScore(result.getScore() + recordBonus);
                     }
                 }
 
-                // 参与分（未进入积分名次者给基础分）
-                if (participationEnabled && result.getScore() <= 0) {
-                    result.setScore(result.getScore() + participationScore);
-                }
+                    // 参与分（未进入积分名次者给基础分）
+                    if (participationEnabled && result.getScore() <= 0) {
+                        result.setScore(result.getScore() + participationScore);
+                    }
 
-                // 接力项目积分加倍
-                if (isRelay) {
-                    result.setScore(result.getScore() * relayMultiplier);
-                }
+                    // 接力项目积分加倍
+                    if (isRelay) {
+                        result.setScore(result.getScore() * relayMultiplier);
+                    }
 
-                result.setUpdatedAt(LocalDateTime.now());
-                resultRepository.save(result);
+                    result.setUpdatedAt(LocalDateTime.now());
+                    resultRepository.save(result);
+                }
+                rank += sequential ? groupSize : 1;
+                i = j + 1;
             }
-            rank += sequential ? groupSize : 1;
-            i = j + 1;
         }
 
         // 计算热次排名
@@ -175,8 +188,8 @@ public class ResultService {
                 .collect(Collectors.groupingBy(Result::getHeat));
 
         for (Map.Entry<Integer, List<Result>> entry : byHeat.entrySet()) {
-            List<Result> heatResults = entry.getValue().stream()
-                    .sorted(Comparator.comparing(Result::getTimeSeconds, Comparator.nullsLast(Double::compareTo)))
+            final List<Result> heatResults = entry.getValue().stream()
+                    .sorted(byResult)
                     .collect(Collectors.toList());
 
             int heatRank = 1;
@@ -194,12 +207,22 @@ public class ResultService {
      * 获取项目排名
      */
     @Transactional(readOnly = true)
-    public List<Map<String, Object>> getRanking(Long eventId) {
+    public Map<String, Object> getRanking(Long eventId) {
         List<Result> results = resultRepository.findByEventIdOrderByTotalRankAsc(eventId);
+        Map<String, Object> rule = systemService.getScoringRule();
+        boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+        String tieRuleNote = sequential
+                ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
+                : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
+        Set<String> tiedRanks = computeTiedRanks(results);
 
-        return results.stream().map(r -> {
+        List<Map<String, Object>> list = results.stream().map(r -> {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("rank", r.getTotalRank());
+            map.put("tied", r.getTotalRank() != null
+                    && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank())));
+            map.put("gradeRankLabel", r.getTotalRank() != null && r.getAthlete().getGrade() != null
+                    ? r.getAthlete().getGrade() + "第" + r.getTotalRank() + "名" : null);
             map.put("athleteId", r.getAthlete().getId());
             map.put("athleteName", r.getAthlete().getName());
             map.put("number", r.getAthlete().getNumber());
@@ -215,6 +238,49 @@ public class ResultService {
             map.put("isRecord", r.getIsRecord());
             return map;
         }).collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("list", list);
+        result.put("tieRuleNote", tieRuleNote);
+        result.put("tieHandling", sequential ? "sequential" : "same_rank");
+        return result;
+    }
+
+    /**
+     * 计算某项目内「同名次含多人」的并列名次集合（按年级分组统计）。
+     *
+     * <p><b>B08/U08 修复</b>：名次是按年级独立排的（见 computeRanking 的 byGrade 分组），
+     * 因此并列判定必须落在「年级 × 名次」这一复合键上。旧实现把所有年级的并列名次
+     * 塞进同一个 {@code Set<Integer>}，再用 rank 单键去判断，于是
+     * 「高一第2名并列」会把高二、高三的第2名（各自其实唯一）也标成并列——
+     * 成绩表导出随之给它们打上「=」与「并列」列，对外发布凭空多出并列。
+     * 现改为 {@code Set<String>}，键 = {@code 年级|名次}。</p>
+     */
+    private Set<String> computeTiedRanks(List<Result> results) {
+        Map<String, Map<Integer, Integer>> cnt = new LinkedHashMap<>();
+        for (Result r : results) {
+            if (r.getTotalRank() == null) continue;
+            cnt.computeIfAbsent(gradeOf(r), k -> new LinkedHashMap<>())
+                    .merge(r.getTotalRank(), 1, Integer::sum);
+        }
+        Set<String> tied = new HashSet<>();
+        for (Map.Entry<String, Map<Integer, Integer>> g : cnt.entrySet()) {
+            for (Map.Entry<Integer, Integer> e : g.getValue().entrySet()) {
+                if (e.getValue() > 1) tied.add(tieKey(g.getKey(), e.getKey()));
+            }
+        }
+        return tied;
+    }
+
+    /** 并列判定键：年级 × 名次（名次是年级内名次，跨年级同名次不构成并列） */
+    private static String tieKey(String grade, Integer rank) {
+        return (grade == null || grade.isBlank() ? "未知" : grade) + "|" + rank;
+    }
+
+    /** 成绩所属年级（缺失归为「未知」，与分组口径保持一致） */
+    private static String gradeOf(Result r) {
+        return r.getAthlete() != null && r.getAthlete().getGrade() != null
+                ? r.getAthlete().getGrade() : "未知";
     }
 
     /**
@@ -250,7 +316,10 @@ public class ResultService {
 
         if (rawTime != null) {
             result.setRawTime(rawTime);
-            result.setTimeSeconds(parseTime(rawTime));
+            // R-2：若 rawTime 为非完赛标记且未显式指定状态，则标记为非 valid 状态
+            String nonFinish = normalizeNonFinishStatus(rawTime);
+            result.setTimeSeconds(nonFinish != null ? null : parseTime(rawTime));
+            if (nonFinish != null && status == null) result.setStatus(nonFinish);
         }
         if (status != null) result.setStatus(status);
         if (remark != null) result.setRemark(remark);
@@ -275,15 +344,46 @@ public class ResultService {
 
     // ============ Controller 兼容方法 ============
 
-    /** Controller: list */
+    /** Controller: list —— 返回安全扁平 VO（避免 open-in-view=false 下懒加载序列化异常） */
     @Transactional(readOnly = true)
-    public List<Result> list(Long eventId, Integer heat) {
+    public List<Map<String, Object>> list(Long eventId, Integer heat) {
+        List<Result> base;
         if (eventId != null && heat != null) {
-            return resultRepository.findByEventIdAndHeat(eventId, heat);
+            base = resultRepository.findByEventIdAndHeat(eventId, heat);
         } else if (eventId != null) {
-            return resultRepository.findByEventId(eventId);
+            base = resultRepository.findByEventId(eventId);
+        } else {
+            base = resultRepository.findAll();
         }
-        return resultRepository.findAll();
+        return base.stream().map(ResultService::toVo).collect(Collectors.toList());
+    }
+
+    /** 成绩 → 扁平 VO */
+    static Map<String, Object> toVo(Result r) {
+        Athlete a = r.getAthlete();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", r.getId());
+        m.put("eventId", r.getEvent() != null ? r.getEvent().getId() : null);
+        m.put("athleteId", a != null ? a.getId() : null);
+        m.put("athleteName", a != null ? a.getName() : null);
+        m.put("number", a != null ? a.getNumber() : null);
+        m.put("className", a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : null);
+        m.put("grade", a != null ? a.getGrade() : null);
+        m.put("round", r.getRound());
+        m.put("heat", r.getHeat());
+        m.put("lane", r.getLane());
+        m.put("laneNumber", r.getLane());
+        m.put("rawTime", r.getRawTime());
+        m.put("timeSeconds", r.getTimeSeconds());
+        m.put("heatRank", r.getHeatRank());
+        m.put("rank", r.getTotalRank());
+        m.put("totalRank", r.getTotalRank());
+        m.put("score", r.getScore());
+        m.put("points", r.getScore());
+        m.put("status", r.getStatus());
+        m.put("remark", r.getRemark());
+        m.put("enteredAt", r.getEnteredAt());
+        return m;
     }
 
     /** Controller: enterScore (单条) */
@@ -335,7 +435,7 @@ public class ResultService {
 
     /** Controller: viewRanking (别名) */
     @Transactional(readOnly = true)
-    public List<Map<String, Object>> viewRanking(Long eventId) {
+    public Map<String, Object> viewRanking(Long eventId) {
         return getRanking(eventId);
     }
 
@@ -346,32 +446,178 @@ public class ResultService {
         String name = event != null ? event.getName() : "成绩";
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
-        String fileName = name + "_成绩表_" + LocalDateTime.now().toString().replace(":", "-") + ".xlsx";
+        String fileName = name + "_成绩表_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
                 + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
         try (OutputStream out = response.getOutputStream()) {
+            Map<String, Object> rule = systemService.getScoringRule();
+            boolean sequential = "sequential".equals(String.valueOf(rule.getOrDefault("tie_handling", "same_rank")));
+            String tieRuleNote = sequential
+                    ? "并列规则：并列顺延占位（名次如 1,2,2,4，被占名次不补授），并列者共享该名次积分。"
+                    : "并列规则：同名次并列（名次如 1,2,2,3），并列者共享该名次积分，后续名次顺延。";
+            Set<String> tiedRanks = computeTiedRanks(results);
+
             java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
-            data.add(java.util.List.of("排名", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录"));
+            data.add(java.util.List.of("排名", "年级组名次", "运动员", "号码簿", "班级", "年级", "成绩", "得分", "破纪录", "并列"));
             for (Result r : results) {
                 Athlete a = r.getAthlete();
+                String grade = a != null && a.getGrade() != null ? a.getGrade() : "";
+                // B08/U08：并列按「年级 × 名次」判定，避免跨年级同名次被误标
+                boolean tied = r.getTotalRank() != null
+                        && tiedRanks.contains(tieKey(gradeOf(r), r.getTotalRank()));
+                String rankDisp = r.getTotalRank() != null
+                        ? (tied ? r.getTotalRank() + "=" : String.valueOf(r.getTotalRank())) : "-";
+                // B11/U17：年级组名次（如「高一第1名」），避免各年级多个「第1名」被误读为总冠军
+                String gradeRank = r.getTotalRank() != null && !grade.isEmpty()
+                        ? grade + "第" + r.getTotalRank() + "名" : "";
                 data.add(java.util.List.of(
-                    r.getTotalRank() != null ? String.valueOf(r.getTotalRank()) : "-",
+                    rankDisp,
+                    gradeRank,
                     a != null ? (a.getName() != null ? a.getName() : "") : "",
-                    a != null ? (a.getNumber() != null ? a.getNumber() : "") : "",
+                    a != null ? athleteRef(a) : "",
                     a != null && a.getClassInfo() != null ? a.getClassInfo().getName() : "",
-                    a != null ? (a.getGrade() != null ? a.getGrade() : "") : "",
+                    grade,
                     r.getRawTime() != null ? r.getRawTime() : "",
                     r.getScore() != null ? String.valueOf(r.getScore()) : "",
-                    Boolean.TRUE.equals(r.getIsRecord()) ? "是" : ""
+                    Boolean.TRUE.equals(r.getIsRecord()) ? "是" : "",
+                    tied ? "并列" : ""
                 ));
             }
+            // 并列规则说明行（置于表格末尾，便于打印/核对）
+            data.add(java.util.List.of("说明", tieRuleNote, "", "", "", "", "", "", "", ""));
+
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
             com.alibaba.excel.EasyExcel.write(out)
                 .head(headCols)
                 .sheet("成绩表").doWrite(data.subList(1, data.size()));
             log.info("导出成绩: eventId={}, 共{}条", eventId, results.size());
+        }
+    }
+
+    /**
+     * B02/U02：成绩导出中的「运动员号码」列取值——优先号码布，号码布未生成时回退学号。
+     *
+     * <p>背景：号码布是「系统按号码簿规则生成」的（见导入模板「填写说明」），
+     * 尚未执行生成时 {@code athlete.number} 全为 null。此时若导出仍只写 number，
+     * 该列会整列为空，回导只能靠姓名匹配——而重名运动员（本库 1047 人中 348 个重名）
+     * 会全部失败，「导出 → 回导」的闭环直接断裂（实测 456 条成绩里 388 条回导失败）。</p>
+     *
+     * <p>导入端按「号码布或学号」匹配（模板「填写说明」已如此约定），
+     * 因此导出侧同步回退学号即可让文件真正可回导。</p>
+     */
+    private static String athleteRef(Athlete a) {
+        if (a == null) return "";
+        if (a.getNumber() != null && !a.getNumber().isBlank()) return a.getNumber();
+        return a.getStudentId() != null ? a.getStudentId() : "";
+    }
+
+    /**
+     * B02 / U02：全量导出已录成绩，格式与 /api/excel/import/scores 完全对齐（项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注），
+     * 覆盖全部项目（不限于单项目），可直接再次导入做一致性校验。
+     */
+    @Transactional(readOnly = true)
+    public void exportAllResults(HttpServletResponse response) throws IOException {
+        List<Result> results = resultRepository.findAll();
+        results.sort((a, b) -> {
+            String ca = a.getEvent() != null && a.getEvent().getCode() != null ? a.getEvent().getCode() : "";
+            String cb = b.getEvent() != null && b.getEvent().getCode() != null ? b.getEvent().getCode() : "";
+            return ca.compareTo(cb);
+        });
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "成绩全量导入_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
+                        + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
+        try (OutputStream out = response.getOutputStream()) {
+            java.util.List<java.util.List<String>> data = new java.util.ArrayList<>();
+            data.add(java.util.List.of("项目编码", "运动员号码", "运动员姓名", "成绩", "组别", "道次", "风速", "备注"));
+            int count = 0;
+            for (Result r : results) {
+                Event e = r.getEvent();
+                Athlete a = r.getAthlete();
+                if (e == null || a == null) continue;
+                data.add(java.util.List.of(
+                        e.getCode() != null ? e.getCode() : "",
+                        athleteRef(a),
+                        a.getName() != null ? a.getName() : "",
+                        r.getRawTime() != null ? r.getRawTime() : "",
+                        // 组别 = 该成绩所在组次（Result.heat）。
+                        // 旧实现写的是 event.gradeGroup（项目所属年级组），既语义错位、
+                        // 又与导入端 ScoreExcelModel.heat(Integer) 的类型不符——组次信息丢失。
+                        r.getHeat() != null ? String.valueOf(r.getHeat()) : "",
+                        r.getLane() != null ? String.valueOf(r.getLane()) : "",
+                        r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
+                        r.getRemark() != null ? r.getRemark() : ""));
+                count++;
+            }
+            java.util.List<java.util.List<String>> headCols = data.get(0).stream()
+                    .map(java.util.List::of).collect(java.util.stream.Collectors.toList());
+            com.alibaba.excel.EasyExcel.write(out)
+                    .head(headCols)
+                    .sheet("成绩全量").doWrite(data.subList(1, data.size()));
+            long projects = results.stream()
+                    .map(x -> x.getEvent() != null ? x.getEvent().getCode() : "")
+                    .filter(s -> !s.isEmpty()).distinct().count();
+            log.info("全量导出成绩: 共{}条, 覆盖项目数={}", count, projects);
+        }
+    }
+
+    /**
+     * U13：按项目分 Sheet 导出成绩——每个项目一个 Sheet，避免单 Sheet 混杂；
+     * 与 importScores（读全部 Sheet）配合，可直接再导入。
+     */
+    @Transactional(readOnly = true)
+    public void exportAllResultsByProject(HttpServletResponse response) throws IOException {
+        List<Result> results = resultRepository.findAll();
+        // 按项目编码排序、分组
+        Map<String, List<Result>> byEvent = new LinkedHashMap<>();
+        results.stream()
+                .filter(r -> r.getEvent() != null && r.getEvent().getCode() != null)
+                .sorted(Comparator.comparing(r -> r.getEvent().getCode()))
+                .forEach(r -> byEvent.computeIfAbsent(r.getEvent().getCode(), k -> new ArrayList<>()).add(r));
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("utf-8");
+        String fileName = "成绩导入_按项目分Sheet_v" + com.sports.common.ExportNaming.appVersion()
+                + "_" + com.sports.common.ExportNaming.stamp() + ".xlsx";
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20")
+                        + ";filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20"));
+
+        java.util.List<java.util.List<String>> head = java.util.List.of(
+                "项目编码", "运动员号码", "运动员姓名", "成绩", "组别", "道次", "风速", "备注")
+                .stream().map(java.util.List::of).collect(java.util.stream.Collectors.toList());
+
+        try (OutputStream out = response.getOutputStream();
+             com.alibaba.excel.ExcelWriter writer = com.alibaba.excel.EasyExcel.write(out).build()) {
+            int si = 0;
+            for (Map.Entry<String, List<Result>> en : byEvent.entrySet()) {
+                java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+                for (Result r : en.getValue()) {
+                    Event e = r.getEvent();
+                    Athlete a = r.getAthlete();
+                    if (e == null || a == null) continue;
+                    rows.add(java.util.List.of(
+                            e.getCode() != null ? e.getCode() : "",
+                            athleteRef(a),
+                            a.getName() != null ? a.getName() : "",
+                            r.getRawTime() != null ? r.getRawTime() : "",
+                            r.getHeat() != null ? String.valueOf(r.getHeat()) : "",
+                            r.getLane() != null ? String.valueOf(r.getLane()) : "",
+                            r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
+                            r.getRemark() != null ? r.getRemark() : ""));
+                }
+                com.alibaba.excel.write.metadata.WriteSheet ws = com.alibaba.excel.EasyExcel
+                        .writerSheet(si++, en.getKey().length() > 28 ? en.getKey().substring(0, 28) : en.getKey())
+                        .head(head).build();
+                writer.write(rows, ws);
+            }
+            log.info("按项目分Sheet导出成绩: {} 个项目", byEvent.size());
         }
     }
 
@@ -406,9 +652,29 @@ public class ResultService {
         }
     }
 
-    private double parseTimeToSeconds(String time) {
-        Double result = parseTime(time);
-        return result != null ? result : Double.MAX_VALUE;
+    /**
+     * 解析时间字符串为秒数；解析失败返回 {@code null}。
+     * <p>注意：早期实现返回 {@code Double.MAX_VALUE}，会在破纪录判定等环节被当成「无穷大记录」，
+     * 导致所有有效成绩都被误判为破纪录。现改为返回 null，调用方须做 null 判断。</p>
+     */
+    private Double parseTimeToSeconds(String time) {
+        return parseTime(time);
+    }
+
+    /**
+     * R-2 严密性：识别非完赛标记（DNF/DNS/DSQ，模板填写说明承诺支持）。
+     * 命中则返回对应的持久化状态（小写），供成绩落库时标记为非 valid，
+     * 从而自动退出团队/个人计分（findAllValid 只取 valid）并在项目排名中排到末尾。
+     * 未命中返回 null（视为正常成绩，继续数值解析）。集中在此处避免重复识别逻辑。
+     */
+    public static String normalizeNonFinishStatus(String rawTime) {
+        if (rawTime == null) return null;
+        switch (rawTime.trim().toUpperCase()) {
+            case "DNF": return "dnf";
+            case "DNS": return "dns";
+            case "DSQ": return "dsq";
+            default: return null;
+        }
     }
 
     /**

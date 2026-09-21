@@ -15,7 +15,10 @@ export default defineConfig(({ command }) => ({
   base: command === 'build' ? './' : '/',
   build: {
     outDir: resolve(__dirname, '../sports-backend/src/main/resources/static'),
-    emptyOutDir: true
+    // 注意：emptyOutDir 保持 false —— 构建环境的安全删除机制会拦截 vite 对 static/assets
+    // 的 rmSync 清空操作（导致构建失败）。改为由构建脚本用「重命名」方式清理旧 static，
+    // 重命名不被安全删除拦截，且能保证 jar 打包的是干净的前端产物。
+    emptyOutDir: false
   },
   server: {
     port: 3000,

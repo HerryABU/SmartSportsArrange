@@ -95,6 +95,57 @@ class ResultServiceTest {
         assertEquals(7.0, ranked.get(2).getScore());
     }
 
+    @Test
+    void calculateRanking_fieldEvent_higherBetter() {
+        // 回归：田赛（track=false）按距离/高度降序排名（大者优），不得沿用径赛升序
+        Event fieldEvent = Event.builder().id(200L).name("男子跳远").category("田赛").track(false).build();
+        List<Result> results = List.of(result(1L, 5.10, "5.10"), result(2L, 4.80, "4.80"), result(3L, 6.00, "6.00"));
+        when(resultRepository.findValidByEventId(200L)).thenReturn(results);
+        when(eventRepository.findById(200L)).thenReturn(Optional.of(fieldEvent));
+        when(systemService.getScoringRule()).thenReturn(defaultScoringRule());
+        when(resultRepository.save(any(Result.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        List<Result> ranked = resultService.calculateRanking(200L);
+
+        assertEquals(1, ranked.get(0).getTotalRank());
+        assertEquals(6.0, ranked.get(0).getTimeSeconds());
+        assertEquals(5.1, ranked.get(1).getTimeSeconds());
+        assertEquals(4.8, ranked.get(2).getTimeSeconds());
+    }
+
+    private Result resultWithGrade(Long id, double seconds, String raw, String grade) {
+        Athlete a = Athlete.builder().id(id).name("R" + id).grade(grade).gender("男").build();
+        return Result.builder().id(id).athlete(a).event(trackEvent())
+                .rawTime(raw).timeSeconds(seconds).status("valid").build();
+    }
+
+    /**
+     * B08/U08 回归：并列标记必须按「年级 × 名次」判定。
+     * 名次是年级内名次，某年级出现并列不应把其它年级同一名次（唯一）也标成并列。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getRanking_tieFlagIsPerGradeNotGlobal() {
+        List<Result> results = new ArrayList<>(List.of(
+                resultWithGrade(1L, 11.0, "11.00", "高一"),
+                resultWithGrade(2L, 11.0, "11.00", "高一"),
+                resultWithGrade(3L, 11.5, "11.50", "高二")));
+        results.get(0).setTotalRank(2);
+        results.get(1).setTotalRank(2);
+        results.get(2).setTotalRank(2);   // 高二第2名，全年级仅此一人
+
+        when(resultRepository.findByEventIdOrderByTotalRankAsc(100L)).thenReturn(results);
+        when(systemService.getScoringRule()).thenReturn(defaultScoringRule());
+
+        Map<String, Object> ranking = resultService.getRanking(100L);
+        List<Map<String, Object>> list = (List<Map<String, Object>>) ranking.get("list");
+
+        assertEquals(Boolean.TRUE, list.get(0).get("tied"), "高一第2名两人并列，应标并列");
+        assertEquals(Boolean.TRUE, list.get(1).get("tied"), "高一第2名两人并列，应标并列");
+        assertEquals(Boolean.FALSE, list.get(2).get("tied"),
+                "高一第2名并列不得把高二第2名（唯一）也标成并列");
+    }
+
     private Map<String, Object> defaultScoringRule() {
         Map<String, Object> rule = new LinkedHashMap<>();
         Map<String, Object> rankScores = new LinkedHashMap<>();

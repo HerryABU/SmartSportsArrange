@@ -1,5 +1,36 @@
 <template>
   <div class="registration-page" v-loading="loading">
+    <!-- 页面头（工作流 ① 导入） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico"><el-icon :size="20"><Document /></el-icon></span>
+        <div>
+          <h3 class="pg-title">报名表导入 · 审核</h3>
+          <p class="pg-desc">表格1（年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）导入 —— 体育老师后置导入直接生效；班主任端另支持现场报名（导入为待审核）</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+        <el-button type="success" :icon="Upload" @click="openImportDialog">导入报名表</el-button>
+        <el-button plain @click="downloadSignupTemplate7">报名表模板(7列/含组号)</el-button>
+        <el-upload
+          :action="excelImportUrl"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".xlsx,.xls"
+          :data="signupUploadData"
+          :on-success="onSignupImportSuccess"
+          :on-error="onExcelImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="primary" plain>
+            <el-icon><Upload /></el-icon>
+            导入报名表(7列/含组号)
+          </el-button>
+        </el-upload>
+      </div>
+    </div>
+
     <!-- View Toggle -->
     <div class="view-toggle">
       <el-radio-group v-model="viewMode" size="small">
@@ -11,11 +42,6 @@
     <!-- Search & Filter -->
     <el-card class="filter-card" shadow="never">
       <el-form :model="filterForm" inline>
-        <el-form-item label="年级">
-          <el-select v-model="filterForm.grade" placeholder="全部年级" clearable style="width: 140px">
-            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="班级">
           <el-select v-model="filterForm.classId" placeholder="全部班级" clearable filterable style="width: 160px">
             <el-option v-for="c in classList" :key="c.id" :label="c.name" :value="c.id" />
@@ -42,6 +68,10 @@
             搜索
           </el-button>
           <el-button @click="handleReset">重置</el-button>
+          <el-button type="success" @click="openImportDialog">
+            <el-icon><Upload /></el-icon>
+            导入报名表
+          </el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -82,8 +112,13 @@
           <div class="card-header">
             <span>报名列表</span>
             <div>
+              <el-button type="success" plain
+                :disabled="['approved', 'rejected', 'withdrawn'].includes(filterForm.status)"
+                @click="handleApproveAll">
+                <el-icon><CircleCheck /></el-icon> 一键全部通过
+              </el-button>
               <el-button type="success" @click="handleBatchApprove" :disabled="selectedIds.length === 0">
-                批量通过
+                批量通过({{ selectedIds.length }})
               </el-button>
               <el-button type="danger" @click="handleBatchReject" :disabled="selectedIds.length === 0">
                 批量拒绝
@@ -142,8 +177,8 @@
             :page-sizes="[10, 20, 50, 100]"
             :total="pagination.total"
             layout="total, sizes, prev, pager, next, jumper"
-            @size-change="handleSearch"
-            @current-change="handleSearch"
+            @size-change="handleSizeChange"
+            @current-change="handlePageChange"
           />
         </div>
       </el-card>
@@ -163,15 +198,57 @@
         <el-descriptions-item label="备注" :span="2">{{ currentRow.remark || '无' }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
+
+    <!-- 导入报名表向导（三种模式：班主任现场 / 班主任后置 / 体育老师后置） -->
+    <el-dialog v-model="importVisible" title="导入报名表" width="760px" :close-on-click-modal="false">
+      <el-alert type="info" show-icon :closable="false"
+        title="导入方式说明：① 后置导入＝把已经报名完成的报名表整表导入（直接置为已通过）；② 现场报名＝班主任现场登记，导入为待审核，需另行审核通过。" />
+      <el-form label-width="110px" style="margin-top: 16px">
+        <el-form-item label="导入模式">
+          <el-radio-group v-model="importMode">
+            <el-radio-button value="offline">后置导入（已报好的报名表，直接生效）</el-radio-button>
+            <el-radio-button value="onsite" disabled title="现场报名请使用班主任账号登录后操作">
+              现场报名（班主任端）
+            </el-radio-button>
+          </el-radio-group>
+          <div class="import-tip">体育老师/管理员仅支持「后置导入」，可导入任意班级；班主任可在班主任端进行现场报名（待审核）或后置导入（限本人绑定班）。</div>
+        </el-form-item>
+        <el-form-item label="下载模板">
+          <el-button link type="primary" @click="downloadSignupTemplate">报名表模板（年级/班级/姓名/性别/学号/项目/是否团体赛数量/成绩）</el-button>
+        </el-form-item>
+        <el-form-item label="选择文件">
+          <input type="file" accept=".xlsx,.xls,.csv" @change="onFileChange" />
+          <div class="import-tip">支持 Excel / CSV；「项目」列可填项目编码（如 100M）或精确项目名称。</div>
+        </el-form-item>
+      </el-form>
+
+      <el-alert v-if="importResult" :type="importResult.failed > 0 ? 'warning' : 'success'"
+        :title="`导入完成：成功 ${importResult.success} 条，跳过(重复) ${importResult.skipped} 条，失败 ${importResult.failed} 条${importResult.createdAthletes ? '，新建运动员 ' + importResult.createdAthletes + ' 名' : ''}`"
+        show-icon :closable="false" style="margin-top: 8px" />
+      <div v-if="importResult && importResult.errors && importResult.errors.length" class="import-errors">
+        <div class="import-errors-title">失败明细（第 N 行从模板表头下一行起算）：</div>
+        <div v-for="(e, i) in importResult.errors" :key="i" class="import-error-item">
+          第 {{ e.row }} 行：{{ e.message }}
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!selectedFile" @click="doImport">
+          开始导入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DocumentCopy } from '@element-plus/icons-vue'
+import { DocumentCopy, Upload, Document, CircleCheck } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const viewMode = ref('list')
@@ -182,8 +259,6 @@ const eventList = ref([])
 const allRegistrations = ref([])
 const detailVisible = ref(false)
 const currentRow = ref(null)
-
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
 
 const filterForm = reactive({
   grade: '',
@@ -277,6 +352,18 @@ function handleReset() {
   handleSearch()
 }
 
+// 分页换页/改页大小（不再重置回第 1 页，修复“无法换页”）
+function handlePageChange(page) {
+  pagination.page = page
+  fetchData()
+}
+
+function handleSizeChange(size) {
+  pagination.size = size
+  pagination.page = 1
+  fetchData()
+}
+
 function handleSelectionChange(selection) {
   selectedIds.value = selection.map(s => s.id)
 }
@@ -309,6 +396,37 @@ async function handleBatchApprove() {
   } catch (e) { if (e !== 'cancel') console.error(e) }
 }
 
+// 一键全部通过：当前筛选（项目/班级）范围内全部"待审核"一次通过（跨页）
+async function handleApproveAll() {
+  const parts = []
+  if (filterForm.eventId) {
+    const e = eventList.value.find(x => x.id === filterForm.eventId)
+    if (e) parts.push(`项目「${e.name}」`)
+  }
+  if (filterForm.classId) {
+    const c = classList.value.find(x => x.id === filterForm.classId)
+    if (c) parts.push(`班级「${c.name}」`)
+  }
+  if (filterForm.status === 'pending') parts.push('仅待审核')
+  const scopeText = parts.length ? `范围：${parts.join('、')}` : '全部待审核报名'
+  try {
+    await ElMessageBox.confirm(
+      `确定要“一键全部通过”吗？将把${scopeText}中全部“待审核”的报名直接置为已通过（跨页、不可撤销）。`,
+      '一键全部通过',
+      { confirmButtonText: '全部通过', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+  try {
+    const res = await request.put('/registrations/approve-all', {
+      eventId: filterForm.eventId || null,
+      classId: filterForm.classId || null
+    })
+    ElMessage.success(`一键全部通过：共通过 ${res?.approved ?? 0} 条待审核报名`)
+    fetchData()
+    fetchAllRegistrations()
+  } catch (e) { console.error(e) }
+}
+
 async function handleBatchReject() {
   try {
     await ElMessageBox.confirm(`确定要拒绝选中的 ${selectedIds.value.length} 条报名吗？`, '批量拒绝', { type: 'warning' })
@@ -324,12 +442,100 @@ function handleView(row) {
   detailVisible.value = true
 }
 
-function downloadTemplate() {
-  window.open(apiBase() + '/excel/template/registration', '_blank')
+async function downloadTemplate() {
+  // 与导入向导同源：表格1 报名表模板（年级|班级|姓名|性别|学号|项目|是否团体赛数量|成绩）
+  try {
+    await downloadApi('/registrations/template', '报名表模板.xlsx')
+  } catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
 }
 
-function handleExport() {
-  window.open(apiBase() + '/registrations/export', '_blank')
+async function handleExport() {
+  try {
+    await downloadApi('/registrations/export', '报名数据.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
+}
+
+// ==================== 报名表导入向导（三种模式） ====================
+const importVisible = ref(false)
+const importMode = ref('offline')
+const selectedFile = ref(null)
+const importing = ref(false)
+const importResult = ref(null)
+
+function openImportDialog() {
+  importVisible.value = true
+  importMode.value = 'offline'
+  selectedFile.value = null
+  importResult.value = null
+}
+
+async function downloadSignupTemplate() {
+  try {
+    await downloadApi('/registrations/template', '报名表模板.xlsx')
+  } catch (e) { ElMessage.error(e?.message || '模板下载失败，请重新登录后再试') }
+}
+
+// ==================== 报名表（7列：年级/班级/姓名/学号/性别/项目/组号）导入 ====================
+// 复用 /excel/import-with-mapping，固定列映射与后端 getTemplate("signup") 列序完全一致。
+// 组号仅团体/接力项目填写：同一班级同一项目同组号视为一队（两个 4×100 分编 A、B）；个人项目严禁填写。
+const excelImportUrl = apiBase() + '/excel/import-with-mapping'
+const uploadToken = localStorage.getItem('token') || ''
+const uploadHeaders = computed(() => ({ Authorization: uploadToken ? `Bearer ${uploadToken}` : '' }))
+const signupUploadData = {
+  type: 'signup',
+  columnMap: JSON.stringify({
+    0: 'grade', 1: 'className', 2: 'name', 3: 'studentId', 4: 'gender', 5: 'eventCode', 6: 'teamTag',
+  }),
+}
+
+async function downloadSignupTemplate7() {
+  try {
+    await downloadApi('/excel/template/signup', '报名表导入模板.xlsx')
+    ElMessage.success('已下载报名表模板（7列，含组号）')
+  } catch (e) { ElMessage.error(e?.message || '下载报名表模板失败') }
+}
+
+function onSignupImportSuccess(res) {
+  const d = res?.data || res || {}
+  const success = d.success || 0
+  const failed = d.failed || 0
+  if (failed > 0) ElMessage.warning(`报名表导入完成：成功 ${success} 条，失败 ${failed} 条（详见服务日志）`)
+  else ElMessage.success(`报名表导入完成：成功 ${success} 条`)
+  fetchData()
+  fetchAllRegistrations()
+}
+
+function onExcelImportError() { ElMessage.error('导入失败，请检查文件格式') }
+
+function onFileChange(e) {
+  selectedFile.value = e.target.files?.[0] || null
+  importResult.value = null
+}
+
+async function doImport() {
+  if (!selectedFile.value) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  importing.value = true
+  importResult.value = null
+  try {
+    const fd = new FormData()
+    fd.append('file', selectedFile.value)
+    const res = await request.post('/registrations/import-sheet', fd, {
+      params: { source: importMode.value },
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    importResult.value = res || {}
+    ElMessage.success(`导入完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    fetchData()
+    fetchAllRegistrations()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    importing.value = false
+  }
 }
 
 onMounted(() => {
@@ -434,5 +640,36 @@ onMounted(() => {
 @media (max-width: 768px) {
   .view-toggle { justify-content: center; }
   .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+
+.import-tip {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.import-errors {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #e6a23c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fdf6ec;
+}
+
+.import-errors-title {
+  font-size: 12px;
+  color: #e6a23c;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.import-error-item {
+  font-size: 12px;
+  color: #7a6a3e;
+  line-height: 1.6;
 }
 </style>

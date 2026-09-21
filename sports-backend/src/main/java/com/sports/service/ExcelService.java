@@ -1,6 +1,8 @@
 package com.sports.service;
 
 import com.alibaba.excel.EasyExcel;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.dto.excel.*;
 import com.sports.entity.*;
 import com.sports.repository.*;
@@ -29,106 +31,18 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ExcelService {
 
+    private static final ObjectMapper OB_MAPPER = new ObjectMapper();
+
     private final AthleteRepository athleteRepository;
     private final RegistrationRepository registrationRepository;
     private final ResultRepository resultRepository;
     private final EventRepository eventRepository;
     private final ClassInfoRepository classInfoRepository;
     private final ArrangementRepository arrangementRepository;
-
-    // ==================== 列别名映射表 ====================
-
-    /** 列别名：标准字段 → 可能的列名列表 */
-    static final Map<String, List<String>> COLUMN_ALIASES = new LinkedHashMap<>();
-
-    /** 每种类型的可用字段：fieldName → 中文标签 */
-    static final Map<String, Map<String, String>> TYPE_FIELDS = new LinkedHashMap<>();
-
-    static {
-        initColumnAliases();
-        initTypeFields();
-    }
-
-    private static void initColumnAliases() {
-        COLUMN_ALIASES.put("name",         List.of("姓名","名字","name","运动员名称","学生姓名","选手","学生"));
-        COLUMN_ALIASES.put("gender",       List.of("性别","sex","gender","男女"));
-        COLUMN_ALIASES.put("grade",        List.of("年级","grade","年段","年级名称"));
-        COLUMN_ALIASES.put("className",    List.of("班级","class","班别","班级名称","班","班号"));
-        COLUMN_ALIASES.put("number",       List.of("号码簿","号码布","号码","number","参赛号","编号","号码牌"));
-        COLUMN_ALIASES.put("studentId",    List.of("学号","studentId","学籍号"));
-        COLUMN_ALIASES.put("idCard",       List.of("身份证号","身份证","idCard"));
-        COLUMN_ALIASES.put("birthDate",    List.of("出生日期","生日","birthDate"));
-        COLUMN_ALIASES.put("emergencyContact", List.of("紧急联系人","联系人","emergencyContact"));
-        COLUMN_ALIASES.put("emergencyPhone",   List.of("紧急联系电话","联系电话","电话","phone"));
-        COLUMN_ALIASES.put("healthStatus",     List.of("健康状况","健康","healthStatus"));
-        COLUMN_ALIASES.put("remark",       List.of("备注","remark","说明","描述"));
-        COLUMN_ALIASES.put("eventCode",    List.of("项目编码","项目代码","code","eventCode"));
-        COLUMN_ALIASES.put("eventName",    List.of("项目名称","项目","eventName"));
-        COLUMN_ALIASES.put("athleteNumber",List.of("运动员号码","号码","运动员编号","athleteNumber"));
-        COLUMN_ALIASES.put("athleteName",  List.of("运动员姓名","姓名","运动员","athleteName"));
-        COLUMN_ALIASES.put("rawTime",      List.of("成绩","时间","result","rawTime","比赛成绩","用时"));
-        COLUMN_ALIASES.put("heat",         List.of("组别","组","heat","组号","轮次"));
-        COLUMN_ALIASES.put("lane",         List.of("道次","道","lane","跑道"));
-        COLUMN_ALIASES.put("windSpeed",    List.of("风速","windSpeed"));
-        COLUMN_ALIASES.put("rank",         List.of("名次","rank","排名","第几名"));
-        COLUMN_ALIASES.put("score",        List.of("积分","score","point","得分"));
-        COLUMN_ALIASES.put("classCode",    List.of("班级编码","班级编号","classCode"));
-        COLUMN_ALIASES.put("teacherName",  List.of("班主任","teacherName","班主任姓名"));
-        COLUMN_ALIASES.put("username",     List.of("用户名","账号","username","用户名"));
-        COLUMN_ALIASES.put("password",     List.of("密码","password"));
-        COLUMN_ALIASES.put("realName",     List.of("姓名","真实姓名","realName"));
-        COLUMN_ALIASES.put("role",         List.of("角色","role","身份"));
-        COLUMN_ALIASES.put("phone",        List.of("电话","手机号","手机","phone"));
-        COLUMN_ALIASES.put("category",     List.of("类别","类型","category","项目类别"));
-        COLUMN_ALIASES.put("genderLimit",  List.of("性别限制","性别","genderLimit"));
-        COLUMN_ALIASES.put("defaultLanes", List.of("跑道数","道数","lanes","defaultLanes"));
-        COLUMN_ALIASES.put("scoringType",  List.of("计分方式","计分规则","scoringType"));
-        COLUMN_ALIASES.put("record",       List.of("校纪录","纪录","record"));
-    }
-
-    private static void initTypeFields() {
-        Map<String, String> athleteFields = new LinkedHashMap<>();
-        athleteFields.put("name","姓名"); athleteFields.put("gender","性别");
-        athleteFields.put("grade","年级"); athleteFields.put("className","班级");
-        athleteFields.put("studentId","学号"); athleteFields.put("number","号码布编号");
-        athleteFields.put("idCard","身份证号"); athleteFields.put("birthDate","出生日期");
-        athleteFields.put("emergencyContact","紧急联系人");
-        athleteFields.put("emergencyPhone","紧急联系电话");
-        athleteFields.put("healthStatus","健康状况"); athleteFields.put("remark","备注");
-        TYPE_FIELDS.put("athlete", athleteFields);
-        TYPE_FIELDS.put("score", new LinkedHashMap<>(Map.of(
-            "eventCode","项目编码","athleteNumber","运动员号码","athleteName","运动员姓名",
-            "rawTime","成绩","heat","组别","lane","道次","windSpeed","风速","remark","备注")));
-        TYPE_FIELDS.put("registration", new LinkedHashMap<>(Map.of(
-            "eventCode","项目编码","athleteNumber","运动员号码","athleteName","运动员姓名",
-            "grade","年级","className","班级","remark","备注")));
-        TYPE_FIELDS.put("class", new LinkedHashMap<>(Map.of(
-            "name","班级名称","code","班级编码","grade","年级","teacherName","班主任")));
-        TYPE_FIELDS.put("user", new LinkedHashMap<>(Map.of(
-            "username","用户名","password","密码","realName","姓名","role","角色","phone","电话")));
-        TYPE_FIELDS.put("event", new LinkedHashMap<>(Map.of(
-            "name","项目名称","code","项目编码","category","类别","genderLimit","性别限制",
-            "defaultLanes","跑道数","scoringType","计分规则","record","校纪录")));
-    }
-
-    /** 智能匹配列名→标准字段 */
-    private static String matchColumnName(String colName) {
-        if (colName == null || colName.isBlank()) return null;
-        String s = colName.trim().toLowerCase().replaceAll("[\\s\\-_/（）()]", "");
-        for (Map.Entry<String, List<String>> e : COLUMN_ALIASES.entrySet()) {
-            for (String alias : e.getValue()) {
-                String a = alias.toLowerCase().replaceAll("[\\s\\-_/（）()]", "");
-                if (s.equals(a) || s.contains(a) || a.contains(s))
-                    return e.getKey();
-            }
-        }
-        return null;
-    }
-
-    private static String getFieldLabel(String type, String field) {
-        Map<String, String> fields = TYPE_FIELDS.getOrDefault(type, TYPE_FIELDS.get("athlete"));
-        return fields.getOrDefault(field, field);
-    }
+    private final EventScheduleRepository scheduleRepository;
+    private final EventRefereeRepository eventRefereeRepository;
+    private final RefereeRepository refereeRepository;
+    private final VenueRepository venueRepository;
 
     // ==================== 模板下载 ====================
 
@@ -152,8 +66,8 @@ public class ExcelService {
             }
             case "registration" -> {
                 fileName = "报名导入模板.xlsx";
-                sheet.add(List.of("项目编码","运动员号码","运动员姓名","年级","班级","备注"));
-                sheet.add(List.of("100M","010101","张三","高一年级","高一1班",""));
+                sheet.add(List.of("项目编码","运动员号码","运动员姓名","年级","班级","团队标识号","备注"));
+                sheet.add(List.of("100M","010101","张三","高一年级","高一1班","A组",""));
             }
             case "class" -> {
                 fileName = "班级导入模板.xlsx";
@@ -165,10 +79,47 @@ public class ExcelService {
                 sheet.add(List.of("用户名","密码","姓名","角色","电话"));
                 sheet.add(List.of("teacher01","123456","张老师","TEACHER","13800138000"));
             }
+            case "eventsimple" -> {
+                // 运动项目表（7列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间
+                // 复用 Event 现有字段，不新增列；与「表格2」17列模板互补，面向只需登记基础编排参数的老师
+                fileName = "运动项目表导入模板.xlsx";
+                sheet.add(List.of("项目代码","项目名称","每组人数","每批组数","项目类型","场地号","每批所需时间(分)"));
+                sheet.add(List.of("100M","100米","1","6","径赛","TRACK","20"));
+                sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30"));
+                sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90"));
+                sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300"));
+            }
+            case "roster" -> {
+                // 全名单表（5列）：年级/班级/姓名/学号/性别 —— 运动员主数据
+                // 按学号 upsert；班级缺失时按(年级,班级)自动创建
+                fileName = "全名单表导入模板.xlsx";
+                sheet.add(List.of("年级","班级","姓名","学号","性别"));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男"));
+                sheet.add(List.of("高一年级","高一1班","李四","2024002","女"));
+            }
+            case "signup" -> {
+                // 报名表（7列）：年级/班级/姓名/学号/性别/项目/组号
+                // 个人项目严禁填写组号；团体/接力按班级内编 A/B（同一班级同一项目同组号视为一队）
+                fileName = "报名表导入模板.xlsx";
+                sheet.add(List.of("年级","班级","姓名","学号","性别","项目","组号"));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男","100米",""));
+                sheet.add(List.of("高一年级","高一1班","张三","2024001","男","4×100米接力","A"));
+                sheet.add(List.of("高一年级","高一1班","李四","2024002","女","4×100米接力","B"));
+            }
             case "event" -> {
-                fileName = "项目导入模板.xlsx";
-                sheet.add(List.of("项目名称","项目编码","类别","性别限制","跑道数","计分规则","校纪录"));
-                sheet.add(List.of("100米","100M","径赛","男子组","8","global","11.23"));
+                // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
+                // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(1=串行,n=并行)/
+                // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)/Q组次裁判数量
+                // 并行数=项目内并发人数（径赛=每组人数即道次，田赛=工位数，游泳=泳道数）；
+                // 项目绑定场地后受该场地 parallelMax 约束（上限=可用场地/泳道数）
+                // 组次裁判数量=每个组次（heat/组/轮）需安排的裁判人数，留空/0=不安排裁判
+                fileName = "项目表导入模板_表格2.xlsx";
+                sheet.add(List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码",
+                        "性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量"));
+                sheet.add(List.of("100M","100米","是","8","1","8","","8","TRACK","男子组","高一年级","否","0","田径场","20","10","2"));
+                sheet.add(List.of("4X100M","4×100米接力","是","8","2","4","","8","TRACK","男子组","高一年级","是","4","田径场","30","15","3"));
+                sheet.add(List.of("TY_F","跳远(女子)","否","0","3","1","A","1","FIELD_A","女子组","高一年级","否","0","田赛A区","90","10","1"));
+                sheet.add(List.of("SWIM_M","50米蛙泳(男子)","是","8","4","4","","4","SWIM","男子组","高一年级","否","0","游泳馆","25","10","2"));
             }
             default -> {
                 fileName = "导入模板.xlsx";
@@ -179,10 +130,78 @@ public class ExcelService {
         setExcelResponse(response, fileName);
         try (OutputStream out = response.getOutputStream()) {
             List<List<String>> headCols = sheet.get(0).stream().map(List::of).collect(Collectors.toList());
-            EasyExcel.write(out).head(headCols).sheet("Sheet1").doWrite(sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of());
+            List<List<String>> dataRows = sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of();
+            // B14/U19：新增「填写说明」Sheet，说明字段规则（尤其号码布由系统生成，可留空）
+            List<List<String>> notes = templateNotes(t);
+            try (com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
+                com.alibaba.excel.write.metadata.WriteSheet s1 =
+                        EasyExcel.writerSheet(0, "数据").head(headCols).build();
+                writer.write(dataRows, s1);
+                if (!notes.isEmpty()) {
+                    com.alibaba.excel.write.metadata.WriteSheet s2 =
+                            EasyExcel.writerSheet(1, "填写说明")
+                                    .head(List.of(List.of("字段"), List.of("填写说明"))).build();
+                    writer.write(notes, s2);
+                }
+            }
         } catch (IOException e) {
             throw new RuntimeException("模板下载失败: " + e.getMessage());
         }
+    }
+
+    /** 各模板的「填写说明」（B14/U19）：解释字段取值与系统自动生成项 */
+    private List<List<String>> templateNotes(String type) {
+        List<List<String>> notes = new ArrayList<>();
+        switch (type == null ? "" : type.toLowerCase()) {
+            case "athlete" -> {
+                notes.add(List.of("号码布编号", "由系统按「号码簿规则」自动生成，导入时可留空；导出「运动员信息」时会自动回填。"));
+                notes.add(List.of("学号", "必填且唯一，用于区分同名运动员。"));
+                notes.add(List.of("班级", "须与系统中已创建的班级名称一致。"));
+                notes.add(List.of("性别", "填写「男」或「女」。"));
+            }
+            case "score" -> {
+                notes.add(List.of("项目编码", "须与系统中项目编码一致，可从「项目列表/项目表模板」获取。"));
+                notes.add(List.of("运动员号码", "填号码布编号；也可填学号（系统按号码/学号匹配运动员）。"));
+                notes.add(List.of("成绩", "径赛填秒数(如 12.34)、田赛填米/厘米数；支持 DNS/DNF/DSQ。"));
+            }
+            case "registration" -> {
+                notes.add(List.of("项目编码", "须与系统中项目编码一致。"));
+                notes.add(List.of("运动员号码", "填号码布编号或学号。"));
+                notes.add(List.of("团队标识号", "仅团体/趣味接力类项目填写（如 A组、B组、C组）。同一运动员在同一项目同一队伍标识下重复填写将自动去重；不填则按普通项目「一人一项一次」去重。"));
+            }
+            case "class" -> notes.add(List.of("班级编码", "唯一标识；班主任可填姓名，系统按规则匹配登录账号。"));
+            case "user" -> notes.add(List.of("角色", "取值：ADMIN/TEACHER/CLASS_TEACHER/STUDENT/REFEREE（REFEREE=裁判，可登录查看本人执裁安排）。"));
+            case "event" -> {
+                notes.add(List.of("道次", "田赛填 0；径赛填实际道次数。"));
+                notes.add(List.of("每组次几人", "径赛=每组人数即道次，田赛=工位数，游泳=泳道数。"));
+                notes.add(List.of("并行数", "项目内并发人数（1=串行，n=并行）；绑定场地后受该场地并行上限约束。"));
+                notes.add(List.of("捆绑字母", "同字母的田赛项目安排在同一时段并行。"));
+            }
+            case "eventsimple" -> {
+                notes.add(List.of("项目代码", "唯一编码，如 100M；导入后作为项目主键。"));
+                notes.add(List.of("每组人数", "一个组/队的人数：个人项目填 1，4×100 填 4，拔河填 15。>1 自动标记为团体赛。"));
+                notes.add(List.of("每批组数", "同一时刻可并行进行的批次数：1000米6道填6，立定跳远每批4人填4。"));
+                notes.add(List.of("项目类型", "取值：径赛 / 田赛 / 趣味运动会 / 球类；用于推断是否占道次与趣味并行。"));
+                notes.add(List.of("场地号", "场地编码（与全局场地配置 code 对应），如 TRACK / FIELD_A；绑定独立并发池。"));
+                notes.add(List.of("每批所需时间(分)", "一批人同时上场的分钟数，如趣味项目一组5分钟。"));
+            }
+            case "roster" -> {
+                notes.add(List.of("年级", "如 高一年级；用于年级分组与统计。"));
+                notes.add(List.of("班级", "班级名称，须与系统中班级名称一致；不存在时按(年级,班级)自动创建。"));
+                notes.add(List.of("姓名", "学生姓名，必填。"));
+                notes.add(List.of("学号", "必填且唯一，按学号 upsert（已存在则更新，不存在则新建）。"));
+                notes.add(List.of("性别", "填 男 / 女。"));
+                notes.add(List.of("号码布", "由系统按号码簿规则批量生成，本表无需填写。"));
+            }
+            case "signup" -> {
+                notes.add(List.of("年级/班级/姓名/学号", "用于定位已存在于「全名单表」的运动员，须与全名单一致。"));
+                notes.add(List.of("项目", "填项目名称或项目编码（如 100米 / 100M / 4×100米接力），须与运动项目表一致。"));
+                notes.add(List.of("组号", "仅团体/接力项目填写（如 A / B）：同一班级同一项目同组号视为同一支队伍；两个 4×100 队分别编 A、B。"));
+                notes.add(List.of("个人项目", "个人项目（非团体）严禁填写组号，填了将报错。"));
+            }
+            default -> notes.add(List.of("说明", "请在下载链接中指定模板类型。"));
+        }
+        return notes;
     }
 
     // ==================== 导入预览（智能列映射 + 多Sheet + 详细预览） ====================
@@ -221,15 +240,15 @@ public class ExcelService {
             Map<String, String> mappingLabels = new LinkedHashMap<>();
             Map<String, List<String>> fieldOptions = new LinkedHashMap<>();
             for (int c = 0; c < headers.size(); c++) {
-                String field = matchColumnName(headers.get(c));
+                String field = ExcelColumnMapping.matchColumnName(headers.get(c));
                 if (field != null) {
                     suggestedMappings.put(String.valueOf(c), field);
-                    mappingLabels.put(field, getFieldLabel(type, field));
+                    mappingLabels.put(field, ExcelColumnMapping.getFieldLabel(type, field));
                     fieldOptions.computeIfAbsent(field, k -> new ArrayList<>()).add(headers.get(c));
                 }
             }
 
-            Map<String, String> availableFields = TYPE_FIELDS.getOrDefault(type, TYPE_FIELDS.get("athlete"));
+            Map<String, String> availableFields = ExcelColumnMapping.TYPE_FIELDS.getOrDefault(type, ExcelColumnMapping.TYPE_FIELDS.get("athlete"));
 
             // 预览数据行（最多100行）
             List<List<String>> previewRows = new ArrayList<>();
@@ -266,9 +285,12 @@ public class ExcelService {
         if (filename == null) return "athlete";
         String l = filename.toLowerCase();
         if (l.contains("score")||l.contains("成绩")) return "score";
+        else if (l.contains("报名表")) return "signup";
+        else if (l.contains("全名单")||l.contains("名单")) return "roster";
         else if (l.contains("registration")||l.contains("报名")) return "registration";
         else if (l.contains("class")||l.contains("班级")) return "class";
         else if (l.contains("user")||l.contains("用户")) return "user";
+        else if (l.contains("运动项目表")) return "eventsimple";
         else if (l.contains("event")||l.contains("项目")) return "event";
         return "athlete";
     }
@@ -346,6 +368,9 @@ public class ExcelService {
             case "registration" -> processRegistrationRow(values);
             case "class" -> processClassRow(values);
             case "event" -> processEventRow(values);
+            case "eventsimple" -> processEventSimpleRow(values);
+            case "roster" -> processRosterRow(values);
+            case "signup" -> processSignupRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
     }
@@ -467,8 +492,159 @@ public class ExcelService {
                 .defaultLanes(parseIntSafe(v.get("defaultLanes"), 8))
                 .scoringType(v.get("scoringType") != null ? v.get("scoringType") : "global")
                 .record(v.get("record"))
+                .refereesPerGroup(parseIntSafe(v.get("refereesPerGroup"), 0))
                 .isEnabled(true).sortOrder(0).build();
         eventRepository.save(event);
+    }
+
+    /**
+     * 运动项目表（7列精简模板）导入：复用 Event 现有字段，不新增列。
+     * <p>A项目代码→code / B项目名称→name / C每组人数→teamMembers(>1 自动标记团体赛) /
+     * D每批组数→concurrency(径赛同步 laneCount) / E项目类型→category(推断 track/funSports) /
+     * F场地号→defaultVenueCode / G每批所需时间→perBatchMinutes。</p>
+     */
+    private void processEventSimpleRow(Map<String, String> v) {
+        String name = v.get("eventName");
+        String code = v.get("eventCode");
+        if (name == null || code == null) throw new RuntimeException("项目名称和编码不能为空");
+        if (eventRepository.existsByCode(code)) throw new RuntimeException("项目编码已存在: " + code);
+
+        String category = trimToNull(v.get("category"));
+        Integer teamMembers = parseIntSafe(v.get("teamMembers"), 0);
+        Integer concurrency = parseIntSafe(v.get("concurrency"), null);
+        Integer perBatch = parseIntSafe(v.get("perBatchMinutes"), null);
+        String venueCode = trimToNull(v.get("defaultVenueCode"));
+
+        // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味/球类，复用现有字段
+        boolean isTrack = "径赛".equals(category);
+        // 趣味运动会、球类 复用田赛逻辑（不占道次、并行分组）
+        boolean isFun = "趣味运动会".equals(category) || "球类".equals(category);
+        Integer laneCount = isTrack ? (concurrency != null ? concurrency : 8) : 0;
+
+        Event.EventBuilder b = Event.builder()
+                .name(name).code(code)
+                .category(category)
+                .team(teamMembers != null && teamMembers > 1)
+                .teamMembers(teamMembers)
+                .concurrency(concurrency)
+                .perBatchMinutes(perBatch)
+                .defaultVenueCode(venueCode)
+                .laneCount(laneCount)
+                .defaultLanes(laneCount)
+                .isEnabled(true).sortOrder(0);
+        // 项目类型留空时不覆盖 track/funSports 的实体默认值，避免产生无法编排的事件
+        if (category != null) {
+            b.track(isTrack).funSports(isFun);
+            // 趣味运动会/球类 若被安排在跑道场地(type=track)，则须与真正径赛错开(occupiesTrack)，
+            // 避免跑道被径赛与趣味项目同时占用（用户「趣味运动会占用跑道则错开」规则）
+            if (isFun && venueCode != null) {
+                boolean occ = venueRepository.findByCode(venueCode)
+                        .map(ven -> "track".equalsIgnoreCase(ven.getType()))
+                        .orElse(false);
+                b.occupiesTrack(occ);
+            }
+        }
+        eventRepository.save(b.build());
+    }
+
+    // ==================== 全名单表（5列）：年级/班级/姓名/学号/性别 ====================
+
+    /**
+     * 全名单表：运动员主数据导入。按学号(studentId) upsert；
+     * 班级不存在时按(年级,班级)自动创建，便于「全名单 → 报名表」顺次导入。
+     */
+    private void processRosterRow(Map<String, String> v) {
+        String studentId = trimToNull(v.get("studentId"));
+        String name = trimToNull(v.get("name"));
+        if (studentId == null) throw new RuntimeException("学号不能为空");
+        if (name == null) throw new RuntimeException("姓名不能为空");
+
+        String grade = trimToNull(v.get("grade"));
+        String className = trimToNull(v.get("className"));
+        ClassInfo classInfo = null;
+        if (className != null) {
+            classInfo = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
+            if (classInfo == null) classInfo = classInfoRepository.findByName(className).orElse(null);
+            if (classInfo == null) {
+                // 班级缺失：按(年级,班级)自动创建，code 取班级名（唯一），参与状态默认开启
+                String code = className;
+                int dup = 1;
+                while (classInfoRepository.existsByCode(code)) code = className + "_" + (dup++);
+                classInfo = ClassInfo.builder()
+                        .name(className).code(code).grade(grade)
+                        .isParticipating(true).build();
+                classInfo = classInfoRepository.save(classInfo);
+            }
+        }
+
+        String gender = mapGender(v.get("gender"));
+        Athlete athlete = athleteRepository.findByStudentId(studentId).orElse(null);
+        if (athlete == null) {
+            athlete = Athlete.builder()
+                    .name(name).gender(gender).grade(grade).classInfo(classInfo)
+                    .studentId(studentId).status("normal").build();
+        } else {
+            athlete.setName(name);
+            athlete.setGender(gender);
+            athlete.setGrade(grade);
+            athlete.setClassInfo(classInfo);
+            athlete.setStudentId(studentId);
+            athlete.setStatus("normal");
+        }
+        athleteRepository.save(athlete);
+    }
+
+    // ==================== 报名表（7列）：年级/班级/姓名/学号/性别/项目/组号 ====================
+
+    /**
+     * 报名表：按(学号/姓名+班级)定位运动员，按(项目编码/名称)定位项目，写入报名。
+     * 组号→Registration.teamTag：团体/接力项目可按班级内编 A/B 区分不同队伍；
+     * 个人项目(event.team=false)严禁填写组号，否则报错。
+     */
+    private void processSignupRow(Map<String, String> v) {
+        String eventRef = trimToNull(v.get("eventCode"));
+        if (eventRef == null) throw new RuntimeException("项目不能为空（填项目编码或名称）");
+        Event event = eventRepository.findByCode(eventRef.trim())
+                .orElseGet(() -> eventRepository.findByNameAndIsEnabledTrue(eventRef.trim()).orElse(null));
+        if (event == null) throw new RuntimeException("项目不存在: " + eventRef);
+
+        // 定位运动员：优先学号，其次 姓名+班级
+        Athlete athlete = null;
+        String studentId = trimToNull(v.get("studentId"));
+        if (studentId != null) athlete = athleteRepository.findByStudentId(studentId).orElse(null);
+        if (athlete == null) {
+            String name = trimToNull(v.get("name"));
+            String className = trimToNull(v.get("className"));
+            if (name == null) throw new RuntimeException("姓名或学号至少一项用于定位运动员");
+            List<Athlete> cands = athleteRepository.findByName(name);
+            if (className != null) {
+                cands = cands.stream()
+                        .filter(a -> a.getClassInfo() != null && className.equals(a.getClassInfo().getName()))
+                        .collect(java.util.stream.Collectors.toList());
+            }
+            if (cands.isEmpty()) throw new RuntimeException("运动员不存在: " + name + (className != null ? "(" + className + ")" : ""));
+            if (cands.size() > 1) throw new RuntimeException("运动员重名需补充学号以唯一定位: " + name);
+            athlete = cands.get(0);
+        }
+
+        String teamTag = trimToNull(v.get("teamTag"));
+        boolean isTeam = Boolean.TRUE.equals(event.getTeam()) || (event.getTeamMembers() != null && event.getTeamMembers() > 1);
+        if (!isTeam && teamTag != null) {
+            throw new RuntimeException("个人项目严禁填写组号: " + event.getName() + "（" + athlete.getName() + "）");
+        }
+
+        if (registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId()))
+            throw new RuntimeException("该运动员已报名此项目: " + athlete.getName() + " / " + event.getName());
+
+        Registration reg = Registration.builder()
+                .athlete(athlete).event(event)
+                .team(isTeam)
+                .teamTag(teamTag)
+                .status("approved")
+                .source("offline")
+                .registrationTime(LocalDateTime.now())
+                .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
+        registrationRepository.save(reg);
     }
 
     // ==================== 直接导入（兼容旧接口） ====================
@@ -509,12 +685,17 @@ public class ExcelService {
         try (InputStream in = file.getInputStream()) {
             ScoreDataListener listener = new ScoreDataListener(
                     resultRepository, eventRepository, athleteRepository, arrangementRepository);
-            EasyExcel.read(in, ScoreExcelModel.class, listener).sheet().doRead();
+            // U13：读取全部 Sheet——支持「每个项目一个 Sheet」的成绩表，同时兼容单 Sheet
+            EasyExcel.read(in, ScoreExcelModel.class, listener).doReadAll();
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("total", listener.getSuccessCount() + listener.getErrorCount());
             result.put("success", listener.getSuccessCount());
             result.put("failed", listener.getErrorCount());
             result.put("errors", listener.getErrors());
+            // B02/U13：说明/汇总行单独计数，不再混入 failed
+            // （模板自带的「填写说明」Sheet 曾被当成数据，产生一整片假错误）
+            result.put("skipped", listener.getSkipped());
+            result.put("skippedCount", listener.getSkipped().size());
             return result;
         } catch (IOException e) {
             throw new RuntimeException("读取Excel文件失败: " + e.getMessage());
@@ -525,11 +706,26 @@ public class ExcelService {
     public Map<String, Object> importRegistrations(MultipartFile file) {
         log.info("Excel导入报名: {}", file.getOriginalFilename());
         int success = 0;
+        int skipped = 0;
         List<Map<String, Object>> errors = new ArrayList<>();
         try (InputStream in = file.getInputStream()) {
-            List<Map<Integer, String>> rows = EasyExcel.read(in).sheet().headRowNumber(1).doReadSync();
-            for (int i = 0; i < rows.size(); i++) {
-                Map<Integer, String> row = rows.get(i);
+            // 表头 + 数据一起读（headRowNumber(0)），按表头定位「团队标识号」列；
+            // 项目编码 / 运动员号码仍按位置 0/1 兼容旧模板（无团队标识号列时 teamTag 取 null）。
+            List<Map<Integer, String>> all = EasyExcel.read(in).sheet().headRowNumber(0).doReadSync();
+            if (all.isEmpty()) return buildImportResult(success, skipped, errors);
+            Map<Integer, String> header = all.get(0);
+            int teamTagCol = -1;
+            for (Map.Entry<Integer, String> e : header.entrySet()) {
+                if (e.getValue() == null) continue;
+                final String hv = e.getValue().trim();
+                if (ExcelColumnMapping.COLUMN_ALIASES.getOrDefault("teamTag", List.of()).stream()
+                        .anyMatch(a -> a.equalsIgnoreCase(hv))) {
+                    teamTagCol = e.getKey();
+                    break;
+                }
+            }
+            for (int i = 1; i < all.size(); i++) {
+                Map<Integer, String> row = all.get(i);
                 try {
                     String eventCode = row.getOrDefault(0, "");
                     String athleteNumber = row.getOrDefault(1, "");
@@ -537,17 +733,38 @@ public class ExcelService {
                             .orElseThrow(() -> new RuntimeException("项目编码不存在: " + eventCode));
                     Athlete athlete = athleteRepository.findByNumber(athleteNumber.trim())
                             .orElseThrow(() -> new RuntimeException("号码簿不存在: " + athleteNumber));
-                    if (!registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId())) {
+                    String teamTag = teamTagCol >= 0 ? trimToNull(row.get(teamTagCol)) : null;
+                    boolean dup = Boolean.TRUE.equals(event.getTeam())
+                            ? registrationRepository.existsByAthleteIdAndEventIdAndTeamTag(athlete.getId(), event.getId(), teamTag)
+                            : registrationRepository.existsByAthleteIdAndEventId(athlete.getId(), event.getId());
+                    // 每班人数限制：项目自带 maxPerClass 优先（未设定则不限制）
+                    if (event.getMaxPerClass() != null && event.getMaxPerClass() > 0
+                            && athlete.getClassInfo() != null) {
+                        long classCnt = registrationRepository.countByClassAndEvent(
+                                athlete.getClassInfo().getId(), event.getId());
+                        if (classCnt >= event.getMaxPerClass()) {
+                            Map<String, Object> e2 = new LinkedHashMap<>();
+                            e2.put("row", i + 1);
+                            e2.put("message", "项目「" + event.getName() + "」本班已达每班人数限制("
+                                    + event.getMaxPerClass() + "人)");
+                            errors.add(e2);
+                            continue;
+                        }
+                    }
+                    if (!dup) {
                         Registration reg = Registration.builder()
                                 .athlete(athlete).event(event).status("approved")
+                                .team(Boolean.TRUE.equals(event.getTeam())).teamTag(teamTag)
                                 .registrationTime(LocalDateTime.now())
                                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
                         registrationRepository.save(reg);
                         success++;
+                    } else {
+                        skipped++;
                     }
                 } catch (Exception e) {
                     Map<String, Object> err = new LinkedHashMap<>();
-                    err.put("row", i + 2);
+                    err.put("row", i + 1);
                     err.put("message", e.getMessage());
                     errors.add(err);
                 }
@@ -555,9 +772,20 @@ public class ExcelService {
         } catch (IOException e) {
             throw new RuntimeException("读取Excel文件失败: " + e.getMessage());
         }
+        return buildImportResult(success, skipped, errors);
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    private Map<String, Object> buildImportResult(int success, int skipped, List<Map<String, Object>> errors) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("total", success + errors.size());
+        result.put("total", success + skipped + errors.size());
         result.put("success", success);
+        result.put("skipped", skipped);
         result.put("failed", errors.size());
         result.put("errors", errors);
         return result;
@@ -612,16 +840,93 @@ public class ExcelService {
         }
     }
 
-    /** 导出秩序册Excel */
+    /** 导出秩序册Excel：竞赛日程 / 分组道次名单 / 项目列表 / 参赛班级 */
+    @Transactional(readOnly = true)
     public void exportOrderBook(HttpServletResponse response) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
+        // B03/U03 + B04/U04：参赛运动员集合（已审核报名），用于「参赛班级人数」「号码对照表仅含参赛」
+        Set<Long> participantIds = registrationRepository.findByStatus("approved").stream()
+                .map(r -> r.getAthlete() != null ? r.getAthlete().getId() : null)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Long> participantCountByClass = new LinkedHashMap<>();
+        for (Athlete p : athleteRepository.findAllById(participantIds)) {
+            if (p.getDeletedAt() != null || p.getClassInfo() == null) continue;
+            participantCountByClass.merge(p.getClassInfo().getId(), 1L, Long::sum);
+        }
+        // 裁判分配查找表：key=eventId|grade|gender|round|heat → 裁判姓名串（分组道次名单挂载用）
+        Map<Long, Referee> refMapAll = refereeRepository.findAll().stream()
+                .collect(Collectors.toMap(Referee::getId, r -> r, (a, b) -> a));
+        Map<String, String> refByHeat = new HashMap<>();
+        for (EventReferee er : eventRefereeRepository.findAll()) {
+            if (er.getEvent() == null) continue;
+            List<Long> ids = parseRefIds(er.getRefereeIds());
+            String names = ids.stream()
+                    .map(id -> refMapAll.get(id) != null ? refMapAll.get(id).getName() : "未知")
+                    .collect(Collectors.joining("、"));
+            String key = er.getEvent().getId() + "|" + (er.getGrade() == null ? "" : er.getGrade()) + "|"
+                    + (er.getGender() == null ? "" : er.getGender()) + "|"
+                    + (er.getRound() == null ? "" : er.getRound()) + "|" + er.getHeat();
+            refByHeat.put(key, names);
+        }
         setExcelResponse(response, "秩序册_" + dateStr() + ".xlsx");
 
         try (OutputStream out = response.getOutputStream()) {
-            // Sheet1: 项目列表
+            // Sheet1: 竞赛日程
+            List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
+            List<List<String>> schedData = new ArrayList<>();
+            schedData.add(List.of("天次", "日期", "时段", "时间", "项目", "轮次", "性别", "年级", "场地"));
+            // U09/B09/B10：预计算含预赛轮的项目，用于区分「决赛」与「直接决赛」
+            Set<Long> prelimEventIds = arrangementRepository.findAll().stream()
+                    .filter(a -> "preliminary".equals(a.getRound()))
+                    .map(a -> a.getEvent() != null ? a.getEvent().getId() : null)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toSet());
+            for (EventSchedule s : scheds) {
+                Event se = s.getEvent();
+                long seId = se != null && se.getId() != null ? se.getId() : -1L;
+                String roundLabel = com.sports.common.RoundLabelUtil.label(s.getRound(), prelimEventIds.contains(seId));
+                schedData.add(List.of(safe(s.getDay()), safe(s.getScheduleDate()), safe(s.getTimeSlot()),
+                        safe(s.getStartTime()) + "~" + safe(s.getEndTime()),
+                        se != null ? safe(se.getName()) : "-",
+                        roundLabel,
+                        se != null ? safe(se.getGenderLimit()) : "-",
+                        safe(s.getGrade()), safe(s.getVenue())));
+            }
+
+            // Sheet2: 分组道次名单（决赛优先，无决赛用预赛）——U09/B10：新增「轮次」列
+            List<List<String>> laneData = new ArrayList<>();
+            laneData.add(List.of("项目", "轮次", "性别", "年级", "组次", "道次", "号码", "姓名", "班级", "裁判"));
+            for (Event e : events) {
+                List<Arrangement> all = arrangementRepository.findByEventId(e.getId());
+                if (all.isEmpty()) continue;
+                boolean hasPrelim = all.stream().anyMatch(a -> "preliminary".equals(a.getRound()));
+                boolean hasFinal = all.stream().anyMatch(a -> "final".equals(a.getRound()));
+                List<Arrangement> pool = hasFinal
+                        ? all.stream().filter(a -> "final".equals(a.getRound())).collect(Collectors.toList())
+                        : all;
+                pool.sort(Comparator
+                        .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
+                        .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
+                for (Arrangement a : pool) {
+                    Athlete at = a.getAthlete();
+                    if (at == null) continue;
+                    String rl = com.sports.common.RoundLabelUtil.label(a.getRound(), hasPrelim);
+                    String refKey = e.getId() + "|" + (a.getGrade() == null ? "" : a.getGrade()) + "|"
+                            + (a.getGender() == null ? "" : a.getGender()) + "|"
+                            + (a.getRound() == null ? "" : a.getRound()) + "|" + a.getHeat();
+                    laneData.add(List.of(safe(e.getName()), rl, safe(e.getGenderLimit()), safe(a.getGrade()),
+                            safe(a.getHeat()), safe(a.getLane()),
+                            safe(at.getNumber()), safe(at.getName()),
+                            at.getClassInfo() != null ? safe(at.getClassInfo().getName()) : "-",
+                            refByHeat.getOrDefault(refKey, "")));
+                }
+            }
+
+            // Sheet3: 项目列表
             List<List<String>> eventData = new ArrayList<>();
-            eventData.add(List.of("序号","项目编码","项目名称","类别","性别限制","跑道数","校纪录"));
+            eventData.add(List.of("序号", "项目编码", "项目名称", "类别", "性别限制", "跑道数", "校纪录"));
             int idx = 1;
             for (Event e : events) {
                 eventData.add(List.of(String.valueOf(idx++), n(e.getCode()), n(e.getName()),
@@ -630,31 +935,41 @@ public class ExcelService {
                         n(e.getRecord())));
             }
 
-            // Sheet2: 参赛班级
+            // Sheet4: 参赛班级
             List<List<String>> classData = new ArrayList<>();
-            classData.add(List.of("序号","班级名称","年级","班主任","学生人数"));
+            classData.add(List.of("序号", "班级名称", "年级", "班主任", "学生人数"));
             idx = 1;
             for (ClassInfo c : classes) {
+                // B03/U03：人数取「本班参赛运动员数」（按报名审核统计），班主任优先班级登记名、缺失回退绑定账号
+                String teacher = c.getTeacherName() != null && !c.getTeacherName().isBlank() ? c.getTeacherName().trim()
+                        : (c.getTeacherUser() != null
+                            ? (c.getTeacherUser().getName() != null && !c.getTeacherUser().getName().isBlank()
+                                ? c.getTeacherUser().getName().trim()
+                                : n(c.getTeacherUser().getUsername()))
+                            : "-");
                 classData.add(List.of(String.valueOf(idx++), n(c.getName()), n(c.getGrade()),
-                        n(c.getTeacherName()), String.valueOf(c.getStudentCount() != null ? c.getStudentCount() : 0)));
+                        teacher, String.valueOf(participantCountByClass.getOrDefault(c.getId(), 0L))));
             }
 
-            // 写入Excel（多Sheet）
             com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build();
-            com.alibaba.excel.write.metadata.WriteSheet sheet1 = EasyExcel.writerSheet(0, "项目列表")
-                    .head(eventData.get(0).stream().map(List::of).collect(Collectors.toList())).build();
-            com.alibaba.excel.write.metadata.WriteSheet sheet2 = EasyExcel.writerSheet(1, "参赛班级")
-                    .head(classData.get(0).stream().map(List::of).collect(Collectors.toList())).build();
-            writer.write(eventData.subList(1, eventData.size()), sheet1);
-            writer.write(classData.subList(1, classData.size()), sheet2);
+            writer.write(schedData.subList(1, schedData.size()),
+                    EasyExcel.writerSheet(0, "竞赛日程").head(schedData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(laneData.subList(1, laneData.size()),
+                    EasyExcel.writerSheet(1, "分组道次名单").head(laneData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(eventData.subList(1, eventData.size()),
+                    EasyExcel.writerSheet(2, "项目列表").head(eventData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
+            writer.write(classData.subList(1, classData.size()),
+                    EasyExcel.writerSheet(3, "参赛班级").head(classData.get(0).stream().map(List::of).collect(Collectors.toList())).build());
             writer.finish();
+            log.info("导出秩序册: {}个项目, {}个班级, 日程{}条, 道次{}行",
+                    events.size(), classes.size(), scheds.size(), laneData.size() - 1);
         } catch (IOException e) {
             throw new RuntimeException("导出秩序册失败: " + e.getMessage());
         }
-        log.info("导出秩序册: {} 个项目, {} 个班级", events.size(), classes.size());
     }
 
     /** 导出成绩册Excel */
+    @Transactional
     public void exportResultBook(HttpServletResponse response) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         setExcelResponse(response, "成绩册_" + dateStr() + ".xlsx");
@@ -724,6 +1039,8 @@ public class ExcelService {
     private void setExcelResponse(HttpServletResponse response, String fileName) {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("utf-8");
+        // U11/B13：导出文件名统一带版本号，便于区分多版本产物
+        fileName = com.sports.common.ExportNaming.withVersion(fileName);
         String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
         response.setHeader("Content-Disposition",
                 "attachment;filename=" + encoded + ";filename*=UTF-8''" + encoded);
@@ -734,6 +1051,19 @@ public class ExcelService {
     }
 
     private static String n(String s) { return s != null ? s : ""; }
+
+    private static String safe(Object o) { return o == null ? "" : String.valueOf(o); }
+
+    /** 解析 event_referee.referee_ids（JSON 数组字符串）为裁判 ID 列表 */
+    private static List<Long> parseRefIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<Integer> list = OB_MAPPER.readValue(json, new TypeReference<List<Integer>>() {});
+            return list.stream().map(Long::valueOf).collect(Collectors.toList());
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
 
     private static String toStringSafe(Object v) {
         return v != null ? v.toString() : "";

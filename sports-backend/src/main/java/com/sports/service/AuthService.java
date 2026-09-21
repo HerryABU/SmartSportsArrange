@@ -4,7 +4,7 @@ import com.sports.dto.LoginRequest;
 import com.sports.dto.LoginResponse;
 import com.sports.entity.User;
 import com.sports.repository.UserRepository;
-import com.sports.security.JwtUtil;
+import com.sports.security.jwt.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -62,7 +62,7 @@ public class AuthService {
         return LoginResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(86400000L)  // 24小时
+                .expiresIn(jwtUtil.getExpiration())  // M8 修复：从 JwtUtil 读取，与 jwt.expiration 配置同步
                 .user(userInfo)
                 .build();
     }
@@ -101,7 +101,7 @@ public class AuthService {
         return LoginResponse.builder()
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
-                .expiresIn(86400000L)
+                .expiresIn(jwtUtil.getExpiration())  // M8 修复：从 JwtUtil 读取
                 .user(userInfo)
                 .build();
     }
@@ -185,6 +185,8 @@ public class AuthService {
             case "ROLE_CLASS_TEACHER" -> List.of("athlete:view", "class:view", "registration:manage",
                     "event:view", "arrange:view", "result:view", "ranking:view", "statistics:view");
             case "ROLE_STUDENT" -> List.of("event:view", "arrange:view", "result:view", "ranking:view");
+            // 裁判：仅需查看自己的执裁安排与相关赛程/项目信息
+            case "ROLE_REFEREE" -> List.of("referee:view", "event:view", "arrange:view", "result:view");
             default -> List.of("event:view", "arrange:view", "result:view", "ranking:view");
         };
     }

@@ -1,5 +1,18 @@
 <template>
   <div class="settings-page" v-loading="loading">
+    <!-- 页面头 -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">⚙️</span>
+        <div>
+          <h3 class="pg-title">系统设置</h3>
+          <p class="pg-desc">基本信息 · 积分规则 · 号码簿 · 年级管理 · 编排规则 · 数据库迁移 · 用户/批量创建（管理员）</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#f0fdf4;color:#15803d">配置即保存，所见即所得</span>
+      </div>
+    </div>
     <el-tabs v-model="activeTab" :tab-position="isMobile ? 'top' : 'left'">
       <!-- Basic Settings -->
       <el-tab-pane label="基本设置" name="basic">
@@ -170,6 +183,28 @@
             </el-form-item>
           </el-form>
         </el-card>
+
+        <el-card shadow="never" style="margin-top:12px">
+          <template #header><span>号码簿 · 按名单顺序重排</span></template>
+          <el-alert type="info" :closable="false" style="margin-bottom:12px"
+            title="按「年级（系统设置顺序）→ 班级序号 → 名单（导入顺序）」为运动员重新编号；同一班级内序号从 1 连续递增，号码仍套用上方模板。" />
+          <el-form label-width="140px" style="max-width: 760px">
+            <el-form-item label="范围年级">
+              <el-select v-model="reassignGrade" clearable placeholder="全部年级" style="width:220px">
+                <el-option v-for="g in reassignGradeOptions" :key="g" :label="g" :value="g" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="warning" :loading="reassigning" @click="doReassignNumberBook">
+                生成 / 重排号码簿
+              </el-button>
+              <el-button type="primary" :loading="generating" @click="doGenerateNumberBook">
+                按名单顺序生成（补全空缺）
+              </el-button>
+              <span class="form-tip" style="margin-left:10px">「生成」仅给尚无号码的运动员按名单顺序补号（不覆盖已有）；「重排」则会整体按名单顺序覆盖重编</span>
+            </el-form-item>
+          </el-form>
+        </el-card>
       </el-tab-pane>
 
       <!-- Arrange Rule -->
@@ -196,6 +231,14 @@
             <el-form-item label="同班同组最多人数">
               <el-input-number v-model="arrangeRuleForm.soft.same_class_max_per_heat" :min="0" :max="20" />
               <span class="rule-desc">0 表示不限制</span>
+            </el-form-item>
+
+            <el-divider content-position="left">🧑‍⚖️ 裁判编排</el-divider>
+            <el-form-item label="启用裁判编排">
+              <el-switch v-model="refereeArrangeEnabled" :loading="refereeArrangeSaving" @change="saveRefereeArrange" />
+              <span class="rule-desc">
+                关闭后编排<b>不分配裁判</b>（组次裁判数量将被忽略）；裁判池为空时同样自动跳过。关闭不影响分组/分道等其它编排
+              </span>
             </el-form-item>
 
             <el-divider content-position="left">⚙️ 算法参数</el-divider>
@@ -239,6 +282,19 @@
 
       <!-- 批量创建 — 仅管理员可见 -->
       <el-tab-pane v-if="authStore.isAdmin" label="批量创建" name="batch">
+        <!-- 批量导入中心：管理员四类名单导入入口（班主任 / 学生 / 体育老师 / 裁判） -->
+        <el-card shadow="never" style="margin-bottom:16px">
+          <template #header><span>📥 批量导入中心（班主任名单 · 学生名单 · 体育老师 · 裁判）</span></template>
+          <el-table :data="importEntries" size="small">
+            <el-table-column label="导入对象" prop="name" width="140" />
+            <el-table-column label="说明" prop="desc" />
+            <el-table-column label="入口" width="200">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" plain @click="gotoImport(row)">{{ row.action }}</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
         <el-row :gutter="16">
           <!-- 批量创建班级 -->
           <el-col :span="12">
@@ -457,17 +513,48 @@
               <el-button @click="step = 0">取消</el-button>
             </div>
             <div v-else>
-              <el-progress :percentage="migration.progress || 0"
+              <div class="mg-head">
+                <span class="mg-pct"
+                      :class="{ 'is-done': migration.status === 'completed', 'is-fail': migration.status === 'failed' }">
+                  {{ migration.progress || 0 }}%
+                </span>
+                <span class="mg-step">当前步骤：{{ migration.step || '准备中…' }}</span>
+              </div>
+              <el-progress :percentage="migration.progress || 0" :stroke-width="14" :show-text="false"
                            :status="migration.status === 'failed' ? 'exception' : (migration.status === 'completed' ? 'success' : '')" />
-              <div style="margin:12px 0;color:#606266">当前步骤：{{ migration.step || '准备中…' }}</div>
-              <div class="migration-log" v-if="migration.logs && migration.logs.length">
+
+              <div class="mg-stats">
+                <div class="mg-stat">
+                  <span class="mg-k">数据表</span>
+                  <span class="mg-v">{{ migration.totalTables || '—' }}<i>张</i></span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">已迁移数据</span>
+                  <span class="mg-v">{{ migration.rowsDone || 0 }}<i>/ {{ migration.rowsTotal || '—' }} 行 · {{ rowProgressPercent }}%</i></span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">已用时</span>
+                  <span class="mg-v">{{ formatDuration(migration.elapsedMs) }}</span>
+                </div>
+                <div class="mg-stat">
+                  <span class="mg-k">预计剩余</span>
+                  <span class="mg-v">{{ etaText }}</span>
+                </div>
+              </div>
+
+              <div class="migration-log" ref="migrationLogEl" v-if="migration.logs && migration.logs.length">
                 <div v-for="(l, i) in migration.logs" :key="i" class="log-line">{{ l }}</div>
               </div>
+
               <el-alert v-if="migration.status === 'completed'" type="success" :closable="false" show-icon
                         :title="migration.message" style="margin-top:12px">
                 <template #default>
                   <p style="margin:0">{{ migration.message }}</p>
-                  <p style="margin:6px 0 0;font-size:12px">请重启应用以切换到新数据库（可运行 <code>.\start.ps1</code> 重启）。</p>
+                  <p style="margin:6px 0 0;font-size:12px">
+                    共迁移 <b>{{ migration.rowsDone || 0 }}</b> 行、<b>{{ migration.totalTables || 0 }}</b> 张表，
+                    耗时 <b>{{ formatDuration(migration.elapsedMs) }}</b>。
+                    请重启应用以切换到新数据库（可运行 <code>.\start.ps1</code> 重启）。
+                  </p>
                 </template>
               </el-alert>
               <el-alert v-if="migration.status === 'failed'" type="error" :closable="false" show-icon
@@ -558,6 +645,44 @@
           </div>
         </el-card>
       </el-tab-pane>
+
+      <!-- 操作审计日志（仅超管，U16） -->
+      <el-tab-pane v-if="authStore.isAdmin" label="操作审计" name="audit">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span>操作审计日志</span>
+              <div class="header-actions">
+                <el-input v-model="auditActionFilter" placeholder="动作过滤（如 ARRANGE，留空为全部）" clearable
+                          size="small" style="width:240px" @keyup.enter="fetchAuditLogs" @clear="fetchAuditLogs" />
+                <el-select v-model="auditLimit" size="small" style="width:130px" @change="fetchAuditLogs">
+                  <el-option v-for="n in [50,100,200,500]" :key="n" :label="`最近 ${n} 条`" :value="n" />
+                </el-select>
+                <el-button :icon="Download" @click="exportAuditCsv">导出 CSV</el-button>
+                <el-button :icon="Refresh" @click="fetchAuditLogs" :loading="auditLoading">刷新</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-loading="auditLoading">
+            <el-alert v-if="!auditLoading && !auditRecords.length" type="info" :closable="false" title="暂无审计记录" />
+            <el-table v-else :data="auditRecords" stripe size="small" border>
+              <el-table-column prop="createdAt" label="时间" width="175" />
+              <el-table-column prop="operator" label="操作人" width="120" />
+              <el-table-column label="动作" width="150">
+                <template #default="{row}">
+                  <el-tag size="small" :type="auditActionTag(row.action)">{{ row.action || '—' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="targetType" label="对象类型" width="130" />
+              <el-table-column prop="targetId" label="对象ID" width="100" align="center" />
+              <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
+            </el-table>
+            <div v-if="auditRecords.length" style="margin-top:10px;color:#909399;font-size:12px">
+              共返回 {{ auditRecords.length }} 条（查询上限 {{ auditLimit }}）
+            </div>
+          </div>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- User Dialog -->
@@ -609,11 +734,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, DocumentCopy, Plus, Delete, Refresh } from '@element-plus/icons-vue'
+import { Upload, DocumentCopy, Plus, Delete, Refresh, Download } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -674,6 +800,9 @@ const numberPreview = ref('')
 
 // 编排规则
 const arrangeRuleForm = reactive({
+  // L1「自定义规则」款型（class/snake/snakeSeed）：此处仅做整份回写时的保留，避免保存其它规则时被清掉；
+  // 款型的选择入口在「道次编排」页（选择后自动持久化到本配置）
+  l1Rule: 'class',
   soft: {
     prefer_diff_heat: true,
     prefer_diff_lane: true,
@@ -701,7 +830,47 @@ const testing = ref(false)
 const testResult = reactive({ ok: false, message: '' })
 const startingMigration = ref(false)
 const migrating = ref(false)
-const migration = reactive({ status: '', progress: 0, step: '', message: '', logs: [] })
+const migration = reactive({
+  status: '', progress: 0, step: '', message: '', logs: [],
+  rowsDone: 0, rowsTotal: 0, elapsedMs: 0, totalTables: 0
+})
+const rowProgressPercent = computed(() => {
+  if (!migration.rowsTotal) return 0
+  return Math.round(100 * (migration.rowsDone || 0) / migration.rowsTotal)
+})
+
+/** 毫秒 → mm:ss（超过一小时则 h:mm:ss） */
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor((ms || 0) / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
+}
+
+/** 按「已迁移行/总行数」与已用时线性外推剩余时间；样本不足时返回 null */
+const etaMs = computed(() => {
+  const done = migration.rowsDone || 0
+  const total = migration.rowsTotal || 0
+  const elapsed = migration.elapsedMs || 0
+  if (!done || !total || done >= total || elapsed <= 0) return null
+  return Math.round(elapsed * (total - done) / done)
+})
+const etaText = computed(() => {
+  if (migration.status === 'completed') return '已完成'
+  if (migration.status === 'failed') return '—'
+  const ms = etaMs.value
+  return ms == null ? '估算中…' : formatDuration(ms)
+})
+
+/** 迁移日志自动滚到最新一行，省去长迁移里用户手动翻到底 */
+const migrationLogEl = ref(null)
+watch(() => migration.logs.length, async () => {
+  await nextTick()
+  const el = migrationLogEl.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 let progressTimer = null
 
 async function fetchDbMigrationInfo() {
@@ -735,6 +904,10 @@ async function startMigration() {
     migrating.value = true
     migration.status = 'running'
     migration.progress = 0
+    migration.rowsDone = 0
+    migration.rowsTotal = 0
+    migration.elapsedMs = 0
+    migration.totalTables = 0
     migration.logs = []
     migration.message = ''
     pollProgress(res.taskId)
@@ -751,6 +924,10 @@ function pollProgress(taskId) {
       migration.step = res.step || ''
       migration.message = res.message || ''
       migration.logs = res.logs || []
+      migration.rowsDone = res.rowsDone || 0
+      migration.rowsTotal = res.rowsTotal || 0
+      migration.elapsedMs = res.elapsedMs || 0
+      migration.totalTables = res.totalTables || 0
       if (res.status === 'completed' || res.status === 'failed' || res.status === 'not_found') {
         clearInterval(progressTimer)
         progressTimer = null
@@ -794,8 +971,11 @@ async function deleteBackup(row) {
   } catch (e) { if (e !== 'cancel') console.error(e) }
 }
 
-function downloadBackup(row) {
-  window.open(apiBase() + '/backup/download/' + encodeURIComponent(row.fileName), '_blank')
+async function downloadBackup(row) {
+  try {
+    await downloadApi('/backup/download/' + encodeURIComponent(row.fileName), row.fileName || 'backup.zip')
+    ElMessage.success('备份下载中')
+  } catch (e) { ElMessage.error(e?.message || '备份下载失败，请重新登录后再试') }
 }
 
 // ============ 健康检查 ============
@@ -809,6 +989,51 @@ async function fetchHealth() {
     health.value = res || {}
   } catch (e) { console.error(e) }
   finally { healthLoading.value = false }
+}
+
+// ============ 操作审计日志（U16） ============
+const auditRecords = ref([])
+const auditLoading = ref(false)
+const auditActionFilter = ref('')
+const auditLimit = ref(100)
+
+async function fetchAuditLogs() {
+  auditLoading.value = true
+  try {
+    const res = await request.get('/audit/logs', {
+      params: { action: auditActionFilter.value || undefined, limit: auditLimit.value }
+    })
+    auditRecords.value = (res && Array.isArray(res.records)) ? res.records : (Array.isArray(res) ? res : [])
+  } catch (e) {
+    console.error(e)
+    ElMessage.error('加载审计日志失败')
+  } finally {
+    auditLoading.value = false
+  }
+}
+
+function auditActionTag(action) {
+  if (!action) return 'info'
+  if (action.includes('IMPORT') || action.includes('EXPORT')) return 'warning'
+  if (action.includes('MODIFY') || action.includes('LOCK')) return 'danger'
+  if (action.includes('ARRANGE')) return 'primary'
+  return 'success'
+}
+
+function exportAuditCsv() {
+  if (!auditRecords.value.length) { ElMessage.warning('暂无可导出的记录'); return }
+  const header = ['时间', '操作人', '动作', '对象类型', '对象ID', '详情']
+  const rows = auditRecords.value.map(r => [r.createdAt, r.operator, r.action, r.targetType, r.targetId, r.detail])
+  const csv = [header, ...rows]
+    .map(cols => cols.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n')
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `audit_logs_${Date.now()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 const gradeList = ref([])
@@ -870,6 +1095,18 @@ const userForm = reactive({ username:'', realName:'', role:'TEACHER', password:'
 const gradeForm = reactive({ name:'', sortOrder:0 })
 
 const userImportUrl = apiBase() + '/system/users/import'
+
+// 批量导入中心：四类名单导入入口（学生 / 班主任 / 体育老师 / 裁判）
+const importEntries = [
+  { key: 'students', name: '学生名单', desc: '批量导入学生花名册，自动生成运动员并分配号码簿（支持列映射预览）', action: '去导入学生名单', hash: '#/teacher/athletes' },
+  { key: 'ct', name: '班主任名单', desc: '批量导入班主任账号（用户导入，角色选「班主任」）', action: '去导入用户', tab: 'users' },
+  { key: 'pe', name: '体育老师', desc: '批量导入体育老师账号（用户导入，角色选「体育老师」）', action: '去导入用户', tab: 'users' },
+  { key: 'ref', name: '裁判', desc: '批量导入裁判花名册（专长项目支持 [a,b，c] 逗号列表语法）', action: '去导入裁判', hash: '#/teacher/referees' }
+]
+const gotoImport = (row) => {
+  if (row.hash) { window.location.hash = row.hash; return }
+  if (row.tab) { activeTab.value = row.tab }
+}
 const uploadHeaders = computed(() => ({
   Authorization: 'Bearer ' + authStore.token
 }))
@@ -1106,13 +1343,78 @@ async function saveNumberRule() {
   finally { loading.value = false }
 }
 
+// ---- 号码簿 · 按名单顺序重排 ----
+const reassignGrade = ref('')
+const reassigning = ref(false)
+const generating = ref(false)
+const reassignGradeOptions = computed(() => {
+  const s = new Set()
+  ;(numberRuleForm.gradeMapping || []).forEach(g => { if (g && g.name && g.name.trim()) s.add(g.name.trim()) })
+  return [...s]
+})
+async function doReassignNumberBook() {
+  try {
+    await ElMessageBox.confirm(
+      '将按「年级顺序 → 班级顺序 → 名单顺序」为范围内运动员重新生成号码簿并覆盖现有号码。是否继续？',
+      '号码簿重排确认', { confirmButtonText: '开始重排', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  reassigning.value = true
+  try {
+    const res = await request.post('/system/number-rule/reassign', { grade: reassignGrade.value || '' })
+    ElMessage.success(`号码簿重排完成：${res?.totalClasses ?? 0} 个班级、更新 ${res?.updated ?? 0} 人`)
+    if (res?.sample && res.sample.length) {
+      console.info('号码簿重排样例', res.sample)
+    }
+  } catch (e) { console.error(e) }
+  finally { reassigning.value = false }
+}
+
+// ---- 号码簿 · 按名单顺序生成（仅补全空缺，不覆盖已有） ----
+async function doGenerateNumberBook() {
+  generating.value = true
+  try {
+    const res = await request.post('/system/number-rule/generate', { grade: reassignGrade.value || '' })
+    const skipped = res?.skipped ?? 0
+    ElMessage.success(`号码簿生成完成：${res?.totalClasses ?? 0} 个班级、新增 ${res?.generated ?? 0} 人（原有 ${res?.already ?? 0} 人保留）`
+      + (skipped > 0 ? `，${skipped} 人因号码被占用而跳过` : ''))
+    if (res?.sample && res.sample.length) {
+      console.info('号码簿生成样例', res.sample)
+    }
+  } catch (e) { console.error(e); ElMessage.error('号码簿生成失败: ' + (e.response?.data?.message || e.message || '')) }
+  finally { generating.value = false }
+}
+
 // ---- 编排规则 ----
+// 裁判编排开关（独立持久化，切换即保存）
+const refereeArrangeEnabled = ref(true)
+const refereeArrangeSaving = ref(false)
+async function fetchRefereeArrangeEnabled() {
+  try {
+    const res = await request.get('/arrange/referee-arrange-enabled')
+    refereeArrangeEnabled.value = res?.enabled !== false
+  } catch (e) { /* 默认开启 */ }
+}
+async function saveRefereeArrange(val) {
+  refereeArrangeSaving.value = true
+  try {
+    await request.put('/arrange/referee-arrange-enabled', { enabled: !!val })
+    ElMessage.success(val ? '已启用裁判编排' : '已关闭裁判编排（编排不分配裁判）')
+  } catch (e) {
+    refereeArrangeEnabled.value = !val // 回滚
+    ElMessage.error(e.response?.data?.message || e.message || '保存失败')
+  } finally {
+    refereeArrangeSaving.value = false
+  }
+}
+
 async function fetchArrangeRule() {
+  await fetchRefereeArrangeEnabled()
   try {
     const res = await request.get('/system/arrange-rule')
     if (res) {
       if (res.soft_constraints) Object.assign(arrangeRuleForm.soft, res.soft_constraints)
       if (res.algorithm_params) Object.assign(arrangeRuleForm.params, res.algorithm_params)
+      if (res.l1_rule) arrangeRuleForm.l1Rule = String(res.l1_rule)
     }
   } catch (e) { console.error(e) }
 }
@@ -1120,6 +1422,7 @@ async function saveArrangeRule() {
   loading.value = true
   try {
     await request.put('/system/arrange-rule', {
+      l1_rule: arrangeRuleForm.l1Rule,
       soft_constraints: { ...arrangeRuleForm.soft },
       algorithm_params: { ...arrangeRuleForm.params }
     })
@@ -1253,6 +1556,7 @@ onMounted(() => {
     fetchDbMigrationInfo()
     fetchBackupList()
     fetchHealth()
+    fetchAuditLogs()
   }
 })
 
@@ -1282,6 +1586,17 @@ onBeforeUnmount(() => {
 .target-name { font-size:16px; font-weight:700; color:#303133; margin-bottom:8px; }
 .target-desc { font-size:12px; color:#909399; line-height:1.6; }
 .migration-log { max-height:260px; overflow-y:auto; background:#0f172a; color:#a5f3fc; border-radius:8px; padding:12px 14px; font-family:Consolas,Monaco,monospace; font-size:12px; margin-top:12px; }
+/* 迁移执行中：进度表头 + 四项统计卡 */
+.mg-head { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+.mg-pct { font-size:26px; font-weight:600; color:#303133; line-height:1; }
+.mg-pct.is-done { color:#67c23a; }
+.mg-pct.is-fail { color:#f56c6c; }
+.mg-step { flex:1; color:#606266; font-size:13px; }
+.mg-stats { display:flex; flex-wrap:wrap; gap:10px; margin:14px 0 0; }
+.mg-stat { flex:1 1 150px; min-width:150px; background:#f5f7fa; border:1px solid #ebeef5; border-radius:8px; padding:10px 12px; }
+.mg-k { display:block; color:#909399; font-size:12px; margin-bottom:6px; }
+.mg-v { display:block; color:#303133; font-size:17px; font-weight:600; line-height:1.2; }
+.mg-v i { display:block; font-style:normal; font-size:11px; font-weight:400; color:#909399; margin-top:4px; }
 .log-line { line-height:1.7; white-space:pre-wrap; word-break:break-all; }
 @media(max-width:768px) {
   .settings-page { height:auto; overflow:visible; }

@@ -34,6 +34,7 @@
       <div v-for="heat in heats" :key="heat.heat || heat.heatNo" class="heat-block">
         <div class="heat-title">
           <span class="heat-badge">第 {{ heat.heat || heat.heatNo }} 组</span>
+          <span v-if="lottery" class="draw-badge" title="本组道次为随机抽签分配">🎲 抽签</span>
         </div>
         <div class="lane-grid">
           <div
@@ -41,8 +42,10 @@
             :key="lane.lane"
             class="lane-cell"
             :class="{
-              'lane-empty': !lane.athleteId && !lane.athlete,
-              'lane-occupied': lane.athleteId || lane.athlete
+              'lane-empty': !lane.athleteId && !lane.athlete && !lane.reserved,
+              'lane-occupied': lane.athleteId || lane.athlete,
+              'lane-locked': lane.locked,
+              'lane-reserved': lane.reserved
             }"
           >
             <div class="lane-number">{{ lane.lane }}</div>
@@ -57,8 +60,43 @@
                 {{ lane.className || (lane.athlete && lane.athlete.className) || '-' }}
               </div>
             </div>
+            <div v-else-if="lane.reserved" class="lane-content">
+              <div class="lane-athlete">
+                <span class="reserved-text">预留空位</span>
+              </div>
+              <div class="lane-class" v-if="lane.scheduledTime">⏱ {{ prettyTime(lane.scheduledTime) }}</div>
+            </div>
             <div v-else class="lane-empty-text">空</div>
+            <!-- U12/B18：锁定人工调整项 —— 锁定后自动重排会跳过它，不再覆盖 -->
+            <el-tooltip
+              v-if="lockable && lane.arrangementId"
+              :content="lane.locked
+                ? '已锁定：自动重排将跳过此项（点击解锁）'
+                : '点击锁定：防止后续自动重排覆盖人工调整'"
+              placement="top"
+            >
+              <button
+                type="button"
+                class="lane-lock"
+                :class="{ 'is-locked': lane.locked }"
+                @click.stop="emit('toggle-lock', lane)"
+              >
+                {{ lane.locked ? '🔒' : '🔓' }}
+              </button>
+            </el-tooltip>
           </div>
+        </div>
+
+        <!-- 裁判分配（智能编排产出，可在此查看本组次裁判） -->
+        <div v-if="heat.referees && heat.referees.length" class="heat-referees">
+          <span class="ref-label">
+            <el-icon><Medal /></el-icon> 裁判 ({{ heat.refereeCount }})
+          </span>
+          <span v-for="r in heat.referees" :key="r.id" class="ref-tag">{{ r.name }}</span>
+        </div>
+        <div v-else-if="showRefereeSlot" class="heat-referees heat-referees-empty">
+          <span class="ref-label"><el-icon><Medal /></el-icon> 裁判</span>
+          <span class="ref-none">本组次未安排裁判</span>
         </div>
       </div>
     </div>
@@ -69,6 +107,8 @@
 </template>
 
 <script setup>
+import { Medal } from '@element-plus/icons-vue'
+
 defineProps({
   heats: {
     type: Array,
@@ -77,8 +117,32 @@ defineProps({
   statistics: {
     type: Object,
     default: null
+  },
+  // U12/B18：是否显示「锁定」开关（仅编排结果页开启，预览/只读场景关闭）
+  lockable: {
+    type: Boolean,
+    default: false
+  },
+  // 是否展示「未安排裁判」占位（仅当项目设置了组次裁判数量且确实需裁判时开启）
+  showRefereeSlot: {
+    type: Boolean,
+    default: false
+  },
+  // 抽签（随机道次）：开启后组内道次为随机分配，组标题显示抽签徽标
+  lottery: {
+    type: Boolean,
+    default: false
   }
 })
+
+const emit = defineEmits(['toggle-lock'])
+
+// 预留空位时间展示：2026-09-16T09:30 → 09-16 09:30
+function prettyTime(t) {
+  if (!t) return ''
+  const s = String(t).replace('T', ' ')
+  return s.length >= 16 ? s.slice(5, 16) : s
+}
 </script>
 
 <style scoped>
@@ -149,7 +213,10 @@ defineProps({
 .heat-title {
   background: linear-gradient(135deg, #409eff 0%, #337ecc 100%);
   padding: 10px 16px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
 .heat-badge {
@@ -157,6 +224,16 @@ defineProps({
   font-weight: 700;
   font-size: 15px;
   letter-spacing: 2px;
+}
+
+.draw-badge {
+  font-size: 11px;
+  color: #7a4a00;
+  background: #ffe9b3;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 /* 跑道网格 */
@@ -240,10 +317,100 @@ defineProps({
   color: #909399;
 }
 
+/* 预留模拟空位（项目级编排） */
+.lane-reserved {
+  background: linear-gradient(135deg, #fffaf0 0%, #fff4e0 100%);
+  border: 1px dashed #f0c37a;
+}
+.lane-reserved .lane-number {
+  background: linear-gradient(135deg, #e6a23c 0%, #f0b45f 100%);
+}
+.reserved-text {
+  font-weight: 600;
+  font-size: 13px;
+  color: #b8860b;
+}
+
 .lane-empty-text {
   flex: 1;
   text-align: center;
   color: #c0c4cc;
   font-size: 13px;
+}
+
+/* U12/B18 锁定开关 */
+.lane-locked {
+  background: linear-gradient(135deg, #fff8e6 0%, #fdf1d6 100%);
+  border-color: #f0d39a;
+}
+
+.lane-lock {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  color: #909399;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: all 0.2s;
+}
+
+.lane-lock:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.2);
+}
+
+.lane-lock.is-locked {
+  border-color: #e6a23c;
+  background: #fdf6ec;
+}
+
+/* 裁判分配 footer */
+.heat-referees {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e6f4ff 100%);
+  border-top: 1px dashed #b6dcff;
+}
+
+.heat-referees-empty {
+  background: #fafafa;
+  border-top: 1px dashed #e4e7ed;
+}
+
+.ref-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d6fc4;
+  margin-right: 2px;
+}
+
+.heat-referees-empty .ref-label {
+  color: #909399;
+}
+
+.ref-tag {
+  font-size: 12px;
+  color: #1d6fc4;
+  background: #fff;
+  border: 1px solid #b6dcff;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-weight: 500;
+}
+
+.ref-none {
+  font-size: 12px;
+  color: #c0c4cc;
 }
 </style>

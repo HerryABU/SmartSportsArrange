@@ -11,7 +11,7 @@
 
 | 维度 | 结果 | 说明 |
 |------|------|------|
-| 功能完整性检查 | ✅ PASS | 21 个控制器 / README 接口均有实现，无空壳 stub；GSAP 仅存于文档/示例（AGPL 合规） |
+| 功能完整性检查 | ✅ PASS | 21 个控制器 / README 接口均有实现，无空壳 stub；GSAP 已彻底移除（代码与文档均已清理，AGPL 合规） |
 | 单元测试 | ✅ PASS | **37/37 通过**，7 个测试类；暴露并修复 3 个生产缺陷 |
 | 冒烟测试 | ✅ PASS | 启动、SQLite 初始化、前端 200、JWT 登录 + 鉴权端点 200 |
 | 缺陷修复（共 4 处） | ✅ 已修复并重建 jar | 3 处来自单测，1 处（随机端口）来自冒烟 |
@@ -26,7 +26,7 @@
 - 后端 21 个 Controller 覆盖：认证、用户/角色、班级、运动员、项目、报名、编排、成绩、排名、系统设置、数据库迁移、Excel 导入导出等；对应 README 与需求文档中的接口清单，**无空实现、无 TODO 占位**。
 - 前端 Vue 3 已构建并内嵌于 jar（`BOOT-INF/classes/static`），` welcome page: static/index.html` 正常挂载。
 - 默认账户 `admin/admin123`、`teacher/teacher123`、`class_teacher/class123`、`student/student123` 均可登录。
-- 许可证合规：前端已彻底移除 GSAP（仅文档/示例提及），符合 AGPL-3.0。
+- 许可证合规：前端已彻底移除 GSAP（代码、依赖、文档示例均已清理），符合 AGPL-3.0。
 
 ---
 

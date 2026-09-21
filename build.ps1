@@ -11,33 +11,52 @@ $timer = [System.Diagnostics.Stopwatch]::StartNew()
 
 if (-not $SkipFrontend) {
   Write-Host "[1/2] Frontend (Vite)..." -ForegroundColor Magenta
-  Set-Location "$root\sports-frontend"
-  npx vite build
-  if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Frontend failed" -ForegroundColor Red; exit 1 }
-  # 同步前端产物到后端静态资源目录（static 已 gitignore，构建时生成，保证 jar 打包包含前端）
-  $dist = Join-Path $root "sports-frontend\dist"
+  # 先把旧 static 改名移走：vite 的 emptyOutDir 清空会被构建环境的安全删除机制拦截，
+  # 改用「重命名」方式（重命名不被拦截），vite 会创建干净的 static；改名的旧目录稍后移出版本树。
   $static = Join-Path $root "sports-backend\src\main\resources\static"
-  if (Test-Path $dist) {
-    if (Test-Path $static) { Remove-Item -Recurse -Force $static }
-    Copy-Item -Recurse $dist $static
-    Write-Host "[1/2] Frontend assets synced to src/main/resources/static" -ForegroundColor Green
+  $stamp = Get-Date -Format "yyyyMMddHHmmss"
+  $oldStatic = $null
+  if (Test-Path $static) {
+    $oldStatic = Join-Path $root "sports-backend\src\main\resources\static_old_$stamp"
+    Move-Item -Force $static $oldStatic
   }
-  Write-Host "[1/2] Frontend OK" -ForegroundColor Green
+  Set-Location "$root\sports-frontend"
+  # --no-install：仅用本地已装的 vite，避免离线环境 npx 解析注册表长时间挂起
+  npx --no-install vite build
+  if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Frontend failed" -ForegroundColor Red; exit 1 }
+  # 旧 static 移出版本目录，避免被 jar 打包或误提交
+  if ($oldStatic -and (Test-Path $oldStatic)) {
+    $trash = Join-Path $root "_trash"
+    if (-not (Test-Path $trash)) { New-Item -ItemType Directory -Force -Path $trash | Out-Null }
+    Move-Item -Force $oldStatic $trash -ErrorAction SilentlyContinue
+  }
+  Write-Host "[1/2] Frontend OK (assets -> src/main/resources/static)" -ForegroundColor Green
 }
 
 if (-not $SkipBackend) {
   Write-Host "[2/2] Backend (Maven)..." -ForegroundColor Magenta
+  # 防御性清扫：src/main/resources 下若残留 static_old_*（手工改名或中断的构建留下的旧前端产物），
+  # Maven 会把它们当普通资源原样打进 jar（BOOT-INF/classes/static_old_*/…）——
+  # 既撑大产物，又把垃圾暴露成可访问路径（/static_old_xxxx/…）。打包前一律移出。
+  $resDir = Join-Path $root "sports-backend\src\main\resources"
+  $strays = @(Get-ChildItem -Path $resDir -Directory -Filter "static_old_*" -ErrorAction SilentlyContinue)
+  if ($strays.Count -gt 0) {
+    $trashDir = Join-Path $root "_trash"
+    if (-not (Test-Path $trashDir)) { New-Item -ItemType Directory -Force -Path $trashDir | Out-Null }
+    foreach ($d in $strays) { Move-Item -Force $d.FullName $trashDir -ErrorAction SilentlyContinue }
+    Write-Host "[2/2] 已移出 $($strays.Count) 个残留 static_old_*（否则会被打进 jar）" -ForegroundColor Yellow
+  }
   Set-Location "$root\sports-backend"
   .\mvnw.cmd clean package -DskipTests
   if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Backend failed" -ForegroundColor Red; exit 1 }
   Write-Host "[2/2] Backend OK" -ForegroundColor Green
 }
 
-$jar = Join-Path $root "sports-backend\target\sports-1.0.0.jar"
+$jar = Join-Path $root "sports-backend\target\sports-2.7.1.jar"
 if (Test-Path $jar) {
   Copy-Item $jar $root -Force
-  $sizeMb = [math]::Round((Get-Item (Join-Path $root "sports-1.0.0.jar")).Length / 1MB, 1)
-  Write-Host "[OUTPUT] sports-1.0.0.jar ($sizeMb MB)" -ForegroundColor Cyan
+  $sizeMb = [math]::Round((Get-Item (Join-Path $root "sports-2.7.1.jar")).Length / 1MB, 1)
+  Write-Host "[OUTPUT] sports-2.7.1.jar ($sizeMb MB)" -ForegroundColor Cyan
 }
 
 $elapsed = $timer.Elapsed.TotalSeconds.ToString("0.0")

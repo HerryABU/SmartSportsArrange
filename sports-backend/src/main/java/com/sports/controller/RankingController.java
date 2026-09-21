@@ -30,6 +30,19 @@ public class RankingController {
         return ApiResponse.success(rankingService.getTeamScores(grade));
     }
 
+    /** 合分排行总览（班级×男女×项目，含/去除入场式；gender=男/女 出单性别榜） */
+    @GetMapping("/scoreboard")
+    public ApiResponse<?> getScoreBoard(
+            @RequestParam(required = false) String grade,
+            @RequestParam(defaultValue = "false") boolean includeParade,
+            @RequestParam(defaultValue = "0") int topN,
+            @RequestParam(defaultValue = "false") boolean byGrade,
+            @RequestParam(required = false) String gender) {
+        log.info("查询合分排行: grade={}, includeParade={}, topN={}, byGrade={}, gender={}",
+                grade, includeParade, topN, byGrade, gender);
+        return ApiResponse.success(rankingService.getScoreBoard(grade, includeParade, topN, byGrade, gender));
+    }
+
     @GetMapping("/team-score/breakdown")
     public ApiResponse<?> getTeamBreakdown(
             @RequestParam String className,
@@ -92,6 +105,9 @@ public class RankingController {
         List<Map<String, Object>> rows;
         if (data instanceof List) {
             rows = (List<Map<String, Object>>) data;
+        } else if (data instanceof Map && ((Map<?, ?>) data).get("records") instanceof List) {
+            // 兼容 {records:[...], tieRuleNote:...} 等分页/带说明的包装结构
+            rows = (List<Map<String, Object>>) ((Map<?, ?>) data).get("records");
         } else {
             rows = List.of();
         }

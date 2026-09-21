@@ -34,6 +34,14 @@ public class EventSchedule {
     @Column(nullable = false)
     private Integer day;
 
+    /** 具体日期 yyyy-MM-dd（由 meet_schedule 的 startDate 推算） */
+    @Column(length = 10)
+    private String scheduleDate;
+
+    /** 年级（赛程按年级顺序展开；不分年级时为 null） */
+    @Column(length = 20)
+    private String grade;
+
     /** 时段，如 "上午" / "下午" / "晚上" */
     @Column(length = 20)
     private String timeSlot;
@@ -57,6 +65,15 @@ public class EventSchedule {
     /** 预计用时（分钟） */
     @Column
     private Integer durationMinutes;
+
+    /**
+     * 轮次：preliminary=预赛 / final=决赛。
+     * needHeats 的径赛项目第一次编排排的是预赛条目，录入预赛成绩并计算晋级后
+     * 由二次编排追加独立决赛条目（day/timeSlot 同预赛、startTime 顺延）；
+     * 其余项目单轮 final。旧数据为 null，展示时按 final 处理。
+     */
+    @Column(length = 12)
+    private String round;
 
     @Column(columnDefinition = "TEXT")
     private String remark;

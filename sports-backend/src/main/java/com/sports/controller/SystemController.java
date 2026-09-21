@@ -77,6 +77,26 @@ public class SystemController {
         return ApiResponse.success(Map.of("number", number));
     }
 
+    /** 号码簿 · 按名单顺序重排（年级顺序 → 班级顺序 → 名单顺序，班级内序号从 1 重编） */
+    @PostMapping("/number-rule/reassign")
+    public ApiResponse<?> reassignNumbers(@RequestBody(required = false) Map<String, Object> body) {
+        String grade = body != null && body.get("grade") != null
+                ? body.get("grade").toString().trim() : "";
+        log.info("号码簿按名单顺序重排: grade={}", grade);
+        return ApiResponse.success("号码簿重排完成",
+                numberRuleService.reassignNumbers(grade.isBlank() ? null : grade));
+    }
+
+    /** 号码簿 · 按名单顺序生成（仅补全尚无号码的运动员，不覆盖已有号码） */
+    @PostMapping("/number-rule/generate")
+    public ApiResponse<?> generateNumbers(@RequestBody(required = false) Map<String, Object> body) {
+        String grade = body != null && body.get("grade") != null
+                ? body.get("grade").toString().trim() : "";
+        log.info("号码簿按名单顺序生成(补全): grade={}", grade);
+        return ApiResponse.success("号码簿生成完成",
+                numberRuleService.generateNumbers(grade.isBlank() ? null : grade));
+    }
+
     // ---- 编排规则（完全自定义） ----
 
     @GetMapping("/arrange-rule")
@@ -88,6 +108,25 @@ public class SystemController {
     public ApiResponse<?> saveArrangeRule(@RequestBody Map<String, Object> body) {
         log.info("保存编排规则: {}", body);
         return ApiResponse.success("编排规则保存成功", systemService.saveArrangeRule(body));
+    }
+
+    // ---- 运动会日程配置（日期/时段/年级顺序/串行并行，全部可配置） ----
+
+    @GetMapping("/meet-schedule")
+    public ApiResponse<?> getMeetSchedule() {
+        return ApiResponse.success(systemService.getMeetSchedule());
+    }
+
+    @PutMapping("/meet-schedule")
+    public ApiResponse<?> saveMeetSchedule(@RequestBody Map<String, Object> body) {
+        log.info("保存运动会日程配置: {}", body);
+        return ApiResponse.success("运动会日程配置保存成功", systemService.saveMeetSchedule(body));
+    }
+
+    /** 年级出场顺序（按 sortOrder 升序，管理员可调） */
+    @GetMapping("/grade-order")
+    public ApiResponse<?> getGradeOrder() {
+        return ApiResponse.success(systemService.getGradeOrder());
     }
 
     // ---- 积分规则（完全自定义） ----

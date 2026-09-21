@@ -1,5 +1,18 @@
 <template>
   <div class="reports-page" v-loading="loading">
+    <!-- 页面头（工作流 ③ 统计） -->
+    <div class="pg-head rise-in">
+      <div class="pg-titles">
+        <span class="pg-ico">📋</span>
+        <div>
+          <h3 class="pg-title">秩序册 · 成绩册 · 统计报表</h3>
+          <p class="pg-desc">一键生成并导出秩序册（项目按径赛/田赛分组 + 班级花名册）与成绩册（分项目排名 + 破纪录汇总），另提供报名与成绩统计看板</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#f5f3ff;color:#7c3aed">③ 统计排名</span>
+      </div>
+    </div>
     <el-tabs v-model="activeTab">
       <!-- Order Book -->
       <el-tab-pane label="秩序册" name="orderBook">
@@ -17,7 +30,11 @@
                 </el-button>
                 <el-button type="success" :disabled="!orderBookContent" @click="exportOrderBook">
                   <el-icon><Download /></el-icon>
-                  导出PDF
+                  导出Excel
+                </el-button>
+                <el-button type="warning" :disabled="!orderBookContent" @click="exportOrderBookDocx">
+                  <el-icon><Document /></el-icon>
+                  下载Word(.docx)
                 </el-button>
               </div>
             </div>
@@ -130,12 +147,15 @@
                   <el-table-column prop="count" label="报名人数" />
                   <el-table-column prop="capacity" label="满额率">
                     <template #default="{ row }">
-                      <el-progress
-                        :percentage="row.capacity"
-                        :stroke-width="16"
-                        :text-inside="true"
-                        :status="row.capacity >= 100 ? 'success' : undefined"
-                      />
+                      <template v-if="row.capacity !== null">
+                        <el-progress
+                          :percentage="row.capacity"
+                          :stroke-width="16"
+                          :text-inside="true"
+                          :status="row.capacity >= 100 ? 'success' : undefined"
+                        />
+                      </template>
+                      <el-tag v-else size="small" type="info" effect="plain">不限</el-tag>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -144,22 +164,89 @@
           </el-row>
         </el-card>
       </el-tab-pane>
+
+      <!-- U10/B15：数据一致性校验（报名 → 编排 → 成绩 → 总分 跨环节核对） -->
+      <el-tab-pane label="数据校验" name="consistency">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span>数据一致性校验</span>
+              <div>
+                <el-button type="primary" :loading="checkLoading" @click="loadConsistency">
+                  <el-icon><Search /></el-icon>
+                  生成校验报告
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <template v-if="checkReport">
+            <el-alert
+              :type="checkReport.ok ? 'success' : 'warning'"
+              show-icon
+              :closable="false"
+              :title="consistencyAlertText"
+              style="margin-bottom: 14px" />
+
+            <el-row :gutter="16" class="stat-cards">
+              <el-col :span="6" v-for="s in checkSummaryCards" :key="s.label">
+                <el-card shadow="hover" class="stat-card-item">
+                  <div class="stat-value">{{ s.value }}</div>
+                  <div class="stat-label">{{ s.label }}</div>
+                </el-card>
+              </el-col>
+            </el-row>
+
+            <el-card shadow="never" style="margin-top: 16px">
+              <template #header><span>差异清单</span></template>
+              <el-table v-if="(checkReport.discrepancies || []).length"
+                :data="checkReport.discrepancies" border stripe size="small" max-height="360">
+                <el-table-column type="index" label="#" width="46" align="center" />
+                <el-table-column prop="severity" label="级别" width="72" align="center">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.severity === 'P0' ? 'danger' : 'warning'">{{ row.severity }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="type" label="差异类型" min-width="210" />
+                <el-table-column prop="scope" label="范围" min-width="120" />
+                <el-table-column prop="message" label="说明" min-width="320" show-overflow-tooltip />
+              </el-table>
+              <el-empty v-else description="未发现差异" :image-size="60" />
+            </el-card>
+
+            <el-card shadow="never" style="margin-top: 16px">
+              <template #header><span>分项目核对明细</span></template>
+              <el-table :data="checkReport.perEvent || []" border stripe size="small" max-height="360">
+                <el-table-column prop="eventName" label="项目" min-width="150" />
+                <el-table-column prop="registrationApproved" label="报名审核" width="106" align="center" />
+                <el-table-column prop="arrangedAthletes" label="编排人数" width="106" align="center" />
+                <el-table-column prop="resultCount" label="成绩条数" width="106" align="center" />
+              </el-table>
+            </el-card>
+          </template>
+
+          <el-empty v-else
+            description="点击「生成校验报告」，核对 报名 → 编排 → 成绩 → 总分 各环节数据是否对得上"
+            :image-size="100" />
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 const loading = ref(false)
 const activeTab = ref('orderBook')
 
-const gradeOptions = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '初一', '初二', '初三', '高一', '高二', '高三']
+const gradeOptions = ref([])
 
 const obFilter = reactive({ grade: '' })
 const rbFilter = reactive({ grade: '', eventType: '' })
@@ -177,35 +264,74 @@ const statCards = ref([
 const gradeStats = ref([])
 const eventStats = ref([])
 
+// ==================== U10/B15：数据一致性校验 ====================
+const checkReport = ref(null)
+const checkLoading = ref(false)
+
+const checkSummaryCards = computed(() => {
+  const s = (checkReport.value && checkReport.value.summary) || {}
+  return [
+    { label: '项目数', value: s.eventCount ?? 0 },
+    { label: '报名审核（条）', value: s.registrationApproved ?? 0 },
+    { label: '已编排（人）', value: s.arrangedAthleteCount ?? 0 },
+    { label: '差异处数', value: s.discrepancyCount ?? 0 }
+  ]
+})
+
+const consistencyAlertText = computed(() => {
+  if (!checkReport.value) return ''
+  if (checkReport.value.ok) return '各环节数据一致，未发现差异'
+  const n = (checkReport.value.discrepancies || []).length
+  return `发现 ${n} 处差异，请逐条核对后再出册`
+})
+
+async function loadConsistency() {
+  checkLoading.value = true
+  try {
+    const res = await request.get('/validate/report')
+    checkReport.value = res || null
+    const n = ((res && res.discrepancies) || []).length
+    if (n) ElMessage.warning(`校验完成：发现 ${n} 处差异`)
+    else ElMessage.success('校验完成：各环节数据一致')
+  } catch (e) {
+    console.error(e)
+  } finally {
+    checkLoading.value = false
+  }
+}
+
 async function generateOrderBook() {
   loading.value = true
   try {
-    const params = {}
-    if (obFilter.grade) params.grade = obFilter.grade
-    const res = await request.post('/statistics/order-book', params)
-    // response format: { eventResults, classes, totalEvents } or similar
+    const res = await request.post('/statistics/order-book', { grade: obFilter.grade || null })
     const data = res || {}
-    orderBookContent.value = [
-      { title: '径赛项目', columns: [
-        { prop: 'name', label: '项目名称' },
-        { prop: 'code', label: '编码' },
-        { prop: 'genderLimit', label: '性别' },
-        { prop: 'arrangedCount', label: '已编排人数' }
-      ], items: (data.events?.径赛 || []) },
-      { title: '田赛项目', columns: [
-        { prop: 'name', label: '项目名称' },
-        { prop: 'code', label: '编码' },
-        { prop: 'genderLimit', label: '性别' },
-        { prop: 'arrangedCount', label: '已编排人数' }
-      ], items: (data.events?.田赛 || []) },
-      { title: '参赛班级', columns: [
-        { prop: 'name', label: '班级名称' },
-        { prop: 'grade', label: '年级' },
-        { prop: 'teacherName', label: '班主任' },
-        { prop: 'studentCount', label: '人数' }
-      ], items: (data.classes || []) }
-    ]
-    ElMessage.success('秩序册生成成功')
+    // 后端返回统一 sections（竞赛日程 / 径赛·田赛项目 / 参赛班级 / 各项目道次名单），直接渲染
+    if (data.sections && data.sections.length) {
+      orderBookContent.value = data.sections
+    } else {
+      // 兼容兜底
+      orderBookContent.value = [
+        { title: '径赛项目', columns: [
+          { prop: 'name', label: '项目名称' },
+          { prop: 'code', label: '编码' },
+          { prop: 'genderLimit', label: '性别' },
+          { prop: 'arrangedCount', label: '已编排人数' }
+        ], items: (data.events?.径赛 || []) },
+        { title: '田赛项目', columns: [
+          { prop: 'name', label: '项目名称' },
+          { prop: 'code', label: '编码' },
+          { prop: 'genderLimit', label: '性别' },
+          { prop: 'arrangedCount', label: '已编排人数' }
+        ], items: (data.events?.田赛 || []) },
+        { title: '参赛班级', columns: [
+          { prop: 'name', label: '班级名称' },
+          { prop: 'grade', label: '年级' },
+          { prop: 'teacherName', label: '班主任' },
+          { prop: 'studentCount', label: '人数' }
+        ], items: (data.classes || []) }
+      ]
+    }
+    ElMessage.success('秩序册生成成功' + (orderBookContent.value.length ? `（${orderBookContent.value.length} 个分册）` : ''))
   } catch (e) {
     console.error('生成秩序册失败', e)
   } finally {
@@ -213,8 +339,14 @@ async function generateOrderBook() {
   }
 }
 
-function exportOrderBook() {
-  window.open(apiBase() + '/excel/export/order-book', '_blank')
+async function exportOrderBook() {
+  try { await downloadApi('/excel/export/order-book', '秩序册.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
+}
+
+async function exportOrderBookDocx() {
+  try { await downloadApi('/excel/export/order-book-docx', '运动会秩序册.docx'); ElMessage.success('Word秩序册下载成功') }
+  catch (e) { ElMessage.error(e?.message || '下载失败，请重新登录后再试') }
 }
 
 async function generateResultBook() {
@@ -239,8 +371,9 @@ async function generateResultBook() {
   }
 }
 
-function exportResultBook() {
-  window.open(apiBase() + '/excel/export/result-book', '_blank')
+async function exportResultBook() {
+  try { await downloadApi('/excel/export/result-book', '成绩册.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function fetchStatistics() {
@@ -258,17 +391,33 @@ async function fetchStatistics() {
         { label: '成绩记录', value: scoreStats?.totalResults || 0 }
       ]
     }
-    // 按班级统计
-    if (regStats?.byClass) {
-      gradeStats.value = Object.entries(regStats.byClass).map(([name, count]) => ({
-        grade: name, count: count, percentage: 0
+    // 按年级统计参赛人数（含占比）
+    if (regStats?.byGrade) {
+      const rows = Object.entries(regStats.byGrade).map(([grade, count]) => ({
+        grade, count: Number(count) || 0
+      }))
+      const sum = rows.reduce((acc, r) => acc + r.count, 0)
+      gradeStats.value = rows.map(r => ({
+        grade: r.grade,
+        count: r.count,
+        percentage: sum > 0 ? Math.round(r.count / sum * 100) : 0
       }))
     }
-    // 按项目统计
+    // 按项目统计（含满额率）；同名项目(多个年级组)后端已聚合
     if (regStats?.byEvent) {
-      eventStats.value = Object.entries(regStats.byEvent).map(([name, counts]) => ({
-        eventName: name, count: counts.total || 0, capacity: 0
-      }))
+      eventStats.value = Object.entries(regStats.byEvent).map(([name, counts]) => {
+        const approved = Number(counts.approved) || 0
+        const pending = Number(counts.pending) || 0
+        const cap = Number(counts.capacity) || 0
+        return {
+          eventName: name,
+          count: approved + pending, // 有效报名（已审核 + 待审核）
+          approved,
+          pending,
+          // 未配置名额上限 → null，前端显示「不限」而非误导性的 0%
+          capacity: cap > 0 ? Math.min(100, Math.round((approved + pending) / cap * 100)) : null
+        }
+      })
     }
   } catch (e) {
     console.error('获取统计数据失败', e)
@@ -283,6 +432,18 @@ watch(activeTab, (tab) => {
     fetchStatistics()
   }
 }, { immediate: true })
+
+async function loadGradeOptions() {
+  try {
+    const res = await request.get('/system/grades')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    gradeOptions.value = list.map(g => (g && g.name) || '').filter(Boolean)
+  } catch {
+    gradeOptions.value = []
+  }
+}
+
+onMounted(() => { loadGradeOptions() })
 </script>
 
 <style scoped>

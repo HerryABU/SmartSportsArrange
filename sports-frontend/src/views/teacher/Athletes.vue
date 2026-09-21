@@ -1,5 +1,18 @@
 <template>
   <div class="athletes-container">
+    <!-- 页面头（工作流 ① 导入） -->
+    <div class="pg-head rise-in" style="margin-bottom:14px">
+      <div class="pg-titles">
+        <span class="pg-ico">👟</span>
+        <div>
+          <h3 class="pg-title">运动员名单</h3>
+          <p class="pg-desc">各班级运动员档案与号码簿管理 —— 支持 Excel 名单导入（姓名/性别/年级/班级/学号/号码布…），班主任端可导入花名册自动建档</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+      </div>
+    </div>
     <!-- 搜索/筛选区域 -->
     <el-card class="search-card" shadow="never">
       <el-form :model="searchForm" inline>
@@ -92,6 +105,25 @@
             <el-icon><DocumentCopy /></el-icon>
             下载示例
           </el-button>
+          <el-button @click="downloadRosterTemplate" plain>
+            <el-icon><DocumentCopy /></el-icon>
+            全名单表模板
+          </el-button>
+          <el-upload
+            :action="excelImportUrl"
+            :headers="uploadHeaders"
+            :show-file-list="false"
+            accept=".xlsx,.xls"
+            :data="rosterUploadData"
+            :on-success="onRosterImportSuccess"
+            :on-error="onExcelImportError"
+            style="display:inline-block;margin-left:8px"
+          >
+            <el-button type="success" plain>
+              <el-icon><Upload /></el-icon>
+              导入全名单表
+            </el-button>
+          </el-upload>
         </div>
       </div>
     </el-card>
@@ -250,6 +282,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Edit, Delete, Upload, Download, DocumentCopy, List } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 import ImportPreview from '@/components/ImportPreview.vue'
 
 // ==================== 响应式数据 ====================
@@ -528,6 +561,41 @@ function onImported(result) {
 
 function downloadTemplate() {
   window.open(apiBase() + '/athletes/template', '_blank')
+}
+
+// ---- 全名单表（5列：年级/班级/姓名/学号/性别）模板下载 + 导入 ----
+// 复用 /excel/import-with-mapping，固定列映射与 getTemplate("roster") 列序完全一致
+const excelImportUrl = apiBase() + '/excel/import-with-mapping'
+const uploadToken = localStorage.getItem('token') || ''
+const uploadHeaders = computed(() => ({ Authorization: uploadToken ? `Bearer ${uploadToken}` : '' }))
+const rosterUploadData = {
+  type: 'roster',
+  columnMap: JSON.stringify({ 0: 'grade', 1: 'className', 2: 'name', 3: 'studentId', 4: 'gender' }),
+}
+
+async function downloadRosterTemplate() {
+  try {
+    await downloadApi('/excel/template/roster', '全名单表导入模板.xlsx')
+    ElMessage.success('已下载全名单表模板（5列）')
+  } catch (e) {
+    ElMessage.error(e?.message || '下载全名单表模板失败')
+  }
+}
+
+function onRosterImportSuccess(res) {
+  const d = res?.data || res || {}
+  const success = d.success || 0
+  const failed = d.failed || 0
+  if (failed > 0) {
+    ElMessage.warning(`全名单表导入完成：成功 ${success} 条，失败 ${failed} 条（详见服务日志）`)
+  } else {
+    ElMessage.success(`全名单表导入完成：成功 ${success} 条`)
+  }
+  loadTableData()
+}
+
+function onExcelImportError() {
+  ElMessage.error('导入失败，请检查文件格式')
 }
 
 async function handleExport() {

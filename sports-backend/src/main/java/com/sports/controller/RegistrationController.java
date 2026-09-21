@@ -11,6 +11,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
@@ -28,7 +29,7 @@ public class RegistrationController {
     private final RegistrationService registrationService;
 
     @GetMapping
-    public ApiResponse<ApiResponse.PageData<Registration>> list(
+    public ApiResponse<ApiResponse.PageData<Map<String, Object>>> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) Long eventId,
@@ -37,7 +38,7 @@ public class RegistrationController {
         log.info("查询报名列表: page={}, size={}, eventId={}, classId={}, status={}",
                 page, size, eventId, classId, status);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<Registration> result = registrationService.list(pageable, eventId, classId, status);
+        Page<Map<String, Object>> result = registrationService.list(pageable, eventId, classId, status);
         return ApiResponse.page(result);
     }
 
@@ -91,20 +92,37 @@ public class RegistrationController {
     public ApiResponse<?> batchApprove(@RequestBody Map<String, List<Long>> request) {
         List<Long> ids = request.get("ids");
         log.info("批量通过报名: count={}", ids != null ? ids.size() : 0);
-        if (ids != null) {
-            for (Long id : ids) registrationService.approve(id, null);
+        if (ids == null || ids.isEmpty()) {
+            return ApiResponse.success("批量通过成功", Map.of("success", 0, "total", 0, "failed", 0, "failures", List.of()));
         }
-        return ApiResponse.success("批量通过成功", null);
+        return ApiResponse.success("批量通过成功", registrationService.batchApprove(ids));
+    }
+
+    /** 一键全部通过（当前筛选范围：eventId/classId 可空，仅处理 pending） */
+    @PutMapping("/approve-all")
+    public ApiResponse<?> approveAll(@RequestBody(required = false) Map<String, Object> body) {
+        Long eventId = numOf(body, "eventId");
+        Long classId = numOf(body, "classId");
+        log.info("一键全部通过: eventId={}, classId={}", eventId, classId);
+        int approved = registrationService.approveAll(eventId, classId);
+        return ApiResponse.success("全部通过成功", Map.of("approved", approved));
+    }
+
+    private Long numOf(Map<String, Object> body, String key) {
+        if (body == null || body.get(key) == null) return null;
+        Object v = body.get(key);
+        if (v instanceof Number n) return n.longValue();
+        try { return Long.parseLong(v.toString()); } catch (NumberFormatException e) { return null; }
     }
 
     @PutMapping("/batch-reject")
     public ApiResponse<?> batchReject(@RequestBody Map<String, List<Long>> request) {
         List<Long> ids = request.get("ids");
         log.info("批量拒绝报名: count={}", ids != null ? ids.size() : 0);
-        if (ids != null) {
-            for (Long id : ids) registrationService.reject(id);
+        if (ids == null || ids.isEmpty()) {
+            return ApiResponse.success("批量拒绝成功", Map.of("success", 0, "total", 0, "failed", 0, "failures", List.of()));
         }
-        return ApiResponse.success("批量拒绝成功", null);
+        return ApiResponse.success("批量拒绝成功", registrationService.batchReject(ids));
     }
 
     @GetMapping("/statistics")
@@ -117,5 +135,20 @@ public class RegistrationController {
     public void export(HttpServletResponse response) throws IOException {
         log.info("导出报名数据");
         registrationService.export(response);
+    }
+
+    /** 报名表（表格1）导入：班主任(现场/后置)或体育老师(后置)统一入口 */
+    @PostMapping("/import-sheet")
+    public ApiResponse<?> importSignupSheet(@RequestParam MultipartFile file,
+                                            @RequestParam(defaultValue = "offline") String source) {
+        log.info("导入报名表: file={}, source={}", file.getOriginalFilename(), source);
+        return ApiResponse.success("导入完成", registrationService.importSignupSheet(file, source));
+    }
+
+    /** 报名表（表格1）导入模板 */
+    @GetMapping("/template")
+    public void signupTemplate(HttpServletResponse response) throws IOException {
+        log.info("下载报名表模板");
+        registrationService.exportSignupTemplate(response);
     }
 }

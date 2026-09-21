@@ -1,9 +1,22 @@
 <template>
   <div class="events-container">
-    <!-- 页面标题 -->
-    <div class="page-header">
-      <h2 class="page-title">项目管理</h2>
-      <p class="page-desc">管理运动会比赛项目，支持预设模板快速创建</p>
+    <!-- 页面标题（表格2 项目字典 · 工作流①导入） -->
+    <div class="pg-head rise-in" style="margin-bottom:14px">
+      <div class="pg-titles">
+        <span class="pg-ico">🏆</span>
+        <div>
+          <h3 class="pg-title">比赛项目（表格2）</h3>
+          <p class="pg-desc">A代码 | B项目 | C是否田径 | D道次（田赛=0）… 报名表 F 列通过「代码/名称」软链本表；径赛可开预赛淘汰并设置晋级人数</p>
+        </div>
+      </div>
+      <div class="pg-actions">
+        <span class="chip" style="background:#eff6ff;color:#2563eb">① 导入报名</span>
+        <el-button plain @click="downloadTemplate" :icon="Download">表格2模板</el-button>
+        <el-button plain @click="downloadEventSimpleTemplate" :icon="Download">运动项目表模板</el-button>
+        <el-button plain @click="handleExport" :icon="Download">导出Excel</el-button>
+        <el-button plain @click="downloadJsonTemplate" :icon="DocumentCopy">JSON模板</el-button>
+        <el-button plain @click="handleExportJson" :icon="Download">导出JSON</el-button>
+      </div>
     </div>
 
     <!-- 操作栏 -->
@@ -17,6 +30,10 @@
           <el-icon><Plus /></el-icon>
           新增项目
         </el-button>
+        <el-button type="success" plain @click="openBatchAdd">
+          <el-icon><Plus /></el-icon>
+          批量新增
+        </el-button>
         <el-upload
           :action="importUrl"
           :headers="uploadHeaders"
@@ -28,33 +45,40 @@
         >
           <el-button type="warning"><el-icon><Upload /></el-icon> 导入Excel/CSV</el-button>
         </el-upload>
-        <el-button plain @click="downloadTemplate" style="margin-left:8px">
-          <el-icon><Download /></el-icon> 下载模板
-        </el-button>
-        <el-button plain @click="handleExport" style="margin-left:4px">
-          <el-icon><Download /></el-icon> 导出
-        </el-button>
+        <el-upload
+          :action="importJsonUrl"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".json"
+          :on-success="onImportJsonSuccess"
+          :on-error="onImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="warning" plain><el-icon><Upload /></el-icon> 导入JSON</el-button>
+        </el-upload>
+        <el-upload
+          :action="apiBase() + '/excel/import-with-mapping'"
+          :data="eventSimpleUploadData"
+          :headers="uploadHeaders"
+          :show-file-list="false"
+          accept=".xlsx,.xls,.csv"
+          :on-success="onEventSimpleImportSuccess"
+          :on-error="onImportError"
+          style="display:inline-block;margin-left:8px"
+        >
+          <el-button type="primary" plain><el-icon><Upload /></el-icon> 导入运动项目表</el-button>
+        </el-upload>
       </div>
       <div class="toolbar-right">
         <el-select
           v-model="filters.grade"
           placeholder="年级筛选"
           clearable
-          style="width: 120px"
+          filterable
+          style="width: 130px"
           @change="handleFilterChange"
         >
-          <el-option label="一年级" value="一年级" />
-          <el-option label="二年级" value="二年级" />
-          <el-option label="三年级" value="三年级" />
-          <el-option label="四年级" value="四年级" />
-          <el-option label="五年级" value="五年级" />
-          <el-option label="六年级" value="六年级" />
-          <el-option label="初一年级" value="初一年级" />
-          <el-option label="初二年级" value="初二年级" />
-          <el-option label="初三年级" value="初三年级" />
-          <el-option label="高一年级" value="高一年级" />
-          <el-option label="高二年级" value="高二年级" />
-          <el-option label="高三年级" value="高三年级" />
+          <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
         </el-select>
         <el-select
           v-model="filters.gender"
@@ -80,15 +104,32 @@
       </div>
     </div>
 
+    <!-- 批量操作条（勾选后出现） -->
+    <transition name="el-fade-in">
+      <div v-if="multipleSelection.length" class="batch-bar">
+        <el-icon class="bb-ico"><CircleCheck /></el-icon>
+        <span class="bb-info">已选 <b>{{ multipleSelection.length }}</b> 个项目</span>
+        <el-button size="small" type="primary" @click="openBatchEdit">批量修改</el-button>
+        <el-button size="small" type="success" plain @click="batchSetStatus(true)">批量启用</el-button>
+        <el-button size="small" type="warning" plain @click="batchSetStatus(false)">批量禁用</el-button>
+        <el-button size="small" type="danger" plain @click="confirmBatchDelete">批量删除</el-button>
+        <el-button size="small" link type="info" @click="clearSelection">取消选择</el-button>
+      </div>
+    </transition>
+
     <!-- 数据表格 -->
     <el-table
       v-loading="loading"
       :data="tableData"
       border
       stripe
+      row-key="id"
+      ref="tableRef"
       style="width: 100%"
       :header-cell-style="{ background: '#f5f7fa', color: '#303133' }"
+      @selection-change="onSelectionChange"
     >
+      <el-table-column type="selection" width="46" align="center" />
       <el-table-column prop="name" label="项目名称" min-width="150" />
       <el-table-column prop="eventType" label="项目类型" width="100" align="center">
         <template #default="{ row }">
@@ -100,6 +141,16 @@
       <el-table-column prop="gender" label="性别" width="100" align="center" />
       <el-table-column prop="gradeGroup" label="年级组" width="120" align="center" />
       <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />
+      <el-table-column label="调度标记" width="180" align="center">
+        <template #default="{ row }">
+          <span v-if="!row.funSports && !row.cooperative && !row.occupiesTrack" class="txt-muted">—</span>
+          <template v-else>
+            <el-tag v-if="row.funSports" size="small" effect="plain" type="success">趣味</el-tag>
+            <el-tag v-if="row.cooperative" size="small" effect="plain" type="primary">合作</el-tag>
+            <el-tag v-if="row.occupiesTrack" size="small" effect="plain" type="warning">占道</el-tag>
+          </template>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="100" align="center">
         <template #default="{ row }">
           <el-switch
@@ -226,9 +277,10 @@
           <el-input v-model="formData.name" placeholder="请输入项目名称" maxlength="50" show-word-limit />
         </el-form-item>
         <el-form-item label="项目类型" prop="eventType">
-          <el-select v-model="formData.eventType" placeholder="请选择项目类型" style="width: 100%">
-            <el-option label="径赛" value="径赛" />
-            <el-option label="田赛" value="田赛" />
+          <el-select v-model="formData.eventType" placeholder="请选择项目类型" style="width: 100%"
+                     @change="onEventTypeChange">
+            <el-option label="径赛（田径/竞速，占道次）" value="径赛" />
+            <el-option label="田赛（跳跃/投掷，不占道次）" value="田赛" />
           </el-select>
         </el-form-item>
         <el-form-item label="性别" prop="gender">
@@ -238,20 +290,84 @@
             <el-option label="混合组" value="混合组" />
           </el-select>
         </el-form-item>
+        <el-form-item label="项目编码" prop="code">
+          <el-input v-model="formData.code" placeholder="如 100M / TY_F（报名表 F 列可填）" maxlength="20" />
+        </el-form-item>
+        <el-form-item label="道次" prop="laneCount">
+          <el-input-number
+            v-model="formData.laneCount"
+            :min="0"
+            :max="12"
+            :disabled="formData.eventType === '田赛'"
+            placeholder="径赛填道次，田赛为 0"
+            style="width: 100%"
+          />
+          <div class="form-tip" v-if="formData.eventType === '田赛'">田赛不占道次，固定为 0</div>
+          <div class="form-tip" v-else>径赛跑道数（默认 8）</div>
+        </el-form-item>
+        <template v-if="formData.eventType === '径赛'">
+          <el-form-item label="预赛淘汰">
+            <el-switch v-model="formData.needHeats" inline-prompt active-text="需要预赛淘汰"
+              inactive-text="直接决赛" />
+            <div class="form-tip">需要预赛的项目：编排页先「生成预赛 → 录预赛成绩 → 立即计算晋级」，系统自动排出决赛</div>
+          </el-form-item>
+          <el-form-item label="晋级人数" v-if="formData.needHeats">
+            <el-input-number v-model="formData.advanceCount" :min="1" :max="99" style="width: 100%" />
+            <div class="form-tip">预赛结束后全场取前 N 名晋级决赛</div>
+          </el-form-item>
+          <el-form-item label="每组上限">
+            <el-input-number v-model="formData.maxPerHeat" :min="1" :max="12" style="width: 100%" />
+            <div class="form-tip">单组最多人数（一般等于道次数）</div>
+          </el-form-item>
+        </template>
+        <el-form-item label="团体每队人数" prop="teamSize">
+          <el-input-number
+            v-model="formData.teamSize"
+            :min="0"
+            :max="99"
+            placeholder="0 = 非团体赛"
+            style="width: 100%"
+          />
+          <div class="form-tip">接力等团体项目填写每队人数（4×100 → 4）；0 表示个人项目</div>
+        </el-form-item>
+        <el-form-item label="项目内并发" prop="concurrency">
+          <el-input-number v-model="formData.concurrency" :min="1" :max="60" style="width: 100%"
+            placeholder="同时进行人数" />
+          <div class="form-tip">同一时刻该项目可同时进行的人数（田赛=工位数，径赛=每组人数）；留空按道次数（径赛）或 1 人（田赛）</div>
+        </el-form-item>
+        <el-form-item label="每组次几人" prop="groupSize">
+          <el-input-number v-model="formData.groupSize" :min="1" :max="200" style="width: 100%"
+            placeholder="单组人数" />
+          <div class="form-tip">田赛单组同时进行的人数（如跳远每组 1 人、游泳每组 4 人）；径赛一般等于道次数</div>
+        </el-form-item>
+        <el-form-item label="并行捆绑组" prop="bundleGroup">
+          <el-input v-model="formData.bundleGroup" placeholder="如 A / B / C" maxlength="10" />
+          <div class="form-tip">田赛并行捆绑：填<b>相同字母</b>的项目会安排在同一时段并行进行；留空则由编排自动安排</div>
+        </el-form-item>
+        <el-form-item label="组次裁判数量" prop="refereesPerGroup">
+          <el-input-number v-model="formData.refereesPerGroup" :min="0" :max="20" style="width: 100%" placeholder="每个组次需几名裁判" />
+          <div class="form-tip">每个组次（heat/组/轮）需安排的裁判人数。田赛如立定跳远一组 5 人填 x 名裁判即填 x；拔河一组 3 人填 3；N 组并行仍按单组填写，系统自动为每组分别安排。留空/0 表示不安排裁判</div>
+        </el-form-item>
+        <el-form-item label="抽签（随机道次）" prop="drawLots">
+          <el-switch v-model="formData.drawLots" active-text="开启" inactive-text="关闭" />
+          <div class="form-tip">开启后，组内道次按随机抽签分配（xxx、yyy 同组随机占位），而非按班级顺序固定 x 在 1 道、y 在 2 道。仅作用于非人工锁定占用的道次</div>
+        </el-form-item>
+        <el-form-item label="默认场地" prop="defaultVenue">
+          <el-input v-model="formData.defaultVenue" placeholder="如 田径场 / 田赛A区" maxlength="50" />
+        </el-form-item>
+        <el-form-item label="场地编码" prop="defaultVenueCode">
+          <el-input v-model="formData.defaultVenueCode" placeholder="如 TRACK / FIELD_A / SWIM" maxlength="20" />
+          <div class="form-tip">与全局场地编码一致时，该项目固定使用对应场地（独立并发池），可与其他场地并行（如游泳指定独立场馆即与主径赛同排）</div>
+        </el-form-item>
+        <el-form-item label="最大用时/间隔">
+          <div style="display:flex;gap:8px;width:100%">
+            <el-input-number v-model="formData.maxDurationMinutes" :min="1" :max="600" placeholder="最大用时(分)" style="flex:1" />
+            <el-input-number v-model="formData.intervalMinutes" :min="0" :max="120" placeholder="间隔(分)" style="flex:1" />
+          </div>
+        </el-form-item>
         <el-form-item label="年级组" prop="gradeGroup">
-          <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%">
-            <el-option label="一年级" value="一年级" />
-            <el-option label="二年级" value="二年级" />
-            <el-option label="三年级" value="三年级" />
-            <el-option label="四年级" value="四年级" />
-            <el-option label="五年级" value="五年级" />
-            <el-option label="六年级" value="六年级" />
-            <el-option label="初一年级" value="初一年级" />
-            <el-option label="初二年级" value="初二年级" />
-            <el-option label="初三年级" value="初三年级" />
-            <el-option label="高一年级" value="高一年级" />
-            <el-option label="高二年级" value="高二年级" />
-            <el-option label="高三年级" value="高三年级" />
+          <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%" filterable>
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
         <el-form-item label="最大报名人数" prop="maxParticipants">
@@ -263,6 +379,41 @@
             style="width: 100%"
           />
         </el-form-item>
+
+        <!-- ===== 趣味 / 合作 / 占道 调度开关 ===== -->
+        <el-form-item label="趣味运动会">
+          <el-switch v-model="formData.funSports" active-text="是(特殊田赛)" inactive-text="否" />
+          <div class="form-tip">趣味项目作为「特殊田赛」处理：不占道次、走田赛并行逻辑（含球赛等集体趣味项目）</div>
+        </el-form-item>
+        <el-form-item label="小组合作">
+          <el-switch v-model="formData.cooperative" active-text="是(合并同批)" inactive-text="否" />
+          <div class="form-tip">开启后，该项目与同年级同合作组其他项目自动合并到同一时段并行进行</div>
+        </el-form-item>
+        <el-form-item label="占跑道用田赛法">
+          <el-switch v-model="formData.occupiesTrack" active-text="是(需错开径赛)" inactive-text="否" />
+          <div class="form-tip">该项目虽用田赛方法（不占道次、并行），但实体占用跑道，必须与真实径赛在时间上错开，避免跑道冲突</div>
+        </el-form-item>
+        <el-form-item label="每班人数限制" prop="maxPerClass">
+          <el-input-number
+            v-model="formData.maxPerClass"
+            :min="0"
+            :max="999"
+            placeholder="0=不限制"
+            style="width: 100%"
+          />
+          <div class="form-tip">该项目每个班级最多可报名人数（0 或不填表示不限制）</div>
+        </el-form-item>
+        <el-form-item label="每批所需时间(分)" prop="perBatchMinutes">
+          <el-input-number
+            v-model="formData.perBatchMinutes"
+            :min="1"
+            :max="600"
+            placeholder="覆盖全局每批耗时"
+            style="width: 100%"
+          />
+          <div class="form-tip">一组/一批同时上场所需时间，覆盖全局 heatMinutes / fieldPerAthleteMinutes 估算</div>
+        </el-form-item>
+
         <el-form-item label="排序号" prop="sortOrder">
           <el-input-number
             v-model="formData.sortOrder"
@@ -290,16 +441,165 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- ===== 批量新增（公共字段 + 每行一个项目名[可选,编码]） ===== -->
+    <el-dialog v-model="batchAddVisible" title="批量新增比赛项目" width="760px" :close-on-click-modal="false"
+      top="5vh" @closed="resetBatchAdd">
+      <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px"
+        title="下方先填好公共属性，再在文本区每行输入一个项目（支持「项目名」或「项目名,编码」），实时预览后可一次创建。单条失败不影响其它项目。" />
+      <div class="batch-common">
+        <el-form label-width="96px" label-position="top" class="bc-grid">
+          <el-form-item label="项目类型" required>
+            <el-radio-group v-model="batchAddForm.eventType" size="default">
+              <el-radio-button value="径赛">径赛</el-radio-button>
+              <el-radio-button value="田赛">田赛</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="性别组" required>
+            <el-select v-model="batchAddForm.gender" style="width: 100%">
+              <el-option label="男子组" value="男子组" />
+              <el-option label="女子组" value="女子组" />
+              <el-option label="混合组" value="混合组" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="年级组">
+            <el-select v-model="batchAddForm.gradeGroup" placeholder="选择年级组" clearable filterable style="width: 100%">
+              <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="团体人数">
+            <el-input-number v-model="batchAddForm.teamSize" :min="0" :max="99" style="width: 100%" />
+            <div class="form-tip">0 = 个人项目；&gt;0（如接力4）为团体</div>
+          </el-form-item>
+          <el-form-item v-if="batchAddForm.eventType === '径赛'" label="预赛淘汰">
+            <el-switch v-model="batchAddForm.needHeats" inline-prompt active-text="预赛→决赛"
+              inactive-text="直接决赛" />
+            <template v-if="batchAddForm.needHeats">
+              <div class="form-tip" style="margin-top:4px">晋级人数
+                <el-input-number v-model="batchAddForm.advanceCount" :min="1" :max="99" size="small" style="width:120px" />
+              </div>
+            </template>
+          </el-form-item>
+          <el-form-item label="最大报名人数">
+            <el-input-number v-model="batchAddForm.maxParticipants" :min="1" :max="999" style="width: 100%" />
+          </el-form-item>
+          <el-form-item label="默认场地">
+            <el-input v-model="batchAddForm.defaultVenue" placeholder="如 田径场（选填）" maxlength="50" style="width:100%" />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <div class="batch-names-head">
+        <span class="batch-label2">项目名称列表（一行一个）</span>
+        <span class="batch-hint">支持「项目名,编码」两段，如：<code>100米,100M</code></span>
+      </div>
+      <el-input v-model="batchAddNames" type="textarea" :rows="6" class="batch-names"
+        placeholder="100米,100M&#10;200米,200M&#10;4×100米接力,4X100M" />
+      <div v-if="batchItems.length" class="batch-preview">
+        <span class="bp-title">预览（共 {{ batchItems.length }} 项，将按上方公共属性创建）：</span>
+        <div class="bp-tiles">
+          <el-tag v-for="(it, i) in batchItems" :key="i" closable size="large" effect="plain"
+            @close="removePreviewItem(i)">
+            <b>{{ it.name }}</b><span v-if="it.code" class="bp-code">{{ it.code }}</span>
+          </el-tag>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="batchAddVisible = false">取消</el-button>
+        <el-button :disabled="!batchItems.length" @click="batchAddNames = ''">清空名称</el-button>
+        <el-button type="primary" :loading="batchAddSubmitting" :disabled="!batchItems.length"
+          @click="submitBatchAdd">
+          创建 {{ batchItems.length }} 个项目
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ===== 批量修改（留空 = 不修改） ===== -->
+    <el-dialog v-model="batchEditVisible" title="批量修改比赛项目" width="620px" :close-on-click-modal="false"
+      @closed="resetBatchEdit">
+      <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px"
+        title="以下字段留空表示「不修改」该属性；已选项目将全部应用填写项。" />
+      <div class="be-names">
+        已选：<el-tag v-for="r in multipleSelection" :key="r.id" size="small" effect="plain" style="margin:2px">{{ r.name }}</el-tag>
+      </div>
+      <el-form label-width="100px" style="margin-top:10px">
+        <el-form-item label="项目类型">
+          <el-select v-model="batchPatch.eventType" placeholder="不修改" clearable style="width: 100%">
+            <el-option label="径赛（田径/竞速）" value="径赛" />
+            <el-option label="田赛（跳跃/投掷）" value="田赛" />
+          </el-select>
+          <div class="form-tip">改为田赛会自动置道次 0 并关闭预赛；改为径赛保持原预赛设置</div>
+        </el-form-item>
+        <el-form-item label="性别组">
+          <el-select v-model="batchPatch.gender" placeholder="不修改" clearable style="width: 100%">
+            <el-option label="男子组" value="男子组" />
+            <el-option label="女子组" value="女子组" />
+            <el-option label="混合组" value="混合组" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="年级组">
+          <el-select v-model="batchPatch.gradeGroup" placeholder="不修改" clearable filterable style="width: 100%">
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="道次">
+          <el-input-number v-model="batchPatch.laneCount" :min="0" :max="12" :clearable="true"
+            value-on-clear="null" placeholder="不修改" style="width: 100%" />
+          <div class="form-tip">田赛填 0；径赛为跑道数（默认 8）</div>
+        </el-form-item>
+        <el-form-item label="团体人数">
+          <el-input-number v-model="batchPatch.teamSize" :min="0" :max="99" :clearable="true"
+            value-on-clear="null" placeholder="0=个人" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="项目内并发">
+          <el-input-number v-model="batchPatch.concurrency" :min="1" :max="60" value-on-clear="null"
+            placeholder="不修改" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="并行捆绑组">
+          <el-input v-model="batchPatch.bundleGroup" placeholder="不修改（如 A/B/C，同字母同批并行）" maxlength="10" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="组次裁判数量">
+          <el-input-number v-model="batchPatch.refereesPerGroup" :min="0" :max="20" value-on-clear="null"
+            placeholder="不修改" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="抽签（随机道次）">
+          <el-switch v-model="batchPatch.drawLots" />
+        </el-form-item>
+        <el-form-item label="每组次几人">
+          <el-input-number v-model="batchPatch.groupSize" :min="1" :max="200" value-on-clear="null"
+            placeholder="不修改（单组人数）" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="默认场地">
+          <el-input v-model="batchPatch.defaultVenue" placeholder="不修改（留空）" maxlength="50" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="场地编码">
+          <el-input v-model="batchPatch.defaultVenueCode" placeholder="不修改（留空，如 TRACK/FIELD_A/SWIM）" maxlength="20" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="启用状态">
+          <el-select v-model="batchPatch.enabled" placeholder="不修改" clearable style="width: 100%">
+            <el-option label="启用" :value="true" />
+            <el-option label="禁用" :value="false" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchEditVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchEditSubmitting" @click="submitBatchEdit">
+          应用到 {{ multipleSelection.length }} 个项目
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy, Plus, CircleCheck, Upload, Download } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 // ==================== 类型定义 ====================
 interface EventItem {
@@ -312,6 +612,31 @@ interface EventItem {
   description: string
   sortOrder: number
   enabled: boolean
+  // 表格2 / 调度字段
+  code?: string
+  isTrack?: boolean
+  laneCount?: number
+  isTeam?: boolean
+  teamSize?: number
+  scheduleMode?: string
+  /** 项目内并发人数（田赛工位数 / 径赛每组人数）；空 = 径赛按道次、田赛 1 人 */
+  concurrency?: number
+  /** 每组次人数（田赛单组同时进行人数 / 径赛单组人数）；空 = 按道次或 1 人 */
+  groupSize?: number
+  /** 田赛并行捆绑组（同字母同批并行）；空=自动编排 */
+  bundleGroup?: string
+  defaultVenue?: string
+  defaultVenueCode?: string
+  maxDurationMinutes?: number
+  intervalMinutes?: number
+  // 预赛淘汰字段（径赛 needHeats=true 时先预赛后晋级决赛）
+  needHeats?: boolean
+  advanceCount?: number
+  maxPerHeat?: number
+  /** 组次裁判数量：每个组次(heat/组/轮)需安排的裁判人数；0/空 = 不安排裁判 */
+  refereesPerGroup?: number
+  /** 抽签（随机道次）：开启后组内道次随机分配 */
+  drawLots?: boolean
 }
 
 interface TemplateItem {
@@ -359,6 +684,8 @@ const loading = ref(false)
 const submitLoading = ref(false)
 const tableData = ref<EventItem[]>([])
 const formRef = ref<FormInstance>()
+// 年级下拉：动态来自 系统设置·年级管理（不硬编码）
+const gradeOptions = ref<string[]>([])
 
 const filters = reactive({
   grade: '',
@@ -378,7 +705,6 @@ const editingId = ref<number | null>(null)
 const formDialogVisible = ref(false)
 const templateDialogVisible = ref(false)
 const templateCategory = ref('跑步类')
-
 const formData = reactive<EventItem>({
   name: '',
   eventType: '',
@@ -388,6 +714,28 @@ const formData = reactive<EventItem>({
   description: '',
   sortOrder: 0,
   enabled: true,
+  code: '',
+  isTrack: true,
+  laneCount: 8,
+  isTeam: false,
+  teamSize: 0,
+  concurrency: undefined,
+  groupSize: undefined,
+  bundleGroup: '',
+  defaultVenue: '',
+  defaultVenueCode: '',
+  maxDurationMinutes: undefined,
+  intervalMinutes: undefined,
+  needHeats: true,
+  advanceCount: 8,
+  maxPerHeat: 8,
+  refereesPerGroup: undefined,
+  drawLots: false,
+  funSports: false,
+  cooperative: false,
+  occupiesTrack: false,
+  maxPerClass: undefined,
+  perBatchMinutes: undefined,
 })
 
 const formRules: FormRules = {
@@ -410,16 +758,97 @@ function onImportSuccess(res: any) {
 function onImportError() { ElMessage.error('导入失败，请检查文件格式') }
 
 function downloadTemplate() {
-  const csv = '项目名称,项目代码,类别(径赛/田赛),性别限制(M/F/mixed),道数,需要预赛(是/否),计分方式(global/grade),纪录(秒/米)\n100米,M100,径赛,M,8,是,global,\n跳远,TY_F,田赛,F,1,否,global,'
+  // 表格2 折中布局（与后端 parseTable2Row/exportEvents/模板完全对齐）：
+  // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(=项目内并发)/
+  // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时/P间隔
+  const csv =
+    '代码,项目,是否田径(是/否),道次(田赛写0),顺序号,每组次几人,捆绑字母(同字母同批并行),并行数(项目内并发人),场地编码,性别,年级组,是否团体(是/否),团体人数,场地,最大用时(分),间隔(分),组次裁判数量,抽签(是/否)\n' +
+    '100M,100米,是,8,1,8,,8,TRACK,男子组,高一年级,否,0,田径场,20,10,2,否\n' +
+    '100F,100米(女子),是,8,2,8,,8,TRACK,女子组,高一年级,否,0,田径场,20,10,2,否\n' +
+    '4X100M,4×100米接力,是,8,3,4,,8,TRACK,男子组,高一年级,是,4,田径场,30,15,3,否\n' +
+    'TY_F,跳远(女子),否,0,4,1,A,1,FIELD_A,女子组,高一年级,否,0,田赛A区,90,10,5,否\n' +
+    'SWIM_M,50米蛙泳(男子),是,8,5,4,,4,SWIM,男子组,高一年级,否,0,游泳馆,25,10,2,是\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = '项目导入模板.csv'; a.click()
+  a.href = url; a.download = '项目表模板_表格2.csv'; a.click()
   URL.revokeObjectURL(url)
 }
 
-function handleExport() {
-  window.open(apiBase() + '/events/export', '_blank')
+async function handleExport() {
+  try {
+    await downloadApi('/events/export', '比赛项目导出.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
+}
+
+// ---- JSON 导入/导出（全字段往返） ----
+const importJsonUrl = apiBase() + '/events/import/json'
+
+// ---- 运动项目表（7列精简模板）：复用 /excel/import-with-mapping，固定列映射 ----
+// 列序与服务端 getTemplate("eventsimple") 完全一致：0项目代码/1项目名称/2每组人数/
+// 3每批组数/4项目类型/5场地号/6每批所需时间(分)；按此映射即可把模板原样导回，无需用户手动配列
+const eventSimpleUploadData = {
+  type: 'eventsimple',
+  columnMap: JSON.stringify({
+    0: 'eventCode', 1: 'eventName', 2: 'teamMembers', 3: 'concurrency',
+    4: 'category', 5: 'defaultVenueCode', 6: 'perBatchMinutes',
+  }),
+}
+
+function onImportJsonSuccess(res: any) {
+  const d = res?.data || res || {}
+  const created = d.created ?? 0
+  const updated = d.updated ?? 0
+  const failed = d.failed ?? 0
+  if (failed > 0) {
+    ElMessage.warning(`JSON 导入完成：新增 ${created}，更新 ${updated}，失败 ${failed}`)
+  } else {
+    ElMessage.success(`JSON 导入完成：新增 ${created}，更新 ${updated}`)
+  }
+  fetchData()
+}
+
+async function handleExportJson() {
+  try {
+    await downloadApi('/events/export/json', '比赛项目.json')
+    ElMessage.success('已导出 JSON（含全部字段与默认值）')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出 JSON 失败，请重新登录后再试')
+  }
+}
+
+async function downloadJsonTemplate() {
+  try {
+    await downloadApi('/events/template/json', '比赛项目模板.json')
+    ElMessage.success('已下载 JSON 模板')
+  } catch (e) {
+    ElMessage.error(e?.message || '下载 JSON 模板失败')
+  }
+}
+
+// ---- 运动项目表（7列）模板下载 + 导入（eventsimple） ----
+async function downloadEventSimpleTemplate() {
+  try {
+    await downloadApi('/excel/template/eventsimple', '运动项目表导入模板.xlsx')
+    ElMessage.success('已下载运动项目表模板（7列精简版）')
+  } catch (e) {
+    ElMessage.error(e?.message || '下载运动项目表模板失败')
+  }
+}
+
+function onEventSimpleImportSuccess(res: any) {
+  const d = res?.data || res || {}
+  const success = d.success || 0
+  const failed = d.failed || 0
+  if (failed > 0) {
+    ElMessage.warning(`运动项目表导入完成：成功 ${success} 条，失败 ${failed} 条（详见服务日志）`)
+  } else {
+    ElMessage.success(`运动项目表导入完成：成功 ${success} 条`)
+  }
+  fetchData()
 }
 
 // ==================== 方法 ====================
@@ -496,6 +925,7 @@ function selectTemplate(tpl: TemplateItem) {
   formData.description = ''
   formData.sortOrder = 0
   formData.enabled = true
+  onEventTypeChange(tpl.eventType)
 
   isEdit.value = false
   editingId.value = null
@@ -514,14 +944,7 @@ function openAddDialog() {
 function openEditDialog(row: EventItem) {
   isEdit.value = true
   editingId.value = row.id ?? null
-  formData.name = row.name
-  formData.eventType = row.eventType
-  formData.gender = row.gender
-  formData.gradeGroup = row.gradeGroup
-  formData.maxParticipants = row.maxParticipants
-  formData.description = row.description ?? ''
-  formData.sortOrder = row.sortOrder ?? 0
-  formData.enabled = row.enabled
+  fillFormFromRow(row)
   formDialogVisible.value = true
 }
 
@@ -535,6 +958,91 @@ function resetFormData() {
   formData.description = ''
   formData.sortOrder = 0
   formData.enabled = true
+  formData.code = ''
+  formData.isTrack = true
+  formData.laneCount = 8
+  formData.isTeam = false
+  formData.teamSize = 0
+  formData.concurrency = undefined
+  formData.groupSize = undefined
+  formData.bundleGroup = ''
+  formData.defaultVenue = ''
+  formData.defaultVenueCode = ''
+  formData.maxDurationMinutes = undefined
+  formData.intervalMinutes = undefined
+  formData.needHeats = true
+  formData.advanceCount = 8
+  formData.maxPerHeat = 8
+  formData.refereesPerGroup = undefined
+  formData.drawLots = false
+  formData.funSports = false
+  formData.cooperative = false
+  formData.occupiesTrack = false
+  formData.maxPerClass = undefined
+  formData.perBatchMinutes = undefined
+}
+
+// 组装提交体：径赛/田赛 自动联动 道次
+function buildPayload() {
+  const isTrack = formData.eventType !== '田赛'
+  return {
+    ...formData,
+    isTrack,
+    laneCount: isTrack ? (formData.laneCount ?? 8) : 0,
+    teamSize: formData.teamSize ?? 0,
+    needHeats: isTrack ? (formData.needHeats ?? true) : false,
+    advanceCount: isTrack ? (formData.advanceCount ?? 8) : null,
+    maxPerHeat: isTrack ? (formData.maxPerHeat ?? formData.laneCount ?? 8) : 1,
+    refereesPerGroup: formData.refereesPerGroup ?? 0,
+    drawLots: formData.drawLots === true,
+  }
+}
+
+// 把服务端行数据填回表单（含表格2/调度字段兼容）
+function fillFormFromRow(row: EventItem) {
+  const isTrack = row.eventType !== '田赛'
+  formData.name = row.name
+  formData.eventType = row.eventType
+  formData.gender = row.gender
+  formData.gradeGroup = row.gradeGroup
+  formData.maxParticipants = row.maxParticipants
+  formData.description = row.description ?? ''
+  formData.sortOrder = row.sortOrder ?? 0
+  formData.enabled = row.enabled
+  formData.code = row.code ?? ''
+  formData.isTrack = row.isTrack ?? isTrack
+  formData.laneCount = isTrack ? (row.laneCount ?? 8) : 0
+  formData.isTeam = !!row.isTeam
+  formData.teamSize = row.teamSize ?? 0
+  // 项目内并发：服务端值优先；缺省时展示实际口径（径赛=道次数、田赛=1 人）
+  formData.concurrency = row.concurrency ?? (isTrack ? (row.laneCount ?? 8) : 1)
+  formData.groupSize = row.groupSize ?? undefined
+  formData.bundleGroup = row.bundleGroup ?? ''
+  formData.defaultVenue = row.defaultVenue ?? ''
+  formData.defaultVenueCode = row.defaultVenueCode ?? ''
+  formData.maxDurationMinutes = row.maxDurationMinutes ?? undefined
+  formData.intervalMinutes = row.intervalMinutes ?? undefined
+  formData.needHeats = row.needHeats ?? true
+  formData.advanceCount = row.advanceCount ?? 8
+  formData.maxPerHeat = row.maxPerHeat ?? (isTrack ? (row.laneCount ?? 8) : 1)
+  formData.refereesPerGroup = row.refereesPerGroup ?? undefined
+  formData.drawLots = row.drawLots === true
+  formData.funSports = row.funSports === true
+  formData.cooperative = row.cooperative === true
+  formData.occupiesTrack = row.occupiesTrack === true
+  formData.maxPerClass = row.maxPerClass ?? undefined
+  formData.perBatchMinutes = row.perBatchMinutes ?? undefined
+}
+
+function onEventTypeChange(val: string) {
+  formData.eventType = val
+  if (val === '田赛') {
+    formData.laneCount = 0
+    if (!formData.concurrency || formData.concurrency < 1) formData.concurrency = 1
+  } else {
+    formData.laneCount = formData.laneCount && formData.laneCount > 0 ? formData.laneCount : 8
+    formData.concurrency = formData.laneCount
+  }
 }
 
 // 关闭对话框时重置表单
@@ -549,11 +1057,12 @@ async function handleSubmit() {
 
   submitLoading.value = true
   try {
+    const payload = buildPayload()
     if (isEdit.value && editingId.value !== null) {
-      await request.put(`/events/${editingId.value}`, { ...formData })
+      await request.put(`/events/${editingId.value}`, payload)
       ElMessage.success('项目更新成功')
     } else {
-      await request.post('/events', { ...formData })
+      await request.post('/events', payload)
       ElMessage.success('项目创建成功')
     }
     formDialogVisible.value = false
@@ -622,9 +1131,254 @@ async function handleDelete(row: EventItem) {
   }
 }
 
+// ==================== 批量操作 ====================
+const tableRef = ref<any>()
+const multipleSelection = ref<EventItem[]>([])
+const batchAddVisible = ref(false)
+const batchEditVisible = ref(false)
+const batchAddSubmitting = ref(false)
+const batchEditSubmitting = ref(false)
+const batchAddNames = ref('')
+const batchItems = ref<{ name: string; code?: string }[]>([])
+
+const batchAddForm = reactive({
+  eventType: '径赛',
+  gender: '男子组',
+  gradeGroup: '',
+  teamSize: 0,
+  needHeats: true,
+  advanceCount: 8,
+  maxParticipants: 1,
+  defaultVenue: '',
+  defaultVenueCode: '',
+})
+
+const batchPatch = reactive<Record<string, any>>({
+  eventType: undefined,
+  gender: undefined,
+  gradeGroup: undefined,
+  laneCount: null,
+  teamSize: null,
+  concurrency: undefined,
+  groupSize: undefined,
+  bundleGroup: undefined,
+  refereesPerGroup: undefined,
+  drawLots: undefined,
+  defaultVenue: undefined,
+  defaultVenueCode: undefined,
+  enabled: undefined,
+})
+
+function onSelectionChange(rows: EventItem[]) {
+  multipleSelection.value = rows
+}
+function clearSelection() {
+  tableRef.value?.clearSelection()
+}
+
+// 批量新增名称行解析（watch 文本域 → 重建可编辑列表）
+watch(batchAddNames, () => {
+  const arr: { name: string; code?: string }[] = []
+  batchAddNames.value.split('\n').forEach(line => {
+    const s = line.trim()
+    if (!s) return
+    const parts = s.split(/[,，]/).map(x => x.trim())
+    const name = parts[0] || ''
+    if (!name) return
+    arr.push({ name, code: parts.length > 1 && parts[1] ? parts[1] : undefined })
+  })
+  batchItems.value = arr
+})
+function removePreviewItem(i: number) {
+  batchItems.value.splice(i, 1)
+  batchAddNames.value = batchItems.value.map(x => (x.code ? `${x.name},${x.code}` : x.name)).join('\n')
+}
+
+function openBatchAdd() {
+  Object.assign(batchAddForm, {
+    eventType: '径赛', gender: '男子组', gradeGroup: '', teamSize: 0,
+    needHeats: true, advanceCount: 8, maxParticipants: 1, defaultVenue: '', defaultVenueCode: '',
+  })
+  batchAddNames.value = ''
+  batchAddVisible.value = true
+}
+
+function buildBatchItem(it: { name: string; code?: string }, idx: number) {
+  const isTrack = batchAddForm.eventType !== '田赛'
+  const needHeats = isTrack && batchAddForm.needHeats
+  const item: Record<string, any> = {
+    name: it.name,
+    eventType: batchAddForm.eventType,
+    gender: batchAddForm.gender,
+    maxParticipants: batchAddForm.maxParticipants,
+    isTrack,
+    laneCount: isTrack ? 8 : 0,
+    isTeam: batchAddForm.teamSize > 0,
+    teamSize: batchAddForm.teamSize || 0,
+    needHeats,
+    advanceCount: needHeats ? batchAddForm.advanceCount : null,
+    maxPerHeat: isTrack ? 8 : 1,
+    concurrency: isTrack ? 8 : 1,
+    groupSize: isTrack ? 8 : 1,
+    defaultVenue: batchAddForm.defaultVenue.trim() || undefined,
+    defaultVenueCode: batchAddForm.defaultVenueCode.trim() || undefined,
+    enabled: true,
+    sortOrder: pagination.total + idx,
+  }
+  if (it.code) item.code = it.code
+  if (batchAddForm.gradeGroup) item.gradeGroup = batchAddForm.gradeGroup
+  return item
+}
+
+async function submitBatchAdd() {
+  if (!batchItems.value.length) return
+  batchAddSubmitting.value = true
+  try {
+    const payload = batchItems.value.map((it, i) => buildBatchItem(it, i))
+    const res: any = await request.post('/events/batch', payload)
+    ElMessage.success(`批量创建完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    if (res?.failed) {
+      const first = (res.errors || [])[0]
+      if (first) ElMessage.warning(`失败示例：${first.name || first.message}`)
+      console.warn(res.errors)
+    }
+    batchAddVisible.value = false
+    fetchData()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    batchAddSubmitting.value = false
+  }
+}
+
+function openBatchEdit() {
+  Object.assign(batchPatch, {
+    eventType: undefined, gender: undefined, gradeGroup: undefined,
+    laneCount: null, teamSize: null, concurrency: undefined, groupSize: undefined, bundleGroup: undefined,
+    refereesPerGroup: undefined, drawLots: undefined, defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
+  })
+  batchEditVisible.value = true
+}
+
+function buildPatchPayload(): Record<string, any> {
+  const p: Record<string, any> = {}
+  if (batchPatch.eventType) {
+    p.eventType = batchPatch.eventType
+    const isTrack = batchPatch.eventType !== '田赛'
+    p.isTrack = isTrack
+    if (!isTrack) { p.laneCount = 0; p.needHeats = false }
+  }
+  if (batchPatch.gender) p.gender = batchPatch.gender
+  if (batchPatch.gradeGroup) p.gradeGroup = batchPatch.gradeGroup
+  if (batchPatch.laneCount !== undefined && batchPatch.laneCount !== null) p.laneCount = batchPatch.laneCount
+  if (batchPatch.teamSize !== undefined && batchPatch.teamSize !== null) {
+    p.teamSize = batchPatch.teamSize
+    p.isTeam = batchPatch.teamSize > 0
+  }
+  if (batchPatch.concurrency !== undefined && batchPatch.concurrency !== null) {
+    p.concurrency = batchPatch.concurrency
+  }
+  if (batchPatch.groupSize !== undefined && batchPatch.groupSize !== null) {
+    p.groupSize = batchPatch.groupSize
+  }
+  if (batchPatch.bundleGroup !== undefined && batchPatch.bundleGroup !== null
+      && String(batchPatch.bundleGroup).trim() !== '') {
+    p.bundleGroup = String(batchPatch.bundleGroup).trim().toUpperCase()
+  }
+  if (batchPatch.refereesPerGroup !== undefined && batchPatch.refereesPerGroup !== null) {
+    p.refereesPerGroup = batchPatch.refereesPerGroup
+  }
+  if (batchPatch.drawLots !== undefined && batchPatch.drawLots !== null) {
+    p.drawLots = batchPatch.drawLots === true
+  }
+  if (batchPatch.defaultVenue && String(batchPatch.defaultVenue).trim()) {
+    p.defaultVenue = String(batchPatch.defaultVenue).trim()
+  }
+  if (batchPatch.defaultVenueCode && String(batchPatch.defaultVenueCode).trim()) {
+    p.defaultVenueCode = String(batchPatch.defaultVenueCode).trim().toUpperCase()
+  }
+  if (batchPatch.enabled !== undefined && batchPatch.enabled !== null) p.enabled = batchPatch.enabled
+  return p
+}
+
+async function submitBatchEdit() {
+  const ids = multipleSelection.value.map(r => r.id).filter(Boolean) as number[]
+  if (!ids.length) { ElMessage.info('请先勾选要修改的项目'); return }
+  const patch = buildPatchPayload()
+  if (!Object.keys(patch).length) { ElMessage.info('请至少填写一个要修改的属性'); return }
+  batchEditSubmitting.value = true
+  try {
+    const res: any = await request.put('/events/batch', { ids, patch })
+    ElMessage.success(`批量更新完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    if (res?.failed) console.warn(res.errors)
+    batchEditVisible.value = false
+    clearSelection()
+    fetchData()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    batchEditSubmitting.value = false
+  }
+}
+
+async function batchSetStatus(enabled: boolean) {
+  const ids = multipleSelection.value.map(r => r.id).filter(Boolean) as number[]
+  if (!ids.length) return
+  const action = enabled ? '启用' : '禁用'
+  try {
+    await ElMessageBox.confirm(`确定要${action}已选的 ${ids.length} 个项目吗？`, `${action}确认`, { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    const res: any = await request.post('/events/batch-status', { ids, enabled })
+    ElMessage.success(`批量${action}完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    clearSelection()
+    fetchData()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function confirmBatchDelete() {
+  const rows = multipleSelection.value
+  const ids = rows.map(r => r.id).filter(Boolean) as number[]
+  if (!ids.length) return
+  const names = rows.slice(0, 5).map(r => r.name).join('、') + (rows.length > 5 ? ` 等 ${rows.length} 个` : '')
+  try {
+    await ElMessageBox.confirm(
+      `确定删除已选 ${ids.length} 个项目（${names}）吗？删除后不可恢复。`,
+      '批量删除确认',
+      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const res: any = await request.post('/events/batch-delete', { ids })
+    ElMessage.success(`批量删除完成：成功 ${res?.success || 0} 条，失败 ${res?.failed || 0} 条`)
+    if (tableData.value.length === ids.length && pagination.page > 1) pagination.page--
+    clearSelection()
+    fetchData()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
 // ==================== 生命周期 ====================
+async function loadGradeOptions() {
+  try {
+    const res = await request.get('/system/grades')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    gradeOptions.value = list.map((g: any) => (g && g.name) || '').filter(Boolean)
+  } catch {
+    gradeOptions.value = []
+  }
+}
+
 onMounted(() => {
   fetchData()
+  loadGradeOptions()
 })
 </script>
 
@@ -718,4 +1472,43 @@ onMounted(() => {
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-left, .toolbar-right { flex-wrap: wrap; }
 }
+
+.form-tip {
+  width: 100%;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.txt-muted { color: #c0c4cc; }
+
+/* ===== 批量操作条 ===== */
+.batch-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 8px 14px;
+  background: linear-gradient(120deg, #eff6ff, #eef2ff);
+  border: 1px solid #bfdbfe; border-radius: 12px;
+}
+.bb-ico { color: #2563eb; font-size: 16px; }
+.bb-info { font-size: 13px; color: #1e3a8a; margin-right: 4px; }
+.bb-info b { font-size: 15px; }
+
+/* ===== 批量新增 ===== */
+.batch-common { background: #f8fafc; border-radius: 12px; padding: 12px 14px 2px; margin-bottom: 12px; }
+.bc-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  column-gap: 16px; row-gap: 2px;
+}
+.batch-names-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.batch-label2 { font-size: 13px; font-weight: 700; color: #0f172a; }
+.batch-hint { font-size: 12px; color: #94a3b8; }
+.batch-hint code { background: #f1f5f9; padding: 0 4px; border-radius: 4px; }
+.batch-preview { margin-top: 10px; }
+.bp-title { font-size: 12.5px; color: #475569; }
+.bp-tiles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 150px; overflow-y: auto; }
+.bp-code { margin-left: 4px; font-size: 11px; color: #94a3b8; font-weight: 400; }
+
+/* ===== 批量修改 ===== */
+.be-names { font-size: 13px; color: #475569; line-height: 1.8; }
 </style>

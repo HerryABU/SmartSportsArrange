@@ -192,6 +192,7 @@ async function handleLogin() {
       const role = authStore.userRole
       if (role === 'TEACHER' || role === 'SUPER_ADMIN') router.push('/teacher/dashboard')
       else if (role === 'CLASS_TEACHER') router.push('/class-teacher/dashboard')
+      else if (role === 'REFEREE') router.push('/referee/dashboard')
       else router.push('/student/home')
     } else {
       errorMsg.value = r.message || '登录失败'

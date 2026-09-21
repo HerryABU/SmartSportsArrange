@@ -123,6 +123,7 @@ public class DatabaseMigrationService {
     public void executeMigrationAsync(String taskId, Map<String, Object> target) {
         MigrationTask task = tasks.get(taskId);
         String targetType = String.valueOf(target.getOrDefault("type", "")).toLowerCase();
+        List<String> createdTables = new ArrayList<>();
         try {
             // 1. 备份源库
             task.step("备份源数据库", 5);
@@ -140,7 +141,6 @@ public class DatabaseMigrationService {
 
             // 3. 连接目标库
             task.step("连接目标数据库", 15);
-            List<String> createdTables = new ArrayList<>();
             try (Connection dst = openTarget(target)) {
                 // 4. 建表（类型映射）
                 task.step("创建表结构", 20);
@@ -153,6 +153,20 @@ public class DatabaseMigrationService {
                     task.log("建表 " + t.name + "（" + t.columns.size() + " 列）");
                 }
 
+                // 4.5 统计待迁移总行数（供行级进度；纯只读 COUNT，不动数据）
+                task.step("统计待迁移行数", 18);
+                long rowsTotal = 0;
+                try (Connection src = dataSource.getConnection()) {
+                    String srcType = detectType(src.getMetaData().getURL());
+                    for (TableDef t : tables) {
+                        try (Statement st = src.createStatement();
+                             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + q(srcType, t.name))) {
+                            if (rs.next()) rowsTotal += rs.getLong(1);
+                        }
+                    }
+                }
+                task.setRowsTotal(rowsTotal);
+
                 // 5. 迁数据
                 try (Connection src = dataSource.getConnection()) {
                     int done = 0;
@@ -161,6 +175,7 @@ public class DatabaseMigrationService {
                         task.step("迁移数据 " + (done + 1) + "/" + tables.size() + "：" + t.name, pct);
                         long rows = copyTableData(src, dst, t, targetType);
                         task.log("迁移表 " + t.name + "：共 " + rows + " 行");
+                        task.addRows(rows);
                         done++;
                     }
                 }
@@ -186,11 +201,30 @@ public class DatabaseMigrationService {
             }
         } catch (Exception e) {
             log.error("数据库迁移失败", e);
-            // 回滚：清理目标库已创建的表（尽力而为）
-            task.step("迁移失败，回滚中", 99);
+            // H3 修复：迁移失败真正回滚——DROP 目标库已创建但半迁移的表，避免下次迁移冲突
+            rollbackTarget(createdTables, target);
+            task.step("迁移失败，已回滚残留表", 99);
             String msg = e.getMessage();
             task.log("迁移失败: " + msg);
             task.fail(msg);
+        }
+    }
+
+    /** 迁移失败回滚（H3 修复）：DROP 目标库中已创建但半迁移的表（尽力而为，不抛异常） */
+    private void rollbackTarget(List<String> createdTables, Map<String, Object> target) {
+        if (createdTables == null || createdTables.isEmpty()) return;
+        String targetType = String.valueOf(target.getOrDefault("type", "")).toLowerCase();
+        try (Connection dst = openTarget(target)) {
+            for (String t : createdTables) {
+                try (Statement st = dst.createStatement()) {
+                    st.execute("DROP TABLE IF EXISTS " + q(targetType, t));
+                    log.warn("迁移回滚：已删除目标库残留表 {}", t);
+                } catch (Exception ex) {
+                    log.error("迁移回滚删除表 {} 失败: {}", t, ex.getMessage());
+                }
+            }
+        } catch (Exception ex) {
+            log.error("迁移回滚：无法连接目标库清理残留表: {}", ex.getMessage());
         }
     }
 
@@ -213,6 +247,7 @@ public class DatabaseMigrationService {
                     c.jdbcType = rs.getInt("DATA_TYPE");
                     c.typeName = rs.getString("TYPE_NAME");
                     c.size = rs.getInt("COLUMN_SIZE");
+                    c.scale = rs.getInt("DECIMAL_DIGITS");
                     c.nullable = rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls;
                     c.autoIncrement = "YES".equalsIgnoreCase(rs.getString("IS_AUTOINCREMENT"));
                     t.columns.add(c);
@@ -260,7 +295,7 @@ public class DatabaseMigrationService {
         for (ColumnDef c : t.columns) {
             StringBuilder col = new StringBuilder();
             col.append(q(targetType, c.name)).append(" ");
-            String type = mapType(targetType, c.jdbcType, c.size);
+            String type = mapType(targetType, c.jdbcType, c.size, c.scale);
             col.append(type);
 
             boolean isPk = t.primaryKeys.contains(c.name);
@@ -445,7 +480,7 @@ public class DatabaseMigrationService {
 
     // ==================== 类型映射 ====================
 
-    private String mapType(String target, int jdbcType, int size) {
+    private String mapType(String target, int jdbcType, int size, int scale) {
         if ("mysql".equals(target)) {
             return switch (jdbcType) {
                 case Types.TINYINT, Types.SMALLINT -> "SMALLINT";
@@ -454,13 +489,20 @@ public class DatabaseMigrationService {
                 case Types.BOOLEAN, Types.BIT -> "TINYINT(1)";
                 case Types.FLOAT, Types.REAL -> "FLOAT";
                 case Types.DOUBLE -> "DOUBLE";
-                case Types.DECIMAL, Types.NUMERIC -> "DECIMAL(20,4)";
+                // M4 修复：保留精度与标度（原固定 DECIMAL(20,4) 会丢失精度/标度）
+                case Types.DECIMAL, Types.NUMERIC -> {
+                    int precision = size > 0 ? Math.min(size, 65) : 38;
+                    int scaleVal = scale >= 0 ? Math.min(scale, precision) : 4;
+                    yield "DECIMAL(" + precision + "," + scaleVal + ")";
+                }
+                // M4 修复：超长 VARCHAR 改用 LONGTEXT，避免 VARCHAR(255) 截断数据
                 case Types.VARCHAR, Types.NVARCHAR ->
-                        size > 0 && size <= 16000 ? "VARCHAR(" + size + ")" : "VARCHAR(255)";
+                        size > 0 && size <= 16000 ? "VARCHAR(" + size + ")" : "LONGTEXT";
                 case Types.CHAR, Types.NCHAR -> "CHAR(" + Math.max(1, size) + ")";
                 case Types.LONGVARCHAR, Types.CLOB, Types.NCLOB -> "LONGTEXT";
                 case Types.DATE -> "DATE";
                 case Types.TIME -> "TIME";
+                // 注：TIMESTAMP 映射为 DATETIME 会丢失时区语义；此处保留 DATETIME 以保证日期范围（避开 MySQL TIMESTAMP 2038 上限）
                 case Types.TIMESTAMP -> "DATETIME";
                 case Types.BLOB, Types.LONGVARBINARY, Types.VARBINARY, Types.BINARY -> "LONGBLOB";
                 default -> "LONGTEXT";
@@ -541,6 +583,7 @@ public class DatabaseMigrationService {
         int jdbcType;
         String typeName;
         int size;
+        int scale;
         boolean nullable;
         boolean autoIncrement;
     }
@@ -558,6 +601,8 @@ public class DatabaseMigrationService {
         String message = "";
         int progress = 0;
         int totalTables = 0;
+        long rowsDone = 0;
+        long rowsTotal = 0;
         List<String> logs = Collections.synchronizedList(new ArrayList<>());
         final long startAt = System.currentTimeMillis();
 
@@ -566,6 +611,14 @@ public class DatabaseMigrationService {
         synchronized void step(String s, int p) {
             this.step = s;
             this.progress = Math.max(this.progress, p);
+        }
+        /** 行级进度：迁移前统计总行数，迁移中逐表累加，细化 20-85 区间的进度反馈 */
+        synchronized void setRowsTotal(long t) { this.rowsTotal = t; }
+        synchronized void addRows(long c) {
+            this.rowsDone += c;
+            if (this.rowsTotal > 0) {
+                this.progress = 20 + (int) (65.0 * this.rowsDone / this.rowsTotal);
+            }
         }
         synchronized void log(String msg) {
             logs.add("[" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")) + "] " + msg);
@@ -590,6 +643,8 @@ public class DatabaseMigrationService {
             m.put("step", step);
             m.put("progress", progress);
             m.put("totalTables", totalTables);
+            m.put("rowsDone", rowsDone);
+            m.put("rowsTotal", rowsTotal);
             m.put("message", message);
             m.put("elapsedMs", System.currentTimeMillis() - startAt);
             m.put("logs", new ArrayList<>(logs));

@@ -1,7 +1,8 @@
 <template>
-  <div class="student-layout" :class="{dark: isDark}">
+  <div class="student-layout role-root role-student" :class="{dark: isDark}">
     <div class="topbar">
       <span class="topbar-title">🏃 运动会</span>
+      <span class="role-chip student-chip">🎒 学生</span>
       <div class="topbar-right">
         <el-button :icon="isDark ? 'Sunny' : 'Moon'" circle size="small" text style="color:#fff" @click="toggleDark" />
         <span class="user-name">{{ authStore.user?.realName || authStore.user?.username }}</span>
@@ -57,6 +58,7 @@ watch(() => route.path, (p) => { activeTab.value = p }, { immediate: true })
 .student-layout{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:var(--bg-page)}
 .topbar{height:50px;background:linear-gradient(135deg,#6366f1,#8b5cf6,#a855f7);display:flex;align-items:center;justify-content:space-between;padding:0 16px;flex-shrink:0;box-shadow:0 2px 12px rgba(99,102,241,.3)}
 .topbar-title{color:#fff;font-size:17px;font-weight:700;letter-spacing:.5px}
+.student-chip{margin-left:8px;background:rgba(255,255,255,.92);border:none}
 .topbar-right{display:flex;align-items:center;gap:12px}
 .user-name{color:rgba(255,255,255,.9);font-size:13px;font-weight:500}
 .content{flex:1;overflow-y:auto;padding:16px 12px 8px}

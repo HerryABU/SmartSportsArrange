@@ -24,6 +24,10 @@ public class RegistrationExcelModel {
     @ExcelProperty(value = "班级", index = 4)
     private String className;
 
-    @ExcelProperty(value = "备注", index = 5)
+    /** 团队标识号（团队项目分组用，如 A组/B组）；非团队项目留空 */
+    @ExcelProperty(value = "团队标识号", index = 5)
+    private String teamTag;
+
+    @ExcelProperty(value = "备注", index = 6)
     private String remark;
 }

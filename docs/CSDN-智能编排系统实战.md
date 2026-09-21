@@ -19,7 +19,7 @@ SmartSportsArrange 的目标，就是把这些流程**搬到一个系统里**，
 
 ## 二、技术架构与功能全景
 
-后端 **Spring Boot 3.4（Java 21）**，前端 **Vue 3 + Vite + Element Plus + Pinia + GSAP**，前后端最终打包进**同一个可执行 JAR**，零配置启动。
+后端 **Spring Boot 3.4（Java 21）**，前端 **Vue 3 + Vite + Element Plus + Pinia（动效走纯 CSS 过渡，无第三方动画库）**，前后端最终打包进**同一个可执行 JAR**，零配置启动。
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -42,7 +42,7 @@ SmartSportsArrange 的目标，就是把这些流程**搬到一个系统里**，
 | 安全 | Spring Security + JWT 0.12 | 无状态鉴权 |
 | ORM | Spring Data JPA + Hibernate | 实体 8 张表 |
 | Excel | EasyExcel 4.0.3 | 名单/成绩批量导入导出 |
-| 前端 | Vue 3 + Vite 6 + Element Plus 2.14 | 含 GSAP 入场动画 |
+| 前端 | Vue 3 + Vite 6 + Element Plus 2.14 | CSS 变量主题 + 过渡动效（无 GSAP） |
 
 ---
 
@@ -156,12 +156,12 @@ private static void autoDetectConsoleEncoding() {
 
 - `vite.config.js` 的构建输出指向 `../sports-backend/src/main/resources/static`；
 - 后端用 `SpaFallbackConfig` 做 SPA 回退（未知路由转发到 `index.html`）；
-- 一键脚本 `build.ps1`：前端 Vite → 后端 Maven → 根目录产出 `sports-1.0.0.jar`。
+- 一键脚本 `build.ps1`：前端 Vite → 后端 Maven → 根目录产出 `sports-2.0.0.jar`。
 
 最终用户拿到一个 JAR：
 
 ```bash
-java -jar sports-1.0.0.jar        # 默认 SQLite，零配置，访问 http://localhost:8080
+java -jar sports-2.0.0.jar        # 默认 SQLite，零配置，访问 http://localhost:8080
 ```
 
 ---

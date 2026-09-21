@@ -23,5 +23,9 @@ public interface EventRepository extends JpaRepository<Event, Long>, JpaSpecific
 
     List<Event> findByIsEnabledTrueOrderBySortOrderAsc();
 
+    Optional<Event> findByNameAndIsEnabledTrue(String name);
+
+    List<Event> findByIsEnabledTrueAndNameContaining(String name);
+
     boolean existsByCode(String code);
 }

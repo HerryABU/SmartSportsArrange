@@ -2,12 +2,14 @@ package com.sports.service;
 
 import com.alibaba.excel.EasyExcel;
 import com.sports.entity.ClassInfo;
+import com.sports.repository.AthleteRepository;
 import com.sports.repository.ClassInfoRepository;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -29,6 +31,7 @@ import java.util.stream.Collectors;
 public class ClassService {
 
     private final ClassInfoRepository classInfoRepository;
+    private final AthleteRepository athleteRepository;
     private final ExcelService excelService;
     private final com.sports.repository.UserRepository userRepository;
     private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
@@ -42,6 +45,42 @@ public class ClassService {
             return cb.and(predicates.toArray(new Predicate[0]));
         };
         return classInfoRepository.findAll(spec, pageable);
+    }
+
+    /**
+     * 班级列表（管理页专用）：支持 年级 + 关键字(班名/编号/班主任) 检索；
+     * studentCount 返回该班<b>真实运动员人数</b>（而非手填静态值），便于核对花名册是否齐全。
+     */
+    @Transactional(readOnly = true)
+    public Page<Map<String, Object>> listDetail(Pageable pageable, String grade, String keyword) {
+        Specification<ClassInfo> spec = (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            if (grade != null && !grade.isBlank())
+                predicates.add(cb.equal(root.get("grade"), grade));
+            if (keyword != null && !keyword.isBlank()) {
+                String like = "%" + keyword.trim() + "%";
+                predicates.add(cb.or(
+                        cb.like(root.get("name"), like),
+                        cb.like(root.get("code"), like),
+                        cb.like(root.get("teacherName"), like)));
+            }
+            return cb.and(predicates.toArray(new Predicate[0]));
+        };
+        Page<ClassInfo> page = classInfoRepository.findAll(spec, pageable);
+        List<Map<String, Object>> rows = page.getContent().stream().map(ci -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", ci.getId());
+            m.put("name", ci.getName());
+            m.put("grade", ci.getGrade());
+            m.put("code", ci.getCode());
+            m.put("teacherName", ci.getTeacherName());
+            m.put("phone", ci.getPhone());
+            m.put("isParticipating", ci.getIsParticipating());
+            m.put("remark", ci.getRemark());
+            m.put("studentCount", athleteRepository.countByClassId(ci.getId()));
+            return m;
+        }).collect(Collectors.toList());
+        return new PageImpl<>(rows, pageable, page.getTotalElements());
     }
 
     @Transactional(readOnly = true)

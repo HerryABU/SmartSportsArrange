@@ -1,5 +1,5 @@
 <template>
-  <div class="teacher-layout">
+  <div class="teacher-layout role-root" :class="isAdmin ? 'role-admin' : 'role-teacher'">
     <!-- Desktop sidebar -->
     <div class="sidebar">
       <div class="sidebar-header">
@@ -10,27 +10,40 @@
       </div>
       <el-menu :default-active="activeMenu" router class="sidebar-menu">
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="基础数据">
+        <el-menu-item-group title="① 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
-          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员管理</span></el-menu-item>
-          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>项目管理</span></el-menu-item>
+          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
+          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
+          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="赛事管理">
-          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
-          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
-          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
-          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
-          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
+        <el-menu-item-group title="② 编排比赛">
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
+          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
+          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>统计报表</span></el-menu-item>
+        <el-menu-item-group title="③ 统计排名">
+          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
+          <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+          <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
+          <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
+        <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
+        <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
+        <el-menu-item index="/referee/dashboard"><el-icon><Medal /></el-icon><span>裁判工作台</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
           <div style="padding:4px 16px;font-size:11px;color:rgba(255,255,255,.35)">管理员专用</div>
+          <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=users"><el-icon><Avatar /></el-icon><span>用户管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=batch"><el-icon><MagicStick /></el-icon><span>批量创建</span></el-menu-item>
         </template>
       </el-menu>
+      <div class="sidebar-foot">
+        <el-button class="foot-btn" :icon="Guide" @click="guideVisible = true">🧭 新手引导</el-button>
+      </div>
     </div>
 
     <!-- Mobile drawer -->
@@ -40,26 +53,39 @@
       </template>
       <el-menu :default-active="activeMenu" router class="sidebar-menu" @select="drawerVisible = false">
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="基础数据">
+        <el-menu-item-group title="① 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
-          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员管理</span></el-menu-item>
-          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>项目管理</span></el-menu-item>
+          <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
+          <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
+          <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
+          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="赛事管理">
-          <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名管理</span></el-menu-item>
-          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>智能编排</span></el-menu-item>
-          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>项目编排</span></el-menu-item>
-          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩管理</span></el-menu-item>
-          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>排名积分</span></el-menu-item>
+        <el-menu-item-group title="② 编排比赛">
+          <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
+          <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
+          <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
+          <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>统计报表</span></el-menu-item>
+        <el-menu-item-group title="③ 统计排名">
+          <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
+          <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
+          <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
+          <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
+        <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
+        <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
+        <el-menu-item index="/referee/dashboard"><el-icon><Medal /></el-icon><span>裁判工作台</span></el-menu-item>
         <template v-if="isAdmin">
           <el-divider style="margin:8px 0;border-color:rgba(255,255,255,.1)" />
+          <el-menu-item index="/teacher/referees"><el-icon><Medal /></el-icon><span>裁判管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=users"><el-icon><Avatar /></el-icon><span>用户管理</span></el-menu-item>
           <el-menu-item index="/teacher/settings?tab=batch"><el-icon><MagicStick /></el-icon><span>批量创建</span></el-menu-item>
         </template>
       </el-menu>
+      <div class="sidebar-foot">
+        <el-button class="foot-btn" :icon="Guide" @click="guideVisible = true">🧭 新手引导</el-button>
+      </div>
     </el-drawer>
 
     <div class="main-container">
@@ -101,6 +127,8 @@
       </el-form>
       <template #footer><el-button @click="showPwd=false">取消</el-button><el-button type="primary" @click="doPwd" :loading="pwdLoading">确认</el-button></template>
     </el-dialog>
+
+    <OnboardingGuide v-model="guideVisible" />
   </div>
 </template>
 
@@ -109,8 +137,9 @@ import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand } from '@element-plus/icons-vue'
+import { Expand, Guide, Location, Medal } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import OnboardingGuide from '@/components/OnboardingGuide.vue'
 
 const route = useRoute(); const router = useRouter(); const authStore = useAuthStore()
 const activeMenu = ref('/teacher/dashboard'); const title = computed(()=>route.meta?.title||'')
@@ -118,6 +147,7 @@ const isAdmin = computed(()=>authStore.isAdmin)
 const showPwd = ref(false); const pwdLoading = ref(false)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 const drawerVisible = ref(false)
+const guideVisible = ref(false)
 const pf = reactive({old:'',new1:'',new2:''})
 
 function toggleDark() {
@@ -138,8 +168,19 @@ async function doPwd() {
   try { await request.post('/auth/change-password',{oldPassword:pf.old,newPassword:pf.new1}); ElMessage.success('密码修改成功'); showPwd.value=false }
   catch(e){} finally { pwdLoading.value=false }
 }
-onMounted(()=>{activeMenu.value=route.path})
-watch(() => route.path, (p) => { activeMenu.value = p }, { immediate: true })
+onMounted(()=>{
+  activeMenu.value=route.fullPath
+  // 首次部署后自动弹出新手引导（Setup 安装成功时写入 sp_just_installed）
+  try {
+    const justInstalled = localStorage.getItem('sp_just_installed')
+    const guideDone = localStorage.getItem('sp_guide_done')
+    if (justInstalled && !guideDone) {
+      guideVisible.value = true
+      localStorage.removeItem('sp_just_installed')
+    }
+  } catch (e) {}
+})
+watch(() => route.fullPath, (p) => { activeMenu.value = p }, { immediate: true })
 </script>
 
 <style scoped>
@@ -153,7 +194,10 @@ watch(() => route.path, (p) => { activeMenu.value = p }, { immediate: true })
 .sidebar-menu :deep(.el-menu-item-group__title) { color:rgba(255,255,255,.3); font-size:11px; padding:12px 16px 4px; letter-spacing:.5px; }
 .sidebar-menu :deep(.el-menu-item) { color:rgba(255,255,255,.6)!important; margin:2px 8px; border-radius:10px; height:42px; line-height:42px; font-size:13px; transition:all .2s; }
 .sidebar-menu :deep(.el-menu-item:hover) { background:rgba(255,255,255,.08)!important; color:#fff!important; }
-.sidebar-menu :deep(.el-menu-item.is-active) { background:linear-gradient(135deg,rgba(59,130,246,.85),rgba(99,102,241,.85))!important; color:#fff!important; box-shadow:0 4px 12px rgba(59,130,246,.3); }
+.sidebar-menu :deep(.el-menu-item.is-active) { background:linear-gradient(135deg,var(--role-accent),var(--role-accent-2))!important; color:#fff!important; box-shadow:0 4px 12px rgba(59,130,246,.3); }
+.sidebar-foot { padding: 12px 16px 16px; }
+.foot-btn { width:100%; justify-content:flex-start; color:rgba(255,255,255,.82)!important; background:rgba(255,255,255,.08)!important; border:1px solid rgba(255,255,255,.14)!important; font-size:13px; }
+.foot-btn:hover { background:rgba(255,255,255,.18)!important; color:#fff!important; }
 .main-container { flex:1; display:flex; flex-direction:column; overflow:hidden; }
 .header { height:52px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:var(--bg-header); backdrop-filter:blur(12px); border-bottom:1px solid var(--border-light); flex-shrink:0; }
 .header-right { display:flex; align-items:center; gap:8px; }

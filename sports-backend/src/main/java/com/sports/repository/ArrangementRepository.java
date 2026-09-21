@@ -16,13 +16,93 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
 
     List<Arrangement> findByEventId(Long eventId);
 
-    Optional<Arrangement> findByEventIdAndAthleteId(Long eventId, Long athleteId);
+    /**
+     * 同一 事件×运动员 可能同时存在 预赛(preliminary) 与 决赛(final) 两条编排（二次编排后），
+     * 单条 Optional 语义会触发 NonUniqueResultException。
+     * 取数规则：优先决赛轮；无决赛时取最新一条（id 最大）。
+     */
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND a.athlete.id = :athleteId ORDER BY CASE WHEN COALESCE(a.round, 'final') = 'final' THEN 0 ELSE 1 END ASC, a.id DESC")
+    List<Arrangement> findByEventIdAndAthleteIdAllRounds(@Param("eventId") Long eventId, @Param("athleteId") Long athleteId);
 
-    List<Arrangement> findByEventIdAndGradeAndGender(Long eventId, String grade, String gender);
+    default Optional<Arrangement> findByEventIdAndAthleteId(Long eventId, Long athleteId) {
+        List<Arrangement> rows = findByEventIdAndAthleteIdAllRounds(eventId, athleteId);
+        if (rows.isEmpty()) return Optional.empty();
+        // 优先决赛轮（round 为 null 视作 final，历史 NULL 行兼容），取该轮 id 最大的一条；否则取全轮 id 最大
+        return rows.stream()
+                .filter(a -> "final".equals(a.getRound() == null ? "final" : a.getRound()))
+                .max(java.util.Comparator.comparing(Arrangement::getId))
+                .or(() -> rows.stream().max(java.util.Comparator.comparing(Arrangement::getId)));
+    }
 
+    /** 按赛次查询编排（历史 NULL 行视作 final） */
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round ORDER BY a.heat ASC, a.lane ASC")
+    List<Arrangement> findByEventIdAndRoundOrderByHeatAscLaneAsc(@Param("eventId") Long eventId, @Param("round") String round);
+
+    /** 全部赛次编排（兼容历史调用/导出） */
     List<Arrangement> findByEventIdOrderByHeatAscLaneAsc(Long eventId);
 
-    List<Arrangement> findByEventIdAndHeatOrderByLaneAsc(Long eventId, Integer heat);
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round")
+    List<Arrangement> findByEventIdAndRound(@Param("eventId") Long eventId, @Param("round") String round);
+
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.grade = :grade AND a.gender = :gender")
+    List<Arrangement> findByEventRoundGradeGender(@Param("eventId") Long eventId,
+                                                  @Param("round") String round,
+                                                  @Param("grade") String grade,
+                                                  @Param("gender") String gender);
+
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.heat = :heat")
+    List<Arrangement> findByEventRoundHeat(@Param("eventId") Long eventId,
+                                           @Param("round") String round,
+                                           @Param("heat") Integer heat);
+
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.athlete.id = :athleteId")
+    Optional<Arrangement> findByEventRoundAthleteId(@Param("eventId") Long eventId,
+                                                    @Param("round") String round,
+                                                    @Param("athleteId") Long athleteId);
+
+    @Modifying
+    @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round")
+    void deleteByEventIdAndRound(@Param("eventId") Long eventId, @Param("round") String round);
+
+    @Modifying
+    @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.grade = :grade AND a.gender = :gender")
+    void deleteByEventRoundGradeGender(@Param("eventId") Long eventId, @Param("round") String round,
+                                       @Param("grade") String grade, @Param("gender") String gender);
+
+    /**
+     * U12/B18：仅删除「非人工锁定」行——自动重排时保留 isManual=true 的人工调整项，避免覆盖。
+     */
+    /**
+     * U12/B18：只取「人工锁定」行。
+     *
+     * <p><b>必须在 SQL 层过滤，不能先查出整轮再在 Java 里 filter。</b>
+     * 原因：紧随其后会执行 {@link #deleteNonManualByEventRoundGradeGender} 这样的
+     * bulk JPQL DELETE，bulk delete 绕过持久化上下文——被删掉的行仍以托管实体形式留在
+     * 当前 session 里。SQLite 的 {@code id integer} 主键在删除最大 id 后会复用该 id，
+     * 新插入行拿到同一个 id 时就会撞上 session 里那个「已删除但仍在托管」的实例，
+     * 抛 Hibernate 的
+     * 「A different object with the same identifier value was already associated with the session」。
+     * 只查锁定行即可完全不触碰待删行，从根上避免该冲突。</p>
+     */
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round "
+            + "AND a.grade = :grade AND a.gender = :gender AND a.isManual = true "
+            + "ORDER BY a.heat ASC, a.lane ASC")
+    List<Arrangement> findManualByEventRoundGradeGender(@Param("eventId") Long eventId,
+                                                       @Param("round") String round,
+                                                       @Param("grade") String grade,
+                                                       @Param("gender") String gender);
+
+    @Modifying
+    @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round "
+            + "AND a.grade = :grade AND a.gender = :gender AND (a.isManual = false OR a.isManual IS NULL)")
+    void deleteNonManualByEventRoundGradeGender(@Param("eventId") Long eventId, @Param("round") String round,
+                                                @Param("grade") String grade, @Param("gender") String gender);
+
+    @Query("SELECT a FROM Arrangement a WHERE a.event.id = :eventId AND COALESCE(a.round, 'final') = :round AND a.qualified = true ORDER BY a.prelimRank ASC")
+    List<Arrangement> findQualifiedByEventIdAndRound(@Param("eventId") Long eventId, @Param("round") String round);
+
+    @Query("SELECT COUNT(a) FROM Arrangement a WHERE a.event.id = :eventId AND a.round = 'preliminary'")
+    long countPreliminaryByEventId(@Param("eventId") Long eventId);
 
     @Query("SELECT MAX(a.version) FROM Arrangement a WHERE a.event.id = :eventId")
     Integer findMaxVersionByEventId(@Param("eventId") Long eventId);

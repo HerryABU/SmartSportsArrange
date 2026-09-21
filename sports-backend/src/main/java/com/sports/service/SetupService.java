@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.File;
 import java.sql.Connection;
@@ -111,31 +113,35 @@ public class SetupService {
             throw new IllegalArgumentException("不支持的数据库类型: " + dbType);
         }
 
-        // 1. 数据库配置：MySQL 场景写入 db-config.json（重启后自动连接）
-        boolean needRestart = false;
-        if ("mysql".equals(dbType)) {
-            writeJsonFile(DB_CONFIG_FILE, body.get("db"));
-            needRestart = true;
-        }
+        // 1. 数据库配置：MySQL 场景需要重启后连接（db-config.json 移到事务提交后落盘）
+        boolean needRestart = "mysql".equals(dbType);
 
-        // 2. 写安装配置（站点 + 管理员），供重启后 DataInitializer 重建管理员/站点
+        // 2. 安装配置（站点 + 管理员），供重启后 DataInitializer 重建管理员/站点
         Map<String, Object> setupConfig = new LinkedHashMap<>();
         setupConfig.put("siteName", siteName);
         setupConfig.put("siteDescription", siteDescription);
         setupConfig.put("adminUsername", adminUsername.trim());
         setupConfig.put("adminPasswordHash", passwordEncoder.encode(adminPassword));
-        writeJsonFile(SETUP_CONFIG_FILE, setupConfig);
 
-        // 3. 在当前库创建管理员账号（SQLite 场景立即可用）
+        // 3. 在当前库创建管理员账号（SQLite 场景立即可用；MySQL 场景重启后由 ensureInstalledData 重建）
         createAdmin(adminUsername.trim(), adminPassword);
 
         // 4. 写站点名到当前库配置（SQLite 场景立即可见）
         saveSiteConfig(siteName, siteDescription);
 
-        // 5. 写入安装标记（此后安装接口一律拒绝）
-        writeFlag();
-
-        log.info("建站向导安装完成: siteName={}, dbType={}, admin={}", siteName, dbType, adminUsername);
+        // 5. M3 修复：文件写入移到事务提交后（afterCommit），避免“DB 回滚但 installed.flag 已写”的半安装态。
+        //    只有 DB 事务成功提交，才落盘 db-config / setup-config / installed.flag。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                if (needRestart) {
+                    writeJsonFile(DB_CONFIG_FILE, body.get("db"));
+                }
+                writeJsonFile(SETUP_CONFIG_FILE, setupConfig);
+                writeFlag();
+                log.info("建站向导安装完成（已落盘）: siteName={}, dbType={}, admin={}", siteName, dbType, adminUsername);
+            }
+        });
 
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("installed", true);

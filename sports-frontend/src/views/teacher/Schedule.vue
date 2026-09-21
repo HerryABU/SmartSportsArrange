@@ -4,21 +4,56 @@
     <el-card shadow="never" class="toolbar-card">
       <div class="toolbar">
         <div class="toolbar-left">
-          <el-tag type="primary" effect="dark" size="large" round>📅 项目编排</el-tag>
-          <span class="hint">将比赛项目自动调度到「天 × 时段 × 场地」时间表</span>
+          <el-tag type="primary" effect="dark" size="large" round>📅 赛程编排</el-tag>
+          <span class="hint">先配置运动会日期/时段/年级顺序，再一键生成赛程（径赛串行、田赛并行）</span>
         </div>
         <div class="toolbar-right">
-          <el-button type="primary" :icon="MagicStick" @click="showAutoDialog = true">自动编排</el-button>
+          <!-- U39/B36：规则模式 / 优化模式 切换（三级求解梯度的最低层 vs 全链路求解） -->
+          <el-tooltip placement="top" effect="light">
+            <template #content>
+              <div style="max-width: 320px; line-height: 1.7">
+                <b>规则模式</b>：确定性规则编排（蛇形分组 + 固定分道 + 时间栅格顺序放置），毫秒级出结果、完全可复现、参数透明可解释——与豪杰/索美同级<br/>
+                <b>优化模式</b>：Timefold 约束求解 + 遗传算法 + 大邻域搜索，权衡兼项冲突与场地利用率，秒级出更优方案——本项目独有<br/>
+                两种模式都经过同一套自检（场地重叠 / 赶场 / 漏排）与下界 gap 评估
+              </div>
+            </template>
+            <el-radio-group v-model="arrangeMode" size="default" class="mode-switch" @change="onArrangeModeChange">
+              <el-radio-button value="rule">规则模式</el-radio-button>
+              <el-radio-button value="optimize">优化模式</el-radio-button>
+            </el-radio-group>
+          </el-tooltip>
+          <el-button :icon="Setting" @click="openMeetConfig">运动会日程配置</el-button>
+          <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">
+            {{ arrangeMode === 'rule' ? '按规则编排' : '一键编排赛程' }}
+          </el-button>
           <el-button type="success" :icon="Download" @click="exportSheet" :disabled="!items.length">导出赛程表</el-button>
           <el-button type="warning" :icon="RefreshLeft" @click="clearAll" :disabled="!items.length">清空</el-button>
         </div>
       </div>
     </el-card>
 
+    <el-alert type="info" show-icon :closable="false" style="border-radius: 10px">
+      <template #title>
+        编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；
+        径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自日程配置，可每天不同。
+      </template>
+      <div v-if="lastArrangeMode" style="margin-top: 4px">
+        <el-tag size="small" :type="lastArrangeMode === 'rule' ? 'warning' : 'success'" effect="plain">
+          当前赛程由「{{ lastArrangeMode === 'rule' ? '规则模式' : '优化模式' }}」生成
+          <template v-if="lastArrangeMode === 'rule' && lastRuleInfo">
+            · 耗时 {{ lastRuleInfo.elapsedMillis }}ms · 残余兼项冲突 {{ lastRuleInfo.residualConflicts }} 处
+          </template>
+        </el-tag>
+        <span v-if="lastArrangeMode === 'rule'" style="margin-left: 8px; font-size: 12px; color: #909399">
+          想要更优的兼项规避与场地利用率？切换「优化模式」重新编排
+        </span>
+      </div>
+    </el-alert>
+
     <!-- 空态 -->
     <el-card v-if="!items.length" shadow="never" class="empty-card">
-      <el-empty description="暂无赛程，点击「自动编排」一键生成项目日程">
-        <el-button type="primary" :icon="MagicStick" @click="showAutoDialog = true">立即自动编排</el-button>
+      <el-empty description="暂无赛程，先配置运动会日程，再点击「一键编排赛程」">
+        <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">立即编排</el-button>
       </el-empty>
     </el-card>
 
@@ -28,7 +63,10 @@
         <template #header>
           <div class="day-header">
             <span class="day-title">🏅 第 {{ day }} 天</span>
-            <el-tag type="info" effect="plain" round>{{ dayItems.length }} 个项目</el-tag>
+            <el-tag type="info" effect="plain" round v-if="dayItems[0]?.scheduleDate">
+              {{ dayItems[0].scheduleDate }}
+            </el-tag>
+            <el-tag type="info" effect="plain" round>{{ dayItems.length }} 个单元</el-tag>
           </div>
         </template>
 
@@ -36,22 +74,46 @@
         <div v-for="(slotItems, slot) in groupBySlot(dayItems)" :key="slot" class="slot-block">
           <div class="slot-title">
             <el-tag :type="slotTag(slot)" effect="plain">{{ slot }}</el-tag>
+            <span class="slot-time" v-if="slotItems[0]?.startTime">{{ slotItems[0].startTime }} 起</span>
           </div>
           <el-table :data="slotItems" size="small" border stripe>
-            <el-table-column prop="startTime" label="开始" width="80" align="center" />
-            <el-table-column prop="endTime" label="结束" width="80" align="center" />
+            <el-table-column prop="grade" label="年级" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" type="info" effect="plain">{{ row.grade || '不分年级' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="eventName" label="项目名称" min-width="170">
+              <template #default="{ row }">
+                <span v-if="row.isTeam" class="team-mark" title="团体赛">团</span>
+                {{ row.eventName }}
+              </template>
+            </el-table-column>
+            <el-table-column label="轮次" width="76" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.round === 'preliminary' ? 'warning' : 'primary'" effect="plain">
+                  {{ row.round === 'preliminary' ? '预赛' : '决赛' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="startTime" label="开始" width="90" align="center" />
+            <el-table-column prop="endTime" label="结束" width="90" align="center" />
             <el-table-column prop="venue" label="场地" width="110" align="center">
               <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.venue }}</el-tag></template>
             </el-table-column>
-            <el-table-column prop="eventName" label="项目名称" min-width="160" />
-            <el-table-column prop="eventCode" label="编码" width="90" align="center" />
-            <el-table-column prop="category" label="类别" width="80" align="center">
+            <el-table-column label="类别/道次" width="110" align="center">
               <template #default="{ row }">
-                <el-tag size="small" :type="row.category === '径赛' ? 'success' : 'warning'">{{ row.category || '—' }}</el-tag>
+                <el-tag size="small" :type="row.isTrack ? 'success' : 'warning'">
+                  {{ row.isTrack ? '径赛' : '田赛' }}{{ row.isTrack ? ` ·${row.laneCount}道` : '' }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="durationMinutes" label="用时" width="80" align="center">
               <template #default="{ row }">{{ row.durationMinutes }} 分</template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="140">
+              <template #default="{ row }">
+                <span class="row-remark">{{ row.remark || '—' }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="操作" width="90" align="center" fixed="right">
               <template #default="{ row }">
@@ -63,41 +125,254 @@
       </el-card>
     </template>
 
-    <!-- 自动编排配置对话框 -->
-    <el-dialog v-model="showAutoDialog" title="自动编排配置" width="500px" :close-on-click-modal="false">
-      <el-form :model="autoConfig" label-width="120px" label-position="left">
+    <!-- B06/U05：兼项冲突检测 —— 同一运动员在相近时间被排到不同项目 -->
+    <el-card shadow="never" class="conflict-card">
+      <template #header>
+        <div class="conflict-header">
+          <span>⚔️ 兼项冲突检测</span>
+          <span class="hint">同一运动员的两个项目时间重叠（或间隔小于 15 分钟）时告警，附根因与调整建议</span>
+          <div class="conflict-actions">
+            <el-tag v-if="conflictSummary" size="small"
+              :type="conflictSummary.blocker ? 'danger' : (conflictSummary.total ? 'warning' : 'success')">
+              共 {{ conflictSummary.total }} 处（严重 {{ conflictSummary.blocker }} / 一般 {{ conflictSummary.warn }}），涉及 {{ conflictSummary.athleteCount }} 人
+            </el-tag>
+            <el-button size="small" type="primary" plain :icon="Search" :loading="conflictLoading" @click="loadConflicts">
+              检测冲突
+            </el-button>
+            <el-button size="small" type="success" plain :icon="Download"
+              :disabled="!conflictList.length" @click="exportConflicts">
+              导出清单
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <template v-if="conflictList.length">
+        <el-table :data="conflictPaged" border stripe size="small" max-height="420">
+          <el-table-column type="index" label="#" width="46" align="center" />
+          <el-table-column prop="severity" label="严重度" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.severity === '严重' ? 'danger' : 'warning'">{{ row.severity }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="type" label="类型" width="112" />
+          <el-table-column prop="athleteName" label="运动员" width="88" />
+          <el-table-column prop="athleteNumber" label="号码布" width="84" />
+          <el-table-column prop="eventAName" label="项目A" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="windowA" label="A 时间/场地" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="eventBName" label="项目B" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="windowB" label="B 时间/场地" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="gapMinutes" label="间隔(分)" width="84" align="center" />
+          <el-table-column prop="suggestion" label="调整建议" min-width="260" show-overflow-tooltip />
+        </el-table>
+        <el-pagination
+          v-if="conflictList.length > conflictPageSize"
+          v-model:current-page="conflictPage"
+          :page-size="conflictPageSize"
+          :total="conflictList.length"
+          layout="total, prev, pager, next"
+          style="margin-top:10px;justify-content:flex-end" />
+      </template>
+
+      <el-empty v-else
+        :description="conflictSummary ? '未检测到兼项冲突' : '点击「检测冲突」检查是否存在兼项冲突'"
+        :image-size="70" />
+    </el-card>
+
+    <!-- 运动会日程配置对话框（日期/时段/年级顺序/串行并行 全部可配置，不硬编码） -->
+    <el-dialog v-model="showConfigDialog" title="运动会日程配置" width="860px" :close-on-click-modal="false"
+      top="4vh">
+      <el-form label-width="130px" label-position="left">
+        <el-form-item label="运动会名称">
+          <el-input v-model="meetForm.meetName" maxlength="40" />
+        </el-form-item>
+        <el-form-item label="开始日期">
+          <el-date-picker v-model="meetForm.startDate" type="date" value-format="YYYY-MM-DD"
+            placeholder="选择第一天日期" style="width: 220px" @change="syncDates" />
+          <span class="hint" style="margin-left:12px">共 {{ meetForm.days }} 天，每天具体日期自动顺延</span>
+        </el-form-item>
         <el-form-item label="比赛天数">
-          <el-input-number v-model="autoConfig.days" :min="1" :max="10" />
+          <el-input-number v-model="meetForm.days" :min="1" :max="10" @change="syncDays" />
         </el-form-item>
-        <el-form-item label="时段">
-          <el-select v-model="autoConfig.time_slots" multiple allow-create default-first-option style="width:100%"
-            placeholder="如 上午/下午/晚上">
-            <el-option v-for="s in ['上午','下午','晚上']" :key="s" :label="s" :value="s" />
-          </el-select>
+        <el-form-item label="年级出场顺序">
+          <div style="width:100%">
+            <el-switch v-model="useCustomOrder" inline-prompt active-text="自定义顺序" inactive-text="跟随年级设置"
+              style="margin-bottom:8px" @change="onCustomOrderChange" />
+            <template v-if="!useCustomOrder">
+              <div>
+                <el-tag v-for="g in meetForm.gradeOrder" :key="g" style="margin-right:6px" size="small">
+                  {{ g }}
+                </el-tag>
+              </div>
+              <span class="hint" style="display:block;margin-top:6px">
+                出场顺序实时跟随「系统设置 → 年级管理」的 sortOrder；调整后重新点击「一键编排赛程」即生效。
+              </span>
+            </template>
+            <template v-else>
+              <div class="grade-order-edit">
+                <div v-for="(g, gi) in meetForm.gradeOrder" :key="g" class="grade-order-row">
+                  <span class="go-idx">{{ gi + 1 }}</span>
+                  <span class="go-name">{{ g }}</span>
+                  <el-button-group>
+                    <el-button :icon="Top" size="small" :disabled="gi === 0" title="上移" @click="moveGrade(gi, -1)" />
+                    <el-button :icon="Bottom" size="small" :disabled="gi === meetForm.gradeOrder.length - 1"
+                      title="下移" @click="moveGrade(gi, 1)" />
+                  </el-button-group>
+                </div>
+                <el-button link type="primary" @click="useCustomOrder = false">恢复跟随年级设置</el-button>
+              </div>
+              <span class="hint" style="display:block;margin-top:4px">
+                已启用自定义出场顺序（保存后以本处顺序为准）。
+              </span>
+            </template>
+          </div>
         </el-form-item>
+
+        <!-- 每天时段（各自独立，可不同） -->
+        <el-form-item label="每天时段">
+          <div style="width:100%">
+            <div v-for="dc in meetForm.dayConfigs" :key="dc.day" class="day-config-block">
+              <div class="day-config-title">
+                第 {{ dc.day }} 天
+                <span v-if="dc.date" class="hint">{{ dc.date }}</span>
+              </div>
+              <div v-for="(sl, si) in dc.slots" :key="sl.key" class="slot-row">
+                <el-select v-model="sl.name" style="width:100px">
+                  <el-option label="上午" value="上午" />
+                  <el-option label="下午" value="下午" />
+                  <el-option label="晚上" value="晚上" />
+                </el-select>
+                <el-time-select v-model="sl.start" start="06:00" step="00:10" end="22:00" style="width:130px"
+                  placeholder="开始" />
+                <span style="color:#909399">至</span>
+                <el-time-select v-model="sl.end" start="06:00" step="00:10" end="22:00" style="width:130px"
+                  placeholder="结束" />
+                <el-button link type="danger" :icon="Delete" @click="removeSlot(dc, si)" />
+              </div>
+              <el-button size="small" type="primary" plain :icon="Plus" @click="addSlot(dc)">添加时段</el-button>
+            </div>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="并数">
+          <div style="display:flex;gap:32px;align-items:flex-start;width:100%;flex-wrap:wrap">
+            <div>
+              <div class="hint" style="margin-bottom:4px">径赛（同时进行的项目数）</div>
+              <el-input-number v-model="meetForm.trackSlots" :min="1" :max="venueCount" size="small" />
+            </div>
+            <div>
+              <div class="hint" style="margin-bottom:4px">田赛（同时进行的项目数）</div>
+              <el-input-number v-model="meetForm.fieldSlots" :min="1" :max="venueCount" size="small" />
+            </div>
+            <div class="hint" style="margin-top:20px;flex:1;min-width:280px">
+              <b>并数</b>：1 = 该位次同一时刻只进行 1 个项目（串行）；n = 最多 n 个项目同时进行（并行）。<br />
+              <b>上限取决于场地数量</b>（当前 {{ venueCount }} 个场地），场地不足时编排会自动复用并提示。
+            </div>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="项目编排顺序">
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              自定义项目的编排先后顺序（田赛 + 径赛混排，各自在所属并发池内生效）；未列入的项目按项目排序号排在后面。
+            </div>
+            <div class="order-list">
+              <div class="hint" style="margin-bottom:4px">提示：可直接拖拽行（⠿ 手柄）调整项目顺序，松手后自动按新顺序重新编排并重新检测兼项冲突。</div>
+              <div v-for="(item, idx) in eventOrderList" :key="item.id" class="order-row"
+                   :class="{ 'dragging': dragIndex === idx }"
+                   draggable="true"
+                   @dragstart="onDragStart(idx, $event)"
+                   @dragover.prevent="onDragOver(idx, $event)"
+                   @drop="onDrop(idx)"
+                   @dragend="onDragEnd">
+                <span class="drag-handle" title="拖拽排序">⠿</span>
+                <el-tag size="small" :type="item.isTrack ? 'primary' : 'warning'" effect="plain">
+                  {{ item.isTrack ? '径' : '田' }}
+                </el-tag>
+                <span class="order-name">{{ item.name }}</span>
+                <span class="hint">{{ item.gradeGroup || '不分年级' }}</span>
+                <span style="flex:1"></span>
+                <el-button link size="small" :disabled="idx === 0 || reordering" @click="moveEvent(idx, 0)">置顶</el-button>
+                <el-button link size="small" :disabled="idx === 0 || reordering" @click="moveEvent(idx, -1)">上移</el-button>
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1 || reordering"
+                  @click="moveEvent(idx, 1)">下移</el-button>
+                <el-button link size="small" :disabled="idx === eventOrderList.length - 1 || reordering"
+                  @click="moveEvent(idx, 999)">置底</el-button>
+              </div>
+              <el-empty v-if="!eventOrderList.length" description="暂无启用项目" :image-size="48" />
+            </div>
+            <el-button size="small" plain @click="resetEventOrder">按项目排序号重置</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="田赛分组">
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              同一组的田赛项目会安排在同一时段并行进行（组内项目数受「田赛并发位数」约束，超出时自动分波）。
+            </div>
+            <div v-for="(g, gi) in meetForm.fieldGroups" :key="gi" class="group-row">
+              <el-input v-model="g.name" size="small" placeholder="组名（如 田赛A组）" style="width:150px" />
+              <el-select v-model="g.eventIds" multiple collapse-tags size="small" placeholder="选择田赛项目"
+                style="flex:1;min-width:220px">
+                <el-option v-for="e in fieldEvents" :key="e.id"
+                  :label="e.name + '（' + (e.gradeGroup || '不分年级') + '）'" :value="e.id" />
+              </el-select>
+              <el-button link type="danger" size="small" @click="meetForm.fieldGroups.splice(gi, 1)">删除</el-button>
+            </div>
+            <el-button size="small" type="primary" plain :icon="Plus" @click="addFieldGroup">添加分组</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="时长/间隔(分)">
+          <div style="display:flex;gap:8px;align-items:center;width:100%">
+            <span>项目上限</span>
+            <el-input-number v-model="meetForm.defaultDurationMinutes" :min="5" :max="300" :step="5" />
+            <span>间隔</span>
+            <el-input-number v-model="meetForm.defaultIntervalMinutes" :min="0" :max="60" />
+            <span>单组(径赛)</span>
+            <el-input-number v-model="meetForm.heatMinutes" :min="1" :max="60" />
+            <span>每人次(田赛)</span>
+            <el-input-number v-model="meetForm.fieldPerAthleteMinutes" :min="1" :max="60" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;width:100%;margin-top:8px">
+            <span>间隔下限</span>
+            <el-input-number v-model="meetForm.minIntervalMinutes" :min="1" :max="60" />
+            <span>压缩告警阈值</span>
+            <el-input-number v-model="meetForm.compressionWarnRatio" :min="1" :max="5" :step="0.1" :precision="1" />
+            <span class="hint">（被压到预计用时 1/阈值 以下时告警，建议 1.5）</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;width:100%;margin-top:8px">
+            <span>预赛-决赛最小间隔</span>
+            <el-input-number v-model="meetForm.finalMinGapMinutes" :min="10" :max="180" :step="5" />
+            <span class="hint">（B07/U06：预赛结束后至少间隔此时长再决赛，默认 45 分钟，建议 45~60）</span>
+          </div>
+        </el-form-item>
+
         <el-form-item label="场地">
-          <el-select v-model="autoConfig.venues" multiple allow-create default-first-option style="width:100%"
-            placeholder="如 田径场/田赛场地">
-            <el-option v-for="v in ['田径场','田赛场地']" :key="v" :label="v" :value="v" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="每时段时长(分)">
-          <el-input-number v-model="autoConfig.slot_minutes" :min="30" :max="480" :step="30" />
-        </el-form-item>
-        <el-form-item label="默认项目用时(分)">
-          <el-input-number v-model="autoConfig.per_event_minutes" :min="10" :max="120" :step="5" />
+          <div style="width:100%">
+            <div class="hint" style="margin-bottom:6px">
+              第 1 个场地为径赛主场地，其余供田赛并行使用；<b>并数上限取决于场地数量</b>，请先录全场地（名称 + 编码）。
+            </div>
+            <div v-for="(v, vi) in meetForm.venues" :key="vi" class="venue-row">
+              <el-input v-model="v.name" size="small" placeholder="场地名称（如 田赛A区）" style="width:190px" />
+              <el-input v-model="v.code" size="small" placeholder="编码（如 FIELD_A）" style="width:150px" />
+              <el-tag v-if="vi === 0" size="small" type="primary" effect="plain">径赛主场地</el-tag>
+              <span style="flex:1"></span>
+              <el-button link type="danger" size="small" :disabled="meetForm.venues.length <= 1"
+                @click="removeVenue(vi)">删除</el-button>
+            </div>
+            <el-button size="small" type="primary" plain :icon="Plus" @click="addVenue">添加场地</el-button>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAutoDialog = false">取消</el-button>
-        <el-button type="primary" :loading="arranging" :icon="MagicStick" @click="doAutoSchedule">
-          {{ arranging ? '编排中...' : '开始编排' }}
-        </el-button>
+        <el-button @click="showConfigDialog = false">取消</el-button>
+        <el-button type="primary" :loading="savingConfig" @click="saveMeetConfig">保存配置</el-button>
       </template>
     </el-dialog>
 
     <!-- 手动调整对话框 -->
-    <el-dialog v-model="showEditDialog" title="调整项目安排" width="440px" :close-on-click-modal="false">
+    <el-dialog v-model="showEditDialog" title="调整项目安排" width="460px" :close-on-click-modal="false">
       <el-form :model="editForm" label-width="100px">
         <el-form-item label="项目">
           <span class="edit-event-name">{{ editForm.eventName }}</span>
@@ -105,19 +380,27 @@
         <el-form-item label="天数">
           <el-input-number v-model="editForm.day" :min="1" :max="10" />
         </el-form-item>
+        <el-form-item label="日期" v-if="editForm.scheduleDate">
+          <span>{{ editForm.scheduleDate }}</span>
+        </el-form-item>
         <el-form-item label="时段">
           <el-select v-model="editForm.timeSlot" style="width:100%">
-            <el-option v-for="s in ['上午','下午','晚上']" :key="s" :label="s" :value="s" />
+            <el-option v-for="s in ['上午', '下午', '晚上']" :key="s" :label="s" :value="s" />
           </el-select>
         </el-form-item>
         <el-form-item label="开始时间">
-          <el-time-select v-model="editForm.startTime" start="07:00" step="00:10" end="21:00" style="width:100%" />
+          <el-time-select v-model="editForm.startTime" start="06:00" step="00:10" end="22:00" style="width:100%" />
         </el-form-item>
         <el-form-item label="结束时间">
-          <el-time-select v-model="editForm.endTime" start="07:00" step="00:10" end="21:00" style="width:100%" />
+          <el-time-select v-model="editForm.endTime" start="06:00" step="00:10" end="22:00" style="width:100%" />
         </el-form-item>
         <el-form-item label="场地">
           <el-input v-model="editForm.venue" placeholder="如 田径场" />
+        </el-form-item>
+        <el-form-item label="年级">
+          <el-select v-model="editForm.grade" style="width:100%" clearable placeholder="不分年级">
+            <el-option v-for="g in meetForm.gradeOrder" :key="g" :label="g" :value="g" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -131,31 +414,219 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, RefreshLeft, EditPen } from '@element-plus/icons-vue'
+import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
+import { downloadApi } from '@/utils/download'
 
 const loading = ref(false)
 const arranging = ref(false)
+const savingConfig = ref(false)
 const items = ref([])
-const showAutoDialog = ref(false)
 const showEditDialog = ref(false)
+const showConfigDialog = ref(false)
 const editingId = ref(null)
+// 年级出场顺序是否自定义（false=跟随系统设置·年级管理的 sortOrder，保存时回传空数组避免冻结）
+const useCustomOrder = ref(false)
+// U39/B36：编排模式（rule=规则模式，确定性毫秒级；optimize=优化模式，Timefold+GA+LNS）。
+// 记忆到 localStorage：用户上次的选择在下次登录后保持，避免误用不期望的模式
+const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
+function onArrangeModeChange() {
+  localStorage.setItem('spt.arrangeMode', arrangeMode.value)
+}
+// 最近一次编排的模式回显（来自后端结果，防止前后端认知漂移）
+const lastArrangeMode = ref('')
+// 最近一次规则编排的观测信息（algorithmPortfolio.rule）
+const lastRuleInfo = ref(null)
 
-const autoConfig = reactive({
+// 场地：名称 + 编码（并数上限取决于场地数量）
+const defaultVenueList = () => ([
+  { name: '田径场', code: 'TRACK' },
+  { name: '田赛A区', code: 'FIELD_A' },
+  { name: '田赛B区', code: 'FIELD_B' }
+])
+
+const emptySlot = { key: 'AM', name: '上午', start: '08:00', end: '11:30' }
+
+const meetForm = reactive({
+  meetName: '',
+  startDate: '',
   days: 2,
-  time_slots: ['上午', '下午'],
-  venues: ['田径场'],
-  slot_minutes: 180,
-  per_event_minutes: 30
+  gradeOrder: [],
+  dayConfigs: [
+    { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
+    { day: 2, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] }
+  ],
+  trackSlots: 1,
+  fieldSlots: 2,
+  eventOrder: [],
+  fieldGroups: [],
+  defaultDurationMinutes: 30,
+  defaultIntervalMinutes: 5,
+  heatMinutes: 6,
+  fieldPerAthleteMinutes: 3,
+  // B05/U07：项目间隔下限 + 压缩告警阈值（被压到预计用时的 1/ratio 以下即告警）
+  minIntervalMinutes: 5,
+  compressionWarnRatio: 1.5,
+  // B07/U06：预赛→决赛最小间隔（默认 45 分钟）
+  finalMinGapMinutes: 45,
+  venues: defaultVenueList()
 })
+
+/** 有效场地数（名称为空的不计），至少 1 —— 并数上限取决于它 */
+const venueCount = computed(() =>
+  Math.max(1, meetForm.venues.filter(v => v && String(v.name || '').trim()).length))
+
+function addVenue() {
+  meetForm.venues.push({ name: '', code: '' })
+}
+
+function removeVenue(index) {
+  if (meetForm.venues.length <= 1) return
+  meetForm.venues.splice(index, 1)
+}
+
+// ==================== 项目编排顺序 / 田赛分组 ====================
+const allEvents = ref([])
+const eventOrderList = ref([])
+const fieldEvents = computed(() => allEvents.value.filter(e => !e.isTrack))
+
+/** 按 meetForm.eventOrder 排出可编辑列表；未列入的项目按 sortOrder 追加在后 */
+function buildEventOrder() {
+  const pos = new Map((meetForm.eventOrder || []).map((id, i) => [id, i]))
+  eventOrderList.value = [...allEvents.value].sort((a, b) => {
+    const pa = pos.has(a.id) ? pos.get(a.id) : Number.MAX_SAFE_INTEGER
+    const pb = pos.has(b.id) ? pos.get(b.id) : Number.MAX_SAFE_INTEGER
+    if (pa !== pb) return pa - pb
+    return (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+  })
+}
+
+/** dir: -1 上移 / 1 下移 / 0 置顶 / 999 置底 */
+function moveEvent(index, dir) {
+  const arr = [...eventOrderList.value]
+  if (dir === 0) {
+    const [it] = arr.splice(index, 1)
+    arr.unshift(it)
+  } else if (dir === 999) {
+    const [it] = arr.splice(index, 1)
+    arr.push(it)
+  } else {
+    const target = index + dir
+    if (target < 0 || target >= arr.length) return
+    ;[arr[index], arr[target]] = [arr[target], arr[index]]
+  }
+  eventOrderList.value = arr
+}
+
+function resetEventOrder() {
+  eventOrderList.value = [...allEvents.value].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+}
+
+// ==================== 拖拽排序（HTML5 原生，无额外依赖）====================
+const dragIndex = ref(-1)
+const reordering = ref(false)
+
+/** 构造运动会日程配置提交体（与「保存」共用，确保拖拽调序提交的字段与手动保存完全一致） */
+function buildMeetSchedulePayload() {
+  const cleanVenues = (meetForm.venues || [])
+    .filter(v => v && String(v.name || '').trim())
+    .map(v => ({ name: String(v.name).trim(), code: String(v.code || '').trim() }))
+  return {
+    meetName: meetForm.meetName,
+    startDate: meetForm.startDate,
+    days: meetForm.dayConfigs.length,
+    dayConfigs: meetForm.dayConfigs,
+    // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
+    gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
+    venues: cleanVenues,
+    trackSlots: meetForm.trackSlots,
+    fieldSlots: meetForm.fieldSlots,
+    // 自定义项目顺序（仅提交当前列表顺序，未列入的项目由后端按排序号追加）
+    eventOrder: eventOrderList.value.map(e => e.id),
+    // 只提交非空分组（组内项目必须同期的田赛）
+    fieldGroups: (meetForm.fieldGroups || [])
+      .filter(g => g.eventIds && g.eventIds.length)
+      .map(g => ({ name: g.name, eventIds: [...g.eventIds] })),
+    defaultDurationMinutes: meetForm.defaultDurationMinutes,
+    defaultIntervalMinutes: meetForm.defaultIntervalMinutes,
+    heatMinutes: meetForm.heatMinutes,
+    fieldPerAthleteMinutes: meetForm.fieldPerAthleteMinutes,
+    // B05/U07：间隔下限 + 压缩告警阈值随配置提交
+    minIntervalMinutes: meetForm.minIntervalMinutes,
+    compressionWarnRatio: meetForm.compressionWarnRatio,
+    // B07/U06：预赛→决赛最小间隔随配置提交
+    finalMinGapMinutes: meetForm.finalMinGapMinutes
+  }
+}
+
+function onDragStart(idx, ev) {
+  dragIndex.value = idx
+  if (ev && ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    ev.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+function onDragOver(idx, ev) {
+  if (ev) ev.preventDefault()
+  if (ev && ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+}
+
+function onDrop(idx) {
+  const from = dragIndex.value
+  dragIndex.value = -1
+  if (from < 0 || from === idx) return
+  const arr = [...eventOrderList.value]
+  const [it] = arr.splice(from, 1)
+  arr.splice(idx, 0, it)
+  eventOrderList.value = arr
+  commitEventOrder()
+}
+
+function onDragEnd() {
+  dragIndex.value = -1
+}
+
+/**
+ * 拖拽落定后：保存新顺序 → 按新顺序重新编排（规则模式，确定性可复现）→ 重新计算兼项冲突。
+ * 与「一键编排」「检测冲突」共用同一套判定，确保人工调序后冲突结果与自动编排一致。
+ */
+async function commitEventOrder() {
+  if (!eventOrderList.value.length) return
+  reordering.value = true
+  try {
+    await request.put('/system/meet-schedule', buildMeetSchedulePayload())
+    await request.post('/schedule/auto', { mode: 'rule' })
+    await loadConflicts()
+    ElMessage.success('顺序已调整，已按新顺序重新编排并检测兼项冲突')
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    reordering.value = false
+  }
+}
+
+function addFieldGroup() {
+  meetForm.fieldGroups.push({ name: '田赛组' + (meetForm.fieldGroups.length + 1), eventIds: [] })
+}
+
+async function fetchEvents() {
+  try {
+    const res = await request.get('/events')
+    const list = Array.isArray(res) ? res : (res?.records || [])
+    allEvents.value = list.filter(e => e.isEnabled !== false && e.enabled !== false)
+  } catch (e) {
+    allEvents.value = []
+  }
+}
 
 const editForm = reactive({
-  eventId: null, eventName: '', day: 1, timeSlot: '上午',
-  startTime: '', endTime: '', venue: '田径场'
+  id: null, eventId: null, eventName: '', day: 1, scheduleDate: '', grade: '',
+  timeSlot: '上午', startTime: '', endTime: '', venue: '田径场'
 })
 
-// 按天分组（对象：day → items）
+// 按天分组
 const groupedByDay = computed(() => {
   const groups = {}
   items.value.forEach(i => {
@@ -163,7 +634,6 @@ const groupedByDay = computed(() => {
     if (!groups[d]) groups[d] = []
     groups[d].push(i)
   })
-  // 按 day 升序返回
   return Object.keys(groups).sort((a, b) => a - b).reduce((acc, k) => {
     acc[k] = groups[k].sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''))
     return acc
@@ -193,33 +663,233 @@ async function fetchList() {
     const res = await request.get('/schedule')
     items.value = res.items || []
   } catch (e) {
-    console.error(e)
     items.value = []
   } finally {
     loading.value = false
   }
 }
 
-async function doAutoSchedule() {
-  if (!autoConfig.time_slots.length) { ElMessage.warning('请至少选择一个时段'); return }
-  if (!autoConfig.venues.length) { ElMessage.warning('请至少选择一个场地'); return }
-  arranging.value = true
+// ==================== 运动会日程配置 ====================
+function blankSlots() {
+  return [{ key: 'AM', name: '上午', start: '08:00', end: '11:30' },
+          { key: 'PM', name: '下午', start: '14:00', end: '17:30' }]
+}
+
+async function openMeetConfig() {
+  showConfigDialog.value = true
   try {
-    const res = await request.post('/schedule/auto', { ...autoConfig })
-    items.value = res.items || []
-    showAutoDialog.value = false
-    ElMessage.success('项目编排完成！共 ' + (res.total || 0) + ' 个项目')
+    const res = await request.get('/system/meet-schedule')
+    Object.assign(meetForm, res)
+    // 规范化 dayConfigs / slots
+    meetForm.dayConfigs = (res.dayConfigs || []).map((dc, i) => ({
+      day: dc.day || i + 1,
+      date: dc.date || '',
+      slots: (dc.slots && dc.slots.length ? dc.slots : blankSlots()).map(s => ({
+        key: s.key || s.name, name: s.name || '上午', start: s.start || '08:00', end: s.end || '11:30'
+      }))
+    }))
+    // 场地：兼容旧的字符串数组 ["田径场", …] 与新的对象数组 [{name, code}, …]
+    const rawVenues = Array.isArray(res.venues) ? res.venues : []
+    meetForm.venues = rawVenues.length
+      ? rawVenues.map(v => typeof v === 'string'
+        ? { name: v, code: '' }
+        : { name: v?.name || '', code: v?.code || '' })
+      : defaultVenueList()
+    // 并发位数（旧串行/并行配置由后端平滑换算为 1~n）
+    meetForm.trackSlots = Number(res.trackSlots) > 0 ? Number(res.trackSlots) : 1
+    meetForm.fieldSlots = Number(res.fieldSlots) > 0 ? Number(res.fieldSlots) : 2
+    // 自定义项目顺序与田赛分组
+    meetForm.eventOrder = Array.isArray(res.eventOrder) ? [...res.eventOrder] : []
+    meetForm.fieldGroups = (Array.isArray(res.fieldGroups) ? res.fieldGroups : [])
+      .map(g => ({ name: g?.name || '', eventIds: Array.isArray(g?.eventIds) ? [...g.eventIds] : [] }))
+    buildEventOrder()
+    // 服务端已自动填充 gradeOrder（跟随年级设置或已显式定制）
+    useCustomOrder.value = !!res.gradeOrderCustom
+    meetForm.gradeOrder = (res.gradeOrder && res.gradeOrder.length) ? [...res.gradeOrder] : []
+    defaultOrderSnapshot.value = [...meetForm.gradeOrder]
+  } catch (e) {
+    // 读取失败仍可编辑默认值
+  }
+}
+
+function onCustomOrderChange(val) {
+  // 从“跟随”切到“自定义”时，以当前（推导）顺序为底稿
+  if (val && !meetForm.gradeOrder.length) {
+    try {
+      meetForm.gradeOrder = [...defaultOrderSnapshot.value]
+    } catch (e) { /* ignore */ }
+  }
+}
+
+function moveGrade(index, dir) {
+  const target = index + dir
+  if (target < 0 || target >= meetForm.gradeOrder.length) return
+  const arr = [...meetForm.gradeOrder]
+  ;[arr[index], arr[target]] = [arr[target], arr[index]]
+  meetForm.gradeOrder = arr
+}
+
+// 打开配置时抓一份“跟随”底稿，供切到自定义时回填
+const defaultOrderSnapshot = ref([])
+
+function syncDates() {
+  if (!meetForm.startDate) return
+  meetForm.dayConfigs.forEach((dc, i) => {
+    const d = new Date(meetForm.startDate)
+    d.setDate(d.getDate() + i)
+    dc.date = d.toISOString().slice(0, 10)
+  })
+}
+
+function syncDays() {
+  const n = Number(meetForm.days) || 2
+  while (meetForm.dayConfigs.length < n) {
+    meetForm.dayConfigs.push({
+      day: meetForm.dayConfigs.length + 1, date: '', slots: blankSlots()
+    })
+  }
+  meetForm.dayConfigs = meetForm.dayConfigs.slice(0, n)
+  meetForm.dayConfigs.forEach((dc, i) => { dc.day = i + 1 })
+  syncDates()
+}
+
+function addSlot(dc) {
+  const keys = 'ABCDEFG'.split('')
+  const key = keys[dc.slots.length] || 'X' + dc.slots.length
+  const start = dc.slots.length ? dc.slots[dc.slots.length - 1].end : '14:00'
+  dc.slots.push({ key, name: '下午', start, end: '17:30' })
+}
+
+function removeSlot(dc, si) {
+  if (dc.slots.length <= 1) return
+  dc.slots.splice(si, 1)
+}
+
+async function saveMeetConfig() {
+  if (!meetForm.startDate) { ElMessage.warning('请选择运动会开始日期'); return }
+  const cleanVenues = meetForm.venues
+    .filter(v => v && String(v.name || '').trim())
+    .map(v => ({ name: String(v.name).trim(), code: String(v.code || '').trim() }))
+  if (!cleanVenues.length) { ElMessage.warning('请至少配置一个场地（需填写场地名称）'); return }
+  const maxSlots = Math.max(1, cleanVenues.length)
+  if (meetForm.trackSlots > maxSlots || meetForm.fieldSlots > maxSlots) {
+    ElMessage.warning(`并数不能超过场地数量（当前 ${maxSlots} 个场地）`)
+    return
+  }
+  for (const dc of meetForm.dayConfigs) {
+    if (!dc.slots.length) { ElMessage.warning(`第 ${dc.day} 天至少需要一个时段`); return }
+  }
+  savingConfig.value = true
+  try {
+    const payload = buildMeetSchedulePayload()
+    await request.put('/system/meet-schedule', payload)
+    ElMessage.success('运动会日程配置已保存')
+    showConfigDialog.value = false
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    savingConfig.value = false
+  }
+}
+
+// ==================== B06/U05：兼项冲突检测 ====================
+const conflictList = ref([])
+const conflictSummary = ref(null)
+const conflictLoading = ref(false)
+const conflictPage = ref(1)
+const conflictPageSize = ref(20)
+const conflictPaged = computed(() => {
+  const from = (conflictPage.value - 1) * conflictPageSize.value
+  return conflictList.value.slice(from, from + conflictPageSize.value)
+})
+
+/** 把后端冲突条目摊平（eventA/eventB 是对象，表格需要可直接渲染的字段名） */
+function normalizeConflicts(list) {
+  return (list || []).map(c => ({
+    ...c,
+    eventAName: (c.eventA && c.eventA.name) || '',
+    eventBName: (c.eventB && c.eventB.name) || ''
+  }))
+}
+
+function applyConflicts(data) {
+  conflictSummary.value = (data && data.summary) || null
+  conflictList.value = normalizeConflicts(data && data.list)
+  conflictPage.value = 1
+}
+
+async function loadConflicts() {
+  conflictLoading.value = true
+  try {
+    const res = await request.get('/arrange/conflicts')
+    applyConflicts(res || {})
+    if (!conflictList.value.length) ElMessage.success('未检测到兼项冲突')
+    else ElMessage.warning(`检测到 ${conflictList.value.length} 处兼项冲突，请按「调整建议」列处理`)
   } catch (e) {
     console.error(e)
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+async function exportConflicts() {
+  try {
+    await downloadApi('/arrange/conflicts/export', '兼项冲突清单.xlsx')
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
+}
+
+// ==================== 一键编排（赛程 + 自动道次） ====================
+// U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize/缺省=优化模式（向后兼容）
+async function doAutoSchedule() {
+  arranging.value = true
+  try {
+    const res = await request.post('/schedule/auto', { mode: arrangeMode.value })
+    items.value = res.items || []
+    // 模式回显（以服务端为准）
+    lastArrangeMode.value = res.mode || arrangeMode.value
+    lastRuleInfo.value = res.algorithmPortfolio?.rule || null
+    // B06/U05：编排响应本身已带 conflicts，直接用，省一次往返
+    applyConflicts({ summary: null, list: res.conflicts })
+    if (res.conflicts) {
+      const severe = res.conflicts.filter(c => c.severity === '严重').length
+      conflictSummary.value = {
+        total: res.conflicts.length, blocker: severe, warn: res.conflicts.length - severe,
+        athleteCount: new Set(res.conflicts.map(c => c.athleteId)).size, bufferMinutes: 15
+      }
+    }
+    const auto = res.autoArrange || null
+    let autoTip = ''
+    if (auto) {
+      autoTip = `；已自动生成道次编排 ${auto.ok} 个（性别组）${auto.failed ? '，' + auto.failed + ' 个失败' : ''}`
+    }
+    const modeTag = lastArrangeMode.value === 'rule' ? '【规则模式】' : '【优化模式】'
+    let ruleTip = ''
+    if (lastArrangeMode.value === 'rule' && lastRuleInfo.value) {
+      ruleTip = `（耗时 ${lastRuleInfo.value.elapsedMillis}ms` +
+        (lastRuleInfo.value.unplaced > 0 ? `，${lastRuleInfo.value.unplaced} 个单元排不下已告警` : '') + '）'
+    }
+    if (res.warnings && res.warnings.length) {
+      ElMessage.warning(modeTag + '编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip + ruleTip)
+    } else {
+      ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip)
+    }
+    if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
+  } catch (e) {
+    if (e && e.message) ElMessage.error(e.message)
   } finally {
     arranging.value = false
   }
 }
 
+// ==================== 手动调整 ====================
 function openEdit(row) {
   editingId.value = row.id
   Object.assign(editForm, {
-    eventId: row.eventId, eventName: row.eventName, day: row.day,
+    id: row.id, eventId: row.eventId, eventName: row.eventName, day: row.day,
+    scheduleDate: row.scheduleDate || '', grade: row.grade || '',
     timeSlot: row.timeSlot, startTime: row.startTime, endTime: row.endTime, venue: row.venue
   })
   showEditDialog.value = true
@@ -227,7 +897,6 @@ function openEdit(row) {
 
 async function saveEdit() {
   try {
-    // 更新本地对应项并整体保存
     const updated = items.value.map(i => i.id === editingId.value ? { ...i, ...editForm } : i)
     const res = await request.post('/schedule/save', updated)
     items.value = res.items || []
@@ -238,8 +907,9 @@ async function saveEdit() {
   }
 }
 
-function exportSheet() {
-  window.open(apiBase() + '/schedule/export', '_blank')
+async function exportSheet() {
+  try { await downloadApi('/schedule/export', '赛程总表.xlsx'); ElMessage.success('导出成功') }
+  catch (e) { ElMessage.error(e?.message || '导出失败，请重新登录后再试') }
 }
 
 async function clearAll() {
@@ -253,7 +923,7 @@ async function clearAll() {
   }
 }
 
-onMounted(fetchList)
+onMounted(() => { fetchList(); fetchEvents() })
 </script>
 
 <style scoped>
@@ -262,17 +932,69 @@ onMounted(fetchList)
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .toolbar-left { display: flex; align-items: center; gap: 12px; }
 .toolbar-right { display: flex; gap: 8px; flex-wrap: wrap; }
-.hint { font-size: 12px; color: #909399; }
+.mode-switch { margin-right: 4px; }
+.mode-switch :deep(.el-radio-button__inner) { font-weight: 600; }
 .empty-card { border-radius: 12px; }
 .day-card { border-radius: 12px; }
 .day-header { display: flex; align-items: center; gap: 10px; }
 .day-title { font-size: 16px; font-weight: 700; color: #303133; }
 .slot-block { margin-bottom: 16px; }
-.slot-title { margin-bottom: 8px; }
+.slot-title { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.slot-time { font-size: 12px; color: #909399; }
 .edit-event-name { font-weight: 600; color: #303133; }
+.team-mark {
+  display: inline-block;
+  width: 18px; height: 18px; line-height: 18px;
+  text-align: center; border-radius: 4px;
+  background: #f56c6c; color: #fff; font-size: 11px;
+  margin-right: 4px;
+}
+.row-remark { font-size: 12px; color: #909399; }
+.day-config-block {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.grade-order-edit { display: flex; flex-direction: column; gap: 6px; }
+.grade-order-row {
+  display: flex; align-items: center; gap: 10px;
+  background: #f8fafc; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
+}
+.grade-order-row .go-idx {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #6366f1); color: #fff;
+  font-size: 12px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600;
+}
+.grade-order-row .go-name { flex: 1; font-size: 14px; color: #303133; }
+.day-config-title { font-weight: 600; margin-bottom: 8px; color: #303133; }
+.slot-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.order-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 260px; overflow-y: auto; padding: 6px; margin-bottom: 8px;
+  border: 1px solid #e4e7ed; border-radius: 8px; background: #fafbfc;
+}
+.order-row {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 4px 10px;
+}
+.order-row .order-name { font-size: 14px; color: #303133; font-weight: 500; }
+.order-row { cursor: default; }
+.order-row.dragging { opacity: 0.4; }
+.drag-handle { cursor: grab; color: #909399; user-select: none; font-size: 16px; line-height: 1; }
+.order-row.dragging .drag-handle { cursor: grabbing; }
+.group-row, .venue-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
+}
+/* B06/U05 兼项冲突卡片 */
+.conflict-card { margin-top: 14px; border-radius: 10px; }
+.conflict-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.conflict-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 @media (max-width: 768px) {
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-right { width: 100%; }
-  .toolbar-right .el-button { flex: 1; }
+  .conflict-header { flex-direction: column; align-items: flex-start; }
+  .conflict-actions { margin-left: 0; }
 }
 </style>

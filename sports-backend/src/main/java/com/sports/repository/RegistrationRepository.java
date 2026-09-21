@@ -35,12 +35,17 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
     @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.status = 'approved'")
     List<Registration> findApprovedByEventId(@Param("eventId") Long eventId);
 
-    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.athlete.grade = :grade AND r.athlete.gender = :gender AND r.status = 'approved'")
+    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId "
+            + "AND (r.athlete.grade = :grade OR r.athlete.grade = :gradeShort) "
+            + "AND r.athlete.gender = :gender AND r.status = 'approved'")
     List<Registration> findApprovedByEventGradeGender(@Param("eventId") Long eventId,
                                                        @Param("grade") String grade,
+                                                       @Param("gradeShort") String gradeShort,
                                                        @Param("gender") String gender);
 
     boolean existsByAthleteIdAndEventId(Long athleteId, Long eventId);
+
+    boolean existsByAthleteIdAndEventIdAndTeamTag(Long athleteId, Long eventId, String teamTag);
 
     @Query("SELECT r FROM Registration r WHERE r.athlete.id IN :athleteIds")
     List<Registration> findByAthleteIdIn(@Param("athleteIds") List<Long> athleteIds);
@@ -50,4 +55,7 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
 
     @Query("SELECT COUNT(r) FROM Registration r WHERE r.status = 'pending'")
     long countPending();
+
+    @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.athlete.classInfo.id = :classId")
+    List<Registration> findByEventIdAndClassId(@Param("eventId") Long eventId, @Param("classId") Long classId);
 }

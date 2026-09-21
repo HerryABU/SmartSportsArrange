@@ -1,5 +1,6 @@
 package com.sports.service;
 
+import com.sports.common.Grades;
 import com.sports.entity.*;
 import com.sports.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,7 @@ public class StatisticsService {
     private final EventRepository eventRepository;
     private final ClassInfoRepository classInfoRepository;
     private final AthleteRepository athleteRepository;
+    private final EventScheduleRepository scheduleRepository;
 
     /**
      * 获取报名统计
@@ -31,32 +33,57 @@ public class StatisticsService {
         List<Event> events = eventRepository.findAll();
         List<ClassInfo> classes = classInfoRepository.findAll();
 
-        // 按项目统计
+        // 按项目统计。
+        // 同名项目可能分布在多个年级组（如三个年级各有「100米」），若按 name 做 key 直接
+        // put 会后者覆盖前者 → 只显示最后一个年级的数字。此处改为同名聚合（数量相加、名额累加），
+        // 未配置名额上限(max_participants 为空/0)时 capacity 合计为 0，前端展示「不限」。
         Map<String, Map<String, Long>> byEvent = new LinkedHashMap<>();
         for (Event event : events) {
-            Map<String, Long> counts = new LinkedHashMap<>();
+            String key = event.getName() != null && !event.getName().isBlank() ? event.getName() : "未命名项目";
+            Map<String, Long> counts = byEvent.computeIfAbsent(key, k -> {
+                Map<String, Long> c = new LinkedHashMap<>();
+                c.put("total", 0L);
+                c.put("approved", 0L);
+                c.put("pending", 0L);
+                c.put("rejected", 0L);
+                c.put("cancelled", 0L);
+                c.put("capacity", 0L);
+                return c;
+            });
             long approved = registrationRepository.countApprovedByEventId(event.getId());
             List<Registration> eventRegs = registrationRepository.findByEventId(event.getId());
             long pending = eventRegs.stream().filter(r -> "pending".equals(r.getStatus())).count();
             long rejected = eventRegs.stream().filter(r -> "rejected".equals(r.getStatus())).count();
             long cancelled = eventRegs.stream().filter(r -> "cancelled".equals(r.getStatus())).count();
 
-            counts.put("total", (long) eventRegs.size());
-            counts.put("approved", approved);
-            counts.put("pending", pending);
-            counts.put("rejected", rejected);
-            counts.put("cancelled", cancelled);
-            byEvent.put(event.getName(), counts);
+            counts.merge("total", (long) eventRegs.size(), Long::sum);
+            counts.merge("approved", approved, Long::sum);
+            counts.merge("pending", pending, Long::sum);
+            counts.merge("rejected", rejected, Long::sum);
+            counts.merge("cancelled", cancelled, Long::sum);
+            counts.merge("capacity", event.getMaxParticipants() != null
+                    ? event.getMaxParticipants().longValue() : 0L, Long::sum);
         }
+
+        // L2 修复：原实现对每个班级都全量扫描 allRegs（O(classes × regs)），年级统计又重复一遍。
+        // 改为一次性按 classId 分组计数，班级与年级统计直接查这张表。
+        Map<Long, Long> countByClass = allRegs.stream()
+                .filter(r -> r.getAthlete() != null && r.getAthlete().getClassInfo() != null)
+                .collect(Collectors.groupingBy(
+                        r -> r.getAthlete().getClassInfo().getId(),
+                        Collectors.counting()));
 
         // 按班级统计
         Map<String, Long> byClass = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
-            List<Registration> classRegs = allRegs.stream()
-                    .filter(r -> r.getAthlete().getClassInfo() != null
-                            && r.getAthlete().getClassInfo().getId().equals(ci.getId()))
-                    .collect(Collectors.toList());
-            byClass.put(ci.getName(), (long) classRegs.size());
+            byClass.put(ci.getName(), countByClass.getOrDefault(ci.getId(), 0L));
+        }
+
+        // 按年级统计（供报表「各年级参赛人数」）
+        Map<String, Long> byGrade = new LinkedHashMap<>();
+        for (ClassInfo ci : classes) {
+            String g = ci.getGrade() != null ? ci.getGrade() : "未分年级";
+            byGrade.merge(g, countByClass.getOrDefault(ci.getId(), 0L), Long::sum);
         }
 
         // 按状态统计
@@ -79,6 +106,7 @@ public class StatisticsService {
         ));
         result.put("byEvent", byEvent);
         result.put("byClass", byClass);
+        result.put("byGrade", byGrade);
 
         return result;
     }
@@ -136,7 +164,7 @@ public class StatisticsService {
     /**
      * 生成秩序册数据
      */
-    public Map<String, Object> generateOrderBook() {
+    public Map<String, Object> generateOrderBook(String grade) {
         List<Event> events = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
 
@@ -153,6 +181,7 @@ public class StatisticsService {
             eventInfo.put("code", event.getCode());
             eventInfo.put("genderLimit", event.getGenderLimit());
             eventInfo.put("distanceType", event.getDistanceType());
+            eventInfo.put("gradeGroup", event.getGradeGroup());
             eventInfo.put("registrationStart", event.getRegistrationStart());
             eventInfo.put("registrationEnd", event.getRegistrationEnd());
             eventInfo.put("record", event.getRecord());
@@ -182,14 +211,115 @@ public class StatisticsService {
             classList.add(classInfo);
         }
 
+        // ============ 统一预览 sections（前端逐 section 渲染表格） ============
+        List<Map<String, Object>> sections = new ArrayList<>();
+
+        // 1) 竞赛日程：来自一键编排生成的 event_schedule
+        List<EventSchedule> scheds = scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc();
+        List<Map<String, Object>> scheduleRows = new ArrayList<>();
+        for (EventSchedule s : scheds) {
+            if (grade != null && !grade.isBlank()) {
+                Event e0 = s.getEvent();
+                boolean evMatch = e0 != null && Grades.same(grade, e0.getGradeGroup());
+                boolean schMatch = Grades.same(grade, s.getGrade());
+                if (!evMatch && !schMatch) continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("day", s.getDay());
+            m.put("date", s.getScheduleDate());
+            m.put("slot", s.getTimeSlot());
+            m.put("time", (s.getStartTime() == null ? "" : s.getStartTime()) + "~" + (s.getEndTime() == null ? "" : s.getEndTime()));
+            m.put("eventName", s.getEvent() != null ? s.getEvent().getName() : "-");
+            m.put("gender", s.getEvent() != null ? s.getEvent().getGenderLimit() : "");
+            m.put("grade", s.getGrade());
+            m.put("venue", s.getVenue());
+            scheduleRows.add(m);
+        }
+        if (!scheduleRows.isEmpty()) {
+            sections.add(Map.of(
+                    "title", "竞赛日程（" + (grade == null || grade.isBlank() ? "全部年级" : grade) + "）",
+                    "columns", List.of(
+                            Map.of("prop", "day", "label", "天次", "width", 60),
+                            Map.of("prop", "date", "label", "日期", "width", 110),
+                            Map.of("prop", "slot", "label", "时段", "width", 80),
+                            Map.of("prop", "time", "label", "时间", "width", 130),
+                            Map.of("prop", "eventName", "label", "项目", "minWidth", 130),
+                            Map.of("prop", "gender", "label", "性别", "width", 80),
+                            Map.of("prop", "grade", "label", "年级", "width", 90),
+                            Map.of("prop", "venue", "label", "场地", "width", 100)),
+                    "items", scheduleRows));
+        }
+
+        // 2) 项目分册（径赛 / 田赛 / 其他）
+        List<String> catOrder = List.of("径赛", "田赛", "其他");
+        List<Map<String, Object>> projectColumns = List.of(
+                Map.of("prop", "name", "label", "项目名称"),
+                Map.of("prop", "code", "label", "编码", "width", 100),
+                Map.of("prop", "genderLimit", "label", "性别", "width", 90),
+                Map.of("prop", "arrangedCount", "label", "已编排人数", "width", 100),
+                Map.of("prop", "heatCount", "label", "组数", "width", 70));
+        for (String cat : catOrder) {
+            List<Map<String, Object>> items = byCategory.get(cat);
+            if (items == null || items.isEmpty()) continue;
+            sections.add(Map.of("title", cat + "项目", "columns", projectColumns, "items", items));
+        }
+
+        // 3) 参赛班级
+        sections.add(Map.of(
+                "title", "参赛班级（" + classes.size() + " 个）",
+                "columns", List.of(
+                        Map.of("prop", "name", "label", "班级名称"),
+                        Map.of("prop", "grade", "label", "年级", "width", 90),
+                        Map.of("prop", "teacherName", "label", "班主任", "width", 100),
+                        Map.of("prop", "studentCount", "label", "人数", "width", 70)),
+                "items", classList));
+
+        // 4) 各编排项目：分组道次名单（决赛优先，无决赛则用预赛）
+        List<Map<String, Object>> laneColumns = List.of(
+                Map.of("prop", "heat", "label", "组次", "width", 60),
+                Map.of("prop", "lane", "label", "道次", "width", 60),
+                Map.of("prop", "number", "label", "号码", "width", 90),
+                Map.of("prop", "name", "label", "姓名", "width", 100),
+                Map.of("prop", "className", "label", "班级", "width", 120),
+                Map.of("prop", "grade", "label", "年级", "width", 90));
+        for (Event event : events) {
+            List<Arrangement> all = arrangementRepository.findByEventId(event.getId());
+            if (all.isEmpty()) continue;
+            boolean hasFinal = all.stream().anyMatch(a -> "final".equals(a.getRound()));
+            List<Arrangement> pool = hasFinal
+                    ? all.stream().filter(a -> "final".equals(a.getRound())).collect(Collectors.toList())
+                    : all;
+            pool.sort(Comparator
+                    .comparingInt((Arrangement a) -> a.getHeat() == null ? 0 : a.getHeat())
+                    .thenComparingInt(a -> a.getLane() == null ? 0 : a.getLane()));
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Arrangement a : pool) {
+                Athlete at = a.getAthlete();
+                if (at == null) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("heat", a.getHeat());
+                row.put("lane", a.getLane());
+                row.put("number", at.getNumber());
+                row.put("name", at.getName());
+                row.put("className", at.getClassInfo() != null ? at.getClassInfo().getName() : "-");
+                row.put("grade", at.getGrade());
+                rows.add(row);
+            }
+            if (rows.isEmpty()) continue;
+            sections.add(Map.of(
+                    "title", event.getName() + (event.getGenderLimit() == null ? "" : "（" + event.getGenderLimit() + "）"),
+                    "columns", laneColumns,
+                    "items", rows));
+        }
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("title", "运动会秩序册");
         result.put("generatedAt", java.time.LocalDateTime.now().toString());
         result.put("events", byCategory);
         result.put("classes", classList);
+        result.put("sections", sections);
         result.put("totalEvents", events.size());
         result.put("totalClasses", classes.size());
-
         return result;
     }
 
@@ -273,33 +403,41 @@ public class StatisticsService {
 
     /**
      * 获取报名进度（按年级，Dashboard用）
+     *
+     * <p>口径与「班级管理」一致：分母取该年级<b>花名册真实运动员人数</b>
+     * （不依赖手填/陈旧的 student_count 列，历史数据该列常为 0 导致进度恒 0%），
+     * 分子取该年级<b>已有审核通过报名</b>的去重运动员数。单位统一为「人」，
+     * 避免「报名人次 / 总人数」口径错配（人次会超过总人数）。
      */
     public List<Map<String, Object>> getRegistrationProgress() {
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
-        Map<String, int[]> byGrade = new LinkedHashMap<>();
 
+        // 该年级在册运动员总数（剔除软删）
+        Map<String, Integer> rosterByGrade = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
             String grade = ci.getGrade() != null ? ci.getGrade() : "未知";
-            byGrade.computeIfAbsent(grade, k -> new int[]{0, 0});
-            byGrade.get(grade)[0] += ci.getStudentCount() != null ? ci.getStudentCount() : 0;
+            long roster = athleteRepository.findByClassInfoId(ci.getId()).stream()
+                    .filter(a -> a.getDeletedAt() == null)
+                    .count();
+            rosterByGrade.merge(grade, (int) roster, Integer::sum);
         }
 
-        List<Registration> approved = registrationRepository.findByStatus("approved");
-        for (Registration reg : approved) {
-            if (reg.getAthlete() != null && reg.getAthlete().getClassInfo() != null) {
-                String grade = reg.getAthlete().getClassInfo().getGrade();
-                if (grade != null && byGrade.containsKey(grade)) {
-                    byGrade.get(grade)[1]++;
-                }
-            }
+        // 该年级已有审核通过报名的去重运动员数
+        Map<String, Set<Long>> approvedAthleteByGrade = new HashMap<>();
+        for (Registration reg : registrationRepository.findByStatus("approved")) {
+            Athlete a = reg.getAthlete();
+            if (a == null || a.getDeletedAt() != null) continue;
+            String grade = a.getGrade();
+            if (grade == null || !rosterByGrade.containsKey(grade)) continue;
+            approvedAthleteByGrade.computeIfAbsent(grade, k -> new HashSet<>()).add(a.getId());
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
-        byGrade.forEach((grade, counts) -> {
+        rosterByGrade.forEach((grade, total) -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", grade);
-            item.put("total", counts[0]);
-            item.put("registered", counts[1]);
+            item.put("total", total);
+            item.put("registered", approvedAthleteByGrade.getOrDefault(grade, Set.of()).size());
             result.add(item);
         });
         return result;

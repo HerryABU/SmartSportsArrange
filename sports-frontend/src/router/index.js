@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { appBase, apiBase } from '@/utils/base'
 
@@ -48,55 +48,85 @@ const routes = [
         path: 'athletes',
         name: 'TeacherAthletes',
         component: () => import('@/views/teacher/Athletes.vue'),
-        meta: { title: '运动员管理' }
+        meta: { title: '运动员名单' }
       },
       {
         path: 'events',
         name: 'TeacherEvents',
         component: () => import('@/views/teacher/Events.vue'),
-        meta: { title: '项目管理' }
+        meta: { title: '比赛项目' }
+      },
+      {
+        path: 'venues',
+        name: 'TeacherVenues',
+        component: () => import('@/views/teacher/VenueManage.vue'),
+        meta: { title: '场地管理' }
       },
       {
         path: 'registrations',
         name: 'TeacherRegistrations',
         component: () => import('@/views/teacher/Registration.vue'),
-        meta: { title: '报名管理' }
+        meta: { title: '报名表导入·审核' }
       },
       {
         path: 'arrange',
         name: 'TeacherArrange',
         component: () => import('@/views/teacher/Arrange.vue'),
-        meta: { title: '智能编排' }
+        meta: { title: '道次编排' }
+      },
+      {
+        path: 'rules',
+        name: 'TeacherRuleScripts',
+        component: () => import('@/views/teacher/RuleScripts.vue'),
+        meta: { title: '规则注入' }
       },
       {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),
-        meta: { title: '项目编排' }
+        meta: { title: '赛程编排' }
       },
       {
         path: 'scores',
         name: 'TeacherScores',
         component: () => import('@/views/teacher/Scores.vue'),
-        meta: { title: '成绩管理' }
+        meta: { title: '成绩录入' }
       },
       {
         path: 'ranking',
         name: 'TeacherRanking',
         component: () => import('@/views/teacher/Ranking.vue'),
-        meta: { title: '排名积分' }
+        meta: { title: '合分排行' }
       },
       {
         path: 'reports',
         name: 'TeacherReports',
         component: () => import('@/views/teacher/Reports.vue'),
-        meta: { title: '统计报表' }
+        meta: { title: '报表中心' }
       },
       {
         path: 'settings',
         name: 'TeacherSettings',
         component: () => import('@/views/teacher/Settings.vue'),
         meta: { title: '系统设置' }
+      },
+      {
+        path: 'referees',
+        name: 'TeacherReferees',
+        component: () => import('@/views/teacher/Referees.vue'),
+        meta: { title: '裁判管理', role: ['SUPER_ADMIN'] }
+      },
+      {
+        path: 'referee-board',
+        name: 'TeacherRefereeBoard',
+        component: () => import('@/views/teacher/RefereeBoard.vue'),
+        meta: { title: '裁判工作安排' }
+      },
+      {
+        path: 'help',
+        name: 'TeacherHelp',
+        component: () => import('@/views/teacher/Help.vue'),
+        meta: { title: '说明书' }
       }
     ]
   },
@@ -178,6 +208,35 @@ const routes = [
       }
     ]
   },
+  // 裁判工作台（裁判可登录：角色 REFEREE；管理员/体育老师亦可进入查看或投屏）
+  {
+    path: '/referee',
+    component: () => import('@/layouts/RefereeLayout.vue'),
+    redirect: '/referee/dashboard',
+    meta: { requiresAuth: true, role: ['REFEREE', 'TEACHER', 'SUPER_ADMIN'] },
+    children: [
+      {
+        path: 'dashboard',
+        name: 'RefereeDashboard',
+        component: () => import('@/views/referee/Dashboard.vue'),
+        meta: { title: '执裁看板' }
+      },
+      {
+        path: 'board',
+        name: 'RefereeBoardAll',
+        component: () => import('@/views/teacher/RefereeBoard.vue'),
+        // 全体裁判安排为管理端视图，裁判本人只看看板（自己的安排）
+        meta: { title: '全体裁判安排', role: ['TEACHER', 'SUPER_ADMIN'] }
+      }
+    ]
+  },
+  // 现场大屏（数据大屏 / 排行榜大屏，全屏投屏用）
+  {
+    path: '/screen',
+    name: 'ScreenBoard',
+    component: () => import('@/views/screen/MeetBoard.vue'),
+    meta: { requiresAuth: true, role: ['TEACHER', 'SUPER_ADMIN'] }
+  },
   // 404 catch-all
   {
     path: '/:pathMatch(.*)*',
@@ -187,7 +246,14 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(appBase()),
+  // 使用 hash 模式：URL 形如 /#/login、/sportmg/#/login。
+  // 反向代理（cpolar/ngrok/nginx 子路径等）下服务器永远只收到「/」或「/sportmg/」，
+  // 不会把前端路由路径（如 /teacher/dashboard）发往后端，从而彻底规避：
+  //   1) 历史模式深链刷新时 ./assets 相对到 /sportmg/teacher/assets 被误判为 SPA 路由而回退成 index.html（白屏）；
+  //   2) 路由基准与反代帽子前缀不一致导致的整页空白。
+  // 同时兼容「子域(无帽子)」与「子路径(有帽子)」两种反代形态（帽子由 base.js 实时推断）。
+  // 注意：带帽子时 base 必须是 "/sportmg/"（带尾斜杠），否则 pushState('#/xxx') 会丢失帽子前缀。
+  history: createWebHashHistory(appBase() ? appBase() + '/' : '/'),
   routes
 })
 
@@ -232,6 +298,8 @@ router.beforeEach(async (to, from, next) => {
         next('/class-teacher/dashboard')
       } else if (authStore.isStudent) {
         next('/student/home')
+      } else if (authStore.isReferee) {
+        next('/referee/dashboard')
       } else {
         next()
       }
@@ -257,6 +325,8 @@ router.beforeEach(async (to, from, next) => {
         next('/class-teacher/dashboard')
       } else if (authStore.isStudent) {
         next('/student/home')
+      } else if (authStore.isReferee) {
+        next('/referee/dashboard')
       } else {
         next('/login')
       }

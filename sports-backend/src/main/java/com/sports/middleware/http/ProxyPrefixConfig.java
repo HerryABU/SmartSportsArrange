@@ -1,0 +1,186 @@
+package com.sports.middleware.http;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+/**
+ * 反向代理子路径（帽子前缀）智能剥离过滤器
+ *
+ * 部署形态：应用可挂在任意反向代理子路径下，如 http://host/sportmg/，业务路径只能位于
+ * 该「帽子」之后（如 /sportmg/login、/sportmg/api/xxx）。帽子（sportmg）仅仅是例子，
+ * 本过滤器严禁硬编码任何具体前缀，而是智能判断是否剥离：
+ *
+ *   - 请求第一段之后剩余路径若是后端 API（/api 或 /api/**）→ 剥离帽子后交给 Controller；
+ *   - 剩余路径若是静态资源（static 下真实存在的文件）→ 剥离帽子后正常返回；
+ *   - 剩余路径是 SPA 前端路由（如 /sportmg/login）→ 不剥离，由 SPA 回退返回 index.html，
+ *     前端会根据当前 URL 智能推断帽子并自适应（见 sports-frontend/src/utils/base.js）；
+ *   - 无帽子部署（/login、/api/xxx）→ 原样放行，行为与改造前完全一致。
+ *
+ * 同时兼容两种反向代理形态：
+ *   A. 保留帽子转发（proxy_pass http://backend;        → 收到 /sportmg/...）：本过滤器剥离；
+ *   B. 剥掉帽子转发（proxy_pass http://backend/;       → 收到 /login）：无需剥离，直接放行。
+ */
+@Configuration
+public class ProxyPrefixConfig {
+
+    /** 智能帽子剥离过滤器（不作为 @Component，避免容器重复自动注册） */
+    static class ProxyPrefixFilter extends OncePerRequestFilter {
+
+        @Override
+        protected void doFilterInternal(HttpServletRequest request,
+                                        HttpServletResponse response,
+                                        FilterChain filterChain) throws ServletException, IOException {
+            String uri = request.getRequestURI();
+            if (uri == null || uri.length() <= 1) {
+                filterChain.doFilter(request, response);
+                return;
+            }
+            // 第一段结束位置（首个 / 之后的第二个 /），如 /sportmg/api/login → 下标 8
+            int idx = uri.indexOf('/', 1);
+            if (idx <= 0) {
+                // 单段路径（/login、/favicon.svg 等）不可能是「帽子 + 业务路径」
+                filterChain.doFilter(request, response);
+                return;
+            }
+            String stripped = uri.substring(idx); // 去掉帽子后的剩余路径，以 / 开头
+            if (stripped.length() <= 1) {
+                // 形如 /sportmg/ —— 帽子 + 空路径，由 SPA 回退返回 index.html
+                filterChain.doFilter(request, response);
+                return;
+            }
+            boolean isApi = stripped.equals("/api") || stripped.startsWith("/api/");
+            // M7 修复：/assets/** 无条件剥离（不论文件是否存在）。目标缺失时由 SpaFallbackConfig 的
+            // /assets/** handler 返回 404，避免「旧资源文件名消失 + 缓存旧 index.html」时返回 HTML 导致前端难排查。
+            boolean isAssets = stripped.startsWith("/assets/");
+            if (isAssets) {
+                filterChain.doFilter(new StrippedRequestWrapper(request, stripped), response);
+                return;
+            }
+            if (!isApi && !existsStaticResource(stripped)) {
+                // 不是 API 也不是静态资源（即 SPA 前端路由，如 /sportmg/login），原样放行
+                filterChain.doFilter(request, response);
+                return;
+            }
+            // 智能剥离帽子前缀，后续 Filter 与 DispatcherServlet 均按干净路径处理
+            filterChain.doFilter(new StrippedRequestWrapper(request, stripped), response);
+        }
+
+        private boolean existsStaticResource(String path) {
+            try {
+                Resource resource = new ClassPathResource("/static" + path);
+                return resource.exists() && resource.isReadable();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+
+    /** 请求包装器：对外呈现剥离帽子后的干净路径 */
+    static class StrippedRequestWrapper extends HttpServletRequestWrapper {
+
+        private final String strippedPath;
+
+        StrippedRequestWrapper(HttpServletRequest request, String strippedPath) {
+            super(request);
+            this.strippedPath = strippedPath;
+        }
+
+        @Override
+        public String getRequestURI() {
+            return strippedPath;
+        }
+
+        @Override
+        public StringBuffer getRequestURL() {
+            HttpServletRequest req = (HttpServletRequest) getRequest();
+            // 反向代理下用 X-Forwarded-* 还原客户端实际看到的协议/主机/端口，
+            // 否则会拼出内网地址（如 http://127.0.0.1:8080），导致回调/绝对链接出错。
+            String scheme = firstHeaderValue(req, "X-Forwarded-Proto", req.getScheme());
+            String host;
+            int port;
+            String hostHeader = req.getHeader("X-Forwarded-Host");
+            if (hostHeader != null && !hostHeader.isBlank()) {
+                // 可能带端口（host:port），也可能逗号分隔多跳代理（取第一个）
+                String first = hostHeader.split(",")[0].trim();
+                int lastBracket = first.lastIndexOf(']'); // 跳过 IPv6 地址里的冒号
+                int colon = first.lastIndexOf(':');
+                if (colon > lastBracket) {
+                    host = first.substring(0, colon);
+                    port = parsePort(first.substring(colon + 1), req.getServerPort());
+                } else {
+                    host = first;
+                    port = parsePort(req.getHeader("X-Forwarded-Port"), req.getServerPort());
+                }
+            } else {
+                host = req.getServerName();
+                port = req.getServerPort();
+            }
+            StringBuffer url = new StringBuffer(scheme).append("://").append(host);
+            if (port > 0 && port != 80 && port != 443) {
+                url.append(':').append(port);
+            }
+            return url.append(strippedPath);
+        }
+
+        /** 取转发头首个值（多跳代理用逗号分隔，取最外层），缺失回退 fallback */
+        private static String firstHeaderValue(HttpServletRequest req, String name, String fallback) {
+            String v = req.getHeader(name);
+            if (v == null || v.isBlank()) return fallback;
+            return v.split(",")[0].trim();
+        }
+
+        private static int parsePort(String s, int fallback) {
+            if (s == null || s.isBlank()) return fallback;
+            try {
+                int p = Integer.parseInt(s.trim());
+                return p > 0 ? p : fallback;
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
+
+        @Override
+        public String getServletPath() {
+            return strippedPath;
+        }
+
+        /**
+         * M6 修复：补齐 Servlet 规范不变量 getRequestURI() == getContextPath() + getServletPath() + getPathInfo()。
+         * 剥离帽子后的世界没有 servlet context path，故返回 ""；整条剥离路径作为 servletPath，pathInfo 为空。
+         * （当前嵌入式容器 contextPath 默认 ""，内部署形态不触发；补上以避免外置 Tomcat + context path 时出错）
+         */
+        @Override
+        public String getContextPath() {
+            return "";
+        }
+
+        @Override
+        public String getPathInfo() {
+            return null;
+        }
+    }
+
+    /**
+     * 注册过滤器并置于整个链路最前（早于 Spring Security 的 FilterChainProxy，order=-100），
+     * 确保 Security 鉴权、JWT、DispatcherServlet 看到的都是剥离帽子后的干净路径。
+     */
+    @Bean
+    public FilterRegistrationBean<ProxyPrefixFilter> proxyPrefixFilterRegistration() {
+        FilterRegistrationBean<ProxyPrefixFilter> registration =
+                new FilterRegistrationBean<>(new ProxyPrefixFilter());
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        return registration;
+    }
+}

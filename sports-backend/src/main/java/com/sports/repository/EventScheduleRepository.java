@@ -24,4 +24,7 @@ public interface EventScheduleRepository extends JpaRepository<EventSchedule, Lo
 
     @Query("SELECT s FROM EventSchedule s WHERE s.event.id = :eventId")
     List<EventSchedule> findByEventId(@Param("eventId") Long eventId);
+
+    /** 某 事件×年级 的全部赛程条目（含预赛/决赛轮次），用于二次编排定位预赛条目与决赛顺延起点 */
+    List<EventSchedule> findByEventIdAndGrade(Long eventId, String grade);
 }

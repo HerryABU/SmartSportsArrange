@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# 测试纪律（H1）：任何推送/PR 都跑一遍 mvn test，拦住「本地能过、CI 挂」的回归。
+# 与本地 pre-commit 钩子（.githooks/pre-commit）互补：CI 是最后一道关卡，钩子是提交前门禁。
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sports-backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B test

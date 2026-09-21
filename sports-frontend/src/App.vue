@@ -225,6 +225,44 @@ html.dark .el-table th.el-table__cell {
   .el-dialog__body { padding: 12px !important; }
 }
 
+/* === 现代化页面头（统一各业务页：渐变图标 + 标题 + 描述 + 操作区） === */
+.pg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: linear-gradient(120deg, rgba(59,130,246,.08), rgba(99,102,241,.06) 55%, rgba(16,185,129,.05));
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+.pg-titles { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pg-ico {
+  width: 44px; height: 44px; border-radius: 14px; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-info));
+  color: #fff; display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 16px rgba(59,130,246,.28);
+}
+.pg-title { margin: 0; font-size: 19px; font-weight: 700; color: var(--text-primary); }
+.pg-desc { margin: 2px 0 0; font-size: 12.5px; color: var(--text-secondary); }
+.pg-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 灵动卡片点缀 */
+.hover-lift { transition: transform .25s ease, box-shadow .25s ease !important; }
+.hover-lift:hover { transform: translateY(-3px); box-shadow: var(--shadow-md) !important; }
+.rise-in { animation: pageRise .4s ease both; }
+@keyframes pageRise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600;
+}
+.grad-text { background: linear-gradient(90deg, var(--color-primary), var(--color-info)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
 /* === Print Styles === */
 @media print {
   .sidebar, .header, .tabs, .topbar {
