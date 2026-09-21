@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.venue;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
+import com.sports.entity.event.Event;
 
 /**
  * 场地（运动场馆/区域）。

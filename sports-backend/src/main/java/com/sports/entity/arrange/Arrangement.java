@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.arrange;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.event.Event;
 
 @Data
 @Builder

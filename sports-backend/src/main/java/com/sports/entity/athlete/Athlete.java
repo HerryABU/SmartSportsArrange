@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.athlete;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
@@ -10,6 +10,7 @@ import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import com.sports.entity.clazz.ClassInfo;
 
 @Data
 @Builder

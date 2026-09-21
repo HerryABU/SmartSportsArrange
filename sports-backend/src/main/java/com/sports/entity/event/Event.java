@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.event;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -10,6 +10,8 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
+import com.sports.common.util.GenderUtil;
+import com.sports.service.excel.ExcelService;
 
 @Data
 @Builder
@@ -164,7 +166,7 @@ public class Event {
      * 「没有符合条件的已审核报名记录」并毒化外层事务导致整个接口 500。
      * 这里用 {@link JsonAlias} 同时接受两种键名，从入口消除这一类静默丢字段的坑。</p>
      *
-     * <p>兼容写法归一化见 {@link com.sports.common.GenderUtil}（男子组/M、女子组/F 双轨）。</p>
+     * <p>兼容写法归一化见 {@link com.sports.common.util.GenderUtil}（男子组/M、女子组/F 双轨）。</p>
      */
     @Column(length = 10)
     @JsonProperty("gender")

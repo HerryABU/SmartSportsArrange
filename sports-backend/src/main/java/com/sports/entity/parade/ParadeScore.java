@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.parade;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
@@ -9,6 +9,7 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
+import com.sports.entity.clazz.ClassInfo;
 
 /**
  * 入场式（开幕式方阵）得分 —— 需手动录入或按 Excel 导入。

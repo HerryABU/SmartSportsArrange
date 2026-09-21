@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.event;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import com.sports.entity.arrange.Arrangement;
 
 /**
  * 组次-裁判分配结果表（编排引擎产出）。

@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.user;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -14,51 +14,42 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
-@Table(name = "class_info")
+@Table(name = "sys_user", indexes = {
+        @Index(name = "idx_user_username", columnList = "username"),
+        @Index(name = "idx_user_role", columnList = "role"),
+        @Index(name = "idx_user_status", columnList = "status")
+})
 @SQLRestriction("deleted_at IS NULL")
-public class ClassInfo {
+public class User {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(length = 50, unique = true)
-    private String name;
+    @Column(length = 50, unique = true, nullable = false)
+    private String username;
+
+    @Column(length = 255, nullable = false)
+    private String password;
 
     @Column(length = 20)
-    private String grade;
-
-    @Column
     @Builder.Default
-    private Integer gradeOrder = 0;
-
-    @Column(name = "class_order")
-    @Builder.Default
-    private Integer classOrder = 0;
-
-    @Column(length = 20, unique = true)
-    private String code;
+    private String role = "ROLE_VIEWER";
 
     @Column(length = 50)
-    private String teacherName;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "teacher_user_id")
-    private User teacherUser;
+    private String name;
 
     @Column(length = 20)
     private String phone;
 
-    @Column
-    @Builder.Default
-    private Integer studentCount = 0;
+    @Column(length = 255)
+    private String avatar;
 
-    @Column
-    @Builder.Default
-    private Boolean isParticipating = true;
+    private LocalDateTime lastLogin;
 
-    @Column(columnDefinition = "TEXT")
-    private String remark;
+    @Column(length = 20)
+    @Builder.Default
+    private String status = "active";
 
     private LocalDateTime createdAt;
 

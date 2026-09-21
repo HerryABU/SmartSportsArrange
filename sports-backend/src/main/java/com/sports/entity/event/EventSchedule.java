@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.event;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;

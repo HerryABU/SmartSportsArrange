@@ -1,4 +1,4 @@
-package com.sports.entity;
+package com.sports.entity.clazz;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -8,48 +8,58 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
+import com.sports.entity.user.User;
 
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
-@Table(name = "sys_user", indexes = {
-        @Index(name = "idx_user_username", columnList = "username"),
-        @Index(name = "idx_user_role", columnList = "role"),
-        @Index(name = "idx_user_status", columnList = "status")
-})
+@Table(name = "class_info")
 @SQLRestriction("deleted_at IS NULL")
-public class User {
+public class ClassInfo {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(length = 50, unique = true, nullable = false)
-    private String username;
-
-    @Column(length = 255, nullable = false)
-    private String password;
+    @Column(length = 50, unique = true)
+    private String name;
 
     @Column(length = 20)
+    private String grade;
+
+    @Column
     @Builder.Default
-    private String role = "ROLE_VIEWER";
+    private Integer gradeOrder = 0;
+
+    @Column(name = "class_order")
+    @Builder.Default
+    private Integer classOrder = 0;
+
+    @Column(length = 20, unique = true)
+    private String code;
 
     @Column(length = 50)
-    private String name;
+    private String teacherName;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "teacher_user_id")
+    private User teacherUser;
 
     @Column(length = 20)
     private String phone;
 
-    @Column(length = 255)
-    private String avatar;
-
-    private LocalDateTime lastLogin;
-
-    @Column(length = 20)
+    @Column
     @Builder.Default
-    private String status = "active";
+    private Integer studentCount = 0;
+
+    @Column
+    @Builder.Default
+    private Boolean isParticipating = true;
+
+    @Column(columnDefinition = "TEXT")
+    private String remark;
 
     private LocalDateTime createdAt;
 
