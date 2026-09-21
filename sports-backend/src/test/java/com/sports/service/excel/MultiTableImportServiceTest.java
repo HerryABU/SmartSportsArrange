@@ -1,5 +1,6 @@
 package com.sports.service.excel;
 
+import com.sports.entity.Athlete;
 import com.sports.entity.ClassInfo;
 import com.sports.entity.Event;
 import com.sports.repository.*;
@@ -327,5 +328,69 @@ class MultiTableImportServiceTest {
 
         verify(classInfoRepository).save(any(ClassInfo.class));
         verify(athleteRepository).save(any());
+    }
+
+    // ==================== 名单+报名合并表（合一）：单 sheet ====================
+
+    @Test
+    @DisplayName("合一表：表头识别为 athlete_signup，建运动员+报名，项目为空只落运动员")
+    void combinedRosterSignupSheet() {
+        // 事件需先存在（合一表优先级在 eventsimple 之后，真实批次里事件已导入）
+        when(eventRepository.findByCode("50M")).thenReturn(Optional.of(
+                Event.builder().id(1L).code("50M").name("50米").isEnabled(true).build()));
+        // 记录落库的运动员，供 processSignupRow 按姓名回查（mock 数据库不共享状态）
+        Map<String, Athlete> savedByName = new java.util.HashMap<>();
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> {
+            Athlete a = inv.getArgument(0);
+            if (a.getName() != null) savedByName.put(a.getName(), a);
+            return a;
+        });
+        when(athleteRepository.findByName(anyString())).thenAnswer(inv -> {
+            Athlete a = savedByName.get(inv.getArgument(0));
+            return a == null ? List.of() : List.of(a);
+        });
+        when(registrationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] book = ExcelTestDataFactory.xlsxMulti(List.of(
+                SheetSpec.of("名单报名（合一）",
+                        List.of("年级", "班级", "姓名", "学号", "性别", "号码布编号", "项目", "组号"),
+                        new String[][]{
+                                // 张三：未报名（项目留空）→ 只落运动员主数据
+                                {"高一年级", "高一1班", "张三", "2024001", "男", "101", "", ""},
+                                // 李四：报名 50米 → 同时写报名
+                                {"高一年级", "高一1班", "李四", "2024002", "男", "102", "50M", ""}})));
+
+        Map<String, Object> result = service.importAll(List.of(file(book, "合一表.xlsx")), Map.of());
+
+        Map<String, Object> sheet = sheetByName(result, "名单报名（合一）");
+        assertEquals("athlete_signup", sheet.get("type"), "表头应识别为合一表");
+        assertEquals("header", sheet.get("resolvedBy"));
+        assertEquals(2, summaryOf(result).get("imported"), "两行都应成功（建人 + 建报名）");
+        assertEquals(0, summaryOf(result).get("failed"));
+        verify(athleteRepository, times(2)).save(any(Athlete.class));
+        verify(registrationRepository, times(1)).save(any());
+    }
+
+    @Test
+    @DisplayName("合一表重跑：运动员 upsert（不重复），报名已存在归「跳过」")
+    void combinedRosterSignupRerunCountsAsSkipped() {
+        when(eventRepository.findByCode("50M")).thenReturn(Optional.of(
+                Event.builder().id(1L).code("50M").name("50米").isEnabled(true).build()));
+        Athlete existing = Athlete.builder().id(7L).name("张三")
+                .classInfo(ClassInfo.builder().id(3L).name("高一1班").build()).build();
+        when(athleteRepository.findByStudentId("2024001")).thenReturn(Optional.of(existing));
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(registrationRepository.existsByAthleteIdAndEventId(7L, 1L)).thenReturn(true);
+
+        byte[] book = ExcelTestDataFactory.xlsxMulti(List.of(
+                SheetSpec.of("名单报名（合一）",
+                        List.of("年级", "班级", "姓名", "学号", "性别", "号码布编号", "项目", "组号"),
+                        new String[][]{{"高一年级", "高一1班", "张三", "2024001", "男", "101", "50M", ""}})));
+
+        Map<String, Object> result = service.importAll(List.of(file(book, "合一重跑.xlsx")), Map.of());
+
+        Map<String, Object> sheet = sheetByName(result, "名单报名（合一）");
+        assertEquals(0, sheet.get("failed"));
+        assertEquals(1, sheet.get("rowSkipped"), "报名已存在应归为跳过，而非失败");
     }
 }

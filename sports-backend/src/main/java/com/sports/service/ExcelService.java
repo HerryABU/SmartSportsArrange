@@ -371,6 +371,7 @@ public class ExcelService {
         if (name == null) return null;
         String l = name.toLowerCase();
         if (l.contains("score") || l.contains("成绩")) return "score";
+        else if (l.contains("名单报名") || l.contains("名单+报名") || l.contains("报名名单")) return "athlete_signup";
         else if (l.contains("报名表")) return "signup";
         else if (l.contains("全名单") || l.contains("名单")) return "roster";
         else if (l.contains("registration") || l.contains("报名")) return "registration";
@@ -460,6 +461,7 @@ public class ExcelService {
             case "eventsimple" -> processEventSimpleRow(values);
             case "roster" -> processRosterRow(values);
             case "signup" -> processSignupRow(values);
+            case "athlete_signup" -> processCombinedRow(values);
             case "grade" -> processGradeRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
@@ -809,6 +811,72 @@ public class ExcelService {
                 .registrationTime(LocalDateTime.now())
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         registrationRepository.save(reg);
+    }
+
+    // ==================== 名单+报名合并表（合一）：单 sheet ====================
+
+    /**
+     * 名单+报名合一：每行既是一条「全名单」（建/更新运动员，含号码布编号），
+     * 若带了「项目」则同时写一条报名；项目为空的行只落运动员主数据（即全名单里未报名的学生）。
+     *
+     * <p>运动员按学号 upsert、班级缺失自动创建（同 roster 口径），这样「一个 Excel 一张表」
+     * 即可完成「建人 + 报名」，适合班主任端一次性提交。报名部分直接复用 {@link #processSignupRow}，
+     * 因此它同样遵守「个人项目严禁填组号」「已报名该项目则跳过」等规则。</p>
+     */
+    private void processCombinedRow(Map<String, String> v) {
+        upsertAthleteFromCombined(v);
+        if (trimToNull(v.get("eventCode")) != null) {
+            processSignupRow(v);
+        }
+    }
+
+    /** 合一表：按学号(优先)/号码布编号 upsert 运动员；班级缺失自动创建。 */
+    private Athlete upsertAthleteFromCombined(Map<String, String> v) {
+        String studentId = trimToNull(v.get("studentId"));
+        String number = trimToNull(v.get("number"));
+        Athlete athlete = null;
+        if (studentId != null) athlete = athleteRepository.findByStudentId(studentId).orElse(null);
+        if (athlete == null && number != null) athlete = athleteRepository.findByNumber(number).orElse(null);
+
+        String name = trimToNull(v.get("name"));
+        if (name == null) throw new RuntimeException("姓名为空");
+
+        if (athlete == null) {
+            ClassInfo classInfo = resolveOrCreateClass(v.get("grade"), v.get("className"));
+            athlete = Athlete.builder()
+                    .name(name).gender(mapGender(v.get("gender")))
+                    .grade(trimToNull(v.get("grade"))).classInfo(classInfo)
+                    .studentId(studentId).number(number)
+                    .status("normal").build();
+            return athleteRepository.save(athlete);
+        }
+
+        athlete.setName(name);
+        String g = trimToNull(v.get("gender"));
+        if (g != null) athlete.setGender(mapGender(g));
+        String grade = trimToNull(v.get("grade"));
+        if (grade != null) athlete.setGrade(grade);
+        ClassInfo ci = resolveOrCreateClass(grade, v.get("className"));
+        if (ci != null) athlete.setClassInfo(ci);
+        if (studentId != null) athlete.setStudentId(studentId);
+        if (number != null) athlete.setNumber(number);
+        athlete.setStatus("normal");
+        return athleteRepository.save(athlete);
+    }
+
+    /** 班级解析：按(年级,班级)或班级名查找，缺失则新建（code 取班级名，唯一去重）。 */
+    private ClassInfo resolveOrCreateClass(String grade, String className) {
+        if (className == null) return null;
+        ClassInfo ci = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
+        if (ci == null) ci = classInfoRepository.findByName(className).orElse(null);
+        if (ci == null) {
+            String code = className;
+            int dup = 1;
+            while (classInfoRepository.existsByCode(code)) code = className + "_" + (dup++);
+            ci = classInfoRepository.save(ClassInfo.builder()
+                    .name(className).code(code).grade(trimToNull(grade)).isParticipating(true).build());
+        }
+        return ci;
     }
 
     // ==================== 直接导入（兼容旧接口） ====================

@@ -114,6 +114,11 @@ public final class ExcelColumnMapping {
         TYPE_FIELDS.put("signup", new LinkedHashMap<>(Map.of(
             "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别",
             "eventCode","项目","teamTag","组号")));
+        // 名单+报名合并表（合一）：单 sheet 同时含运动员主数据(含号码)与报名；项目为空则该行只落运动员。
+        // 适合班主任端一次性提交一张表：每行=一个学生的一次报名；未报名的学生也占一行(项目留空)。
+        TYPE_FIELDS.put("athlete_signup", new LinkedHashMap<>(Map.of(
+            "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别",
+            "number","号码布编号","eventCode","项目","teamTag","组号")));
         // 年级表（1~2列）：年级 / 序号 —— 供「把年级拆成独立表」的场景（写入系统年级配置）
         TYPE_FIELDS.put("grade", new LinkedHashMap<>(Map.of(
             "name","年级","sortOrder","序号")));
@@ -198,6 +203,22 @@ public final class ExcelColumnMapping {
         signup.put("组号", "teamTag");
         signup.put("队伍标识", "teamTag");
         TYPE_COLUMN_ALIASES.put("signup", signup);
+
+        // 名单+报名合并表：处理器读 grade/className/name/studentId/gender/number(号码布编号)/eventCode/teamTag
+        Map<String, String> combined = new LinkedHashMap<>();
+        combined.put("年级", "grade");
+        combined.put("班级", "className");
+        combined.put("姓名", "name");
+        combined.put("学号", "studentId");
+        combined.put("性别", "gender");
+        combined.put("号码布编号", "number");
+        combined.put("号码布", "number");
+        combined.put("编号", "number");
+        combined.put("项目", "eventCode");
+        combined.put("项目编码", "eventCode");
+        combined.put("组号", "teamTag");
+        combined.put("队伍标识", "teamTag");
+        TYPE_COLUMN_ALIASES.put("athlete_signup", combined);
     }
 
     /** 归一化：去空白/常见分隔符与大小写差异，便于「表头 ↔ 别名」比较。 */
