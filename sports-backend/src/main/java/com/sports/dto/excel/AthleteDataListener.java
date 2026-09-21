@@ -2,9 +2,9 @@ package com.sports.dto.excel;
 
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
-import com.sports.entity.Athlete;
-import com.sports.entity.ClassInfo;
-import com.sports.repository.ClassInfoRepository;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.repository.clazz.ClassInfoRepository;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
