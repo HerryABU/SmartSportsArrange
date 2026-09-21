@@ -43,11 +43,88 @@ public class ExcelService {
     private final EventRefereeRepository eventRefereeRepository;
     private final RefereeRepository refereeRepository;
     private final VenueRepository venueRepository;
+    /** 年级表导入需要写系统年级配置（与「班级表」同属基础数据） */
+    private final GradeService gradeService;
 
     // ==================== 模板下载 ====================
 
+    /** 多表模板的类型别名：一个工作簿内含多张表。 */
+    private static final java.util.Set<String> MULTI_WORKBOOK_ALIASES =
+            java.util.Set.of("multiworkbook", "multi-workbook", "multisheet", "multi");
+
     public void getTemplate(String type, HttpServletResponse response) {
         String t = type != null ? type.toLowerCase() : "";
+        if (MULTI_WORKBOOK_ALIASES.contains(t)) {
+            getMultiWorkbookTemplate(response);
+            return;
+        }
+        TemplateSpec spec = buildTemplate(t);
+        setExcelResponse(response, spec.fileName());
+        try (OutputStream out = response.getOutputStream()) {
+            List<List<String>> sheet = spec.rows();
+            List<List<String>> headCols = sheet.get(0).stream().map(List::of).collect(Collectors.toList());
+            List<List<String>> dataRows = sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of();
+            // B14/U19：新增「填写说明」Sheet，说明字段规则（尤其号码布由系统生成，可留空）
+            List<List<String>> notes = templateNotes(t);
+            try (com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
+                com.alibaba.excel.write.metadata.WriteSheet s1 =
+                        EasyExcel.writerSheet(0, "数据").head(headCols).build();
+                writer.write(dataRows, s1);
+                if (!notes.isEmpty()) {
+                    com.alibaba.excel.write.metadata.WriteSheet s2 =
+                            EasyExcel.writerSheet(1, "填写说明")
+                                    .head(List.of(List.of("字段"), List.of("填写说明"))).build();
+                    writer.write(notes, s2);
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("模板下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 多表导入模板：<b>一个工作簿内含多张表</b>（年级表 / 班级表 / 全名单表 / 运动项目表 / 报名表 / 成绩表）。
+     *
+     * <p>Sheet 名与表头都按多表导入的识别口径命名（见 {@code SheetTypeResolver}），
+     * 因此管理员照此填写即可一次性导入，无需逐表说明类型。</p>
+     */
+    public void getMultiWorkbookTemplate(HttpServletResponse response) {
+        setExcelResponse(response, "多表导入模板.xlsx");
+        String[][] sheets = {
+                {"grade", "年级表"}, {"class", "班级表"}, {"roster", "全名单表"},
+                {"eventsimple", "运动项目表"}, {"signup", "报名表"}, {"score", "成绩表"}};
+        try (OutputStream out = response.getOutputStream();
+             com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
+            int idx = 0;
+            for (String[] pair : sheets) {
+                // 直接复用单表模板的行定义，避免「单表模板」与「多表模板」两份口径漂移
+                List<List<String>> rows = buildTemplate(pair[0]).rows();
+                List<List<String>> headCols = rows.get(0).stream().map(List::of).collect(Collectors.toList());
+                List<List<String>> dataRows = rows.size() > 1 ? rows.subList(1, rows.size()) : List.of();
+                writer.write(dataRows, EasyExcel.writerSheet(idx++, pair[1]).head(headCols).build());
+            }
+            List<List<String>> notes = new ArrayList<>();
+            notes.add(List.of("用法", "本工作簿含多张表：年级表/班级表/全名单表/运动项目表/报名表/成绩表。"
+                    + "系统按「Sheet 名 + 表头」自动识别每张表的类型。"));
+            notes.add(List.of("顺序", "Sheet 的先后不影响结果：导入按依赖顺序处理（年级→班级→名单→项目→报名→成绩）。"));
+            notes.add(List.of("不用的表", "用不到的表请整表删除；空表会被自动跳过，不影响其它表。"));
+            notes.add(List.of("重跑", "同一份工作簿可重复导入：已存在的数据会计入「跳过」而不算失败。"));
+            writer.write(notes, EasyExcel.writerSheet(idx, "填写说明")
+                    .head(List.of(List.of("字段"), List.of("填写说明"))).build());
+        } catch (IOException e) {
+            throw new RuntimeException("多表模板下载失败: " + e.getMessage());
+        }
+    }
+
+    /** 模板规格：文件名 + 行（第 0 行为表头）。 */
+    private record TemplateSpec(String fileName, List<List<String>> rows) {
+    }
+
+    /**
+     * 各类型的模板行定义（<b>唯一来源</b>）：单表下载与多表工作簿模板都从这里取，
+     * 保证两种模板的列序/示例永远一致——否则「照多表模板填的」会按单表模板的列序被读错。
+     */
+    private TemplateSpec buildTemplate(String t) {
         String fileName;
         List<List<String>> sheet = new ArrayList<>();
 
@@ -106,6 +183,14 @@ public class ExcelService {
                 sheet.add(List.of("高一年级","高一1班","张三","2024001","男","4×100米接力","A"));
                 sheet.add(List.of("高一年级","高一1班","李四","2024002","女","4×100米接力","B"));
             }
+            case "grade" -> {
+                // 年级表（1~2列）：年级 / 序号 —— 供「把年级/班级拆分为独立表」的工作簿
+                fileName = "年级表导入模板.xlsx";
+                sheet.add(List.of("年级","序号"));
+                sheet.add(List.of("高一年级","1"));
+                sheet.add(List.of("高二年级","2"));
+                sheet.add(List.of("高三年级","3"));
+            }
             case "event" -> {
                 // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
                 // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(1=串行,n=并行)/
@@ -126,27 +211,7 @@ public class ExcelService {
                 sheet.add(List.of("请指定模板类型"));
             }
         }
-
-        setExcelResponse(response, fileName);
-        try (OutputStream out = response.getOutputStream()) {
-            List<List<String>> headCols = sheet.get(0).stream().map(List::of).collect(Collectors.toList());
-            List<List<String>> dataRows = sheet.size() > 1 ? sheet.subList(1, sheet.size()) : List.of();
-            // B14/U19：新增「填写说明」Sheet，说明字段规则（尤其号码布由系统生成，可留空）
-            List<List<String>> notes = templateNotes(t);
-            try (com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
-                com.alibaba.excel.write.metadata.WriteSheet s1 =
-                        EasyExcel.writerSheet(0, "数据").head(headCols).build();
-                writer.write(dataRows, s1);
-                if (!notes.isEmpty()) {
-                    com.alibaba.excel.write.metadata.WriteSheet s2 =
-                            EasyExcel.writerSheet(1, "填写说明")
-                                    .head(List.of(List.of("字段"), List.of("填写说明"))).build();
-                    writer.write(notes, s2);
-                }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("模板下载失败: " + e.getMessage());
-        }
+        return new TemplateSpec(fileName, sheet);
     }
 
     /** 各模板的「填写说明」（B14/U19）：解释字段取值与系统自动生成项 */
@@ -198,6 +263,11 @@ public class ExcelService {
                 notes.add(List.of("项目", "填项目名称或项目编码（如 100米 / 100M / 4×100米接力），须与运动项目表一致。"));
                 notes.add(List.of("组号", "仅团体/接力项目填写（如 A / B）：同一班级同一项目同组号视为同一支队伍；两个 4×100 队分别编 A、B。"));
                 notes.add(List.of("个人项目", "个人项目（非团体）严禁填写组号，填了将报错。"));
+            }
+            case "grade" -> {
+                notes.add(List.of("年级", "年级名称，如 高一年级；写入系统「年级管理」，已存在则跳过。"));
+                notes.add(List.of("序号", "出场/统计顺序，可留空（留空按现有年级数顺延）。"));
+                notes.add(List.of("用途", "配合「班级表」「全名单表」拆分成多个 Sheet 时，先导年级再导班级。"));
             }
             default -> notes.add(List.of("说明", "请在下载链接中指定模板类型。"));
         }
@@ -282,17 +352,31 @@ public class ExcelService {
     }
 
     private String detectType(String filename) {
-        if (filename == null) return "athlete";
-        String l = filename.toLowerCase();
-        if (l.contains("score")||l.contains("成绩")) return "score";
+        String t = detectTypeOrNull(filename);
+        return t != null ? t : "athlete";
+    }
+
+    /**
+     * 按名称（文件名 / Sheet 名）推断导入类型；<b>无法确定时返回 null</b>（不再默认 athlete）。
+     *
+     * <p>多表导入依赖它：默认值会让「班级表」被当成运动员表硬导，从而「导入成功但数据全错」。
+     * 返回 null 由调用方决定是跳过还是报错，绝不猜。</p>
+     */
+    public static String detectTypeOrNull(String name) {
+        if (name == null) return null;
+        String l = name.toLowerCase();
+        if (l.contains("score") || l.contains("成绩")) return "score";
         else if (l.contains("报名表")) return "signup";
-        else if (l.contains("全名单")||l.contains("名单")) return "roster";
-        else if (l.contains("registration")||l.contains("报名")) return "registration";
-        else if (l.contains("class")||l.contains("班级")) return "class";
-        else if (l.contains("user")||l.contains("用户")) return "user";
+        else if (l.contains("全名单") || l.contains("名单")) return "roster";
+        else if (l.contains("registration") || l.contains("报名")) return "registration";
+        else if (l.contains("class") || l.contains("班级")) return "class";
+        else if (l.contains("user") || l.contains("用户")) return "user";
+        // 年级表：只在明确表达「年级表/年级列表/就是年级」时判定，避免把「高一年级」这类
+        // 按年级拆分的名单 Sheet 误判为年级主数据（那种 Sheet 由表头推断为 roster）。
+        else if (l.contains("年级表") || l.contains("年级列表") || "年级".equals(l.trim())) return "grade";
         else if (l.contains("运动项目表")) return "eventsimple";
-        else if (l.contains("event")||l.contains("项目")) return "event";
-        return "athlete";
+        else if (l.contains("event") || l.contains("项目")) return "event";
+        return null;
     }
 
     // ==================== 带列映射的导入 ====================
@@ -371,8 +455,81 @@ public class ExcelService {
             case "eventsimple" -> processEventSimpleRow(values);
             case "roster" -> processRosterRow(values);
             case "signup" -> processSignupRow(values);
+            case "grade" -> processGradeRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
+    }
+
+    /**
+     * 年级表行处理：写入系统年级配置（{@code system_config.grades}）。
+     *
+     * <p>用于「把年级/班级拆成独立表」的多表工作簿——年级先落库，后续班级表与全名单表才有年级可挂。</p>
+     */
+    private void processGradeRow(Map<String, String> v) {
+        String name = trimToNull(v.get("name"));
+        if (name == null) throw new RuntimeException("年级名称为空");
+        List<Map<String, Object>> grades = gradeService.getGrades();
+        for (Map<String, Object> g : grades) {
+            if (name.equals(String.valueOf(g.get("name")))) {
+                throw new RuntimeException("年级已存在: " + name);
+            }
+        }
+        Integer sortOrder = parseIntSafe(v.get("sortOrder"), null);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", name);
+        body.put("sortOrder", sortOrder != null ? sortOrder : grades.size() + 1);
+        gradeService.addGrade(body);
+    }
+
+    // ==================== 批量逐行导入（多表导入复用） ====================
+
+    /** 「已存在」类失败标记：多表导入据此归入「跳过」而非「失败」（重跑同一份工作簿是常态）。 */
+    private static final List<String> ALREADY_EXISTS_MARKERS =
+            List.of("已存在", "已报名", "已存在该", "重复");
+
+    /**
+     * 逐行导入（每行一个 {@code field → 值}）。供「多表导入」把每个 Sheet 的行批量交给既有处理器。
+     *
+     * <p>逐行捕获异常并如实分类：<b>成功 / 跳过（已存在，重跑常见）/ 失败（附行号与原因）</b>。
+     * 绝不静默吞掉失败——{@code failed} 与逐行原因都会回传，供前端逐表展示。</p>
+     */
+    @Transactional
+    public Map<String, Object> importRows(String type, List<Map<String, String>> rows) {
+        int success = 0, skipped = 0;
+        List<Map<String, Object>> errors = new ArrayList<>();
+        List<String> skipNotes = new ArrayList<>();
+        int total = rows == null ? 0 : rows.size();
+        for (int i = 0; i < total; i++) {
+            try {
+                processRow(type, rows.get(i));
+                success++;
+            } catch (Exception e) {
+                String msg = String.valueOf(e.getMessage());
+                if (isAlreadyExists(msg)) {
+                    skipped++;
+                    if (skipNotes.size() < 20) skipNotes.add("第" + (i + 1) + "行：" + msg);
+                } else {
+                    errors.add(new LinkedHashMap<>(Map.of("row", i + 1, "message", msg)));
+                }
+            }
+        }
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("type", type);
+        r.put("totalRows", total);
+        r.put("success", success);
+        r.put("skipped", skipped);
+        r.put("failed", errors.size());
+        r.put("errors", errors);
+        r.put("skipNotes", skipNotes);
+        return r;
+    }
+
+    private static boolean isAlreadyExists(String message) {
+        if (message == null) return false;
+        for (String m : ALREADY_EXISTS_MARKERS) {
+            if (message.contains(m)) return true;
+        }
+        return false;
     }
 
     private void processAthleteRow(Map<String, String> v) {
@@ -468,7 +625,9 @@ public class ExcelService {
     }
 
     private void processClassRow(Map<String, String> v) {
-        String name = v.get("name");
+        // 兼容两种写法：「班级名称」（模板表头）与「班级」（口语表头）。自动映射到 className 时也能落库，
+        // 否则会出现「表头认得出、处理器认不出」的静默丢字段。
+        String name = v.get("name") != null ? v.get("name") : v.get("className");
         if (name == null) throw new RuntimeException("班级名称为空");
         if (classInfoRepository.existsByName(name)) throw new RuntimeException("班级已存在: " + name);
 

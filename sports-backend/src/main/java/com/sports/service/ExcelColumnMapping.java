@@ -19,9 +19,21 @@ public final class ExcelColumnMapping {
     /** 每种类型的可用字段：fieldName → 中文标签 */
     public static final Map<String, Map<String, String>> TYPE_FIELDS = new LinkedHashMap<>();
 
+    /**
+     * 类型专属列名别名（表头 → 该类型处理器<b>真正读取</b>的字段名）。
+     *
+     * <p>为什么需要它：全局别名表是「中文列名 → 通用字段名」，而各类型的处理器读的键并不总等于通用字段名
+     * （如 {@code event} 类型读 {@code name/code}，通用匹配却会给出 {@code eventName/eventCode}）。
+     * 多表导入靠表头自动映射，若在此分叉就会「导入成功但字段全空」。本表显式给出该类型的落点，
+     * 且用 {@link LinkedHashMap} 固定顺序，使**同长度别名的平局有确定结果**（{@code Map.of} 的组合顺序
+     * 由 JVM 每次运行随机化，不能用来做平局判定）。</p>
+     */
+    private static final Map<String, Map<String, String>> TYPE_COLUMN_ALIASES = new LinkedHashMap<>();
+
     static {
         initColumnAliases();
         initTypeFields();
+        initTypeColumnAliases();
     }
 
     private static void initColumnAliases() {
@@ -102,27 +114,176 @@ public final class ExcelColumnMapping {
         TYPE_FIELDS.put("signup", new LinkedHashMap<>(Map.of(
             "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别",
             "eventCode","项目","teamTag","组号")));
+        // 年级表（1~2列）：年级 / 序号 —— 供「把年级拆成独立表」的场景（写入系统年级配置）
+        TYPE_FIELDS.put("grade", new LinkedHashMap<>(Map.of(
+            "name","年级","sortOrder","序号")));
     }
 
     private ExcelColumnMapping() {
     }
 
-    /** 智能匹配列名→标准字段 */
+    /**
+     * 类型专属别名的初始化。
+     *
+     * <p>只为「通用字段名与该类型处理器读取的键不一致」或「同长度别名有歧义」的类型补表；
+     * 其余类型（roster/signup/athlete/score/registration/eventsimple）用改进后的全局匹配已能正确落点。</p>
+     */
+    private static void initTypeColumnAliases() {
+        // 班级表：处理器读 name(班级名称)/code(班级编码)/grade/teacherName。
+        // 全局匹配会把「班级名称/班级」落到 className（处理器不读）→ 必须给专属表。
+        Map<String, String> cls = new LinkedHashMap<>();
+        cls.put("班级名称", "name");
+        cls.put("班级", "name");
+        cls.put("班别", "name");
+        cls.put("班级编码", "code");
+        cls.put("班级编号", "code");
+        cls.put("年级", "grade");
+        cls.put("班主任", "teacherName");
+        cls.put("班主任姓名", "teacherName");
+        cls.put("联系电话", "phone");
+        TYPE_COLUMN_ALIASES.put("class", cls);
+
+        // 表格2 项目表：处理器读 name/code（不是 eventName/eventCode）
+        Map<String, String> ev = new LinkedHashMap<>();
+        ev.put("项目名称", "name");
+        ev.put("项目", "name");
+        ev.put("项目编码", "code");
+        ev.put("项目代码", "code");
+        ev.put("类别", "category");
+        ev.put("项目类型", "category");
+        ev.put("类型", "category");
+        ev.put("性别限制", "genderLimit");
+        ev.put("跑道数", "defaultLanes");
+        ev.put("道数", "defaultLanes");
+        ev.put("计分规则", "scoringType");
+        ev.put("计分方式", "scoringType");
+        ev.put("校纪录", "record");
+        ev.put("纪录", "record");
+        ev.put("组次裁判数量", "refereesPerGroup");
+        ev.put("裁判人数", "refereesPerGroup");
+        TYPE_COLUMN_ALIASES.put("event", ev);
+
+        // 用户表：处理器读 realName；全局匹配会把「姓名」落到 name（处理器不读）
+        Map<String, String> user = new LinkedHashMap<>();
+        user.put("用户名", "username");
+        user.put("账号", "username");
+        user.put("密码", "password");
+        user.put("姓名", "realName");
+        user.put("真实姓名", "realName");
+        user.put("角色", "role");
+        user.put("电话", "phone");
+        user.put("手机号", "phone");
+        TYPE_COLUMN_ALIASES.put("user", user);
+
+        // 年级表：只有一列年级（可带序号）
+        Map<String, String> grade = new LinkedHashMap<>();
+        grade.put("年级", "name");
+        grade.put("年级名称", "name");
+        grade.put("年段", "name");
+        grade.put("序号", "sortOrder");
+        grade.put("排序", "sortOrder");
+        grade.put("顺序", "sortOrder");
+        TYPE_COLUMN_ALIASES.put("grade", grade);
+
+        // 报名表：处理器读 eventCode/teamTag（与全局一致），但「组号」在全局表里与 heat 相邻易歧义 → 显式固定
+        Map<String, String> signup = new LinkedHashMap<>();
+        signup.put("年级", "grade");
+        signup.put("班级", "className");
+        signup.put("姓名", "name");
+        signup.put("学号", "studentId");
+        signup.put("性别", "gender");
+        signup.put("项目", "eventCode");
+        signup.put("项目编码", "eventCode");
+        signup.put("项目代码", "eventCode");
+        signup.put("组号", "teamTag");
+        signup.put("队伍标识", "teamTag");
+        TYPE_COLUMN_ALIASES.put("signup", signup);
+    }
+
+    /** 归一化：去空白/常见分隔符与大小写差异，便于「表头 ↔ 别名」比较。 */
+    private static String normalize(String s) {
+        return s == null ? null : s.trim().toLowerCase().replaceAll("[\\s\\-_/（）():：、]", "");
+    }
+
+    /**
+     * 智能匹配列名 → 标准字段（全局）。
+     *
+     * <p><b>判定顺序：① 归一化后完全相等 → ② 包含匹配取「最长别名」，平局按别名表插入顺序。</b></p>
+     *
+     * <p>为什么不能沿用「按别名表顺序取首个包含命中」：那会让更具体的列名被更短的别名抢走——
+     * 「项目名称」会被 {@code eventCode} 的别名「项目」命中（该键排在 {@code eventName} 之前），
+     * 「项目类型」同样落到 {@code eventCode}。症状是<b>导入成功但字段全空/串列，且不报错</b>。</p>
+     */
     public static String matchColumnName(String colName) {
-        if (colName == null || colName.isBlank()) return null;
-        String s = colName.trim().toLowerCase().replaceAll("[\\s\\-_/（）()]", "");
+        String s = normalize(colName);
+        if (s == null || s.isEmpty()) return null;
+        // ① 完全相等
         for (Map.Entry<String, List<String>> e : COLUMN_ALIASES.entrySet()) {
             for (String alias : e.getValue()) {
-                String a = alias.toLowerCase().replaceAll("[\\s\\-_/（）()]", "");
-                if (s.equals(a) || s.contains(a) || a.contains(s))
-                    return e.getKey();
+                if (s.equals(normalize(alias))) return e.getKey();
             }
         }
-        return null;
+        // ② 包含匹配（最长别名优先）
+        String best = null;
+        int bestLen = -1;
+        for (Map.Entry<String, List<String>> e : COLUMN_ALIASES.entrySet()) {
+            for (String alias : e.getValue()) {
+                String a = normalize(alias);
+                if (a == null || a.isEmpty()) continue;
+                if (s.contains(a) || a.contains(s)) {
+                    if (a.length() > bestLen) {
+                        bestLen = a.length();
+                        best = e.getKey();
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 按「类型优先」匹配表头 → 该类型处理器读取的字段名（多表导入自动映射用）。
+     *
+     * <p>顺序：① 类型专属别名表（精确 → 最长包含）→ ② 全局别名匹配。</p>
+     */
+    public static String matchHeaderForType(String type, String header) {
+        String s = normalize(header);
+        if (s == null || s.isEmpty()) return null;
+
+        Map<String, String> typeAliases = TYPE_COLUMN_ALIASES.get(type);
+        if (typeAliases != null) {
+            for (Map.Entry<String, String> e : typeAliases.entrySet()) {
+                if (s.equals(normalize(e.getKey()))) return e.getValue();
+            }
+            String best = null;
+            int bestLen = -1;
+            for (Map.Entry<String, String> e : typeAliases.entrySet()) {
+                String a = normalize(e.getKey());
+                if (a == null || a.isEmpty()) continue;
+                if (s.contains(a) || a.contains(s)) {
+                    if (a.length() > bestLen) {
+                        bestLen = a.length();
+                        best = e.getValue();
+                    }
+                }
+            }
+            if (best != null) return best;
+        }
+        return matchColumnName(header);
+    }
+
+    /** 该类型自动映射时是否「认得」这个表头。 */
+    public static boolean knowsHeader(String type, String header) {
+        return matchHeaderForType(type, header) != null;
     }
 
     public static String getFieldLabel(String type, String field) {
         Map<String, String> fields = TYPE_FIELDS.getOrDefault(type, TYPE_FIELDS.get("athlete"));
         return fields.getOrDefault(field, field);
+    }
+
+    /** 该类型全部候选字段（供前端「手动指定列映射」下拉）。 */
+    public static Map<String, String> fieldsOf(String type) {
+        return TYPE_FIELDS.getOrDefault(type, TYPE_FIELDS.get("athlete"));
     }
 }

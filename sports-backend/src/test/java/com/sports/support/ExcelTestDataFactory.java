@@ -40,6 +40,35 @@ public final class ExcelTestDataFactory {
         return xlsx(headers, list);
     }
 
+    /** 一个 Sheet 的规格：表名 + 表头 + 行数据（多表导入用例用）。 */
+    public record SheetSpec(String name, List<String> headers, List<List<String>> rows) {
+
+        public static SheetSpec of(String name, List<String> headers, String[][] rows) {
+            List<List<String>> list = new ArrayList<>();
+            for (String[] r : rows) list.add(Arrays.asList(r));
+            return new SheetSpec(name, headers, list);
+        }
+    }
+
+    /**
+     * 多 Sheet 工作簿：一次生成含多个<b>具名</b> Sheet 的 xlsx（多表导入用例用）。
+     *
+     * <p>Sheet 名带业务含义（如「年级表」「班级表」「全名单」），因为多表导入正是靠表名 + 表头指纹来判定类型。</p>
+     */
+    public static byte[] xlsxMulti(List<SheetSpec> sheets) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (ExcelWriter writer = EasyExcel.write(out).build()) {
+            int idx = 0;
+            for (SheetSpec s : sheets) {
+                List<List<String>> head = new ArrayList<>();
+                for (String h : s.headers()) head.add(List.of(h));
+                WriteSheet ws = EasyExcel.writerSheet(idx++, s.name()).head(head).build();
+                writer.write(s.rows(), ws);
+            }
+        }
+        return out.toByteArray();
+    }
+
     // ==================== 与各导入模板列序严格一致的类型化生成器 ====================
 
     /** 全名单表（5列：年级/班级/姓名/学号/性别）。 */

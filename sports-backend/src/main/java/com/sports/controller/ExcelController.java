@@ -5,6 +5,7 @@ import com.sports.service.AuditService;
 import com.sports.service.ExcelService;
 import com.sports.service.SystemService;
 import com.sports.service.WordOrderBookService;
+import com.sports.service.excel.MultiTableImportService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +29,7 @@ public class ExcelController {
     private final WordOrderBookService wordOrderBookService;
     private final SystemService systemService;
     private final AuditService auditService;
+    private final MultiTableImportService multiTableImportService;
 
     // ===== 模板下载 =====
     @GetMapping("/template/{type}")
@@ -50,6 +52,41 @@ public class ExcelController {
             @RequestParam Map<String, Object> mapping) throws IOException {
         log.info("Excel映射导入: filename={}, type={}", file.getOriginalFilename(), mapping.get("type"));
         return ApiResponse.success("导入完成", excelService.importWithMapping(file, mapping));
+    }
+
+    // ===== 多表导入（管理员）：一个工作簿多个 Sheet / 多个文件一次导入 =====
+
+    /**
+     * 多表导入探测：列出每个文件里的每个 Sheet（真实表名）、判定类型、自动列映射与样例。
+     * 供前端「先看清再导」——管理员可逐表确认或改写类型后再导入。
+     */
+    @PostMapping("/multi/preview")
+    public ApiResponse<?> previewMulti(@RequestParam("files") MultipartFile[] files,
+                                       @RequestParam(required = false) Map<String, Object> plan) {
+        log.info("多表导入探测: 文件数={}", files == null ? 0 : files.length);
+        return ApiResponse.success(multiTableImportService.preview(files == null ? java.util.List.of() : java.util.List.of(files),
+                plan == null ? Map.of() : plan));
+    }
+
+    /** 多表导入：files 可多选；plan 可选，用于逐表指定 type / columnMap。 */
+    @PostMapping("/import-multi")
+    public ApiResponse<?> importMulti(@RequestParam("files") MultipartFile[] files,
+                                      @RequestParam(required = false) Map<String, Object> plan) {
+        log.info("多表导入: 文件数={}", files == null ? 0 : files.length);
+        Map<String, Object> result = multiTableImportService.importAll(
+                files == null ? java.util.List.of() : java.util.List.of(files), plan == null ? Map.of() : plan);
+        auditService.record("EXCEL_IMPORT_MULTI", "EXCEL", null, "多表导入 " + summarize(result));
+        return ApiResponse.success("多表导入完成", result);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String summarize(Map<String, Object> result) {
+        Object s = result.get("summary");
+        if (!(s instanceof Map<?, ?> m)) {
+            return "";
+        }
+        return "Sheet " + m.get("sheets") + "，成功 " + m.get("imported")
+                + " 行，跳过 " + m.get("rowSkipped") + " 行，失败 " + m.get("failed") + " 行";
     }
 
     // ===== 直接导入（兼容旧接口）=====

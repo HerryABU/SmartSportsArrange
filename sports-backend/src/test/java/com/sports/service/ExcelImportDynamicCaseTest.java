@@ -44,6 +44,8 @@ class ExcelImportDynamicCaseTest {
     @Mock private EventRefereeRepository eventRefereeRepository;
     @Mock private RefereeRepository refereeRepository;
     @Mock private VenueRepository venueRepository;
+    /** ExcelService 新增依赖（年级表导入）——漏了会注入 null，年级行处理直接 NPE。 */
+    @Mock private GradeService gradeService;
 
     @InjectMocks private ExcelService excelService;
 
