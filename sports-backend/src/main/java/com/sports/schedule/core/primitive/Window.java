@@ -1,4 +1,4 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
 
 /** 一个时段窗口（第几天 + 该天的某个时段）。 */
 public class Window {

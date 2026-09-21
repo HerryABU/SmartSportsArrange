@@ -1,8 +1,8 @@
 package com.sports.schedule.opt.score;
 
-import com.sports.schedule.opt.ScheduleConstraintProvider;
-import com.sports.schedule.opt.SchedulePlan;
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 
 /**
  * 方案度量（算法系：评分/度量）。

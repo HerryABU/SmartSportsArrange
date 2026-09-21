@@ -1,12 +1,15 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.math;
 
-import com.sports.entity.Event;
+import com.sports.entity.event.Event;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.sports.schedule.core.primitive.Unit;
+import com.sports.schedule.core.primitive.Window;
+import com.sports.service.schedule.ScheduleService;
 
 /**
  * 赛程可行性 / 时长 / 压缩的纯静态分析工具（从 {@code ScheduleService} 抽取，行为零变化）。

@@ -1,4 +1,4 @@
-package com.sports.schedule.opt;
+package com.sports.schedule.opt.solver;
 
 import ai.timefold.solver.core.api.score.HardMediumSoftScore;
 import ai.timefold.solver.core.api.solver.SolutionManager;

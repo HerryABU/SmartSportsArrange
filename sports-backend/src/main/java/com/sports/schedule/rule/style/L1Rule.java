@@ -1,9 +1,10 @@
-package com.sports.schedule.rule.l1;
+package com.sports.schedule.rule.style;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.sports.service.arrange.ArrangementService;
 
 /**
  * L1「自定义规则」可选款型（编排分组的 L1 层规则目录）。

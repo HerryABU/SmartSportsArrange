@@ -1,4 +1,4 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
 
 import java.util.ArrayList;
 import java.util.Comparator;

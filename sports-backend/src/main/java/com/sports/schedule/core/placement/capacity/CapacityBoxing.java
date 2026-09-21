@@ -1,6 +1,6 @@
 package com.sports.schedule.core.placement.capacity;
 
-import com.sports.schedule.core.Window;
+import com.sports.schedule.core.primitive.Window;
 
 import java.util.LinkedHashMap;
 import java.util.List;

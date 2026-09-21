@@ -1,4 +1,4 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
 
 /** 放置结果：某个窗口内的某个起点。 */
 public class Slot {

@@ -1,7 +1,8 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.sports.service.schedule.ScheduleService;
 
 /**
  * 并发位池：slots 个并发槽位，槽位与场地一一对应（场地不足则复用）。

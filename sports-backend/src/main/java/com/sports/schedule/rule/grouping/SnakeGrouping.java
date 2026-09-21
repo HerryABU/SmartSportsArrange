@@ -1,4 +1,4 @@
-package com.sports.schedule.rule;
+package com.sports.schedule.rule.grouping;
 
 import java.util.ArrayList;
 import java.util.List;

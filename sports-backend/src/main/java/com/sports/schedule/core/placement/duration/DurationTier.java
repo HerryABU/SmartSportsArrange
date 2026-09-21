@@ -1,6 +1,6 @@
 package com.sports.schedule.core.placement.duration;
 
-import com.sports.schedule.core.Unit;
+import com.sports.schedule.core.primitive.Unit;
 
 import java.util.ArrayList;
 import java.util.Comparator;

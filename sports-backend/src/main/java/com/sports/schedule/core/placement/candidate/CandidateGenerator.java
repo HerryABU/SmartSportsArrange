@@ -1,9 +1,9 @@
 package com.sports.schedule.core.placement.candidate;
 
-import com.sports.schedule.core.Pool;
-import com.sports.schedule.core.Window;
+import com.sports.schedule.core.primitive.Pool;
+import com.sports.schedule.core.primitive.Window;
 import com.sports.schedule.core.placement.duration.DurationTier;
-import com.sports.schedule.opt.Placement;
+import com.sports.schedule.opt.solver.Placement;
 
 import java.util.ArrayList;
 import java.util.List;

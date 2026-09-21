@@ -2,8 +2,8 @@ package com.sports.schedule.rule.inject;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sports.entity.SystemConfig;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.system.SystemConfig;
+import com.sports.repository.system.SystemConfigRepository;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;

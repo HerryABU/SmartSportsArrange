@@ -1,10 +1,12 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
+import com.sports.schedule.core.math.SchedulePlacementMath;
+import com.sports.service.schedule.ScheduleService;
 
 /**
  * 候选位置：某槽位 × 某窗口 × 某起点，及把该单元放在此处的兼项冲突条数。
  *
  * <p>由 {@link SchedulePlacementMath#findBestSlot} 产出，随后被编排层
- * （{@code com.sports.service.ScheduleService#placeOne} / {@code placeBatch}）
+ * （{@code com.sports.service.schedule.ScheduleService#placeOne} / {@code placeBatch}）
  * 跨包读取其字段以落位，故字段与构造器均须为 public。</p>
  */
 public class Cand {

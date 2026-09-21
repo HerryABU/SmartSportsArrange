@@ -1,4 +1,4 @@
-package com.sports.schedule.opt;
+package com.sports.schedule.opt.solver;
 
 import ai.timefold.solver.core.api.domain.entity.PlanningEntity;
 import ai.timefold.solver.core.api.domain.entity.PlanningPin;
@@ -10,6 +10,7 @@ import lombok.Setter;
 
 import java.util.List;
 import java.util.Map;
+import com.sports.entity.event.Event;
 
 /**
  * 待排的赛程单元（约束求解的「计划实体」）= 项目 × 年级。
@@ -113,7 +114,7 @@ public class ScheduleUnit {
      * 而求解路径只有单元，若不放行这些属性，同一条规则在编排阶段命中、到了求解阶段却
      * <b>静默永不命中</b>——同一份脚本在两条路径上语义不一致，属实质性缺陷。</p>
      *
-     * <p><b>为什么是 Map 而不是直接持有 {@link com.sports.entity.Event}</b>：求解域刻意只保留值对象，
+     * <p><b>为什么是 Map 而不是直接持有 {@link com.sports.entity.event.Event}</b>：求解域刻意只保留值对象，
      * 不把 JPA 实体（含懒加载代理）带进 Timefold 的解空间；用 Map 还能让后续 DSL 新增字段
      * 不必改本类签名。</p>
      */

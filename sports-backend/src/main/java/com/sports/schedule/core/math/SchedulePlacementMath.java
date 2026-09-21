@@ -1,4 +1,4 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.math;
 
 import com.sports.schedule.core.placement.candidate.CandidateGenerator;
 import com.sports.schedule.core.placement.capacity.CapacityBoxing;
@@ -6,11 +6,22 @@ import com.sports.schedule.core.placement.conflict.ClashCounter;
 import com.sports.schedule.core.placement.duration.DurationTier;
 import com.sports.schedule.core.placement.label.TimeLabels;
 import com.sports.schedule.core.placement.slot.SlotSearch;
-import com.sports.schedule.opt.Placement;
+import com.sports.schedule.opt.solver.Placement;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import com.sports.schedule.core.primitive.Cand;
+import com.sports.schedule.core.primitive.Cursor;
+import com.sports.schedule.core.primitive.Pool;
+import com.sports.schedule.core.primitive.Unit;
+import com.sports.schedule.core.primitive.Window;
+import com.sports.service.schedule.ScheduleBuildComponent;
+import com.sports.service.schedule.SchedulePlacementComponent;
+import com.sports.service.schedule.ScheduleQueryExportComponent;
+import com.sports.service.schedule.ScheduleSelfCheckComponent;
+import com.sports.service.schedule.ScheduleService;
+import com.sports.service.schedule.ScheduleSolveComponent;
 
 /**
  * 赛程放置的纯静态数学/判定工具门面（从 {@code ScheduleService} 抽取，行为零变化）。

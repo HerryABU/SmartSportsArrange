@@ -1,9 +1,10 @@
-package com.sports.schedule.core;
+package com.sports.schedule.core.primitive;
 
-import com.sports.entity.Event;
+import com.sports.entity.event.Event;
 
 import java.util.HashSet;
 import java.util.Set;
+import com.sports.service.schedule.ScheduleService;
 
 /**
  * 一个赛程单元 = 项目 × 年级。

@@ -1,8 +1,8 @@
 package com.sports.schedule.opt.ga;
 
-import com.sports.schedule.opt.Placement;
-import com.sports.schedule.opt.SchedulePlan;
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.Placement;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 
 import java.util.ArrayList;
 import java.util.HashMap;

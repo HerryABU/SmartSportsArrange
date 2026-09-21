@@ -1,9 +1,9 @@
 package com.sports.schedule.opt.lns;
 
 import ai.timefold.solver.core.config.localsearch.LocalSearchType;
-import com.sports.schedule.opt.ScheduleOptimizer;
-import com.sports.schedule.opt.SchedulePlan;
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.ScheduleOptimizer;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import com.sports.schedule.opt.solver.Placement;
 
 /**
  * 大邻域搜索（LNS）：<b>破坏一部分解 → 只重建这一部分 → 只接受更好的</b>。

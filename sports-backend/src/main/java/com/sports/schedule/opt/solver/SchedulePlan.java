@@ -1,4 +1,4 @@
-package com.sports.schedule.opt;
+package com.sports.schedule.opt.solver;
 
 import ai.timefold.solver.core.api.domain.solution.PlanningEntityCollectionProperty;
 import ai.timefold.solver.core.api.domain.solution.PlanningScore;

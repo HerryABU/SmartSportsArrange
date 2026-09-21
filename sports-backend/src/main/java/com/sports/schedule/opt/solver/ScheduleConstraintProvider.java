@@ -1,4 +1,4 @@
-package com.sports.schedule.opt;
+package com.sports.schedule.opt.solver;
 
 import ai.timefold.solver.core.api.score.HardMediumSoftScore;
 import ai.timefold.solver.core.api.score.stream.Constraint;
@@ -12,6 +12,9 @@ import com.sports.schedule.rule.inject.RuleOutcome;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.sports.schedule.core.primitive.Cursor;
+import com.sports.service.arrange.ArrangementService;
+import com.sports.service.arrange.ConflictService;
 
 /**
  * 赛程编排的约束定义（约束流）。
