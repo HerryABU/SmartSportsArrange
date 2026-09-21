@@ -16,6 +16,7 @@
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
           <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
+          <el-menu-item index="/teacher/bulk-import"><el-icon><Files /></el-icon><span>多表导入</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="② 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
@@ -59,6 +60,7 @@
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
           <el-menu-item index="/teacher/venues"><el-icon><Location /></el-icon><span>场地管理</span></el-menu-item>
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
+          <el-menu-item index="/teacher/bulk-import"><el-icon><Files /></el-icon><span>多表导入</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="② 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>

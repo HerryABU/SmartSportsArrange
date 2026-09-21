@@ -81,6 +81,12 @@ const routes = [
         meta: { title: '规则注入' }
       },
       {
+        path: 'bulk-import',
+        name: 'TeacherBulkImport',
+        component: () => import('@/views/teacher/BulkImport.vue'),
+        meta: { title: '多表导入' }
+      },
+      {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),
