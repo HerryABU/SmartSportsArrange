@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.7.1
+> Sports Meet Intelligent Arrangement System v2.7.3
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -77,7 +77,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.7.1.jar
+java -jar sports-2.7.3.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -965,24 +965,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.7.1.jar
+java -jar sports-2.7.3.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.7.1.jar --app.port=8899 --app.host=::
+java -jar sports-2.7.3.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.7.1.jar --server.port=9090
+java -jar sports-2.7.3.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.7.1.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.7.3.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.7.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.7.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.7.3.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.7.3.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1109,7 +1109,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.7.1.jar .
+copy sports-backend\target\sports-2.7.3.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
