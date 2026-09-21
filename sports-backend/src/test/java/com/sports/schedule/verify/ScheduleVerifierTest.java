@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.entity.result.Result;
 
 /**
  * 校验器（内置裁判）的对抗性验证。

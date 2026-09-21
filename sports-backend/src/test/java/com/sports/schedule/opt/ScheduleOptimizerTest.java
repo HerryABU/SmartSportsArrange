@@ -1,6 +1,6 @@
 package com.sports.schedule.opt;
 
-import com.sports.service.ConflictService;
+import com.sports.service.arrange.ConflictService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,6 +10,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.schedule.opt.solver.Placement;
+import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
+import com.sports.schedule.opt.solver.ScheduleOptimizer;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 
 /**
  * 约束求解器（Timefold）的集成测试。

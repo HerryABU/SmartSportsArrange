@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.sports.common.util.FileEncoding;
 
 /**
  * 文本编码自动识别测试：UTF-8(含BOM) / GB18030(GBK) / UTF-16LE。

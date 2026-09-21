@@ -1,16 +1,16 @@
 package com.sports.service;
 
 import com.sports.collab.ScheduleCollaborationService;
-import com.sports.entity.Athlete;
-import com.sports.entity.Event;
-import com.sports.entity.EventSchedule;
-import com.sports.entity.Registration;
-import com.sports.repository.ArrangementRepository;
-import com.sports.repository.VenueRepository;
-import com.sports.repository.EventRepository;
-import com.sports.repository.EventScheduleRepository;
-import com.sports.repository.RegistrationRepository;
-import com.sports.schedule.opt.ScheduleOptimizer;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.event.Event;
+import com.sports.entity.event.EventSchedule;
+import com.sports.entity.registration.Registration;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.venue.VenueRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.event.EventScheduleRepository;
+import com.sports.repository.registration.RegistrationRepository;
+import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.verify.ScheduleVerifier;
@@ -36,6 +36,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
+import com.sports.entity.result.Result;
+import com.sports.service.arrange.ArrangementService;
+import com.sports.service.arrange.ConflictService;
+import com.sports.service.schedule.ScheduleService;
+import com.sports.service.system.SystemService;
 
 /**
  * 赛程编排测试（并发位模型）。

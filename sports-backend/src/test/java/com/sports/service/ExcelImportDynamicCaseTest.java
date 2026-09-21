@@ -1,7 +1,20 @@
 package com.sports.service;
 
-import com.sports.entity.*;
-import com.sports.repository.*;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.entity.venue.Venue;
+import com.sports.entity.registration.Registration;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.athlete.AthleteRepository;
+import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.event.EventRefereeRepository;
+import com.sports.repository.event.EventScheduleRepository;
+import com.sports.repository.venue.VenueRepository;
+import com.sports.repository.referee.RefereeRepository;
+import com.sports.repository.registration.RegistrationRepository;
+import com.sports.repository.result.ResultRepository;
 import com.sports.support.ExcelTestDataFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,6 +34,8 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import com.sports.service.clazz.GradeService;
+import com.sports.service.excel.ExcelService;
 
 /**
  * Excel 导入「动态用例」测试——用例不再硬编码二进制样例，而是用 {@link ExcelTestDataFactory}

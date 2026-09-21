@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.service.excel.ExcelColumnMapping;
 
 /**
  * 列映射（

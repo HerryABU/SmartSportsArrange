@@ -1,12 +1,12 @@
 package com.sports.service;
 
-import com.sports.entity.Athlete;
-import com.sports.entity.Event;
-import com.sports.entity.Result;
-import com.sports.repository.ArrangementRepository;
-import com.sports.repository.EventRepository;
-import com.sports.repository.ResultRepository;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.event.Event;
+import com.sports.entity.result.Result;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.result.ResultRepository;
+import com.sports.repository.system.SystemConfigRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -19,6 +19,9 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import com.sports.service.excel.ExcelService;
+import com.sports.service.result.ResultService;
+import com.sports.service.system.SystemService;
 
 /**
  * 成绩服务测试。

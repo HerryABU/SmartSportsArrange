@@ -1,7 +1,7 @@
 package com.sports.schedule.rule;
 
-import com.sports.schedule.opt.Placement;
-import com.sports.schedule.rule.FixedLaneAssignment.Policy;
+import com.sports.schedule.opt.solver.Placement;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment.Policy;
 import com.sports.schedule.rule.RuleBasedScheduler.Assignment;
 import com.sports.schedule.rule.RuleBasedScheduler.RulePlan;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment;
 
 /**
  * 规则编排器属性测试：确定性 / 无重叠 / 兼项规避 / 分组同刻 / 压缩红线 / 大规模性能。

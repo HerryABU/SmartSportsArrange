@@ -1,11 +1,20 @@
 package com.sports.service.excel;
 
-import com.sports.entity.Athlete;
-import com.sports.entity.ClassInfo;
-import com.sports.entity.Event;
-import com.sports.repository.*;
-import com.sports.service.ExcelService;
-import com.sports.service.GradeService;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.athlete.AthleteRepository;
+import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.event.EventRefereeRepository;
+import com.sports.repository.event.EventScheduleRepository;
+import com.sports.repository.venue.VenueRepository;
+import com.sports.repository.referee.RefereeRepository;
+import com.sports.repository.registration.RegistrationRepository;
+import com.sports.repository.result.ResultRepository;
+import com.sports.service.excel.ExcelService;
+import com.sports.service.clazz.GradeService;
 import com.sports.support.ExcelTestDataFactory;
 import com.sports.support.ExcelTestDataFactory.SheetSpec;
 import org.junit.jupiter.api.BeforeEach;
@@ -143,7 +152,7 @@ class MultiTableImportServiceTest {
         when(eventRepository.findByCode("4X100M")).thenReturn(Optional.of(relay));
         ClassInfo cls = ClassInfo.builder().id(3L).name("高一1班").grade("高一年级").build();
         when(athleteRepository.findByName("张三")).thenReturn(List.of(
-                com.sports.entity.Athlete.builder().id(7L).name("张三").classInfo(cls).build()));
+                com.sports.entity.athlete.Athlete.builder().id(7L).name("张三").classInfo(cls).build()));
 
         byte[] book = ExcelTestDataFactory.xlsxMulti(List.of(
                 // 故意把报名表放在第 0 个 Sheet：若按物理顺序处理，运动员/项目都还不存在，整表必失败

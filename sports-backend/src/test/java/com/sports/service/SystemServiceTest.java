@@ -1,7 +1,7 @@
 package com.sports.service;
 
-import com.sports.entity.SystemConfig;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.system.SystemConfig;
+import com.sports.repository.system.SystemConfigRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -14,6 +14,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
+import com.sports.service.system.SystemService;
 
 /**
  * 系统配置服务测试。

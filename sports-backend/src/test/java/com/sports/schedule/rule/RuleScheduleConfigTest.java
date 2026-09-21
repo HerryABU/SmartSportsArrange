@@ -1,6 +1,6 @@
 package com.sports.schedule.rule;
 
-import com.sports.schedule.rule.FixedLaneAssignment.Policy;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment.Policy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment;
 
 /**
  * 规则配置解析：缺省向后兼容（不传 mode = 优化模式），非法值取默认。

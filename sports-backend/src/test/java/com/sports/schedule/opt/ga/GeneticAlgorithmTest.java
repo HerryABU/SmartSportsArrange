@@ -1,10 +1,10 @@
 package com.sports.schedule.opt.ga;
 
 import ai.timefold.solver.core.config.localsearch.LocalSearchType;
-import com.sports.schedule.opt.Placement;
-import com.sports.schedule.opt.ScheduleOptimizer;
-import com.sports.schedule.opt.SchedulePlan;
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.Placement;
+import com.sports.schedule.opt.solver.ScheduleOptimizer;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

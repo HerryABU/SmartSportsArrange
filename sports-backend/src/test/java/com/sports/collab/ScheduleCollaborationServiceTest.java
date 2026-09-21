@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.entity.arrange.Arrangement;
+import com.sports.entity.event.EventSchedule;
 
 /**
  * 赛程协作中心（版本号 + 增量事件）的验证。

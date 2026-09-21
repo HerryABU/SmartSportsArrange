@@ -1,13 +1,13 @@
 package com.sports.service;
 
-import com.sports.entity.Athlete;
-import com.sports.entity.ClassInfo;
-import com.sports.entity.Event;
-import com.sports.entity.ParadeScore;
-import com.sports.entity.Result;
-import com.sports.repository.ClassInfoRepository;
-import com.sports.repository.ParadeScoreRepository;
-import com.sports.repository.ResultRepository;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.entity.parade.ParadeScore;
+import com.sports.entity.result.Result;
+import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.parade.ParadeScoreRepository;
+import com.sports.repository.result.ResultRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -18,6 +18,8 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import com.sports.service.result.RankingService;
+import com.sports.service.system.SystemService;
 
 /**
  * 排名与积分聚合测试。

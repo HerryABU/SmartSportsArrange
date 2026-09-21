@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.schedule.rule.grouping.SnakeGrouping;
 
 /**
  * 蛇形分组穷举验证（竞品规则层单测纪律：确定性算法必须可穷举验证）。

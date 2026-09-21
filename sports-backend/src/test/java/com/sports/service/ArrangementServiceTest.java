@@ -1,19 +1,25 @@
 package com.sports.service;
 
 import com.sports.collab.ScheduleCollaborationService;
-import com.sports.entity.*;
-import com.sports.repository.ArrangementRepository;
-import com.sports.repository.ArrangementReservationRepository;
-import com.sports.repository.EventRefereeRepository;
-import com.sports.repository.EventRepository;
-import com.sports.repository.EventScheduleRepository;
-import com.sports.repository.RefereeRepository;
-import com.sports.repository.RegistrationRepository;
-import com.sports.repository.ResultRepository;
+import com.sports.entity.arrange.Arrangement;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.entity.event.EventSchedule;
+import com.sports.entity.registration.Registration;
+import com.sports.entity.result.Result;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.arrange.ArrangementReservationRepository;
+import com.sports.repository.event.EventRefereeRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.event.EventScheduleRepository;
+import com.sports.repository.referee.RefereeRepository;
+import com.sports.repository.registration.RegistrationRepository;
+import com.sports.repository.result.ResultRepository;
 import com.sports.schedule.rule.inject.RuleContext;
 import com.sports.schedule.rule.inject.RuleInjectionService;
 import com.sports.schedule.rule.inject.RuleOutcome;
-import com.sports.schedule.rule.l1.L1Rule;
+import com.sports.schedule.rule.style.L1Rule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -26,6 +32,9 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import com.sports.service.arrange.ArrangementService;
+import com.sports.service.export.WordOrderBookService;
+import com.sports.service.system.SystemService;
 
 /**
  * 编排服务测试。
