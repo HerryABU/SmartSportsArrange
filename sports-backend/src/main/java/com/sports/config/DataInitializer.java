@@ -1,7 +1,7 @@
 package com.sports.config;
 
-import com.sports.repository.UserRepository;
-import com.sports.service.SetupService;
+import com.sports.repository.user.UserRepository;
+import com.sports.service.system.SetupService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
