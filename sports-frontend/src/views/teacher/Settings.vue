@@ -1566,9 +1566,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.settings-page { height:100%; overflow:hidden; }
-.settings-page :deep(.el-tabs) { height:100%; }
-.settings-page :deep(.el-tabs__content) { padding-left:20px; height:100%; overflow-y:auto; }
+.settings-page { min-height:100%; }
+.settings-page :deep(.el-tabs) { min-height:100%; }
+.settings-page :deep(.el-tabs__content) { padding-left:20px; overflow:visible; }
 .settings-page :deep(.el-tabs__header) { margin-right:8px; }
 .card-header { display:flex; justify-content:space-between; align-items:center; }
 .header-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
