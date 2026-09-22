@@ -3,6 +3,7 @@ package com.sports.config;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
@@ -26,6 +27,7 @@ import java.util.Map;
  */
 @Slf4j
 @Component
+@Order(10) // 先于 SqliteForeignKeyMigrator(@Order(20))：让唯一索引先建好，重建表时才能被捕获并恢复
 @RequiredArgsConstructor
 public class SqliteConstraintInitializer implements CommandLineRunner {
 

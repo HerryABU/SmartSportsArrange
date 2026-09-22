@@ -42,6 +42,8 @@ sports_meet.db-shm
 sports_meet.db-wal
 # 手工对比基线快照（一次性测试产物，不入版本库）
 _baseline_meet.db
+# SQLite 物理外键迁移前的自动备份（SqliteForeignKeyMigrator 生成）
+*.fkbackup-*
 
 # 运行时 data 目录整体忽略：数据库、安装配置、日志、上传/导出/备份、
 # 头像、Word 秩序册落盘等全部为运行时生成，一律不入版本库
