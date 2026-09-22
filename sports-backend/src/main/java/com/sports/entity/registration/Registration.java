@@ -16,6 +16,9 @@ import com.sports.entity.event.Event;
 @AllArgsConstructor
 @Entity
 @Table(name = "registration",
+        // 复合唯一以 @UniqueConstraint 声明（H2/MySQL 由 Hibernate 自动建约束）。
+        // ⚠️ SQLite 不支持 ALTER TABLE ADD CONSTRAINT，Hibernate 会静默丢弃该约束 →
+        // 需靠 SqliteConstraintInitializer 用 CREATE UNIQUE INDEX 在 SQLite 上显式落地。
         uniqueConstraints = @UniqueConstraint(columnNames = {"athlete_id", "event_id"}),
         indexes = {
                 @Index(name = "idx_registration_athlete", columnList = "athlete_id"),

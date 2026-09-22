@@ -250,7 +250,12 @@ public class SportsApplication {
                 System.out.println("[db-config] 使用外部 MySQL 数据源: " + host + ":" + port + "/" + database);
             } else if ("sqlite".equals(type)) {
                 String file = str(c.get("file"), "./sports_meet.db");
-                System.setProperty("spring.datasource.url", "jdbc:sqlite:" + file);
+                String sqliteUrl = "jdbc:sqlite:" + file;
+                // 开启外键强制（SQLite 默认关闭）；URL 可能已带 query 参数
+                if (!sqliteUrl.contains("foreign_keys=")) {
+                    sqliteUrl += (sqliteUrl.contains("?") ? "&" : "?") + "foreign_keys=ON";
+                }
+                System.setProperty("spring.datasource.url", sqliteUrl);
                 System.setProperty("spring.datasource.driver-class-name", "org.sqlite.JDBC");
                 System.setProperty("spring.datasource.username", "");
                 System.setProperty("spring.datasource.password", "");

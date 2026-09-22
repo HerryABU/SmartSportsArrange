@@ -16,9 +16,11 @@ import com.sports.entity.event.Event;
 @AllArgsConstructor
 @Entity
 @Table(name = "arrangement",
+        // ⚠️ SQLite 下 Hibernate 会丢弃该复合唯一（见 Registration 注释），由 SqliteConstraintInitializer 落地。
         uniqueConstraints = @UniqueConstraint(columnNames = {"event_id", "athlete_id", "round"}),
         indexes = {
                 @Index(name = "idx_arrangement_event", columnList = "event_id"),
+                @Index(name = "idx_arrangement_event_round_heat", columnList = "event_id, round, heat"),
                 @Index(name = "idx_arrangement_heat", columnList = "heat"),
                 @Index(name = "idx_arrangement_lane", columnList = "lane"),
                 @Index(name = "idx_arrangement_grade", columnList = "grade"),

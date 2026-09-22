@@ -23,6 +23,7 @@ import com.sports.entity.clazz.ClassInfo;
 @Table(name = "parade_score",
         indexes = {
                 @Index(name = "idx_parade_score_class", columnList = "class_info_id"),
+                @Index(name = "idx_parade_score_class_grade", columnList = "class_info_id, grade"),
                 @Index(name = "idx_parade_score_grade", columnList = "grade")
         })
 @SQLRestriction("deleted_at IS NULL")
