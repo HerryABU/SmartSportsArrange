@@ -1,6 +1,6 @@
 package com.sports.schedule.support.config;
 
-import com.sports.common.Grades;
+import com.sports.common.util.Grades;
 
 /**
  * 配置项读取（support 系：配置解析）。

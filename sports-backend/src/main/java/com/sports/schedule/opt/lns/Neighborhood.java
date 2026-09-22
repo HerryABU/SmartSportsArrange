@@ -1,6 +1,6 @@
 package com.sports.schedule.opt.lns;
 
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 
 import java.util.ArrayList;
 import java.util.HashSet;

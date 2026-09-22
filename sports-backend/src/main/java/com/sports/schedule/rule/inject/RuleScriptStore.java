@@ -2,8 +2,8 @@ package com.sports.schedule.rule.inject;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sports.entity.SystemConfig;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.system.SystemConfig;
+import com.sports.repository.system.SystemConfigRepository;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -59,7 +59,7 @@ public class RuleScriptStore {
         SystemConfig cfg = repository.findByConfigKey(CONFIG_KEY).orElseGet(() -> SystemConfig.builder()
                 .configKey(CONFIG_KEY)
                 .configType("arrange")
-                .description("编排规则脚本（L1 形态一：规则注入）")
+                .description("编排规则脚本（ 形态一：规则注入）")
                 .build());
         cfg.setConfigValue(json);
         repository.save(cfg);

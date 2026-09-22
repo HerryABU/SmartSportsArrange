@@ -2,6 +2,9 @@ package com.sports.collab;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.sports.entity.arrange.Arrangement;
+import com.sports.entity.event.EventSchedule;
+import com.sports.service.audit.AuditService;
 
 /**
  * 一次赛程改动的通知事件——协作层在编排/调整落库后广播出去，

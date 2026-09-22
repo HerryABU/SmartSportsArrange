@@ -1,8 +1,8 @@
 package com.sports.schedule.core.placement.conflict;
 
-import com.sports.schedule.core.Unit;
-import com.sports.schedule.opt.Placement;
-import com.sports.service.ConflictService;
+import com.sports.schedule.core.primitive.Unit;
+import com.sports.schedule.opt.solver.Placement;
+import com.sports.service.arrange.ConflictService;
 
 import java.util.ArrayList;
 import java.util.Arrays;

@@ -3,6 +3,7 @@ package com.sports.common;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.common.util.Grades;
 
 class GradesTest {
 

@@ -1,8 +1,10 @@
 package com.sports.schedule.rule;
 
-import com.sports.schedule.opt.Placement;
+import com.sports.schedule.opt.solver.Placement;
 
 import java.util.List;
+import com.sports.schedule.opt.solver.ScheduleUnit;
+import com.sports.service.schedule.ScheduleService;
 
 /**
  * 规则模式的编排单元 DTO（公共、不可变）。

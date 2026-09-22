@@ -2,6 +2,9 @@ package com.sports.schedule.rule;
 
 import java.util.List;
 import java.util.Map;
+import com.sports.entity.event.Event;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment;
+import com.sports.service.arrange.ConflictService;
 
 /**
  * 规则模式参数配置（不可变）。

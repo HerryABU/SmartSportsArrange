@@ -24,11 +24,111 @@ public class SportsApplication {
     public static void main(String[] args) {
         // === Java 适配目标终端编码，消除乱码（Win/Linux/Mac 通用）===
         autoDetectConsoleEncoding();
+        // === -h / --help：仅打印帮助页并退出，不启动 Web 服务（主进程）===
+        if (isHelpRequested(args)) {
+            printHelp();
+            System.exit(0);
+        }
         // === 数据库热迁移：若存在外部连接配置，启动时自动切换数据源 ===
         applyExternalDbConfig();
         // === 应用运行配置：自定义端口/绑定地址（--app.port / --app.host 等）===
         applyAppConfig(args);
         SpringApplication.run(SportsApplication.class, args);
+    }
+
+    /** 是否请求显示帮助页（-h / --help / /? / -? / /h） */
+    private static boolean isHelpRequested(String[] args) {
+        for (String a : args) {
+            if (a == null) continue;
+            String s = a.trim();
+            if (s.equals("-h") || s.equalsIgnoreCase("--help")
+                    || s.equals("/?") || s.equals("-?") || s.equalsIgnoreCase("/h")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 打印使用帮助页（端口 / 网口 / 数据库选型），不启动服务 */
+    private static void printHelp() {
+        String v = detectVersion();
+        String[] lines = {
+            "==============================================================",
+            " 运动会智能编排系统 (SmartSportsArrange)  v" + v,
+            "==============================================================",
+            "",
+            "用法：",
+            "  java -jar sports-2.7.3.jar [选项]",
+            "",
+            "说明：传入 -h / --help 时，仅打印本帮助并立即退出，不会启动 Web 服务。",
+            "",
+            "--------------------------------------------------------------",
+            "一、网络（端口 / 网口 / 绑定地址）",
+            "--------------------------------------------------------------",
+            "  端口（port）设置优先级（高 -> 低）：",
+            "    1) 命令行  --app.port=8899          本次运行生效（推荐）",
+            "    2) 环境变量 SERVER_PORT=8899        docker -e 等场景",
+            "    3) 文件 data/app-config.json 的 port 字段  设置界面保存，重启生效",
+            "    4) 默认 8080",
+            "    （标准 Spring 参数 --server.port=8899 亦可用，优先级更高）",
+            "",
+            "  网口 / 绑定地址（host）设置：",
+            "    --app.host=0.0.0.0        绑定全部网卡（默认，局域网可访问）",
+            "    --app.host=127.0.0.1      仅本机回环，不接受外部连接",
+            "    --app.host=::             绑定全部 IPv6 网卡",
+            "    --app.host=192.168.1.10   仅绑定指定网卡 IP",
+            "    也可用 data/app-config.json 的 host 字段，或标准 --server.address=...",
+            "    不设置时绑定全部网卡。",
+            "",
+            "  访问地址示例： http://<本机IP>:<port>/",
+            "",
+            "--------------------------------------------------------------",
+            "二、数据库（三选一，默认 SQLite 零配置）",
+            "--------------------------------------------------------------",
+            "  ① SQLite（默认，零配置，文件 ./sports_meet.db）",
+            "        java -jar sports-2.7.3.jar",
+            "        纯文件库，无需安装数据库服务，适合单机 / 演示。",
+            "",
+            "  ② H2（Java 原生嵌入式数据库，文件模式 ./data/sports_meet）",
+            "        java -jar sports-2.7.3.jar --spring.profiles.active=h2",
+            "        随 JVM 启动、无需外部服务，兼容 MySQL 模式（MODE=MySQL）。",
+            "",
+            "  ③ MySQL（生产环境，需先建库）",
+            "        java -jar sports-2.7.3.jar --spring.profiles.active=mysql",
+            "        或设置环境变量：",
+            "          MYSQL_URL=jdbc:mysql://host:3306/sports_meet?...",
+            "          MYSQL_USER=root",
+            "          MYSQL_PASS=root",
+            "        适合多实例 / 高并发场景。",
+            "",
+            "  数据库热迁移（在线切换，无需改代码）：",
+            "        系统设置 -> 数据库迁移 中操作，写入 data/db-config.json；",
+            "        重启应用后自动按该文件切换数据源（SQLite / H2 / MySQL 互转）。",
+            "        迁移过程不中断服务。",
+            "",
+            "--------------------------------------------------------------",
+            "三、其它常用选项",
+            "--------------------------------------------------------------",
+            "  --spring.profiles.active=<profile>   激活配置 Profile（h2 / mysql）",
+            "  --help / -h / /?                     显示本帮助并退出",
+            "  完整配置见 application.yml 及各 application-<db>.yml。",
+            "",
+            "==============================================================",
+        };
+        for (String l : lines) {
+            System.out.println(l);
+        }
+    }
+
+    /** 读取应用版本（优先取 jar 清单 Implementation-Version，回退常量） */
+    private static String detectVersion() {
+        try {
+            String v = SportsApplication.class.getPackage().getImplementationVersion();
+            if (v != null && !v.isBlank()) return v;
+        } catch (Exception ignored) {
+            // 非 jar 运行（如 IDE 内）取不到清单，回退常量
+        }
+        return "2.7.3";
     }
 
     /**
@@ -150,7 +250,12 @@ public class SportsApplication {
                 System.out.println("[db-config] 使用外部 MySQL 数据源: " + host + ":" + port + "/" + database);
             } else if ("sqlite".equals(type)) {
                 String file = str(c.get("file"), "./sports_meet.db");
-                System.setProperty("spring.datasource.url", "jdbc:sqlite:" + file);
+                String sqliteUrl = "jdbc:sqlite:" + file;
+                // 开启外键强制（SQLite 默认关闭）；URL 可能已带 query 参数
+                if (!sqliteUrl.contains("foreign_keys=")) {
+                    sqliteUrl += (sqliteUrl.contains("?") ? "&" : "?") + "foreign_keys=ON";
+                }
+                System.setProperty("spring.datasource.url", sqliteUrl);
                 System.setProperty("spring.datasource.driver-class-name", "org.sqlite.JDBC");
                 System.setProperty("spring.datasource.username", "");
                 System.setProperty("spring.datasource.password", "");

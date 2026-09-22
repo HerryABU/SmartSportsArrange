@@ -2,9 +2,15 @@ package com.sports.dto.excel;
 
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
-import com.sports.entity.*;
-import com.sports.repository.*;
-import com.sports.service.ResultService;
+import com.sports.entity.arrange.Arrangement;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.event.Event;
+import com.sports.entity.result.Result;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.athlete.AthleteRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.result.ResultRepository;
+import com.sports.service.result.ResultService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -26,7 +32,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     private int successCount = 0;
     private int errorCount = 0;
 
-    // L3 修复：批量落库 + 导入内幂等/冲突判定
+    // 修复（优化层）：批量落库 + 导入内幂等/冲突判定
     private final List<Result> batch = new ArrayList<>();
     private final Map<String, String> seenRawByKey = new HashMap<>();
     private static final int BATCH_SIZE = 500;
@@ -113,7 +119,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             String key = event.getId() + "_" + athlete.getId();
             String inRaw = model.getRawTime() != null ? model.getRawTime().trim() : "";
 
-            // L3 修复：批量导入性能 + 导入内幂等/冲突判定。原实现逐行 save 且依赖「DB 实时落库」做去重；
+            // 修复（优化层）：批量导入性能 + 导入内幂等/冲突判定。原实现逐行 save 且依赖「DB 实时落库」做去重；
             // 现用内存 seenRawByKey 维护本次导入已处理的 (项目,运动员)→成绩 映射，既支持批量 saveAll，
             // 又能在文件内做幂等/冲突判定（不依赖未刷盘的批次）。跨导入幂等仍由 DB 查询兜底。
             if (seenRawByKey.containsKey(key)) {
@@ -190,7 +196,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 } catch (NumberFormatException ignored) {}
             }
 
-            // L3 修复：批量累积，达到阈值后一次性 saveAll，避免逐条 save 的 N 次写库开销
+            // 修复（优化层）：批量累积，达到阈值后一次性 saveAll，避免逐条 save 的 N 次写库开销
             batch.add(result);
             seenRawByKey.put(key, inRaw);
             successCount++;
@@ -215,7 +221,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                 successCount, errorCount, skipped.size());
     }
 
-    /** L3 修复：将累积的 Result 批次一次性落库（避免逐条 save 的 N 次写库开销） */
+    /** 修复（优化层）：将累积的 Result 批次一次性落库（避免逐条 save 的 N 次写库开销） */
     private void flush() {
         if (!batch.isEmpty()) {
             resultRepository.saveAll(batch);

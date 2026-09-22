@@ -257,23 +257,23 @@
             <el-icon><Switch /></el-icon>
             编排规则
           </div>
-          <el-form-item label="L1 规则款型">
-            <el-select v-model="arrangeConfig.ruleConfig.l1Rule" style="width: 200px">
-              <el-option v-for="r in l1Rules" :key="r.id" :label="r.label" :value="r.id" />
+          <el-form-item label="分组款型">
+            <el-select v-model="arrangeConfig.ruleConfig.styleRule" style="width: 200px">
+              <el-option v-for="r in styleRules" :key="r.id" :label="r.label" :value="r.id" />
             </el-select>
-            <span class="rule-desc">{{ l1RuleDesc }}</span>
+            <span class="rule-desc">{{ styleRuleDesc }}</span>
           </el-form-item>
           <el-form-item label="同班尽量不同组">
             <el-switch v-model="arrangeConfig.ruleConfig.preferDiffHeat" active-color="#13ce66"
-              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
+              :disabled="arrangeConfig.ruleConfig.styleRule === 'snake'" />
           </el-form-item>
           <el-form-item label="同班尽量不同道">
             <el-switch v-model="arrangeConfig.ruleConfig.preferDiffLane" active-color="#13ce66"
-              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
+              :disabled="arrangeConfig.ruleConfig.styleRule === 'snake'" />
           </el-form-item>
           <el-form-item label="禁止同班同组">
             <el-switch v-model="arrangeConfig.ruleConfig.banSameClassSameLane" active-color="#ff4949"
-              :disabled="arrangeConfig.ruleConfig.l1Rule === 'snake'" />
+              :disabled="arrangeConfig.ruleConfig.styleRule === 'snake'" />
             <span class="rule-desc">严格禁止同一班级在同一组中出现（蛇形排布款型下不适用）</span>
           </el-form-item>
         </div>
@@ -624,50 +624,50 @@ const arrangeConfig = reactive({
     preferDiffHeat: true,
     preferDiffLane: true,
     banSameClassSameLane: true,
-    // L1「自定义规则」款型：class=班级均衡（默认）；snake=蛇形排布。可在「L1 规则款型」下拉里选择。
-    l1Rule: 'class'
+    // 「自定义规则」款型：class=班级均衡（默认）；snake=蛇形排布。可在「分组款型」下拉里选择。
+    styleRule: 'class'
   }
 })
 
-// L1 规则款型目录（后端拉取，动态渲染可选项；后端新增款型无需改前端）
-const l1Rules = ref([])
-const l1RuleDesc = computed(
-  () => l1Rules.value.find(r => r.id === arrangeConfig.ruleConfig.l1Rule)?.description || ''
+// 分组款型目录（后端拉取，动态渲染可选项；后端新增款型无需改前端）
+const styleRules = ref([])
+const styleRuleDesc = computed(
+  () => styleRules.value.find(r => r.id === arrangeConfig.ruleConfig.styleRule)?.description || ''
 )
-async function loadL1Rules() {
+async function loadArrangeStyles() {
   try {
-    const rs = await request.get('/arrange/l1-rules')
-    l1Rules.value = Array.isArray(rs) ? rs : (rs?.records || [])
+    const rs = await request.get('/arrange/styles')
+    styleRules.value = Array.isArray(rs) ? rs : (rs?.records || [])
     // 仅在目录非空且不含当前款型时回退默认（目录未就绪时不覆盖，避免冲掉服务端已保存的款型）
-    if (l1Rules.value.length && !l1Rules.value.some(r => r.id === arrangeConfig.ruleConfig.l1Rule)) {
-      arrangeConfig.ruleConfig.l1Rule = 'class'
+    if (styleRules.value.length && !styleRules.value.some(r => r.id === arrangeConfig.ruleConfig.styleRule)) {
+      arrangeConfig.ruleConfig.styleRule = 'class'
     }
   } catch (e) {
     // 拉取失败时保底两款，避免下拉空白
-    l1Rules.value = [
+    styleRules.value = [
       { id: 'class', label: '班级均衡', description: '同组不同班，组内按班级错开道次（默认）' },
       { id: 'snake', label: '蛇形排布', description: '按年级→班级排序后 S 形分散到各组' }
     ]
   }
 }
 
-// ---- L1 款型持久化：记住上次选的款型 ----
+// ----  款型持久化：记住上次选的款型 ----
 // 已保存的编排规则快照（写回时合并，避免覆盖其它规则项——后端 saveArrangeRule 是整份替换）
 let savedArrangeRule = null
-async function persistL1Rule(id) {
+async function persistArrangeStyle(id) {
   try {
     const base = savedArrangeRule || (await request.get('/system/arrange-rule')) || {}
-    const body = { ...base, l1_rule: id }
+    const body = { ...base, style_rule: id }
     await request.put('/system/arrange-rule', body)
     savedArrangeRule = body
   } catch (e) {
-    console.error('保存 L1 款型失败', e)
+    console.error('保存  款型失败', e)
   }
 }
-watch(() => arrangeConfig.ruleConfig.l1Rule, (id) => {
+watch(() => arrangeConfig.ruleConfig.styleRule, (id) => {
   if (!id) return
-  if (savedArrangeRule && savedArrangeRule.l1_rule === id) return // 与已保存一致，无需回写
-  persistL1Rule(id)
+  if (savedArrangeRule && savedArrangeRule.style_rule === id) return // 与已保存一致，无需回写
+  persistArrangeStyle(id)
 })
 
 // 搜索过滤
@@ -676,8 +676,8 @@ watch(searchKeyword, (val) => {
 })
 
 onMounted(async () => {
-  // L1「自定义规则」款型目录
-  loadL1Rules()
+  // 「自定义规则」款型目录
+  loadArrangeStyles()
   // 年级列表：来自系统设置·年级管理（不硬编码），默认选第一个
   await loadAutoOrderBook()
   try {
@@ -711,7 +711,7 @@ onMounted(async () => {
     console.error('加载项目列表失败', e)
   }
 
-  // 加载已保存的编排规则，作为默认编排参数（含 L1 款型 l1_rule —— 记住上次选的款型）
+  // 加载已保存的编排规则，作为默认编排参数（含  款型 style_rule —— 记住上次选的款型）
   try {
     const rule = await request.get('/system/arrange-rule')
     savedArrangeRule = rule || null
@@ -721,7 +721,8 @@ onMounted(async () => {
       if (s.prefer_diff_lane !== undefined) arrangeConfig.ruleConfig.preferDiffLane = !!s.prefer_diff_lane
       if (s.ban_same_class_same_lane !== undefined) arrangeConfig.ruleConfig.banSameClassSameLane = !!s.ban_same_class_same_lane
     }
-    if (rule && rule.l1_rule) arrangeConfig.ruleConfig.l1Rule = String(rule.l1_rule)
+    const savedStyle = rule.style_rule ?? rule.style_rule
+    if (rule && savedStyle) arrangeConfig.ruleConfig.styleRule = String(savedStyle)
   } catch (e) {
     console.error('加载编排规则失败', e)
   }
@@ -796,7 +797,7 @@ const executeArrange = async () => {
       ? '，耗时 ' + result.executionTimeMs + 'ms'
       : ''
     ElMessage.success('编排完成！共 ' + (result.statistics?.totalHeats || 0) + ' 组' + timeInfo)
-    // L1 规则注入（形态一）：把命中情况如实反馈（规则已作为动态约束参与编排）
+    // 规则注入（形态一）：把命中情况如实反馈（规则已作为动态约束参与编排）
     if (result.ruleInjection && result.ruleInjection.hitCount > 0) {
       const ri = result.ruleInjection
       const msg = `规则注入：命中 ${ri.hitCount} 条（hard=${ri.hard}，medium=${ri.medium}，`

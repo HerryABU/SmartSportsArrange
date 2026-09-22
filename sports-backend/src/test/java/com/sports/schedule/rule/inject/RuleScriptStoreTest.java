@@ -1,7 +1,7 @@
 package com.sports.schedule.rule.inject;
 
-import com.sports.entity.SystemConfig;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.system.SystemConfig;
+import com.sports.repository.system.SystemConfigRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

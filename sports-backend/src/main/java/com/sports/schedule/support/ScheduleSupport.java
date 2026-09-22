@@ -9,6 +9,13 @@ import com.sports.schedule.support.verify.ViolationBrief;
 
 import java.util.List;
 import java.util.Map;
+import com.sports.service.arrange.ArrangementService;
+import com.sports.service.schedule.ScheduleBuildComponent;
+import com.sports.service.schedule.SchedulePlacementComponent;
+import com.sports.service.schedule.ScheduleQueryExportComponent;
+import com.sports.service.schedule.ScheduleSelfCheckComponent;
+import com.sports.service.schedule.ScheduleService;
+import com.sports.service.schedule.ScheduleSolveComponent;
 
 /**
  * 赛程编排的<b>纯函数工具门面</b>：类型/字符串/时间/场地配置解析。

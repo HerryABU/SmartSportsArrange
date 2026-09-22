@@ -3,11 +3,14 @@ package com.sports.dto.excel;
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.metadata.holder.ReadRowHolder;
 import com.alibaba.excel.read.metadata.holder.ReadSheetHolder;
-import com.sports.entity.*;
-import com.sports.repository.ArrangementRepository;
-import com.sports.repository.AthleteRepository;
-import com.sports.repository.EventRepository;
-import com.sports.repository.ResultRepository;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.entity.result.Result;
+import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.athlete.AthleteRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.result.ResultRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -58,7 +61,7 @@ class ScoreDataListenerTest {
         return m;
     }
 
-    /** L3 批处理：invoke 只累积到 batch，需在 doAfterAllAnalysed 里 flush 才落库。
+    /** 批处理：invoke 只累积到 batch，需在 doAfterAllAnalysed 里 flush 才落库。
      *  saveAll 拿到的是 batch 的活引用、flush 随后会清空它，故在 answer 内即时拷贝内容，
      *  避免抓到被清空的引用。返回本次落库的所有 Result。 */
     @SuppressWarnings("unchecked")

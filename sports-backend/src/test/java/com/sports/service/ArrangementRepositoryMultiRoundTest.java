@@ -1,7 +1,7 @@
 package com.sports.service;
 
-import com.sports.entity.Arrangement;
-import com.sports.repository.ArrangementRepository;
+import com.sports.entity.arrange.Arrangement;
+import com.sports.repository.arrange.ArrangementRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 

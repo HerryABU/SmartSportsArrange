@@ -1,6 +1,6 @@
 package com.sports.schedule.core.placement.label;
 
-import com.sports.schedule.core.Unit;
+import com.sports.schedule.core.primitive.Unit;
 
 /**
  * 时间解析与标签（算法系：时间/标签辅助）。

@@ -18,6 +18,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import com.sports.entity.result.Result;
+import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
+import com.sports.service.arrange.ConflictService;
 
 /**
  * 赛程独立校验器——自检体系里的「裁判」与<b>编排入口</b>。

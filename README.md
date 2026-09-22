@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.7.1
+> Sports Meet Intelligent Arrangement System v2.7.3
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -77,7 +77,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.7.1.jar
+java -jar sports-2.7.3.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -832,13 +832,15 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 15. Excel 导入导出 Excel
 
-前缀 `/api/excel`，13 个端点。
+前缀 `/api/excel`，15 个端点。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
-| GET | `/api/excel/template/{type}` | Path type | 公开 | 下载指定类型模板 |
+| GET | `/api/excel/template/{type}` | Path type | 公开 | 下载指定类型模板（`multiworkbook` = 多表模板） |
 | POST | `/api/excel/preview` | multipart `file` | T/SA | 导入预览（多 Sheet） |
-| POST | `/api/excel/import-with-mapping` | multipart `file`, Query mapping | T/SA | 带列映射导入 |
+| POST | `/api/excel/import-with-mapping` | multipart `file`, Query mapping | T/SA | 带列映射导入（单表） |
+| POST | `/api/excel/multi/preview` | multipart `files`(多选), `hasHeader` | T/SA | **多表探测**：逐文件逐 Sheet 报表名/表头/判定类型/列映射/可否导入 |
+| POST | `/api/excel/import-multi` | multipart `files`(多选), `hasHeader`, `sheets`(JSON 覆盖) | T/SA | **多表导入**：一个工作簿多 Sheet 或一次多个文件 |
 | POST | `/api/excel/import/athletes` | multipart `file` | T/SA | 导入运动员（兼容旧接口） |
 | POST | `/api/excel/import/scores` | multipart `file` | T/SA | 导入成绩 |
 | POST | `/api/excel/import/registrations` | multipart `file` | T/SA | 导入报名 |
@@ -865,7 +867,54 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 - **专长项目**单元格支持列表语法 `[a,b，c]`（**中英文逗号混用均兼容**，如 `[立定跳远，拔河,50米蛙泳]`），导入后统一落库为标准 JSON 数组字符串（`["立定跳远","拔河","50米蛙泳"]`），用于智能编排时按专长优先分配裁判。
 
-#### 15.3 导出物中的裁判列
+#### 15.3 多表导入（一个 Excel 多张表 / 一次多个文件）
+
+**前端入口**：教师端「① 导入报名 → 多表导入」（`/teacher/bulk-import`），三步式：选择文件 → 解析表结构 → 开始导入。
+
+一条命令导入多张表：既可以是一个工作簿里的多个 Sheet（如把**年级 / 班级 / 全名单 / 报名表**拆成独立表），
+也可以一次选中多个 .xlsx 文件。系统按「**Sheet 名 + 表头指纹**」自动识别每张表的类型，并按**依赖顺序**处理。
+
+**三条规矩**（都有单测钉住）：
+
+1. **按依赖顺序处理，而不是按 Sheet 物理顺序**：年级 → 班级 → 全名单 → 项目 → 报名 → 成绩。
+   制表人把「报名表」排在「名单表」前面是常事，按物理顺序会让整张报名表全行失败。
+2. **认不出类型的 Sheet 一律跳过并给出原因**，绝不默认按「运动员表」硬导 —— 那会把班级表写成运动员且全程不报错。
+   识别优先级：**人工指定 → 表头指纹 → Sheet 名关键词 → 跳过**。
+3. **逐表逐行如实计数**：成功 / 跳过(已存在) / 失败(带行号原因)。同一份工作簿可放心重跑：
+
+| 表 | 重跑行为 | 二次导入计入 |
+|----|---------|-------------|
+| 年级表 / 班级表 / 运动项目表 / 报名表 | 唯一键冲突（已存在 / 已报名） | **跳过** |
+| 全名单表（按学号 upsert） | 存在则**覆盖更新**、不存在则新建 | **成功**（数据被写入） |
+
+   即「重跑不产生重复数据」是硬保证（有端到端用例验证：连导两次运动员总数不变），
+   但「成功/跳过」的归类按各表的写入语义如实反映。
+
+**支持的导入类型**（`Sheet 名` 关键词 / 表头自动识别）：
+
+| 类型 | 建议 Sheet 名 | 表头（列序） |
+|------|--------------|-------------|
+| `grade` | 年级表 | 年级 / 序号 |
+| `class` | 班级表 | 班级名称 / 班级编码 / 年级 / 班主任 |
+| `roster` | 全名单表 | 年级 / 班级 / 姓名 / 学号 / 性别 |
+| `eventsimple` | 运动项目表 | 项目代码 / 项目名称 / 每组人数 / 每批组数 / 项目类型 / 场地号 / 每批所需时间(分) |
+| `signup` | 报名表 | 年级 / 班级 / 姓名 / 学号 / 性别 / 项目 / 组号 |
+| `event` | 项目表（表格2） | 见 [15.1](#151-项目导入模板表格2列说明) |
+| `score` | 成绩表 | 项目编码 / 运动员号码 / 运动员姓名 / 成绩 / 组别 / 道次 / 风速 / 备注 |
+| `athlete` / `registration` / `user` | 运动员表 / 报名表(旧) / 用户表 | 见各自单表模板 |
+
+> 模板：`GET /api/excel/template/multiworkbook` 下载**多表模板**（一个工作簿含上述前 5 张常用表 + 填写说明），
+> Sheet 名与表头都按识别口径命名，照此填写即可一次导入；用不到的表整表删除即可。
+> 模板不含「成绩表」（成绩在编排之后录入，样本行会引用不存在的号码而必然失败），需要时自行加一张 Sheet 即可，同样支持识别。
+
+**逐表覆盖**（表头实在对不上时）：`import-multi` 可带 `sheets` 覆盖项（JSON 数组），
+如 `[{"file":"a.xlsx","sheet":"Sheet1","type":"roster","columnMap":{"0":"grade","1":"name","2":"studentId"}}]`，
+按「文件名 + Sheet 名」或「文件序号 + Sheet 序号」匹配。
+
+**列映射口径**：自动映射为「**精确 → 最长别名**」，并按类型优先落在该类型处理器真正读取的字段上
+（例如表格2 的「项目名称」落 `name`、运动项目表的「项目类型」落 `category`，不会被 `eventCode` 的短别名「项目」抢走）。
+
+#### 15.4 导出物中的裁判列
 
 - **道次表**（`GET /api/arrange/events/{id}/export`）：分组道次名单末尾追加「裁判」列，按 (年级|性别|赛次|组次) 挂载该组次分配的裁判姓名。
 - **秩序册 Excel**（`export/order-book`）：Sheet「分组道次名单」追加「裁判」列。
@@ -965,24 +1014,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.7.1.jar
+java -jar sports-2.7.3.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.7.1.jar --app.port=8899 --app.host=::
+java -jar sports-2.7.3.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.7.1.jar --server.port=9090
+java -jar sports-2.7.3.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.7.1.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.7.3.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.7.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.7.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.7.3.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.7.3.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1109,7 +1158,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.7.1.jar .
+copy sports-backend\target\sports-2.7.3.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。

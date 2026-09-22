@@ -1,6 +1,6 @@
 package com.sports.schedule.rule;
 
-import com.sports.schedule.rule.FixedLaneAssignment.Policy;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment.Policy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.schedule.rule.grouping.FixedLaneAssignment;
 
 /**
  * 固定分道穷举验证：确定性映射必须逐道断言（规则可被精确实现，也可被精确验证）。

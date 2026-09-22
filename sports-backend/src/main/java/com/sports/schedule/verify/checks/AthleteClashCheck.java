@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.sports.service.arrange.ConflictService;
 
 /**
  * 检查③：运动员兼项冲突（含赶场缓冲）。

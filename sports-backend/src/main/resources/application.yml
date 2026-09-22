@@ -12,8 +12,12 @@ spring:
     name: sports-meet
 
   # ======================== SQLite 数据库（默认）==========================
+  # URL 末追加 ?foreign_keys=ON：SQLite 默认不强制外键，显式开启以保证「一旦存在 FK 约束
+  # 就被强制」。注意：Hibernate 的 SQLite 方言以 ALTER TABLE ADD CONSTRAINT 建 FK，而
+  # SQLite 不支持该语法 → 本库不会自动生成物理 FK（H2 / MySQL 会自动生成）。
+  # 该参数只作用于 SQLite URL，H2 / MySQL 各有独立 URL，不受影响。
   datasource:
-    url: jdbc:sqlite:./sports_meet.db
+    url: jdbc:sqlite:./sports_meet.db?foreign_keys=ON
     driver-class-name: org.sqlite.JDBC
     username:
     password:
@@ -126,6 +130,11 @@ sports:
 
 # ======================== 日志 ===========================================
 logging:
+  # 关闭 logback 自带的 JVM 关闭钩子：否则 Ctrl+C / kill 时，logback 的钩子可能先于
+  # Spring 的关闭钩子执行、把 logback 停掉；随后 Spring 关闭上下文时若需打印携带异常的
+  # 警告，就会抛 NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy。
+  # 置 false 可让 logback 存活到 Spring 关闭钩子结束，退出干净（见 spring-boot#4968）。
+  register-shutdown-hook: false
   level:
     com.sports: DEBUG
     org.springframework.security: INFO

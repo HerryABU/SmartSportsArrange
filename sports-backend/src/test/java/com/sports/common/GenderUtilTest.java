@@ -3,6 +3,7 @@ package com.sports.common;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sports.common.util.GenderUtil;
 
 /**
  * 性别归一化/匹配测试（兼容 男子组/M、女子组/F 双轨写法）。

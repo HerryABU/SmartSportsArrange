@@ -1,8 +1,8 @@
 package com.sports.service;
 
 import com.alibaba.excel.EasyExcel;
-import com.sports.entity.Event;
-import com.sports.repository.EventRepository;
+import com.sports.entity.event.Event;
+import com.sports.repository.event.EventRepository;
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import com.sports.service.event.EventService;
+import com.sports.service.excel.ExcelService;
 
 /**
  * 项目服务测试。

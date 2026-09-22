@@ -1,8 +1,8 @@
 package com.sports.service;
 
-import com.sports.entity.Athlete;
-import com.sports.entity.ClassInfo;
-import com.sports.repository.SystemConfigRepository;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.repository.system.SystemConfigRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -16,6 +16,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
+import com.sports.service.athlete.NumberRuleService;
 
 /**
  * 号码簿规则服务测试。

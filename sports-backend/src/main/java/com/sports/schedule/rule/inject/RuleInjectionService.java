@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 规则注入服务（L1「自定义规则」层 · 形态一）。
+ * 规则注入服务（「自定义规则」层 · 形态一）。
  *
  * <p>把用户写的「规则片段」评估为分数增量（hard/medium/soft）与否决标记：</p>
  * <ul>

@@ -800,9 +800,9 @@ const numberPreview = ref('')
 
 // 编排规则
 const arrangeRuleForm = reactive({
-  // L1「自定义规则」款型（class/snake/snakeSeed）：此处仅做整份回写时的保留，避免保存其它规则时被清掉；
+  // 「自定义规则」款型（class/snake/snakeSeed）：此处仅做整份回写时的保留，避免保存其它规则时被清掉；
   // 款型的选择入口在「道次编排」页（选择后自动持久化到本配置）
-  l1Rule: 'class',
+  styleRule: 'class',
   soft: {
     prefer_diff_heat: true,
     prefer_diff_lane: true,
@@ -1414,7 +1414,8 @@ async function fetchArrangeRule() {
     if (res) {
       if (res.soft_constraints) Object.assign(arrangeRuleForm.soft, res.soft_constraints)
       if (res.algorithm_params) Object.assign(arrangeRuleForm.params, res.algorithm_params)
-      if (res.l1_rule) arrangeRuleForm.l1Rule = String(res.l1_rule)
+      const savedStyle = res.style_rule ?? res.style_rule
+      if (savedStyle) arrangeRuleForm.styleRule = String(savedStyle)
     }
   } catch (e) { console.error(e) }
 }
@@ -1422,7 +1423,7 @@ async function saveArrangeRule() {
   loading.value = true
   try {
     await request.put('/system/arrange-rule', {
-      l1_rule: arrangeRuleForm.l1Rule,
+      style_rule: arrangeRuleForm.styleRule,
       soft_constraints: { ...arrangeRuleForm.soft },
       algorithm_params: { ...arrangeRuleForm.params }
     })
@@ -1566,9 +1567,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.settings-page { height:100%; overflow:hidden; }
-.settings-page :deep(.el-tabs) { height:100%; }
-.settings-page :deep(.el-tabs__content) { padding-left:20px; height:100%; overflow-y:auto; }
+.settings-page { min-height:100%; }
+.settings-page :deep(.el-tabs) { min-height:100%; }
+.settings-page :deep(.el-tabs__content) { padding-left:20px; overflow:visible; }
 .settings-page :deep(.el-tabs__header) { margin-right:8px; }
 .card-header { display:flex; justify-content:space-between; align-items:center; }
 .header-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }

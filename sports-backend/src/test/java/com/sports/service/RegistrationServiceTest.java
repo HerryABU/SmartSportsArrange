@@ -1,7 +1,14 @@
 package com.sports.service;
 
-import com.sports.entity.*;
-import com.sports.repository.*;
+import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.event.Event;
+import com.sports.entity.registration.Registration;
+import com.sports.repository.athlete.AthleteRepository;
+import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.event.EventRepository;
+import com.sports.repository.registration.RegistrationRepository;
+import com.sports.repository.system.SystemConfigRepository;
 import com.sports.security.jwt.JwtUserDetails;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +31,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.*;
+import com.sports.service.athlete.NumberRuleService;
+import com.sports.service.registration.RegistrationService;
 
 /**
  * 报名服务约束逻辑测试。

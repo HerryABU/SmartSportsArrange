@@ -1,10 +1,10 @@
 package com.sports.schedule.core.placement.slot;
 
-import com.sports.schedule.core.Cand;
-import com.sports.schedule.core.Cursor;
-import com.sports.schedule.core.Pool;
-import com.sports.schedule.core.Unit;
-import com.sports.schedule.core.Window;
+import com.sports.schedule.core.primitive.Cand;
+import com.sports.schedule.core.primitive.Cursor;
+import com.sports.schedule.core.primitive.Pool;
+import com.sports.schedule.core.primitive.Unit;
+import com.sports.schedule.core.primitive.Window;
 import com.sports.schedule.core.placement.conflict.ClashCounter;
 
 import java.util.List;

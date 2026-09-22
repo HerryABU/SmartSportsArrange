@@ -8,9 +8,9 @@ import ai.timefold.solver.core.config.localsearch.decider.acceptor.LocalSearchAc
 import ai.timefold.solver.core.config.solver.EnvironmentMode;
 import ai.timefold.solver.core.config.solver.SolverConfig;
 import ai.timefold.solver.core.config.solver.termination.TerminationConfig;
-import com.sports.schedule.opt.ScheduleConstraintProvider;
-import com.sports.schedule.opt.SchedulePlan;
-import com.sports.schedule.opt.ScheduleUnit;
+import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
+import com.sports.schedule.opt.solver.SchedulePlan;
+import com.sports.schedule.opt.solver.ScheduleUnit;
 
 import java.time.Duration;
 import java.util.List;

@@ -1,6 +1,6 @@
 package com.sports.schedule.rule;
 
-import com.sports.schedule.opt.Placement;
+import com.sports.schedule.opt.solver.Placement;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.sports.schedule.core.primitive.Cursor;
 
 /**
  * 规则模式编排器（Rule-Based Scheduler）—— 三级求解梯度的最低层。
