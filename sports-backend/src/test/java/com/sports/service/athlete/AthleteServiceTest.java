@@ -106,4 +106,29 @@ class AthleteServiceTest {
         assertEquals(2, res.get("success"));
         assertEquals(0, res.get("skipped"));
     }
+
+    @Test
+    void deleteAllDeletesEverythingDeletableAndSkipsReferenced() {
+        Athlete a1 = athlete(1L, "张三");   // 被报名引用 → 跳过
+        Athlete a2 = athlete(2L, "李四");   // 可删
+        Athlete a3 = athlete(3L, "王五");   // 可删
+
+        when(athleteRepository.findAll()).thenReturn(List.of(a1, a2, a3));
+        when(resultRepository.findValidByAthleteIdIn(anyList())).thenReturn(List.of());
+        Registration reg = new Registration();
+        reg.setAthlete(a1);
+        when(registrationRepository.findActiveByAthleteIdIn(anyList())).thenReturn(List.of(reg));
+        when(arrangementRepository.findAthleteIdsIn(anyList())).thenReturn(List.of());
+        when(athleteRepository.findById(1L)).thenReturn(Optional.of(a1));
+        when(athleteRepository.findById(2L)).thenReturn(Optional.of(a2));
+        when(athleteRepository.findById(3L)).thenReturn(Optional.of(a3));
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Map<String, Object> res = athleteService.deleteAll();
+
+        assertEquals(Boolean.TRUE, res.get("all"), "全部删除须带 all=true 标记");
+        assertEquals(3, res.get("total"));
+        assertEquals(2, res.get("success"), "无引用的 2 人应被删除");
+        assertEquals(1, res.get("skipped"), "被报名的 1 人应被跳过");
+    }
 }

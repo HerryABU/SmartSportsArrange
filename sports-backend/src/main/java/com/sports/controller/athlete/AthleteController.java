@@ -62,6 +62,13 @@ public class AthleteController {
         return ApiResponse.success("批量删除完成", athleteService.batchDelete(ids));
     }
 
+    /** 全部删除（软删除 + 引用保护）：无参数；前端须强警告二次确认 */
+    @PostMapping("/delete-all")
+    public ApiResponse<Map<String, Object>> deleteAll() {
+        log.warn("全部删除运动员（危险操作）");
+        return ApiResponse.success("全部删除完成", athleteService.deleteAll());
+    }
+
     private List<Long> castIds(Object o) {
         List<Long> ids = new ArrayList<>();
         if (o instanceof List<?> list) {

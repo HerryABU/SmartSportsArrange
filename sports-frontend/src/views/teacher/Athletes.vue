@@ -99,6 +99,10 @@
             <el-icon><List /></el-icon>
             全选筛选结果
           </el-button>
+          <el-button type="danger" plain @click="handleDeleteAll">
+            <el-icon><Delete /></el-icon>
+            全部删除
+          </el-button>
         </div>
         <div class="toolbar-right">
           <el-button @click="handleImport">
@@ -530,31 +534,63 @@ function handleSelectionChange(rows) {
   selectedRows.value = rows
 }
 
+// 统一展示删除结果（批量删除 / 全部删除 共用）
+function showDeleteResult (res, fallbackTotal) {
+  const total = res?.total ?? fallbackTotal ?? 0
+  const success = res?.success ?? 0
+  const skipped = res?.skipped ?? 0
+  if (skipped > 0) {
+    const detail = (res?.errors || [])
+      .map((e) => `${e.name || '#' + e.id}：${e.message}`)
+      .join('\n')
+    ElMessageBox.alert(
+      `总计 ${total} 条，成功删除 ${success} 条，跳过 ${skipped} 条（存在关联数据）：\n\n${detail}`,
+      '删除结果',
+      { type: success > 0 ? 'warning' : 'error', confirmButtonText: '知道了' }
+    )
+  } else {
+    ElMessage.success(`成功删除 ${success} 条运动员`)
+  }
+}
+
 // 执行批量删除（被成绩/报名/编排引用的运动员会被后端跳过并报告）
 async function doBatchDelete(ids) {
   if (!ids || ids.length === 0) return
   try {
     const res = await request.post('/athletes/batch-delete', { ids })
-    const total = res?.total ?? ids.length
-    const success = res?.success ?? 0
-    const skipped = res?.skipped ?? 0
-    if (skipped > 0) {
-      const detail = (res?.errors || [])
-        .map((e) => `${e.name || '#' + e.id}：${e.message}`)
-        .join('\n')
-      ElMessageBox.alert(
-        `总计 ${total} 条，成功删除 ${success} 条，跳过 ${skipped} 条（存在关联数据）：\n\n${detail}`,
-        '批量删除结果',
-        { type: success > 0 ? 'warning' : 'error', confirmButtonText: '知道了' }
-      )
-    } else {
-      ElMessage.success(`成功删除 ${success} 条运动员`)
-    }
+    showDeleteResult(res, ids.length)
     selectedRows.value = []
     loadTableData()
   } catch {
     // 错误已由拦截器处理
   }
+}
+
+// 全部删除：强警告二次确认（引用保护仍在 —— 被成绩/报名/编排引用的会跳过并列出）
+function handleDeleteAll() {
+  ElMessageBox.confirm(
+    '⚠️ 将删除【全部】运动员档案！\n\n' +
+    '· 被成绩 / 报名 / 编排引用的运动员会被自动跳过并列出（不破坏历史数据）；\n' +
+    '· 其余运动员将被删除；\n' +
+    '· 此操作不可撤销。\n\n确定要继续吗？',
+    '全部删除（危险操作）',
+    {
+      confirmButtonText: '我确定，全部删除',
+      cancelButtonText: '取消',
+      type: 'error'
+    }
+  )
+    .then(async () => {
+      try {
+        const res = await request.post('/athletes/delete-all')
+        showDeleteResult(res, res?.total)
+        selectedRows.value = []
+        loadTableData()
+      } catch {
+        // 错误已由拦截器处理
+      }
+    })
+    .catch(() => {})
 }
 
 // 批量删除选中项

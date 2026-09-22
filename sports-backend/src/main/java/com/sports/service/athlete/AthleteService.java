@@ -234,4 +234,19 @@ public class AthleteService {
         log.info("批量删除运动员: total={}, success={}, skipped={}", ids.size(), deleted.size(), errors.size());
         return result;
     }
+
+    /**
+     * 全部删除（软删除）：对「当前全部运动员」执行 {@link #batchDelete}。
+     *
+     * <p>仍保留引用保护——被成绩 / 报名 / 编排引用的运动员会<b>跳过并报告原因</b>，
+     * 因此本操作不会破坏历史数据；前端须以强警告二次确认。</p>
+     */
+    public Map<String, Object> deleteAll() {
+        List<Long> ids = athleteRepository.findAll().stream().map(Athlete::getId).toList();
+        Map<String, Object> result = new LinkedHashMap<>(batchDelete(ids));
+        result.put("all", true);
+        log.info("全部删除运动员: 候选 {} 人，实际删除 {} 人，跳过 {} 人",
+                ids.size(), result.get("success"), result.get("skipped"));
+        return result;
+    }
 }
