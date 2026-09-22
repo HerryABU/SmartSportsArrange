@@ -132,4 +132,8 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
 
     @Query("SELECT a FROM Arrangement a WHERE a.athlete.classInfo.id = :classId")
     List<Arrangement> findByClassId(@Param("classId") Long classId);
+
+    /** 按运动员 id 集合返回「被编排引用」的运动员 id 集合（批量删除约束校验用） */
+    @Query("SELECT DISTINCT a.athlete.id FROM Arrangement a WHERE a.athlete.id IN :ids")
+    List<Long> findAthleteIdsIn(@Param("ids") List<Long> ids);
 }

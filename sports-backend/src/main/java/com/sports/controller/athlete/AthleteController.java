@@ -14,6 +14,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 运动员管理控制器
@@ -32,12 +35,44 @@ public class AthleteController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String grade,
             @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) String gender,
             @RequestParam(required = false) String keyword) {
-        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, keyword={}",
-                page, size, grade, classId, keyword);
+        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, gender={}, keyword={}",
+                page, size, grade, classId, gender, keyword);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<Athlete> result = athleteService.list(pageable, grade, classId, keyword);
+        Page<Athlete> result = athleteService.list(pageable, grade, classId, gender, keyword);
         return ApiResponse.page(result);
+    }
+
+    /** 按筛选条件返回全部匹配运动员 id（供「全选筛选结果」批量删除） */
+    @GetMapping("/ids")
+    public ApiResponse<List<Long>> ids(
+            @RequestParam(required = false) String grade,
+            @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) String gender,
+            @RequestParam(required = false) String keyword) {
+        return ApiResponse.success(athleteService.findIdsByFilter(grade, classId, gender, keyword));
+    }
+
+    /** 批量删除（软删除 + 条件约束）：body = { ids: Long[] } */
+    @PostMapping("/batch-delete")
+    public ApiResponse<Map<String, Object>> batchDelete(@RequestBody Map<String, Object> body) {
+        List<Long> ids = castIds(body.get("ids"));
+        log.info("批量删除运动员: count={}", ids.size());
+        return ApiResponse.success("批量删除完成", athleteService.batchDelete(ids));
+    }
+
+    private List<Long> castIds(Object o) {
+        List<Long> ids = new ArrayList<>();
+        if (o instanceof List<?> list) {
+            for (Object v : list) {
+                if (v instanceof Number n) ids.add(n.longValue());
+                else if (v != null) {
+                    try { ids.add(Long.parseLong(v.toString())); } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+        return ids;
     }
 
     @GetMapping("/{id}")
