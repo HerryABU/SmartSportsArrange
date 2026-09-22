@@ -116,7 +116,7 @@ public class ExcelService {
         // 多表导入同样支持（按表头自动识别）。
         String[][] sheets = {
                 {"grade", "年级表"}, {"class", "班级表"}, {"roster", "全名单表"},
-                {"eventsimple", "运动项目表"}, {"signup", "报名表"}};
+                {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"}, {"signup", "报名表"}};
         try (OutputStream out = response.getOutputStream();
              com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
             int idx = 0;
@@ -128,11 +128,14 @@ public class ExcelService {
                 writer.write(dataRows, EasyExcel.writerSheet(idx++, pair[1]).head(headCols).build());
             }
             List<List<String>> notes = new ArrayList<>();
-            notes.add(List.of("用法", "本工作簿含多张表：年级表/班级表/全名单表/运动项目表/报名表。"
+            notes.add(List.of("用法", "本工作簿含多张表：年级表/班级表/全名单表/运动项目表/项目表（表格2）/报名表。"
                     + "系统按「Sheet 名 + 表头」自动识别每张表的类型。"));
             notes.add(List.of("顺序", "Sheet 的先后不影响结果：导入按依赖顺序处理（年级→班级→名单→项目→报名→成绩）。"));
             notes.add(List.of("不用的表", "用不到的表请整表删除；空表会被自动跳过，不影响其它表。"));
             notes.add(List.of("重跑", "同一份工作簿可重复导入：已存在的数据会计入「跳过」而不算失败。"));
+            notes.add(List.of("两张项目表", "「运动项目表」是 7 列精简版；「项目表（表格2）」是完整版"
+                    + "（含性别限制/道数/计分规则/校纪录/组次裁判数等）。二选一即可；"
+                    + "若两张都留，同一项目代码会被自动去重（重复行计入「跳过(重复)」）。"));
             notes.add(List.of("成绩表", "成绩在编排之后录入。若要与本工作簿一起导入，自行增加一张「成绩表」Sheet 即可"
                     + "（表头：项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注）。"));
             writer.write(notes, EasyExcel.writerSheet(idx, "填写说明")

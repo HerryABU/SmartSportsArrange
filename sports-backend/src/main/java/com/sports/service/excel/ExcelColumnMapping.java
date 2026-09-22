@@ -168,6 +168,28 @@ public final class ExcelColumnMapping {
         ev.put("裁判人数", "refereesPerGroup");
         TYPE_COLUMN_ALIASES.put("event", ev);
 
+        // 运动项目表（7列精简）：处理器读 eventCode/eventName/teamMembers/concurrency/category/
+        // defaultVenueCode/perBatchMinutes。显式固定，避免与「项目表（表格2）」(event) 互相抢列
+        // （两边都有「项目类型→category」「项目代码/项目名称」），并保证平局结果确定。
+        Map<String, String> evs = new LinkedHashMap<>();
+        evs.put("项目代码", "eventCode");
+        evs.put("项目编码", "eventCode");
+        evs.put("项目", "eventCode");
+        evs.put("项目名称", "eventName");
+        evs.put("每组人数", "teamMembers");
+        evs.put("每队人数", "teamMembers");
+        evs.put("团队人数", "teamMembers");
+        evs.put("每批组数", "concurrency");
+        evs.put("并发组数", "concurrency");
+        evs.put("项目类型", "category");
+        evs.put("项目类别", "category");
+        evs.put("类别", "category");
+        evs.put("场地号", "defaultVenueCode");
+        evs.put("场地编码", "defaultVenueCode");
+        evs.put("每批所需时间", "perBatchMinutes");
+        evs.put("每批所需分钟", "perBatchMinutes");
+        TYPE_COLUMN_ALIASES.put("eventsimple", evs);
+
         // 用户表：处理器读 realName；全局匹配会把「姓名」落到 name（处理器不读）
         Map<String, String> user = new LinkedHashMap<>();
         user.put("用户名", "username");
