@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import com.sports.common.util.ExportNaming;
-import com.sports.schedule.rule.style.L1Rule;
+import com.sports.schedule.rule.style.ArrangeStyle;
 import com.sports.service.system.SystemService;
 
 /**
@@ -50,13 +50,13 @@ public class ArrangementController {
         return ApiResponse.success(arrangementService.previewArrangement(config));
     }
 
-    /** L1「自定义规则」可选款型目录（供前端「选择哪一款」动态渲染：id / 名称 / 说明） */
-    @GetMapping("/l1-rules")
-    public ApiResponse<?> l1Rules() {
-        return ApiResponse.success(com.sports.schedule.rule.style.L1Rule.catalog());
+    /** 「自定义规则」可选款型目录（供前端「选择哪一款」动态渲染：id / 名称 / 说明） */
+    @GetMapping("/styles")
+    public ApiResponse<?> styleRules() {
+        return ApiResponse.success(com.sports.schedule.rule.style.ArrangeStyle.catalog());
     }
 
-    // ==================== L1 规则注入（形态一：伪代码 / 脚本） ====================
+    // ==================== 规则注入（形态一：伪代码 / 脚本） ====================
 
     /** 规则脚本列表 + 各引擎可用性（内置伪代码必然可用；JSR-223 引擎缺失时提示引入依赖）。 */
     @GetMapping("/rule-scripts")

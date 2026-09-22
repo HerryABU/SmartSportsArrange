@@ -137,7 +137,7 @@ class SnakeGroupingTest {
     }
 
     @Test
-    @DisplayName("L1 按年级/班级蛇形：覆盖全部、组大小差 ≤ 1、可复现")
+    @DisplayName(" 按年级/班级蛇形：覆盖全部、组大小差 ≤ 1、可复现")
     void gradeClassSnake() {
         List<String> keys = List.of("高一1班","高一1班","高一2班","高一2班","高二1班","高二1班","高二2班");
         for (int heats = 1; heats <= 5; heats++) {
@@ -163,7 +163,7 @@ class SnakeGroupingTest {
     }
 
     @Test
-    @DisplayName("L1 团体单元蛇形：同键成员必在同一组、整队不可拆、可复现")
+    @DisplayName(" 团体单元蛇形：同键成员必在同一组、整队不可拆、可复现")
     void teamUnitsSnake() {
         List<String> keys = List.of("T1","T1","T2","T2","T3","T3");
         for (int heats = 1; heats <= 3; heats++) {
@@ -189,7 +189,7 @@ class SnakeGroupingTest {
     }
 
     @Test
-    @DisplayName("L1 组内分道：逐道填充、次圈反向、取值受限")
+    @DisplayName(" 组内分道：逐道填充、次圈反向、取值受限")
     void laneAssignment() {
         assertArrayEquals(new int[]{1, 2, 3, 4, 4}, SnakeGrouping.assignLanes(5, 4));
         assertArrayEquals(new int[]{1, 2, 2, 1, 1, 2}, SnakeGrouping.assignLanes(6, 2));
@@ -205,7 +205,7 @@ class SnakeGroupingTest {
     }
 
     @Test
-    @DisplayName("L1 入口非法参数直接抛出")
+    @DisplayName(" 入口非法参数直接抛出")
     void l1InvalidArgs() {
         assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignByGradeClass(null, 2));
         assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignByGradeClass(List.of("A"), 0));

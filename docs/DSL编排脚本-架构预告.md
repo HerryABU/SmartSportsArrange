@@ -26,8 +26,8 @@
 - 落地约束：
   1. **多文件**：DSL 相关实现拆分为多个文件（词法/语法/AST/执行/沙箱各司其职），不塞进单个大文件；
   2. **两条路径都要支持**（见第三节），分层共存；
-  3. L1 款型目录已抽为独立类型（`com.sports.schedule.rule.l1.L1Rule`），新增款型 = 加枚举 + 在 `allocate` 分流；
-     前端经 `GET /api/arrange/l1-rules` 动态列出，**无需改前端**。
+  3. L1 款型目录已抽为独立类型（`com.sports.schedule.rule.style.ArrangeStyle`），新增款型 = 加枚举 + 在 `allocate` 分流；
+     前端经 `GET /api/arrange/styles` 动态列出，**无需改前端**。
 
 ## 三、两条主路（分层共存，非二选一）
 

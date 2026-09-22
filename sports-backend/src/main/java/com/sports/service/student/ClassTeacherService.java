@@ -309,7 +309,7 @@ public class ClassTeacherService {
         Map<Long, List<Registration>> regsByAthlete = approvedRegs.stream()
                 .collect(Collectors.groupingBy(r -> r.getAthlete().getId()));
 
-        // L1 修复：原实现把 arrangementRepository.findByClassId(classId) 放在运动员循环内，
+        // 修复（基础层）：原实现把 arrangementRepository.findByClassId(classId) 放在运动员循环内，
         // 导致 N 个运动员触发 N 次全表查询；移到循环外只查一次。
         List<Arrangement> allArrs = arrangementRepository.findByClassId(classId);
         for (Athlete a : athletes) {

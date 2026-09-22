@@ -61,7 +61,7 @@ class ScoreDataListenerTest {
         return m;
     }
 
-    /** L3 批处理：invoke 只累积到 batch，需在 doAfterAllAnalysed 里 flush 才落库。
+    /** 批处理：invoke 只累积到 batch，需在 doAfterAllAnalysed 里 flush 才落库。
      *  saveAll 拿到的是 batch 的活引用、flush 随后会清空它，故在 answer 内即时拷贝内容，
      *  避免抓到被清空的引用。返回本次落库的所有 Result。 */
     @SuppressWarnings("unchecked")

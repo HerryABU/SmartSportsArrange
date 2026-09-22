@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
 
 /**
- * L1 规则注入 → Timefold 动态约束 的桥接测试。
+ * 规则注入 → Timefold 动态约束 的桥接测试。
  *
  * <p>不启动求解器，直接验证桥接语义：无脚本时零成本短路；有脚本时规则增量正确映射到
  * 硬/中/软三层；上下文按约束流可见字段组装。</p>

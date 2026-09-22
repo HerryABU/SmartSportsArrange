@@ -20,7 +20,7 @@ import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
-import com.sports.schedule.rule.style.L1Rule;
+import com.sports.schedule.rule.style.ArrangeStyle;
 import com.sports.service.audit.AuditService;
 import com.sports.service.clazz.GradeService;
 
@@ -537,8 +537,8 @@ public class SystemService {
         Map<String, Object> def = new LinkedHashMap<>();
         def.put("hard_constraints", new LinkedHashMap<>(Map.of(
                 "ban_cross_grade", true, "gender_separate", true)));
-        // L1「自定义规则」款型（用户选择用哪一款来分组分道）：class / snake / snakeSeed
-        def.put("l1_rule", com.sports.schedule.rule.style.L1Rule.CLASS.id);
+        // 「自定义规则」款型（用户选择用哪一款来分组分道）：class / snake / snakeSeed
+        def.put("style_rule", com.sports.schedule.rule.style.ArrangeStyle.CLASS.id);
         Map<String, Object> soft = new LinkedHashMap<>();
         soft.put("ban_same_class_same_lane", false);
         soft.put("prefer_diff_heat", true);
@@ -549,7 +549,14 @@ public class SystemService {
         def.put("soft_constraints", soft);
         def.put("algorithm_params", new LinkedHashMap<>(Map.of(
                 "max_attempts", 1000, "timeout_seconds", 30, "optimization_rounds", 3)));
-        return readJsonConfig("arrange_rule", def);
+        Map<String, Object> rule = readJsonConfig("arrange_rule", def);
+        // 向后兼容：升级前持久化的旧键 l1_rule / l1Rule 迁移到新键 style_rule / styleRule（老数据无缝过渡）
+        if (!rule.containsKey("style_rule") && !rule.containsKey("styleRule")) {
+            Object legacy = rule.remove("l1_rule");
+            if (legacy == null) legacy = rule.remove("l1Rule");
+            if (legacy != null) rule.put("style_rule", legacy);
+        }
+        return rule;
     }
 
     /** 保存编排规则 */

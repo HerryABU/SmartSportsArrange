@@ -66,14 +66,14 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 keepRealDuration(cf),
                 preferEarlierDay(cf),
                 preferEarlierStart(cf),
-                // L1 规则注入（形态一）：用户规则片段 → 动态约束。未配置脚本时零成本短路。
+                // 规则注入（形态一）：用户规则片段 → 动态约束。未配置脚本时零成本短路。
                 ruleInjectionHard(cf),
                 ruleInjectionMedium(cf),
                 ruleInjectionSoft(cf),
         };
     }
 
-    // ==================== L1 规则注入（形态一 → 动态约束） ====================
+    // ==================== 规则注入（形态一 → 动态约束） ====================
 
     /**
      * 硬：用户规则片段判定的「否决 / 硬违规」。权重取规则累计 hard（veto 记 1）。

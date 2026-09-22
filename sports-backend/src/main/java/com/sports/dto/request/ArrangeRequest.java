@@ -27,6 +27,6 @@ public class ArrangeRequest {
     @NotNull(message = "跑道数不能为空")
     private Integer lanes;
 
-    /** 编排规则配置：含 L1 款型 l1Rule（class/snake）与其它规则开关 */
+    /** 编排规则配置：含  款型 styleRule（class/snake）与其它规则开关 */
     private Map<String, Object> ruleConfig;
 }

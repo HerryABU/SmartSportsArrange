@@ -77,7 +77,7 @@ public class StatisticsService {
                     ? event.getMaxParticipants().longValue() : 0L, Long::sum);
         }
 
-        // L2 修复：原实现对每个班级都全量扫描 allRegs（O(classes × regs)），年级统计又重复一遍。
+        // 修复（启发式层）：原实现对每个班级都全量扫描 allRegs（O(classes × regs)），年级统计又重复一遍。
         // 改为一次性按 classId 分组计数，班级与年级统计直接查这张表。
         Map<Long, Long> countByClass = allRegs.stream()
                 .filter(r -> r.getAthlete() != null && r.getAthlete().getClassInfo() != null)

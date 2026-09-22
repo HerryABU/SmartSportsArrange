@@ -26,7 +26,7 @@ import com.sports.schedule.rule.grouping.SnakeGrouping;
 import com.sports.schedule.rule.inject.RuleContext;
 import com.sports.schedule.rule.inject.RuleInjectionService;
 import com.sports.schedule.rule.inject.RuleOutcome;
-import com.sports.schedule.rule.style.L1Rule;
+import com.sports.schedule.rule.style.ArrangeStyle;
 import com.sports.schedule.support.ScheduleSupport;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -66,7 +66,7 @@ public class ArrangementService {
 
     private final ArrangementRepository arrangementRepository;
     private final RegistrationRepository registrationRepository;
-    /** 成绩来源：L1「种子蛇形」款型按成绩/种子排序时需要 */
+    /** 成绩来源：「种子蛇形」款型按成绩/种子排序时需要 */
     private final ResultRepository resultRepository;
     private final EventRepository eventRepository;
     private final EventScheduleRepository eventScheduleRepository;
@@ -76,7 +76,7 @@ public class ArrangementService {
     private final SystemService systemService;
     private final WordOrderBookService wordOrderBookService;
     private final ScheduleCollaborationService collaborationService;
-    /** L1 规则注入（形态一）：用户规则片段 → 额外硬否决/软惩罚，编排后如实上报 */
+    /** 规则注入（形态一）：用户规则片段 → 额外硬否决/软惩罚，编排后如实上报 */
     private final RuleInjectionService ruleInjectionService;
 
     private static final ObjectMapper REF_MAPPER = new ObjectMapper();
@@ -788,12 +788,12 @@ public class ArrangementService {
         }
 
         boolean lottery = Boolean.TRUE.equals(event.getDrawLots());
-        // L1「自定义规则」款型：名义上 L1 = 自定义规则，用户可选择是哪一款。
-        // 默认 class（班级均衡）；snake（蛇形排布）；snakeSeed（种子蛇形）。取 ruleConfig.l1Rule，兼容旧布尔 snakeGrouping。
-        String l1Rule = resolveL1Rule(ruleConfig);
-        boolean snakeMode = isSnakeRule(l1Rule);
+        // 「自定义规则」款型：名义上  = 自定义规则，用户可选择是哪一款。
+        // 默认 class（班级均衡）；snake（蛇形排布）；snakeSeed（种子蛇形）。取 ruleConfig.styleRule，兼容旧布尔 snakeGrouping。
+        String styleRule = resolveArrangeStyle(ruleConfig);
+        boolean snakeMode = isSnakeRule(styleRule);
         // 种子蛇形：运动员 → 种子名次（1=最快；含预赛成绩/已有成绩），供 S 形分散使用
-        Map<Long, Integer> seedRank = L1Rule.SNAKE_SEEDED.id.equals(l1Rule)
+        Map<Long, Integer> seedRank = ArrangeStyle.SNAKE_SEEDED.id.equals(styleRule)
                 ? buildSeedRank(event, qualifierRefs) : null;
         Placement placement;
         List<String> hardViolations;
@@ -803,7 +803,7 @@ public class ArrangementService {
         // 蛇形款型为确定性算法（无随机），单趟生成即可。
         do {
             placement = allocate(event, pool, lanes, lockedRows,
-                    (snakeMode || rearrange == 0) ? null : (baseSeed + rearrange), lottery, l1Rule, seedRank);
+                    (snakeMode || rearrange == 0) ? null : (baseSeed + rearrange), lottery, styleRule, seedRank);
             hardViolations = validatePlacement(placement, lanes, snakeMode);
             rearrange++;
         } while (!hardViolations.isEmpty() && rearrange < ADVERSARIAL_MAX_ROUNDS);
@@ -905,14 +905,14 @@ public class ArrangementService {
         result.put("grade", grade);
         result.put("gender", gender);
         result.put("round", round);
-        result.put("l1Rule", l1Rule);
-        result.put("groupingMode", l1Rule);
+        result.put("styleRule", styleRule);
+        result.put("groupingMode", styleRule);
         result.put("heats", heatDetails);
         result.put("statistics", statistics);
         List<String> allWarnings = new ArrayList<>(placement.warnings);
         allWarnings.addAll(refereeWarnings);
 
-        // L1 规则注入（形态一）：对每条落位评估用户规则片段，聚合后如实上报（不粉饰）
+        // 规则注入（形态一）：对每条落位评估用户规则片段，聚合后如实上报（不粉饰）
         RuleOutcome injected = RuleOutcome.empty();
         for (Arrangement arr : arrangements) {
             if (arr.getAthlete() == null) {
@@ -970,7 +970,7 @@ public class ArrangementService {
                 .map(Registration::getAthlete)
                 .collect(Collectors.toList());
 
-        Placement placement = allocate(event, athletes, lanes, null, null, false, L1Rule.CLASS.id, null);
+        Placement placement = allocate(event, athletes, lanes, null, null, false, ArrangeStyle.CLASS.id, null);
 
         List<Map<String, Object>> heatDetails = new ArrayList<>();
         for (int h = 0; h < placement.heats; h++) {
@@ -1331,15 +1331,15 @@ public class ArrangementService {
      * 排除出池，却没占位，重排后组号从 1 重算，锁定道次可能被新项顶掉）。</p>
      */
     private Placement allocate(Event event, List<Athlete> athletes, int lanes, List<Arrangement> locked,
-                                Long seed, boolean lottery, String l1Rule, Map<Long, Integer> seedRank) {
+                                Long seed, boolean lottery, String styleRule, Map<Long, Integer> seedRank) {
         int n = athletes.size();
         List<String> warnings = new ArrayList<>();
         List<Arrangement> locks = locked == null ? List.of() : locked;
         Random rnd = seed != null ? new Random(seed) : null;
 
-        // L1「蛇形」款型（蛇形排布 / 种子蛇形）：确定性 S 形分散，不依赖随机、不强制同组不同班
-        if (isSnakeRule(l1Rule)) {
-            return allocateSnake(event, athletes, lanes, locks, warnings, l1Rule, seedRank);
+        // 「蛇形」款型（蛇形排布 / 种子蛇形）：确定性 S 形分散，不依赖随机、不强制同组不同班
+        if (isSnakeRule(styleRule)) {
+            return allocateSnake(event, athletes, lanes, locks, warnings, styleRule, seedRank);
         }
 
         // 按班级分组（班级缺失归为 0）
@@ -1467,7 +1467,7 @@ public class ArrangementService {
                         continue;
                     }
                 } else {
-                    // L1 规则注入优先：先取规则惩罚最小的候选；完全平局时才随机（保持对抗式重排能力）
+                    // 规则注入优先：先取规则惩罚最小的候选；完全平局时才随机（保持对抗式重排能力）
                     bestHeat = pickAmongCandidates(event, athlete, candidates, heats, rnd);
                 }
                 Arrangement arr = new Arrangement();
@@ -1553,7 +1553,7 @@ public class ArrangementService {
     }
 
     /**
-     * L1「蛇形」款型（蛇形排布 / 种子蛇形）：确定性排序后用 {@link SnakeGrouping} 把运动员
+     * 「蛇形」款型（蛇形排布 / 种子蛇形）：确定性排序后用 {@link SnakeGrouping} 把运动员
      * S 形分散到各组，组内道次按蛇形次序落位。
      *
      * <ul>
@@ -1562,12 +1562,12 @@ public class ArrangementService {
      *       排序，使各组种子强度均衡；无成绩者排最后（退回报名序）。</li>
      * </ul>
      *
-     * <p>与默认「班级均衡」（同组不同班 + 匈牙利分道）互斥，同属 L1。人工锁定项作为已占位参与：
+     * <p>与默认「班级均衡」（同组不同班 + 匈牙利分道）互斥，同属 。人工锁定项作为已占位参与：
      * 蛇形目标组满员时环形顺延。</p>
      */
     private Placement allocateSnake(Event event, List<Athlete> athletes, int lanes,
                                     List<Arrangement> locks, List<String> warnings,
-                                    String l1Rule, Map<Long, Integer> seedRank) {
+                                    String styleRule, Map<Long, Integer> seedRank) {
         int total = athletes.size() + locks.size();
         int minHeats = (int) Math.ceil((double) total / Math.max(1, lanes));
         int maxLockedHeat = 0;
@@ -1600,7 +1600,7 @@ public class ArrangementService {
 
         // 确定性排序（蛇形前先排好序）
         List<Athlete> ordered = new ArrayList<>(athletes);
-        if (L1Rule.SNAKE_SEEDED.id.equals(l1Rule)) {
+        if (ArrangeStyle.SNAKE_SEEDED.id.equals(styleRule)) {
             // 种子蛇形：按种子名次升序（1=最快）；无成绩者名次为 MAX → 排最后，再按 id 稳定
             ordered.sort(Comparator
                     .comparingInt((Athlete a) -> seedRankOf(a, seedRank))
@@ -1612,7 +1612,7 @@ public class ArrangementService {
                     .thenComparing(a -> a.getId() == null ? Long.MAX_VALUE : a.getId()));
         }
 
-        // 蛇形目标组 → 入组（目标组满员则环形顺延；L1 规则注入可改写选择：见 pickHeatByInjection）
+        // 蛇形目标组 → 入组（目标组满员则环形顺延；规则注入可改写选择：见 pickHeatByInjection）
         int[] heatOfPos = SnakeGrouping.heatOf(ordered.size(), heats);
         for (int pos = 0; pos < ordered.size(); pos++) {
             Athlete athlete = ordered.get(pos);
@@ -1654,24 +1654,28 @@ public class ArrangementService {
         return placement;
     }
 
-    // L1「自定义规则」款型目录（CLASS 班级均衡 / SNAKE 蛇形排布 / SNAKE_SEEDED 种子蛇形）
-    // 已拆出为独立文件：com.sports.schedule.rule.style.L1Rule（后续 DSL/伪代码款型也归该层，多文件演进）。
+    // 「自定义规则」款型目录（CLASS 班级均衡 / SNAKE 蛇形排布 / SNAKE_SEEDED 种子蛇形）
+    // 已拆出为独立文件：com.sports.schedule.rule.style.ArrangeStyle（后续 DSL/伪代码款型也归该层，多文件演进）。
 
     /**
-     * 解析本次编排选用的 L1 规则款型 id：优先 {@code ruleConfig.l1Rule}（款型 id 字符串），
+     * 解析本次编排选用的 分组款型 id：优先 {@code ruleConfig.styleRule}（款型 id 字符串），
      * 兼容旧布尔 {@code ruleConfig.snakeGrouping=true} → snake；缺省 → class。
      */
-    private static String resolveL1Rule(Map<String, Object> ruleConfig) {
-        if (ruleConfig == null) return L1Rule.CLASS.id;
-        Object v = ruleConfig.get("l1Rule");
-        if (v != null && !String.valueOf(v).isBlank()) return L1Rule.of(String.valueOf(v)).id;
-        if (Boolean.TRUE.equals(ruleConfig.get("snakeGrouping"))) return L1Rule.SNAKE.id;
-        return L1Rule.CLASS.id;
+    private static String resolveArrangeStyle(Map<String, Object> ruleConfig) {
+        if (ruleConfig == null) return ArrangeStyle.CLASS.id;
+        // 新键 styleRule / style_rule 优先；兼容升级前持久化的旧键 l1Rule / l1_rule（老数据无缝过渡）
+        Object v = ruleConfig.get("styleRule");
+        if (v == null) v = ruleConfig.get("style_rule");
+        if (v == null) v = ruleConfig.get("l1Rule");
+        if (v == null) v = ruleConfig.get("l1_rule");
+        if (v != null && !String.valueOf(v).isBlank()) return ArrangeStyle.of(String.valueOf(v)).id;
+        if (Boolean.TRUE.equals(ruleConfig.get("snakeGrouping"))) return ArrangeStyle.SNAKE.id;
+        return ArrangeStyle.CLASS.id;
     }
 
     /** 是否属于「蛇形」款型（蛇形排布 / 种子蛇形）——二者共用同一套入组/分道实现，仅排序口径不同。 */
-    private static boolean isSnakeRule(String l1Rule) {
-        return L1Rule.of(l1Rule).isSnake();
+    private static boolean isSnakeRule(String styleRule) {
+        return ArrangeStyle.of(styleRule).isSnake();
     }
 
     /** 运动员种子名次（1=最快）；无成绩者返回 MAX（排序时落最后）。 */
@@ -1684,7 +1688,7 @@ public class ArrangementService {
     private static final long RULE_VETO_PENALTY = Long.MAX_VALUE / 4;
 
     /**
-     * L1 规则注入惩罚：(运动员, 候选组) 评估用户规则片段 → 加权惩罚。
+     * 规则注入惩罚：(运动员, 候选组) 评估用户规则片段 → 加权惩罚。
      * hard 权重最高；veto 返回哨兵值（优选时避开）。**无脚本时恒为 0 → 既有编排行为完全不变**。
      */
     private long injectPenalty(Event event, Athlete athlete, int heat1, int heats) {

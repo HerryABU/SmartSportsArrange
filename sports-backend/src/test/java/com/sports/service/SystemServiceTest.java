@@ -64,17 +64,17 @@ class SystemServiceTest {
         assertTrue(rule.containsKey("algorithm_params"));
         Map<String, Object> params = (Map<String, Object>) rule.get("algorithm_params");
         assertEquals(30, params.get("timeout_seconds"));
-        // L1 款型持久化：默认款型为 class（班级均衡）
-        assertEquals("class", rule.get("l1_rule"));
+        //  款型持久化：默认款型为 class（班级均衡）
+        assertEquals("class", rule.get("style_rule"));
     }
 
-    /** 已保存的 L1 款型应被读出（款型持久化：记住上次选的款型）。 */
+    /** 已保存的  款型应被读出（款型持久化：记住上次选的款型）。 */
     @Test
-    void getArrangeRule_mergesSavedL1Rule() {
+    void getArrangeRule_mergesSavedArrangeStyle() {
         SystemConfig cfg = SystemConfig.builder().configKey("arrange_rule")
-                .configValue("{\"l1_rule\":\"snakeSeed\"}").build();
+                .configValue("{\"style_rule\":\"snakeSeed\"}").build();
         when(systemConfigRepository.findByConfigKey("arrange_rule")).thenReturn(Optional.of(cfg));
         Map<String, Object> rule = systemService.getArrangeRule();
-        assertEquals("snakeSeed", rule.get("l1_rule"));
+        assertEquals("snakeSeed", rule.get("style_rule"));
     }
 }

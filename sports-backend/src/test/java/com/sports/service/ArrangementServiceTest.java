@@ -19,7 +19,7 @@ import com.sports.repository.result.ResultRepository;
 import com.sports.schedule.rule.inject.RuleContext;
 import com.sports.schedule.rule.inject.RuleInjectionService;
 import com.sports.schedule.rule.inject.RuleOutcome;
-import com.sports.schedule.rule.style.L1Rule;
+import com.sports.schedule.rule.style.ArrangeStyle;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -163,7 +163,7 @@ class ArrangementServiceTest {
         assertEquals(6, seen.size());
     }
 
-    /** L1「蛇形排布」模式：按年级/班级排序 S 形分散，且有意放开「同组不同班」硬约束（自检仍有效）。 */
+    /** 「蛇形排布」模式：按年级/班级排序 S 形分散，且有意放开「同组不同班」硬约束（自检仍有效）。 */
     @Test
     void arrange_snakeMode_usesGradeClassSnakeAndRelaxesSameClassRule() {
         Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
@@ -173,10 +173,10 @@ class ArrangementServiceTest {
         stubDirectArrange(event, regs);
 
         Map<String, Object> rule = new LinkedHashMap<>();
-        rule.put("l1Rule", "snake");
+        rule.put("styleRule", "snake");
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
 
-        assertEquals("snake", result.get("l1Rule"));
+        assertEquals("snake", result.get("styleRule"));
         assertEquals("snake", result.get("groupingMode"));
         Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
         assertEquals(6, stats.get("totalAthletes"));
@@ -220,10 +220,10 @@ class ArrangementServiceTest {
         assertEquals("class", result.get("groupingMode"));
     }
 
-    /** L1「自定义规则」款型目录：至少含 class/snake 两款且字段齐全（前端据此渲染「选择哪一款」）。 */
+    /** 「自定义规则」款型目录：至少含 class/snake 两款且字段齐全（前端据此渲染「选择哪一款」）。 */
     @Test
-    void l1RuleCatalog_containsVariants() {
-        List<Map<String, String>> cat = L1Rule.catalog();
+    void styleRuleCatalog_containsVariants() {
+        List<Map<String, String>> cat = ArrangeStyle.catalog();
         assertTrue(cat.size() >= 2);
         assertTrue(cat.stream().anyMatch(m -> "class".equals(m.get("id"))));
         assertTrue(cat.stream().anyMatch(m -> "snake".equals(m.get("id"))));
@@ -232,12 +232,12 @@ class ArrangementServiceTest {
             assertNotNull(m.get("description"));
         }
         // 未知款型回退默认；大小写不敏感；含种子蛇形
-        assertEquals(L1Rule.CLASS, L1Rule.of("不存在"));
-        assertEquals(L1Rule.SNAKE, L1Rule.of("SNAKE"));
-        assertEquals(L1Rule.SNAKE_SEEDED, L1Rule.of("snakeSeed"));
-        assertTrue(L1Rule.SNAKE.isSnake());
-        assertTrue(L1Rule.SNAKE_SEEDED.isSnake());
-        assertFalse(L1Rule.CLASS.isSnake());
+        assertEquals(ArrangeStyle.CLASS, ArrangeStyle.of("不存在"));
+        assertEquals(ArrangeStyle.SNAKE, ArrangeStyle.of("SNAKE"));
+        assertEquals(ArrangeStyle.SNAKE_SEEDED, ArrangeStyle.of("snakeSeed"));
+        assertTrue(ArrangeStyle.SNAKE.isSnake());
+        assertTrue(ArrangeStyle.SNAKE_SEEDED.isSnake());
+        assertFalse(ArrangeStyle.CLASS.isSnake());
     }
 
     /** 向后兼容：旧布尔 snakeGrouping=true 仍解析为 snake 款型。 */
@@ -251,11 +251,11 @@ class ArrangementServiceTest {
         Map<String, Object> rule = new LinkedHashMap<>();
         rule.put("snakeGrouping", true);
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 4, rule);
-        assertEquals("snake", result.get("l1Rule"));
+        assertEquals("snake", result.get("styleRule"));
     }
 
     /**
-     * L1 规则注入（形态一）**改写落位**：对某组命中规则惩罚 → 蛇形改投无惩罚的组（能力允许时完全避开）。
+     * 规则注入（形态一）**改写落位**：对某组命中规则惩罚 → 蛇形改投无惩罚的组（能力允许时完全避开）。
      * 用一条人工锁定项把组数撑到 2，从而具备可选的落位空间。
      */
     @Test
@@ -281,7 +281,7 @@ class ArrangementServiceTest {
         });
 
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 3,
-                Map.of("l1Rule", "snake"));
+                Map.of("styleRule", "snake"));
 
         @SuppressWarnings("unchecked")
         Map<String, Object> ri = (Map<String, Object>) result.get("ruleInjection");
@@ -291,7 +291,7 @@ class ArrangementServiceTest {
         assertEquals(0L, ((Number) ri.get("hard")).longValue());
     }
 
-    /** L1「种子蛇形」款型：按成绩/种子名次排序后 S 形分散，组间种子强度均衡、组内道次唯一。 */
+    /** 「种子蛇形」款型：按成绩/种子名次排序后 S 形分散，组间种子强度均衡、组内道次唯一。 */
     @Test
     void arrange_snakeSeeded_ordersBySeedRank() {
         Event event = Event.builder().id(100L).name("100m").defaultLanes(2).build();
@@ -306,10 +306,10 @@ class ArrangementServiceTest {
                 Result.builder().event(event).athlete(regs.get(3).getAthlete()).timeSeconds(14.0).status("valid").build()));
 
         Map<String, Object> rule = new LinkedHashMap<>();
-        rule.put("l1Rule", "snakeSeed");
+        rule.put("styleRule", "snakeSeed");
         Map<String, Object> result = arrangementService.arrange(100L, "高一年级", "男", 2, rule);
 
-        assertEquals("snakeSeed", result.get("l1Rule"));
+        assertEquals("snakeSeed", result.get("styleRule"));
         Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
         assertEquals(4, stats.get("totalAthletes"));
         assertEquals(2, stats.get("totalHeats"));   // ceil(4/2)

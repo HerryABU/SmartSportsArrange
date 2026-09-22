@@ -59,7 +59,7 @@ public class RuleScriptStore {
         SystemConfig cfg = repository.findByConfigKey(CONFIG_KEY).orElseGet(() -> SystemConfig.builder()
                 .configKey(CONFIG_KEY)
                 .configType("arrange")
-                .description("编排规则脚本（L1 形态一：规则注入）")
+                .description("编排规则脚本（ 形态一：规则注入）")
                 .build());
         cfg.setConfigValue(json);
         repository.save(cfg);
