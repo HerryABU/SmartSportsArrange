@@ -114,7 +114,16 @@
           <span>导入结果</span>
           <div class="summary-chips">
             <el-tag type="success" size="small">成功 {{ report.summary.imported }} 行</el-tag>
-            <el-tag type="warning" size="small">跳过(已存在) {{ report.summary.rowSkipped }} 行</el-tag>
+            <el-tag type="warning" size="small">跳过(已存在/重复) {{ report.summary.rowSkipped }} 行</el-tag>
+            <el-tag v-if="report.summary.duplicateRows" type="info" size="small">
+              重复 {{ report.summary.duplicateRows }} 行
+            </el-tag>
+            <el-tag v-if="report.summary.conflictRows" type="warning" size="small">
+              同键冲突 {{ report.summary.conflictRows }} 行
+            </el-tag>
+            <el-tag v-if="report.summary.rosterMismatches" type="danger" size="small">
+              名单不一致 {{ report.summary.rosterMismatches }}
+            </el-tag>
             <el-tag :type="report.summary.failed ? 'danger' : 'info'" size="small">
               失败 {{ report.summary.failed }} 行
             </el-tag>
@@ -151,10 +160,13 @@
               <div v-for="(e, ei) in (row.errors || [])" :key="'e' + ei" class="err-line">
                 第 {{ e.row }} 行：{{ e.message }}
               </div>
+              <div v-for="(c, ci) in (row.inconsistencies || [])" :key="'c' + ci" class="warn-line">
+                第 {{ c.row }} 行 [{{ kindLabel(c.kind) }}]：{{ c.message }}
+              </div>
               <div v-for="(s, si) in (row.skipNotes || [])" :key="'s' + si" class="muted">
                 {{ s }}
               </div>
-              <span v-if="!row.failed && !row.skipped && !(row.skipNotes || []).length && !row.reason"
+              <span v-if="!row.failed && !row.skipped && !(row.skipNotes || []).length && !row.reason && !(row.inconsistencies || []).length"
                 class="muted">
                 无异常
               </span>
@@ -163,7 +175,9 @@
         </el-table>
       </div>
       <div class="hint" style="margin-top:8px">
-        提示：「跳过(已存在)」表示该行数据已在系统中，不计为失败 —— 同一份工作簿可放心重跑。
+        提示：「跳过(已存在)」= 该行数据已在系统中（含<b>文件内重复行</b>与<b>同键冲突行</b>），不计为失败 —— 同一份工作簿可放心重跑。
+        「[重复]」同一实体出现多次只导一次；「[冲突]」同一实体字段不一致（如同学号不同姓名），已按首次出现为准；
+        「[名单不一致]」报名信息与名单不符，仅提示、不阻止导入。
       </div>
     </el-card>
   </div>
@@ -183,6 +197,10 @@ const preview = ref(null)
 const report = ref(null)
 const parsing = ref(false)
 const importing = ref(false)
+
+// 去重 / 一致性问题的中文标签
+const KIND_LABELS = { DUPLICATE: '重复', CONFLICT: '冲突', ROSTER_MISMATCH: '名单不一致' }
+function kindLabel (k) { return KIND_LABELS[k] || k }
 
 const canImport = computed(() => {
   if (!files.value.length) return false
@@ -275,7 +293,14 @@ async function doImport () {
     if (s && s.failed) {
       ElMessage.warning(`导入完成：成功 ${s.imported} 行，失败 ${s.failed} 行，请查看明细`)
     } else if (s) {
-      ElMessage.success(`导入完成：成功 ${s.imported} 行，跳过(已存在) ${s.rowSkipped} 行`)
+      const extra = []
+      if (s.duplicateRows) extra.push(`重复 ${s.duplicateRows}`)
+      if (s.conflictRows) extra.push(`同键冲突 ${s.conflictRows}`)
+      if (s.rosterMismatches) extra.push(`名单不一致 ${s.rosterMismatches}`)
+      ElMessage.success(
+        `导入完成：成功 ${s.imported} 行，跳过(已存在/重复) ${s.rowSkipped} 行` +
+        (extra.length ? `，${extra.join('，')}` : '')
+      )
     } else {
       ElMessage.success('导入完成')
     }
@@ -319,6 +344,7 @@ async function downloadMultiTemplate () {
 .muted { color: #9ca3af; font-size: 12px; }
 .danger-text { color: #b91c1c; font-size: 12px; }
 .err-line { color: #b91c1c; font-size: 12px; }
+.warn-line { color: #b45309; font-size: 12px; }
 .summary-chips { display: flex; gap: 6px; }
 .hint { font-size: 12px; color: #9ca3af; }
 </style>

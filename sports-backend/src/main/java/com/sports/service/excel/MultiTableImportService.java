@@ -116,12 +116,47 @@ public class MultiTableImportService {
 
         Map<String, Map<String, Object>> resultByKey = new LinkedHashMap<>();
         int totalSuccess = 0, totalSkipped = 0, totalFailed = 0, skippedSheets = 0;
+        int totalDup = 0, totalConflict = 0, totalRosterMismatch = 0;
         List<String> notes = new ArrayList<>();
+        List<String> inconsistencies = new ArrayList<>();
 
+        // ---- 阶段 1：逐表读行，并先建「名单索引」（供报名一致性校验）----
+        record Pending(SheetJob job, String type, Map<String, String> columnMap, String key, String reason,
+                       List<Map<String, String>> values, List<Integer> rowNos, int blank) {
+        }
+        List<Pending> pendings = new ArrayList<>();
+        ImportBatchGuard guard = new ImportBatchGuard();
         for (SheetJob job : ordered) {
             String key = job.fileIndex() + "::" + job.sheetIndex();
             String type = SheetTypeResolver.resolve(job.sheetName(), job.headers(), job.overrideType());
             Map<String, String> columnMap = effectiveColumnMap(job, type);
+            String reason = skipReason(type, columnMap);
+            List<Map<String, String>> values = new ArrayList<>();
+            List<Integer> rowNos = new ArrayList<>();
+            int blank = 0;
+            if (reason == null) {
+                int from = hasHeader ? 1 : 0;
+                List<Map<Integer, String>> rows = job.rows();
+                for (int r = from; r < rows.size(); r++) {
+                    Map<Integer, String> row = rows.get(r);
+                    if (ExcelSheetReader.isBlankRow(row)) {
+                        blank++;
+                        continue;
+                    }
+                    values.add(ExcelSheetReader.rowToValues(row, columnMap));
+                    rowNos.add(r + 1); // Excel 里的 1-based 行号
+                }
+                for (Map<String, String> v : values) {
+                    guard.indexAthlete(type, v);
+                }
+            }
+            pendings.add(new Pending(job, type, columnMap, key, reason, values, rowNos, blank));
+        }
+
+        // ---- 阶段 2：逐表去重 / 冲突 / 名单校验 → 导入 ----
+        for (Pending p : pendings) {
+            SheetJob job = p.job();
+            String type = p.type();
 
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("sheetIndex", job.sheetIndex());
@@ -129,53 +164,76 @@ public class MultiTableImportService {
             s.put("type", type);
             s.put("resolvedBy", resolvedBy(job));
             s.put("headers", job.headers());
-            s.put("columnMap", columnMap);
-            s.put("mappedFields", describeMapped(type, job.headers(), columnMap));
+            s.put("columnMap", p.columnMap());
+            s.put("mappedFields", describeMapped(type, job.headers(), p.columnMap()));
 
-            String reason = skipReason(type, columnMap);
-            if (reason != null) {
+            if (p.reason() != null) {
                 s.put("skipped", true);
-                s.put("reason", reason);
+                s.put("reason", p.reason());
                 s.put("totalRows", Math.max(0, job.rows().size() - (hasHeader ? 1 : 0)));
                 s.put("success", 0);
                 s.put("failed", 0);
                 s.put("rowSkipped", 0);
                 s.put("errors", List.of());
                 s.put("skipNotes", List.of());
+                s.put("inconsistencies", List.of());
                 skippedSheets++;
-                notes.add("Sheet「" + job.sheetName() + "」已跳过：" + reason);
-                resultByKey.put(key, s);
+                notes.add("Sheet「" + job.sheetName() + "」已跳过：" + p.reason());
+                resultByKey.put(p.key(), s);
                 continue;
             }
 
-            List<Map<String, String>> values = new ArrayList<>();
-            int blank = 0;
-            int from = hasHeader ? 1 : 0;
-            List<Map<Integer, String>> rows = job.rows();
-            for (int r = from; r < rows.size(); r++) {
-                Map<Integer, String> row = rows.get(r);
-                if (ExcelSheetReader.isBlankRow(row)) {
-                    blank++;
-                    continue;
+            // 去重（同实体只导一次）/ 冲突（同键字段不一致）/ 名单不一致（报名与名单不符）
+            List<Map<String, String>> kept = new ArrayList<>();
+            List<Map<String, Object>> issues = new ArrayList<>();
+            int dup = 0, conflict = 0, mismatch = 0;
+            for (int i = 0; i < p.values().size(); i++) {
+                Map<String, String> v = p.values().get(i);
+                int rowNo = p.rowNos().get(i);
+                String where = job.fileName() + "[" + job.sheetName() + "] 第 " + rowNo + " 行";
+                boolean skipRow = false;
+                for (ImportBatchGuard.Issue it : guard.check(type, v, where)) {
+                    issues.add(Map.of("row", rowNo, "kind", it.kind().name(), "message", it.detail()));
+                    inconsistencies.add(job.sheetName() + " 第 " + rowNo + " 行：" + it.detail());
+                    switch (it.kind()) {
+                        case DUPLICATE -> {
+                            dup++;
+                            skipRow = true;
+                        }
+                        case CONFLICT -> {
+                            conflict++;
+                            skipRow = true;
+                        }
+                        case ROSTER_MISMATCH -> mismatch++;
+                    }
                 }
-                values.add(ExcelSheetReader.rowToValues(row, columnMap));
+                if (!skipRow) {
+                    kept.add(v);
+                }
             }
 
             Map<String, Object> rowResult;
             try {
-                rowResult = excelService.importRows(type, values);
+                rowResult = excelService.importRows(type, kept);
             } catch (Exception e) {
                 // 防御：单表意外异常不应把整批导入拖垮（也避免外层事务被标记回滚）
                 log.warn("多表导入：Sheet「{}」导入异常: {}", job.sheetName(), e.toString());
                 s.put("skipped", false);
-                s.put("totalRows", values.size());
+                s.put("totalRows", p.values().size() + p.blank());
                 s.put("success", 0);
-                s.put("rowSkipped", 0);
-                s.put("failed", values.size());
+                s.put("rowSkipped", dup + conflict);
+                s.put("failed", kept.size());
                 s.put("errors", List.of(Map.of("row", 0, "message", "整表导入异常: " + e.getMessage())));
                 s.put("skipNotes", List.of());
-                totalFailed += values.size();
-                resultByKey.put(key, s);
+                s.put("dupSkipped", dup);
+                s.put("conflicts", conflict);
+                s.put("rosterMismatches", mismatch);
+                s.put("inconsistencies", issues);
+                totalFailed += kept.size();
+                totalDup += dup;
+                totalConflict += conflict;
+                totalRosterMismatch += mismatch;
+                resultByKey.put(p.key(), s);
                 continue;
             }
 
@@ -185,21 +243,28 @@ public class MultiTableImportService {
 
             s.put("skipped", false);
             s.put("reason", null);
-            s.put("totalRows", values.size() + blank);
+            s.put("totalRows", p.values().size() + p.blank());
             s.put("success", success);
-            s.put("rowSkipped", rowSkipped);
+            s.put("rowSkipped", rowSkipped + dup + conflict);
             s.put("failed", failed);
             s.put("errors", rowResult.get("errors"));
             s.put("skipNotes", rowResult.get("skipNotes"));
-            s.put("blankRows", blank);
-            if (rows.size() >= ExcelSheetReader.MAX_ROWS_PER_SHEET) {
+            s.put("blankRows", p.blank());
+            s.put("dupSkipped", dup);
+            s.put("conflicts", conflict);
+            s.put("rosterMismatches", mismatch);
+            s.put("inconsistencies", issues);
+            if (job.rows().size() >= ExcelSheetReader.MAX_ROWS_PER_SHEET) {
                 s.put("truncated", true);
                 notes.add("Sheet「" + job.sheetName() + "」行数达到上限 " + ExcelSheetReader.MAX_ROWS_PER_SHEET + "，超出部分未导入");
             }
             totalSuccess += success;
             totalSkipped += rowSkipped;
             totalFailed += failed;
-            resultByKey.put(key, s);
+            totalDup += dup;
+            totalConflict += conflict;
+            totalRosterMismatch += mismatch;
+            resultByKey.put(p.key(), s);
         }
 
         // 按原始顺序组装报告
@@ -226,13 +291,23 @@ public class MultiTableImportService {
         summary.put("rowSkipped", totalSkipped);
         summary.put("failed", totalFailed);
         summary.put("skippedSheets", skippedSheets);
+        summary.put("duplicateRows", totalDup);
+        summary.put("conflictRows", totalConflict);
+        summary.put("rosterMismatches", totalRosterMismatch);
+
+        if (totalDup > 0 || totalConflict > 0 || totalRosterMismatch > 0) {
+            notes.add("去重 / 一致性检查：重复行 " + totalDup + "、同键冲突 " + totalConflict
+                    + "、报名与名单不一致 " + totalRosterMismatch + "（明细见各表「不一致」列）");
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("files", fileReports);
         out.put("summary", summary);
         out.put("notes", notes);
-        log.info("多表导入完成: 文件 {}，Sheet {}，成功 {} 行，跳过(已存在) {} 行，失败 {} 行，跳过表 {}",
-                fileReports.size(), jobs.size(), totalSuccess, totalSkipped, totalFailed, skippedSheets);
+        out.put("inconsistencies", inconsistencies.size() > 200 ? inconsistencies.subList(0, 200) : inconsistencies);
+        log.info("多表导入完成: 文件 {}，Sheet {}，成功 {} 行，跳过(已存在 {}/重复 {} ) {} 行，失败 {} 行，跳过表 {}，冲突 {}，名单不一致 {}",
+                fileReports.size(), jobs.size(), totalSuccess, totalSkipped - totalDup - totalConflict, totalDup,
+                totalSkipped, totalFailed, skippedSheets, totalConflict, totalRosterMismatch);
         return out;
     }
 
