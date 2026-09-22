@@ -91,6 +91,14 @@
             <el-icon><Plus /></el-icon>
             新增运动员
           </el-button>
+          <el-button type="danger" :disabled="selectedCount === 0" @click="handleBatchDelete">
+            <el-icon><Delete /></el-icon>
+            批量删除{{ selectedCount > 0 ? `(${selectedCount})` : '' }}
+          </el-button>
+          <el-button @click="handleSelectAllByFilter">
+            <el-icon><List /></el-icon>
+            全选筛选结果
+          </el-button>
         </div>
         <div class="toolbar-right">
           <el-button @click="handleImport">
@@ -133,10 +141,13 @@
       <el-table
         v-loading="loading"
         :data="tableData"
+        row-key="id"
         border
         stripe
         style="width: 100%"
+        @selection-change="handleSelectionChange"
       >
+        <el-table-column type="selection" width="48" align="center" reserve-selection />
         <el-table-column prop="name" label="姓名" min-width="100" align="center" />
         <el-table-column prop="gender" label="性别" width="80" align="center">
           <template #default="{ row }">
@@ -294,6 +305,11 @@ const isEdit = ref(false)
 const editId = ref(null)
 const formRef = ref(null)
 const fileInputRef = ref(null)
+
+// 批量删除：多选状态
+const selectedRows = ref([])
+const selectedIds = computed(() => selectedRows.value.map((r) => r.id))
+const selectedCount = computed(() => selectedRows.value.length)
 
 // 班级选项（全部）
 const classOptions = ref([])
@@ -508,6 +524,75 @@ async function handleSubmit() {
 }
 
 // ==================== 删除 ====================
+
+// 多选变化
+function handleSelectionChange(rows) {
+  selectedRows.value = rows
+}
+
+// 执行批量删除（被成绩/报名/编排引用的运动员会被后端跳过并报告）
+async function doBatchDelete(ids) {
+  if (!ids || ids.length === 0) return
+  try {
+    const res = await request.post('/athletes/batch-delete', { ids })
+    const total = res?.total ?? ids.length
+    const success = res?.success ?? 0
+    const skipped = res?.skipped ?? 0
+    if (skipped > 0) {
+      const detail = (res?.errors || [])
+        .map((e) => `${e.name || '#' + e.id}：${e.message}`)
+        .join('\n')
+      ElMessageBox.alert(
+        `总计 ${total} 条，成功删除 ${success} 条，跳过 ${skipped} 条（存在关联数据）：\n\n${detail}`,
+        '批量删除结果',
+        { type: success > 0 ? 'warning' : 'error', confirmButtonText: '知道了' }
+      )
+    } else {
+      ElMessage.success(`成功删除 ${success} 条运动员`)
+    }
+    selectedRows.value = []
+    loadTableData()
+  } catch {
+    // 错误已由拦截器处理
+  }
+}
+
+// 批量删除选中项
+function handleBatchDelete() {
+  if (selectedIds.value.length === 0) return
+  ElMessageBox.confirm(
+    `确定要批量删除选中的 ${selectedIds.value.length} 名运动员吗？\n被成绩/报名/编排引用的运动员将自动跳过并提示。`,
+    '批量删除确认',
+    { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' }
+  )
+    .then(() => doBatchDelete(selectedIds.value))
+    .catch(() => {})
+}
+
+// 按当前筛选条件全选（跨页）后批量删除
+async function handleSelectAllByFilter() {
+  try {
+    const params = {}
+    if (searchForm.grade) params.grade = searchForm.grade
+    if (searchForm.classId) params.classId = searchForm.classId
+    if (searchForm.gender) params.gender = searchForm.gender
+    if (searchForm.keyword) params.keyword = searchForm.keyword
+    const ids = await request.get('/athletes/ids', { params })
+    if (!Array.isArray(ids) || ids.length === 0) {
+      ElMessage.info('当前筛选条件下没有可删除的运动员')
+      return
+    }
+    ElMessageBox.confirm(
+      `将按当前筛选条件批量删除全部 ${ids.length} 名运动员（跨页）。\n被成绩/报名/编排引用的将自动跳过。`,
+      '按筛选条件全选删除',
+      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' }
+    )
+      .then(() => doBatchDelete(ids))
+      .catch(() => {})
+  } catch {
+    // 错误已由拦截器处理
+  }
+}
 
 function handleDelete(row) {
   ElMessageBox.confirm(`确定要删除运动员「${row.name}」吗？此操作不可恢复。`, '删除确认', {
