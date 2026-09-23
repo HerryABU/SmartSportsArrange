@@ -19,7 +19,7 @@
         <el-form-item label="年级">
           <el-select
             v-model="searchForm.grade"
-            placeholder="选择或输入年级"
+            placeholder="高一 / 高一年级 / 10年级 均可"
             clearable
             filterable
             allow-create
@@ -209,7 +209,7 @@
         <el-form-item label="年级" prop="grade">
           <el-select
             v-model="formData.grade"
-            placeholder="选择或直接输入年级"
+            placeholder="高一 / 高一年级 / 10年级 均可"
             style="width: 100%"
             filterable
             allow-create
