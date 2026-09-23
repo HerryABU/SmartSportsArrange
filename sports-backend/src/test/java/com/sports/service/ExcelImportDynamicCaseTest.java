@@ -28,6 +28,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -85,6 +86,40 @@ class ExcelImportDynamicCaseTest {
         m.put("hasHeader", true);
         m.put("columnMap", columnMap);
         return m;
+    }
+
+    // ==================== 运动员表（athlete，如「名单」Sheet） ====================
+
+    @Test
+    @DisplayName("运动员表：班级缺失按(年级,班级)自动创建，不再整表「班级不存在」失败")
+    void athleteAutoCreateClass() {
+        when(classInfoRepository.findByGradeAndName(anyString(), anyString())).thenReturn(Optional.empty());
+        when(classInfoRepository.findByName(anyString())).thenReturn(Optional.empty());
+        when(classInfoRepository.existsByCode(anyString())).thenReturn(false);
+        when(classInfoRepository.save(any(ClassInfo.class))).thenAnswer(inv -> {
+            ClassInfo c = inv.getArgument(0);
+            c.setId(7L);
+            return c;
+        });
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.xlsx(
+                List.of("姓名", "性别", "年级", "班级", "学号", "号码布编号"),
+                new String[][]{{"李四", "女", "高三年级", "高三1班", "202610101", "30101"}});
+        Map<String, String> map = Map.of(
+                "0", "name", "1", "gender", "2", "grade", "3", "className", "4", "studentId", "5", "number");
+
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "名单.xlsx"), mapping("athlete", map));
+
+        assertEquals(1, result.get("success"), "班级缺失应自动建班，而非整行失败: " + result);
+        assertEquals(0, result.get("failed"));
+
+        ArgumentCaptor<Athlete> cap = ArgumentCaptor.forClass(Athlete.class);
+        verify(athleteRepository).save(cap.capture());
+        assertNotNull(cap.getValue().getClassInfo(), "应自动创建并关联班级");
+        assertEquals("高三1班", cap.getValue().getClassInfo().getName());
+        verify(classInfoRepository).save(any(ClassInfo.class));
     }
 
     // ==================== 全名单表（roster） ====================

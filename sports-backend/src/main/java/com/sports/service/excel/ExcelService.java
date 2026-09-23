@@ -567,12 +567,9 @@ public class ExcelService {
         String name = v.get("name");
         if (name == null) throw new RuntimeException("姓名为空");
 
-        ClassInfo classInfo = null;
-        String className = v.get("className");
-        if (className != null) {
-            classInfo = classInfoRepository.findByName(className).orElse(null);
-            if (classInfo == null) throw new RuntimeException("班级不存在: " + className);
-        }
+        // 班级缺失时按 (年级, 班级) 自动创建（与全名单表 / 合一表同口径）——
+        // 否则「只导名单、没先导班级表」会让整张名单因「班级不存在」全行失败。
+        ClassInfo classInfo = resolveOrCreateClass(trimToNull(v.get("grade")), trimToNull(v.get("className")));
 
         String gender = mapGender(v.get("gender"));
 
@@ -751,21 +748,7 @@ public class ExcelService {
 
         String grade = trimToNull(v.get("grade"));
         String className = trimToNull(v.get("className"));
-        ClassInfo classInfo = null;
-        if (className != null) {
-            classInfo = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
-            if (classInfo == null) classInfo = classInfoRepository.findByName(className).orElse(null);
-            if (classInfo == null) {
-                // 班级缺失：按(年级,班级)自动创建，code 取班级名（唯一），参与状态默认开启
-                String code = className;
-                int dup = 1;
-                while (classInfoRepository.existsByCode(code)) code = className + "_" + (dup++);
-                classInfo = ClassInfo.builder()
-                        .name(className).code(code).grade(grade)
-                        .isParticipating(true).build();
-                classInfo = classInfoRepository.save(classInfo);
-            }
-        }
+        ClassInfo classInfo = resolveOrCreateClass(grade, className);
 
         String gender = mapGender(v.get("gender"));
         Athlete athlete = athleteRepository.findByStudentId(studentId).orElse(null);
