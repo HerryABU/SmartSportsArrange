@@ -19,9 +19,12 @@
         <el-form-item label="年级">
           <el-select
             v-model="searchForm.grade"
-            placeholder="请选择年级"
+            placeholder="选择或输入年级"
             clearable
-            style="width: 150px"
+            filterable
+            allow-create
+            default-first-option
+            style="width: 160px"
           >
             <el-option
               v-for="item in gradeOptions"
@@ -191,8 +194,11 @@
         <el-form-item label="年级" prop="grade">
           <el-select
             v-model="formData.grade"
-            placeholder="请选择年级"
+            placeholder="选择或直接输入年级"
             clearable
+            filterable
+            allow-create
+            default-first-option
             style="width: 100%"
           >
             <el-option

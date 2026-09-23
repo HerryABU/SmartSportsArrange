@@ -19,38 +19,28 @@
         <el-form-item label="年级">
           <el-select
             v-model="searchForm.grade"
-            placeholder="请选择年级"
+            placeholder="选择或输入年级"
             clearable
-            style="width: 140px"
+            filterable
+            allow-create
+            default-first-option
+            style="width: 160px"
             @change="handleGradeChange"
           >
-            <el-option label="一年级" value="一年级" />
-            <el-option label="二年级" value="二年级" />
-            <el-option label="三年级" value="三年级" />
-            <el-option label="四年级" value="四年级" />
-            <el-option label="五年级" value="五年级" />
-            <el-option label="六年级" value="六年级" />
-            <el-option label="七年级" value="七年级" />
-            <el-option label="八年级" value="八年级" />
-            <el-option label="九年级" value="九年级" />
-            <el-option label="高一" value="高一" />
-            <el-option label="高二" value="高二" />
-            <el-option label="高三" value="高三" />
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
         <el-form-item label="班级">
           <el-select
-            v-model="searchForm.classId"
-            placeholder="请选择班级"
+            v-model="searchForm.className"
+            placeholder="选择或输入班级"
             clearable
-            style="width: 160px"
+            filterable
+            allow-create
+            default-first-option
+            style="width: 180px"
           >
-            <el-option
-              v-for="c in filteredClassOptions"
-              :key="c.id"
-              :label="c.name"
-              :value="c.id"
-            />
+            <el-option v-for="n in filteredClassNames" :key="n" :label="n" :value="n" />
           </el-select>
         </el-form-item>
         <el-form-item label="性别">
@@ -219,36 +209,26 @@
         <el-form-item label="年级" prop="grade">
           <el-select
             v-model="formData.grade"
-            placeholder="请选择年级"
+            placeholder="选择或直接输入年级"
             style="width: 100%"
+            filterable
+            allow-create
+            default-first-option
             @change="handleFormGradeChange"
           >
-            <el-option label="一年级" value="一年级" />
-            <el-option label="二年级" value="二年级" />
-            <el-option label="三年级" value="三年级" />
-            <el-option label="四年级" value="四年级" />
-            <el-option label="五年级" value="五年级" />
-            <el-option label="六年级" value="六年级" />
-            <el-option label="七年级" value="七年级" />
-            <el-option label="八年级" value="八年级" />
-            <el-option label="九年级" value="九年级" />
-            <el-option label="高一" value="高一" />
-            <el-option label="高二" value="高二" />
-            <el-option label="高三" value="高三" />
+            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
-        <el-form-item label="班级" prop="classId">
+        <el-form-item label="班级" prop="classNameText">
           <el-select
-            v-model="formData.classId"
-            placeholder="请选择班级"
+            v-model="formData.classNameText"
+            placeholder="选择或直接输入班级名称（不存在的会自动创建）"
             style="width: 100%"
+            filterable
+            allow-create
+            default-first-option
           >
-            <el-option
-              v-for="c in formClassOptions"
-              :key="c.id"
-              :label="c.name"
-              :value="c.id"
-            />
+            <el-option v-for="n in formClassNames" :key="n" :label="n" :value="n" />
           </el-select>
         </el-form-item>
         <el-form-item label="学号" prop="studentNo">
@@ -318,10 +298,10 @@ const selectedCount = computed(() => selectedRows.value.length)
 // 班级选项（全部）
 const classOptions = ref([])
 
-// 搜索表单
+// 搜索表单（班级按「名称」筛选，支持直接输入班级名）
 const searchForm = reactive({
   grade: '',
-  classId: '',
+  className: '',
   gender: '',
   keyword: ''
 })
@@ -336,29 +316,34 @@ const pagination = reactive({
   total: 0
 })
 
-// 表单数据
+// 表单数据（班级用「名称」输入，提交时按名称解析/自动建班）
 const formData = reactive({
   name: '',
   gender: '',
   grade: '',
-  classId: '',
+  classNameText: '',
   studentNo: '',
   birthDate: ''
 })
 
 // ==================== 计算属性 ====================
 
-// 搜索区域的班级选项（按年级筛选）
-const filteredClassOptions = computed(() => {
-  if (!searchForm.grade) return classOptions.value
-  return classOptions.value.filter((c) => c.grade === searchForm.grade)
+// 年级可选项：优先取系统里实际存在的年级；一个都没有时才回退到常用列表
+const gradeOptions = computed(() => {
+  const fromData = Array.from(new Set(classOptions.value.map((c) => c.grade).filter(Boolean)))
+  return fromData.length
+    ? fromData
+    : ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级',
+        '七年级', '八年级', '九年级', '高一', '高二', '高三']
 })
 
-// 表单中的班级选项（按年级筛选）
-const formClassOptions = computed(() => {
-  if (!formData.grade) return classOptions.value
-  return classOptions.value.filter((c) => c.grade === formData.grade)
-})
+// 班级名称（按年级过滤）——供「可直接输入」的下拉使用
+function classNamesOf (grade) {
+  const list = grade ? classOptions.value.filter((c) => c.grade === grade) : classOptions.value
+  return list.map((c) => c.name)
+}
+const filteredClassNames = computed(() => classNamesOf(searchForm.grade))
+const formClassNames = computed(() => classNamesOf(formData.grade))
 
 // 对话框标题
 const dialogTitle = computed(() => (isEdit.value ? '编辑运动员' : '新增运动员'))
@@ -368,8 +353,8 @@ const dialogTitle = computed(() => (isEdit.value ? '编辑运动员' : '新增�
 const formRules = {
   name: [{ required: true, message: '请输入姓名', trigger: 'blur' }],
   gender: [{ required: true, message: '请选择性别', trigger: 'change' }],
-  grade: [{ required: true, message: '请选择年级', trigger: 'change' }],
-  classId: [{ required: true, message: '请选择班级', trigger: 'change' }],
+  grade: [{ required: true, message: '请输入或选择年级', trigger: 'change' }],
+  classNameText: [{ required: true, message: '请输入或选择班级', trigger: 'change' }],
   studentNo: [{ required: true, message: '请输入学号', trigger: 'blur' }]
 }
 
@@ -401,7 +386,7 @@ async function loadTableData() {
       size: pagination.size
     }
     if (searchForm.grade) params.grade = searchForm.grade
-    if (searchForm.classId) params.classId = searchForm.classId
+    if (searchForm.className) params.className = searchForm.className
     if (searchForm.gender) params.gender = searchForm.gender
     if (searchForm.keyword) params.keyword = searchForm.keyword
 
@@ -434,7 +419,7 @@ function handleSearch() {
 
 function handleReset() {
   searchForm.grade = ''
-  searchForm.classId = ''
+  searchForm.className = ''
   searchForm.gender = ''
   searchForm.keyword = ''
   pagination.page = 1
@@ -442,13 +427,13 @@ function handleReset() {
 }
 
 function handleGradeChange() {
-  // 年级变化时清空班级选择
-  searchForm.classId = ''
+  // 年级变化时清空班级
+  searchForm.className = ''
 }
 
 function handleFormGradeChange() {
-  // 表单中年级变化时清空班级选择
-  formData.classId = ''
+  // 表单中年级变化时清空班级
+  formData.classNameText = ''
 }
 
 // ==================== 分页 ====================
@@ -479,7 +464,7 @@ function handleEdit(row) {
   formData.name = row.name || ''
   formData.gender = row.gender || ''
   formData.grade = row.grade || ''
-  formData.classId = row.classId || ''
+  formData.classNameText = row.className || ''
   formData.studentNo = row.studentNo || ''
 
   formData.birthDate = row.birthDate || ''
@@ -490,7 +475,7 @@ function resetForm() {
   formData.name = ''
   formData.gender = ''
   formData.grade = ''
-  formData.classId = ''
+  formData.classNameText = ''
   formData.studentNo = ''
   formData.birthDate = ''
   if (formRef.value) {
@@ -509,7 +494,15 @@ async function handleSubmit() {
 
   submitLoading.value = true
   try {
-    const payload = { ...formData }
+    // 班级以「名称」提交：后端按名称解析，缺失则自动创建（无需先建班级）
+    const payload = {
+      name: formData.name,
+      gender: formData.gender,
+      grade: formData.grade,
+      studentNo: formData.studentNo,
+      birthDate: formData.birthDate || null,
+      classNameInput: formData.classNameText
+    }
 
     if (isEdit.value) {
       await request.put(`/athletes/${editId.value}`, payload)
@@ -610,7 +603,7 @@ async function handleSelectAllByFilter() {
   try {
     const params = {}
     if (searchForm.grade) params.grade = searchForm.grade
-    if (searchForm.classId) params.classId = searchForm.classId
+    if (searchForm.className) params.className = searchForm.className
     if (searchForm.gender) params.gender = searchForm.gender
     if (searchForm.keyword) params.keyword = searchForm.keyword
     const ids = await request.get('/athletes/ids', { params })
