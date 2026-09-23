@@ -36,11 +36,12 @@ public class AthleteController {
             @RequestParam(required = false) String grade,
             @RequestParam(required = false) Long classId,
             @RequestParam(required = false) String gender,
-            @RequestParam(required = false) String keyword) {
-        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, gender={}, keyword={}",
-                page, size, grade, classId, gender, keyword);
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String className) {
+        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, gender={}, keyword={}, className={}",
+                page, size, grade, classId, gender, keyword, className);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<Athlete> result = athleteService.list(pageable, grade, classId, gender, keyword);
+        Page<Athlete> result = athleteService.list(pageable, grade, classId, gender, keyword, className);
         return ApiResponse.page(result);
     }
 
@@ -50,8 +51,9 @@ public class AthleteController {
             @RequestParam(required = false) String grade,
             @RequestParam(required = false) Long classId,
             @RequestParam(required = false) String gender,
-            @RequestParam(required = false) String keyword) {
-        return ApiResponse.success(athleteService.findIdsByFilter(grade, classId, gender, keyword));
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String className) {
+        return ApiResponse.success(athleteService.findIdsByFilter(grade, classId, gender, keyword, className));
     }
 
     /** 批量删除（软删除 + 条件约束）：body = { ids: Long[] } */

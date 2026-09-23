@@ -46,10 +46,11 @@ public class AthleteService {
     private final RegistrationRepository registrationRepository;
     private final ArrangementRepository arrangementRepository;
 
-    /** 分页查询 */
+    /** 分页查询（className 支持按班级名称模糊筛选，便于「直接输入班级名」的检索） */
     @Transactional(readOnly = true)
-    public Page<Athlete> list(Pageable pageable, String grade, Long classId, String gender, String keyword) {
-        Page<Athlete> result = athleteRepository.findAll(buildSpec(grade, classId, gender, keyword), pageable);
+    public Page<Athlete> list(Pageable pageable, String grade, Long classId, String gender, String keyword,
+                              String className) {
+        Page<Athlete> result = athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className), pageable);
         // 预加载 classInfo，避免序列化时懒加载导致班级信息为 null
         result.getContent().forEach(a -> {
             if (a.getClassInfo() != null) {
@@ -61,20 +62,23 @@ public class AthleteService {
 
     /** 按筛选条件返回全部匹配 id（供「全选筛选结果」批量删除） */
     @Transactional(readOnly = true)
-    public List<Long> findIdsByFilter(String grade, Long classId, String gender, String keyword) {
-        return athleteRepository.findAll(buildSpec(grade, classId, gender, keyword)).stream()
+    public List<Long> findIdsByFilter(String grade, Long classId, String gender, String keyword, String className) {
+        return athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className)).stream()
                 .map(Athlete::getId)
                 .toList();
     }
 
     /** 统一的筛选条件（年级/班级/性别/关键词），分页查询与全选删除复用 */
-    private Specification<Athlete> buildSpec(String grade, Long classId, String gender, String keyword) {
+    private Specification<Athlete> buildSpec(String grade, Long classId, String gender, String keyword,
+                                             String className) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (grade != null && !grade.isBlank())
                 predicates.add(cb.equal(root.get("grade"), grade));
             if (classId != null)
                 predicates.add(cb.equal(root.get("classInfo").get("id"), classId));
+            if (className != null && !className.isBlank())
+                predicates.add(cb.like(root.get("classInfo").get("name"), "%" + className.trim() + "%"));
             if (gender != null && !gender.isBlank()) {
                 // 兼容「男/女」与「M/F」两种存储口径
                 if ("男".equals(gender) || "M".equalsIgnoreCase(gender)) {
@@ -106,6 +110,9 @@ public class AthleteService {
         if (athlete.getClassInfo() != null && athlete.getClassInfo().getId() != null) {
             classInfoRepository.findById(athlete.getClassInfo().getId())
                     .orElseThrow(() -> new IllegalArgumentException("班级不存在"));
+        } else {
+            // 允许前端直接输入班级名称（不必先建班级）：按名称解析，缺失则自动创建
+            athlete.setClassInfo(resolveOrCreateClass(athlete.getClassNameInput(), athlete.getGrade()));
         }
         if (athlete.getStudentId() != null && !athlete.getStudentId().isBlank()) {
             if (athleteRepository.findByStudentId(athlete.getStudentId()).isPresent())
@@ -126,7 +133,13 @@ public class AthleteService {
         if (updated.getName() != null) existing.setName(updated.getName());
         if (updated.getGender() != null) existing.setGender(updated.getGender());
         if (updated.getGrade() != null) existing.setGrade(updated.getGrade());
-        if (updated.getClassInfo() != null) existing.setClassInfo(updated.getClassInfo());
+        if (updated.getClassInfo() != null && updated.getClassInfo().getId() != null) {
+            existing.setClassInfo(updated.getClassInfo());
+        } else if (updated.getClassNameInput() != null && !updated.getClassNameInput().isBlank()) {
+            // 直接输入班级名 → 解析或自动创建
+            existing.setClassInfo(resolveOrCreateClass(updated.getClassNameInput(),
+                    updated.getGrade() != null ? updated.getGrade() : existing.getGrade()));
+        }
         if (updated.getStudentId() != null) existing.setStudentId(updated.getStudentId());
         if (updated.getIdCard() != null) existing.setIdCard(updated.getIdCard());
         if (updated.getBirthDate() != null) existing.setBirthDate(updated.getBirthDate());
@@ -138,6 +151,28 @@ public class AthleteService {
         if (updated.getRemark() != null) existing.setRemark(updated.getRemark());
         existing.setUpdatedAt(LocalDateTime.now());
         return athleteRepository.save(existing);
+    }
+
+    /**
+     * 按班级名称解析 ClassInfo；不存在时按 (年级, 班级) 自动创建。
+     * 与 Excel 导入的「班级缺失自动创建」口径一致，让前端可以直接输入班级名而不必先建班。
+     */
+    private ClassInfo resolveOrCreateClass(String className, String grade) {
+        if (className == null || className.isBlank()) {
+            return null;
+        }
+        String name = className.trim();
+        return classInfoRepository.findByName(name).orElseGet(() -> {
+            ClassInfo c = new ClassInfo();
+            c.setName(name);
+            if (grade != null && !grade.isBlank()) {
+                c.setGrade(grade.trim());
+            }
+            c.setCreatedAt(LocalDateTime.now());
+            c.setUpdatedAt(LocalDateTime.now());
+            log.info("按名称自动创建班级: {}（年级 {}）", name, grade);
+            return classInfoRepository.save(c);
+        });
     }
 
     public void delete(Long id) {

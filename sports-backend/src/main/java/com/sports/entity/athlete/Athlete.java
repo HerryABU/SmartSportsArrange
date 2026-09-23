@@ -44,6 +44,14 @@ public class Athlete {
     @JoinColumn(name = "class_info_id")
     private ClassInfo classInfo;
 
+    /**
+     * 仅用于接口入参：允许前端<b>直接输入班级名称</b>（不必先建班级或选 id）。
+     * 服务层按名称解析，缺失时按 (年级, 班级) 自动创建 ClassInfo。不落库为列。
+     */
+    @Transient
+    @JsonProperty("classNameInput")
+    private String classNameInput;
+
     @Column(length = 20, unique = true)
     private String number;
 

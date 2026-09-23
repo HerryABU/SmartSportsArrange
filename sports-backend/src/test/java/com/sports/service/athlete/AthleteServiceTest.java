@@ -1,6 +1,7 @@
 package com.sports.service.athlete;
 
 import com.sports.entity.athlete.Athlete;
+import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.registration.Registration;
 import com.sports.entity.result.Result;
 import com.sports.repository.arrange.ArrangementRepository;
@@ -130,5 +131,27 @@ class AthleteServiceTest {
         assertEquals(3, res.get("total"));
         assertEquals(2, res.get("success"), "无引用的 2 人应被删除");
         assertEquals(1, res.get("skipped"), "被报名的 1 人应被跳过");
+    }
+
+    @Test
+    void createResolvesClassFromTypedName_andAutoCreatesWhenMissing() {
+        Athlete a = new Athlete();
+        a.setName("测试同学");
+        a.setGrade("高一年级");
+        a.setClassNameInput("高一9班");   // 前端直接输入的班级名（系统中不存在）
+
+        when(classInfoRepository.findByName("高一9班")).thenReturn(Optional.empty());
+        when(classInfoRepository.save(any(ClassInfo.class))).thenAnswer(inv -> {
+            ClassInfo c = inv.getArgument(0);
+            c.setId(99L);
+            return c;
+        });
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Athlete saved = athleteService.create(a);
+
+        assertNotNull(saved.getClassInfo(), "应把输入的班级名解析成 ClassInfo");
+        assertEquals("高一9班", saved.getClassInfo().getName());
+        assertEquals("高一年级", saved.getClassInfo().getGrade(), "新建班级应带上年级");
     }
 }
