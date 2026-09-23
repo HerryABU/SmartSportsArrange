@@ -152,6 +152,7 @@ class AthleteServiceTest {
 
         assertNotNull(saved.getClassInfo(), "应把输入的班级名解析成 ClassInfo");
         assertEquals("高一9班", saved.getClassInfo().getName());
-        assertEquals("高一年级", saved.getClassInfo().getGrade(), "新建班级应带上年级");
+        // 模糊年级：输入「高一年级」按规范短称「高一」落库（与库内既有口径统一）
+        assertEquals("高一", saved.getClassInfo().getGrade(), "新建班级应带上归一化后的年级");
     }
 }

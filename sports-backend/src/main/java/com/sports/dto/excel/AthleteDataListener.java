@@ -2,6 +2,7 @@ package com.sports.dto.excel;
 
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
+import com.sports.common.util.Grades;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.repository.clazz.ClassInfoRepository;
@@ -59,10 +60,14 @@ public class AthleteDataListener implements ReadListener<AthleteExcelModel> {
 
         ClassInfo classInfo = null;
         if (m.getClassName() != null && !m.getClassName().isBlank()) {
-            classInfo = classInfoRepository.findByName(m.getClassName().trim()).orElse(null);
+            // 模糊班级名：「高三年级（1）班」→「高三1班」，与库内命名对齐后再查
+            String className = Grades.normClassName(m.getClassName());
+            if (className == null || className.isBlank()) className = m.getClassName().trim();
+            classInfo = classInfoRepository.findByName(className).orElse(null);
         }
-        String grade = m.getGrade();
-        if ((grade == null || grade.isBlank()) && classInfo != null) grade = classInfo.getGrade();
+        // 模糊年级：「高一年级 / 10年级 / Grade 10」都归一成「高一」再落库
+        String grade = Grades.norm(m.getGrade());
+        if (grade == null && classInfo != null) grade = classInfo.getGrade();
 
         Athlete a = Athlete.builder()
                 .name(m.getName().trim()).gender(gender).grade(grade).classInfo(classInfo)

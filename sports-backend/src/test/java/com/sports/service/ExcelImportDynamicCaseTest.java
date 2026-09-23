@@ -122,6 +122,77 @@ class ExcelImportDynamicCaseTest {
         verify(classInfoRepository).save(any(ClassInfo.class));
     }
 
+    // ==================== 模糊年级 / 模糊班级名 ====================
+
+    @Test
+    @DisplayName("模糊年级：高一 / 高一年级 / 10年级 / Grade 10 导入后统一存「高一」")
+    void fuzzyGradeNormalizedOnImport() {
+        when(classInfoRepository.findByGradeAndName(anyString(), anyString())).thenReturn(Optional.empty());
+        when(classInfoRepository.findByName(anyString())).thenReturn(Optional.empty());
+        when(classInfoRepository.existsByCode(anyString())).thenReturn(false);
+        when(classInfoRepository.save(any(ClassInfo.class))).thenAnswer(inv -> {
+            ClassInfo c = inv.getArgument(0);
+            c.setId(1L);
+            return c;
+        });
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.xlsx(
+                List.of("姓名", "性别", "年级", "班级", "学号", "号码布编号"),
+                new String[][]{
+                        {"张三", "男", "高一", "高一1班", "202610101", "30101"},
+                        {"李四", "女", "高一年级", "高一年级1班", "202610102", "30102"},
+                        {"王五", "男", "Grade 10", "10年级1班", "202610103", "30103"}});
+        Map<String, String> map = Map.of(
+                "0", "name", "1", "gender", "2", "grade", "3", "className", "4", "studentId", "5", "number");
+
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "名单.xlsx"), mapping("athlete", map));
+
+        assertEquals(3, result.get("success"), "三种年级写法都应导入成功: " + result);
+
+        ArgumentCaptor<Athlete> athletes = ArgumentCaptor.forClass(Athlete.class);
+        verify(athleteRepository, times(3)).save(athletes.capture());
+        for (Athlete a : athletes.getAllValues()) {
+            assertEquals("高一", a.getGrade(), "年级应归一化为「高一」: " + a.getName());
+        }
+        ArgumentCaptor<ClassInfo> classes = ArgumentCaptor.forClass(ClassInfo.class);
+        verify(classInfoRepository, times(3)).save(classes.capture());
+        for (ClassInfo c : classes.getAllValues()) {
+            assertEquals("高一1班", c.getName(), "班级名应归一化为「高一1班」");
+            assertEquals("高一", c.getGrade());
+            assertEquals(10, c.getGradeOrder(), "gradeOrder 应算作 10");
+        }
+    }
+
+    @Test
+    @DisplayName("模糊班级：存量「高一年级1班」与本次「高一1班」视为同一班，复用不重复建班")
+    void fuzzyClassKeyReusesExistingClass() {
+        ClassInfo existing = ClassInfo.builder().name("高一年级1班").grade("高一年级").build();
+        existing.setId(1L);
+
+        when(classInfoRepository.findAll()).thenReturn(List.of(existing));
+        when(classInfoRepository.findByGradeAndName(anyString(), anyString())).thenReturn(Optional.empty());
+        when(classInfoRepository.findByName(anyString())).thenReturn(Optional.empty());
+        when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.xlsx(
+                List.of("姓名", "性别", "年级", "班级", "学号", "号码布编号"),
+                new String[][]{{"赵六", "男", "10年级", "高一1班", "202610201", "30201"}});
+        Map<String, String> map = Map.of(
+                "0", "name", "1", "gender", "2", "grade", "3", "className", "4", "studentId", "5", "number");
+
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "名单.xlsx"), mapping("athlete", map));
+
+        assertEquals(1, result.get("success"), "应复用既有班级: " + result);
+        ArgumentCaptor<Athlete> cap = ArgumentCaptor.forClass(Athlete.class);
+        verify(athleteRepository).save(cap.capture());
+        assertNotNull(cap.getValue().getClassInfo(), "应关联到既有班级");
+        assertEquals(1L, cap.getValue().getClassInfo().getId(), "应复用存量「高一年级1班」而非新建");
+        verify(classInfoRepository, never()).save(any(ClassInfo.class));
+    }
+
     // ==================== 全名单表（roster） ====================
 
     @Test
@@ -162,7 +233,7 @@ class ExcelImportDynamicCaseTest {
     void rosterUpsertExisting() {
         ClassInfo ci = ClassInfo.builder().id(5L).name("高一1班").grade("高一年级").build();
         Athlete existing = Athlete.builder().id(9L).name("旧名").studentId("2024001").build();
-        when(classInfoRepository.findByGradeAndName("高一年级", "高一1班")).thenReturn(Optional.of(ci));
+        when(classInfoRepository.findByGradeAndName("高一", "高一1班")).thenReturn(Optional.of(ci));
         when(athleteRepository.findByStudentId("2024001")).thenReturn(Optional.of(existing));
         when(athleteRepository.save(any(Athlete.class))).thenAnswer(inv -> inv.getArgument(0));
 

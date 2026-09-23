@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 import com.sports.entity.user.User;
 import com.sports.repository.user.UserRepository;
 import com.sports.service.excel.ExcelService;
+import com.sports.common.util.Grades;
 
 @Slf4j
 @Service
@@ -44,7 +45,8 @@ public class ClassService {
         Specification<ClassInfo> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (grade != null && !grade.isBlank())
-                predicates.add(cb.equal(root.get("grade"), grade));
+                // 模糊年级：筛「高一」也命中库里存的「高一年级」「10年级」
+                predicates.add(root.get("grade").in(Grades.equivalents(grade)));
             return cb.and(predicates.toArray(new Predicate[0]));
         };
         return classInfoRepository.findAll(spec, pageable);
@@ -59,7 +61,7 @@ public class ClassService {
         Specification<ClassInfo> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (grade != null && !grade.isBlank())
-                predicates.add(cb.equal(root.get("grade"), grade));
+                predicates.add(root.get("grade").in(Grades.equivalents(grade)));
             if (keyword != null && !keyword.isBlank()) {
                 String like = "%" + keyword.trim() + "%";
                 predicates.add(cb.or(
@@ -93,8 +95,16 @@ public class ClassService {
     }
 
     public ClassInfo create(ClassInfo classInfo) {
-        if (classInfoRepository.existsByName(classInfo.getName()))
-            throw new IllegalArgumentException("班级名称已存在: " + classInfo.getName());
+        String name = Grades.normClassName(classInfo.getName());
+        if (name == null || name.isBlank()) name = classInfo.getName() == null ? null : classInfo.getName().trim();
+        classInfo.setName(name);
+        String grade = Grades.norm(classInfo.getGrade());
+        classInfo.setGrade(grade);
+        if (classInfo.getGradeOrder() == null || classInfo.getGradeOrder() == 0) {
+            classInfo.setGradeOrder(Grades.order(grade));
+        }
+        if (name != null && (classInfoRepository.existsByName(name) || fuzzyClassExists(name)))
+            throw new IllegalArgumentException("班级名称已存在: " + name);
         if (classInfo.getCode() != null && classInfoRepository.existsByCode(classInfo.getCode()))
             throw new IllegalArgumentException("班级编码已存在: " + classInfo.getCode());
         classInfo.setCreatedAt(LocalDateTime.now());
@@ -102,19 +112,35 @@ public class ClassService {
         return classInfoRepository.save(classInfo);
     }
 
+    /** 模糊查重：「高三年级1班」与「高三1班」视为同一班级；标准命名才参与，非标准（实验班）退化为精确比对 */
+    private boolean fuzzyClassExists(String name) {
+        String key = Grades.classKey(name);
+        if (key == null || key.startsWith("RAW:")) return false;
+        return classInfoRepository.findAll().stream()
+                .anyMatch(c -> key.equals(Grades.classKey(c.getName())));
+    }
+
     public ClassInfo update(Long id, ClassInfo updated) {
         ClassInfo existing = getById(id);
         if (updated.getName() != null && !updated.getName().equals(existing.getName())) {
-            if (classInfoRepository.existsByName(updated.getName()))
-                throw new IllegalArgumentException("班级名称已存在: " + updated.getName());
-            existing.setName(updated.getName());
+            String name = Grades.normClassName(updated.getName());
+            if (name == null || name.isBlank()) name = updated.getName().trim();
+            if (classInfoRepository.existsByName(name) || fuzzyClassExists(name))
+                throw new IllegalArgumentException("班级名称已存在: " + name);
+            existing.setName(name);
         }
         if (updated.getCode() != null && !updated.getCode().equals(existing.getCode())) {
             if (classInfoRepository.existsByCode(updated.getCode()))
                 throw new IllegalArgumentException("班级编码已存在: " + updated.getCode());
             existing.setCode(updated.getCode());
         }
-        if (updated.getGrade() != null) existing.setGrade(updated.getGrade());
+        if (updated.getGrade() != null) {
+            String g = Grades.norm(updated.getGrade());
+            if (g != null) {
+                existing.setGrade(g);
+                if (updated.getGradeOrder() == null) existing.setGradeOrder(Grades.order(g));
+            }
+        }
         if (updated.getGradeOrder() != null) existing.setGradeOrder(updated.getGradeOrder());
         if (updated.getClassOrder() != null) existing.setClassOrder(updated.getClassOrder());
         if (updated.getTeacherName() != null) existing.setTeacherName(updated.getTeacherName());
@@ -224,23 +250,21 @@ public class ClassService {
         int classTo = ((Number) body.getOrDefault("classTo", 8)).intValue();
         String defaultPwd = (String) body.getOrDefault("defaultPwd", "123456");
 
-        Map<String, String> gradeMap = new LinkedHashMap<>();
-        gradeMap.put("一年级","1"); gradeMap.put("二年级","2"); gradeMap.put("三年级","3");
-        gradeMap.put("四年级","4"); gradeMap.put("五年级","5"); gradeMap.put("六年级","6");
-        gradeMap.put("初一","7"); gradeMap.put("初二","8"); gradeMap.put("初三","9");
-        gradeMap.put("高一","10"); gradeMap.put("高二","11"); gradeMap.put("高三","12");
-
         int createdClasses = 0, createdTeachers = 0;
         List<String> skipped = new ArrayList<>();
 
-        for (String grade : grades) {
-            String gradeNum = gradeMap.getOrDefault(grade, "00");
+        for (String rawGrade : grades) {
+            // 模糊年级：前端传「高一年级 / 10年级 / Grade 10」都能正确定序建班
+            String grade = Grades.norm(rawGrade);
+            if (grade == null) grade = rawGrade;
+            int ord = Grades.order(grade);
+            String gradeNum = ord > 0 ? String.valueOf(ord) : "00";
             for (int i = classFrom; i <= classTo; i++) {
                 String name = grade + i + "班";
                 String code = "G" + gradeNum + "-" + String.format("%02d", i);
                 String teacherUsername = "ct_" + grade + i;
 
-                if (classInfoRepository.existsByName(name)) {
+                if (classInfoRepository.existsByName(name) || fuzzyClassExists(name)) {
                     skipped.add(name);
                     continue;
                 }
@@ -263,7 +287,7 @@ public class ClassService {
 
                 // 2. 创建班级并绑定班主任
                 ClassInfo ci = ClassInfo.builder()
-                        .name(name).grade(grade).code(code)
+                        .name(name).grade(grade).gradeOrder(ord).code(code)
                         .teacherName(teacher.getName())
                         .teacherUser(teacher)
                         .isParticipating(true).build();

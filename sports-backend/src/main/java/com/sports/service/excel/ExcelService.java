@@ -39,6 +39,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 import com.sports.common.util.ExportNaming;
+import com.sports.common.util.Grades;
 import com.sports.common.util.RoundLabelUtil;
 import com.sports.service.clazz.GradeService;
 import com.sports.service.event.EventService;
@@ -476,6 +477,7 @@ public class ExcelService {
 
     @Transactional
     protected void processRow(String type, Map<String, String> values) {
+        normalizeGradeFields(values);
         switch (type) {
             case "athlete" -> processAthleteRow(values);
             case "score" -> processScoreRow(values);
@@ -488,6 +490,27 @@ public class ExcelService {
             case "athlete_signup" -> processCombinedRow(values);
             case "grade" -> processGradeRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
+        }
+    }
+
+    /**
+     * 模糊年级/班级归一化（所有导入类型共用的唯一收敛点）。
+     *
+     * <p>把「高一年级 / 高中一年级 / 10年级 / Grade 10」统一成「高一」，把
+     * 「高三年级（1）班 / 10年级1班」统一成「高三1班」，与库内既有短称口径一致。
+     * 认不出的写法原样保留（例如「实验班」）。</p>
+     */
+    private void normalizeGradeFields(Map<String, String> v) {
+        if (v == null) return;
+        String grade = trimToNull(v.get("grade"));
+        if (grade != null) {
+            String n = Grades.norm(grade);
+            if (n != null) v.put("grade", n);
+        }
+        String className = trimToNull(v.get("className"));
+        if (className != null) {
+            String n = Grades.normClassName(className);
+            if (n != null) v.put("className", n);
         }
     }
 
@@ -655,12 +678,22 @@ public class ExcelService {
     private void processClassRow(Map<String, String> v) {
         // 兼容两种写法：「班级名称」（模板表头）与「班级」（口语表头）。自动映射到 className 时也能落库，
         // 否则会出现「表头认得出、处理器认不出」的静默丢字段。
-        String name = v.get("name") != null ? v.get("name") : v.get("className");
-        if (name == null) throw new RuntimeException("班级名称为空");
-        if (classInfoRepository.existsByName(name)) throw new RuntimeException("班级已存在: " + name);
+        String raw = v.get("name") != null ? v.get("name") : v.get("className");
+        if (raw == null) throw new RuntimeException("班级名称为空");
+        String name = Grades.normClassName(raw);
+        if (name == null || name.isBlank()) name = raw.trim();
+        String key = Grades.classKey(name);
 
+        // 模糊查重：「高三年级1班」与「高三1班」视为同一班级，避免重复建班
+        boolean dup = classInfoRepository.existsByName(name)
+                || (key != null && !key.startsWith("RAW:") && classInfoRepository.findAll().stream()
+                        .anyMatch(c -> key.equals(Grades.classKey(c.getName()))));
+        if (dup) throw new RuntimeException("班级已存在: " + name);
+
+        String normGrade = Grades.norm(v.get("grade"));
         ClassInfo ci = ClassInfo.builder()
-                .name(name).code(v.get("code")).grade(v.get("grade"))
+                .name(name).code(v.get("code")).grade(normGrade)
+                .gradeOrder(Grades.order(normGrade))
                 .teacherName(v.get("teacherName"))
                 .isParticipating(true).build();
         classInfoRepository.save(ci);
@@ -871,17 +904,39 @@ public class ExcelService {
         return athleteRepository.save(athlete);
     }
 
-    /** 班级解析：按(年级,班级)或班级名查找，缺失则新建（code 取班级名，唯一去重）。 */
+    /**
+     * 班级解析：按(年级,班级)或班级名查找，缺失则新建（code 取班级名，唯一去重）。
+     *
+     * <p>年级/班级做模糊匹配：库里可能存「高三年级1班」，而本次导入写的是「高三1班」，
+     * 两者 {@link Grades#classKey} 相同即视为同一班级，直接复用而不重复建班。</p>
+     */
     private ClassInfo resolveOrCreateClass(String grade, String className) {
-        if (className == null) return null;
-        ClassInfo ci = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
-        if (ci == null) ci = classInfoRepository.findByName(className).orElse(null);
+        if (trimToNull(className) == null) return null;
+        String name = Grades.normClassName(className);
+        if (name == null || name.isBlank()) name = className.trim();
+        String normGrade = Grades.norm(grade);
+
+        ClassInfo ci = null;
+        if (normGrade != null) ci = classInfoRepository.findByGradeAndName(normGrade, name).orElse(null);
+        if (ci == null) ci = classInfoRepository.findByName(name).orElse(null);
         if (ci == null) {
-            String code = className;
+            // 兜底：按归一化班级键匹配（容忍存量库里「高三年级1班」vs 本次「高三1班」）
+            String key = Grades.classKey(name);
+            if (key != null && !key.startsWith("RAW:")) {
+                ci = classInfoRepository.findAll().stream()
+                        .filter(c -> key.equals(Grades.classKey(c.getName())))
+                        .findFirst()
+                        .orElse(null);
+            }
+        }
+        if (ci == null) {
+            String code = name;
             int dup = 1;
-            while (classInfoRepository.existsByCode(code)) code = className + "_" + (dup++);
+            while (classInfoRepository.existsByCode(code)) code = name + "_" + (dup++);
             ci = classInfoRepository.save(ClassInfo.builder()
-                    .name(className).code(code).grade(trimToNull(grade)).isParticipating(true).build());
+                    .name(name).code(code).grade(normGrade)
+                    .gradeOrder(Grades.order(normGrade))
+                    .isParticipating(true).build());
         }
         return ci;
     }

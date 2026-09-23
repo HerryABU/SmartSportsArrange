@@ -31,6 +31,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.sports.service.excel.ExcelService;
+import com.sports.common.util.Grades;
 
 @Slf4j
 @Service
@@ -74,7 +75,8 @@ public class AthleteService {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (grade != null && !grade.isBlank())
-                predicates.add(cb.equal(root.get("grade"), grade));
+                // 模糊年级：筛选「高一」时同时命中库里存的「高一年级」「10年级」等写法
+                predicates.add(root.get("grade").in(Grades.equivalents(grade)));
             if (classId != null)
                 predicates.add(cb.equal(root.get("classInfo").get("id"), classId));
             if (className != null && !className.isBlank())
@@ -107,6 +109,7 @@ public class AthleteService {
     }
 
     public Athlete create(Athlete athlete) {
+        athlete.setGrade(Grades.norm(athlete.getGrade()));   // 模糊年级：「10年级 / 高一年级」统一存「高一」
         if (athlete.getClassInfo() != null && athlete.getClassInfo().getId() != null) {
             classInfoRepository.findById(athlete.getClassInfo().getId())
                     .orElseThrow(() -> new IllegalArgumentException("班级不存在"));
@@ -132,7 +135,10 @@ public class AthleteService {
         Athlete existing = getById(id);
         if (updated.getName() != null) existing.setName(updated.getName());
         if (updated.getGender() != null) existing.setGender(updated.getGender());
-        if (updated.getGrade() != null) existing.setGrade(updated.getGrade());
+        if (updated.getGrade() != null) {
+            String g = Grades.norm(updated.getGrade());
+            if (g != null) existing.setGrade(g);   // 模糊年级：非空才覆盖
+        }
         if (updated.getClassInfo() != null && updated.getClassInfo().getId() != null) {
             existing.setClassInfo(updated.getClassInfo());
         } else if (updated.getClassNameInput() != null && !updated.getClassNameInput().isBlank()) {
@@ -156,23 +162,38 @@ public class AthleteService {
     /**
      * 按班级名称解析 ClassInfo；不存在时按 (年级, 班级) 自动创建。
      * 与 Excel 导入的「班级缺失自动创建」口径一致，让前端可以直接输入班级名而不必先建班。
+     *
+     * <p>年级/班级做模糊匹配：「高三年级1班」「10年级1班」「高三（1）班」与「高三1班」视为同一班级。</p>
      */
     private ClassInfo resolveOrCreateClass(String className, String grade) {
         if (className == null || className.isBlank()) {
             return null;
         }
-        String name = className.trim();
-        return classInfoRepository.findByName(name).orElseGet(() -> {
-            ClassInfo c = new ClassInfo();
-            c.setName(name);
-            if (grade != null && !grade.isBlank()) {
-                c.setGrade(grade.trim());
+        String name = Grades.normClassName(className);
+        if (name == null || name.isBlank()) name = className.trim();
+        String normGrade = Grades.norm(grade);
+
+        ClassInfo found = classInfoRepository.findByName(name).orElse(null);
+        if (found == null) {
+            // 兜底：按归一化班级键匹配（容忍存量库里「高三年级1班」vs 本次「高三1班」）
+            String key = Grades.classKey(name);
+            if (key != null && !key.startsWith("RAW:")) {
+                found = classInfoRepository.findAll().stream()
+                        .filter(c -> key.equals(Grades.classKey(c.getName())))
+                        .findFirst().orElse(null);
             }
-            c.setCreatedAt(LocalDateTime.now());
-            c.setUpdatedAt(LocalDateTime.now());
-            log.info("按名称自动创建班级: {}（年级 {}）", name, grade);
-            return classInfoRepository.save(c);
-        });
+        }
+        if (found != null) {
+            return found;
+        }
+        ClassInfo c = new ClassInfo();
+        c.setName(name);
+        c.setGrade(normGrade);
+        c.setGradeOrder(Grades.order(normGrade));
+        c.setCreatedAt(LocalDateTime.now());
+        c.setUpdatedAt(LocalDateTime.now());
+        log.info("按名称自动创建班级: {}（年级 {}）", name, normGrade);
+        return classInfoRepository.save(c);
     }
 
     public void delete(Long id) {
@@ -195,9 +216,10 @@ public class AthleteService {
 
     /** 批量生成号码簿（按自定义号码簿规则） */
     public int batchGenerateNumbers(String grade, Long classId) {
+        String normGrade = Grades.norm(grade);   // 模糊年级：库内统一存规范名
         List<Athlete> athletes;
-        if (classId != null) athletes = athleteRepository.findByClassIdAndGrade(classId, grade);
-        else if (grade != null) athletes = athleteRepository.findByGrade(grade);
+        if (classId != null) athletes = athleteRepository.findByClassIdAndGrade(classId, normGrade);
+        else if (normGrade != null) athletes = athleteRepository.findByGrade(normGrade);
         else athletes = athleteRepository.findAll();
 
         Map<String, Object> rule = numberRuleService.getNumberRule();

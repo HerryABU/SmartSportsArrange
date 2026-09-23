@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.*;
 import com.sports.common.util.FileEncoding;
+import com.sports.common.util.Grades;
 
 /**
  * 入场式得分服务：手动录入 / Excel 导入 / 查询。
@@ -30,12 +31,13 @@ public class ParadeScoreService {
     private final ParadeScoreRepository paradeScoreRepository;
     private final ClassInfoRepository classInfoRepository;
 
-    /** 列表（可按年级过滤） */
+    /** 列表（可按年级过滤；模糊年级：传「高一年级 / 10年级」同样命中） */
     @Transactional(readOnly = true)
     public List<ParadeScore> list(String grade) {
-        List<ParadeScore> list = (grade == null || grade.isBlank())
+        String normGrade = Grades.norm(grade);
+        List<ParadeScore> list = (normGrade == null || normGrade.isBlank())
                 ? paradeScoreRepository.findAllActive()
-                : paradeScoreRepository.findByGrade(grade);
+                : paradeScoreRepository.findByGrade(normGrade);
         // 按分数从高到低重新排定名次（1-based）
         list.sort(Comparator.comparing(ParadeScore::getScore).reversed());
         return list;
@@ -133,10 +135,13 @@ public class ParadeScoreService {
 
                     Double score = Double.parseDouble(scoreStr.trim());
                     ClassInfo ci;
-                    if (grade != null && !grade.isBlank()) {
-                        ci = classInfoRepository.findByGradeAndName(grade, className).orElse(null);
+                    String normGrade = Grades.norm(grade);
+                    String normClassName = Grades.normClassName(className);
+                    String cn = (normClassName == null || normClassName.isBlank()) ? className.trim() : normClassName;
+                    if (normGrade != null && !normGrade.isBlank()) {
+                        ci = classInfoRepository.findByGradeAndName(normGrade, cn).orElse(null);
                     } else {
-                        ci = classInfoRepository.findByName(className).orElse(null);
+                        ci = classInfoRepository.findByName(cn).orElse(null);
                     }
                     if (ci == null) {
                         Map<String, Object> err = new LinkedHashMap<>();
