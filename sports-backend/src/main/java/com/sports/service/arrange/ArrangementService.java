@@ -846,6 +846,9 @@ public class ArrangementService {
             }
         }
 
+        // 田赛（track=false）：resolveLanes 返回 1 道，每人独占一组，heat 号即出场顺序，
+        // 故 position 落库为 h+1；径赛 position 恒为 null（以 lane 表达道次）。
+        boolean isField = Boolean.FALSE.equals(event.getTrack());
         List<Arrangement> arrangements = new ArrayList<>();
         List<Arrangement> toSave = new ArrayList<>();
         for (int h = 0; h < heats; h++) {
@@ -864,6 +867,7 @@ public class ArrangementService {
                         .gender(gender)
                         .heat(h + 1)
                         .lane(arr.getLane())
+                        .position(isField ? (h + 1) : null)
                         .round(round)
                         .qualified(qualifier != null && Boolean.TRUE.equals(qualifier.getQualified()))
                         .prelimRank(qualifier != null ? qualifier.getPrelimRank() : null)
@@ -1296,8 +1300,8 @@ public class ArrangementService {
                             .thenComparing(a -> a.getHeat() == null ? 0 : a.getHeat())
                             .thenComparing(a -> a.getLane() == null ? 0 : a.getLane()))
                     .collect(Collectors.toList());
-            int fieldSeq = 1;
-            String lastKey = null;
+            // 历史数据（position 为 null）的田赛回退连续序号；新数据一律用落库 position
+            int fieldSeq = 0;
             for (Arrangement a : sorted) {
                 Athlete ath = a.getAthlete();
                 String round = roundLabel(a.getRound());
@@ -1306,12 +1310,11 @@ public class ArrangementService {
                 String refKey = grade + "|" + gender + "|" + a.getRound() + "|" + a.getHeat();
                 String refNames = refNamesByHeat.getOrDefault(refKey, "");
                 if (isField) {
-                    String key = round + "|" + grade;
-                    if (!key.equals(lastKey)) { fieldSeq = 1; lastKey = key; }
+                    // 优先用落库 position（编排时已写入 h+1）；历史数据 position 为 null 时回退到连续序号
                     rows.add(java.util.List.of(
                             round,
                             grade,
-                            String.valueOf(fieldSeq++),
+                            String.valueOf(a.getPosition() != null ? a.getPosition() : (++fieldSeq)),
                             ath.getName(),
                             ath.getNumber() != null ? ath.getNumber() : "",
                             ath.getClassInfo() != null ? ath.getClassInfo().getName() : "",
@@ -1934,6 +1937,8 @@ public class ArrangementService {
     private Map<String, Object> laneInfo(Arrangement arr) {
         Map<String, Object> laneInfo = new LinkedHashMap<>();
         laneInfo.put("lane", arr.getLane());
+        // 田赛（track=false）的出场位次，落库于 position；径赛为 null（以 lane 表达道次）
+        laneInfo.put("position", arr.getPosition());
         laneInfo.put("athleteId", arr.getAthlete().getId());
         laneInfo.put("athleteName", arr.getAthlete().getName());
         laneInfo.put("number", arr.getAthlete().getNumber());

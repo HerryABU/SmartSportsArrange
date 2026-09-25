@@ -71,7 +71,7 @@
             <li v-for="(s, i) in schedules.slice(0, 10)" :key="i" class="role-list-item">
               <div class="role-list-main">
                 <div class="role-list-title">{{ s.eventName }}</div>
-                <div class="role-list-desc">第{{ s.heat }}组 · {{ s.laneNumber }}道 · {{ s.athleteName }}</div>
+                <div class="role-list-desc">第{{ s.heat }}组 · {{ s.eventType === '田赛' && s.position != null ? ('第' + s.position + '位出场') : (s.laneNumber + '道') }} · {{ s.athleteName }}</div>
               </div>
             </li>
           </ul>

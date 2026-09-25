@@ -78,6 +78,7 @@ public class StudentService {
                 m.put("eventName", eventNames.getOrDefault(arr.getEvent().getId(), arr.getEvent().getName()));
                 m.put("heat", arr.getHeat());
                 m.put("laneNumber", arr.getLane());
+                m.put("position", arr.getPosition());
                 m.put("time", null);
                 m.put("location", null);
                 schedules.add(m);
@@ -140,6 +141,7 @@ public class StudentService {
                 m.put("gender", matchedReg != null ? matchedReg.getEvent().getGenderLimit() : "");
                 m.put("heat", arr.getHeat());
                 m.put("laneNumber", arr.getLane());
+                m.put("position", arr.getPosition());
                 m.put("time", null);
                 m.put("location", null);
                 list.add(m);

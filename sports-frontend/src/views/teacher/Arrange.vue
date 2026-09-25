@@ -132,7 +132,7 @@
             </div>
           </template>
           <div class="heat-grid">
-            <HeatGrid :heats="previewData.heats" :statistics="previewData.statistics" />
+            <HeatGrid :heats="previewData.heats" :statistics="previewData.statistics" :field="isFieldEvent" />
           </div>
         </el-card>
 
@@ -153,7 +153,7 @@
             </div>
           </template>
           <div class="heat-grid">
-            <HeatGrid :heats="heats" :statistics="statistics" :lockable="true" :show-referee-slot="needReferees" :lottery="selectedEvent?.drawLots === true" @toggle-lock="toggleLock" />
+            <HeatGrid :heats="heats" :statistics="statistics" :field="isFieldEvent" :lockable="true" :show-referee-slot="needReferees" :lottery="selectedEvent?.drawLots === true" @toggle-lock="toggleLock" />
           </div>
         </el-card>
 
@@ -543,6 +543,9 @@ const refereeEditItems = ref([])        // 可编辑副本
 const needReferees = computed(() =>
   refereeAssignments.value && refereeAssignments.value.refereesPerGroup > 0
 )
+
+// 是否田赛：田赛不占道次，网格徽标改显示「出场顺序」（position）而非道次
+const isFieldEvent = computed(() => !!selectedEvent.value && selectedEvent.value.isTrack === false)
 
 // ===== 预赛淘汰 =====
 const roundsData = ref([])

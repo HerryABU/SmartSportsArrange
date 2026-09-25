@@ -48,7 +48,9 @@
               'lane-reserved': lane.reserved
             }"
           >
-            <div class="lane-number">{{ lane.lane }}</div>
+            <div class="lane-number" :title="field ? '田赛出场顺序' : '道次'">
+              {{ field && lane.position != null ? lane.position : lane.lane }}
+            </div>
             <div v-if="lane.athleteId || lane.athlete" class="lane-content">
               <div class="lane-athlete">
                 <span class="athlete-name">{{ lane.athleteName || (lane.athlete && lane.athlete.name) }}</span>
@@ -130,6 +132,11 @@ defineProps({
   },
   // 抽签（随机道次）：开启后组内道次为随机分配，组标题显示抽签徽标
   lottery: {
+    type: Boolean,
+    default: false
+  },
+  // 是否田赛：田赛不占道次，徽标显示「出场顺序」（position）而非「道次」
+  field: {
     type: Boolean,
     default: false
   }

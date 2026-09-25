@@ -322,6 +322,7 @@ public class ClassTeacherService {
                         m.put("athleteName", athleteNames.get(a.getId()));
                         m.put("heat", arr.getHeat());
                         m.put("laneNumber", arr.getLane());
+                        m.put("position", arr.getPosition());
                         com.sports.entity.event.Event ev = arr.getEvent();
                         m.put("eventType", ev != null && ev.getCategory() != null ? ev.getCategory() : "");
                         m.put("gender", ev != null && ev.getGenderLimit() != null ? ev.getGenderLimit() : "");

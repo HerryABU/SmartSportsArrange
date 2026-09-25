@@ -54,6 +54,14 @@ public class Arrangement {
     private Integer lane;
 
     /**
+     * 田赛出场位次：田赛（track=false，resolveLanes 返回 1 道，每人独占一组）不占道次，
+     * 编排时按「组号」落库为出场顺序（1..N），使田赛也有唯一、有序的位次，
+     * 而非所有运动员道次都显示 1。径赛恒为 null（以 lane 表达道次）。
+     */
+    @Column
+    private Integer position;
+
+    /**
      * 赛次：preliminary=预赛，final=决赛，single=直接决赛（无预赛）。
      * 仅当项目 needHeats=true 时才会出现预赛。
      */

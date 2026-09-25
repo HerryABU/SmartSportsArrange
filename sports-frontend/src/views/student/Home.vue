@@ -42,7 +42,7 @@
           <div class="sched-left">
             <div class="sched-event">{{ s.eventName }}</div>
             <div class="sched-detail">
-              第 {{ s.heat }} 组 · 第 {{ s.laneNumber }} 道
+              第 {{ s.heat }} 组 · {{ s.eventType === '田赛' && s.position != null ? ('第 ' + s.position + ' 位出场') : ('第 ' + s.laneNumber + ' 道') }}
             </div>
           </div>
           <div class="sched-right">
