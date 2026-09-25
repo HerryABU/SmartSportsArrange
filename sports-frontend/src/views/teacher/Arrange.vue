@@ -248,6 +248,10 @@
           <el-form-item label="跑道数">
             <el-input-number v-model="arrangeConfig.lanes" :min="2" :max="10" />
           </el-form-item>
+          <el-form-item label="对抗重排次数">
+            <el-input-number v-model="arrangeConfig.adversarialRounds" :min="1" :max="20" />
+            <span class="rule-desc">自检不通过时换随机种子重排的最大轮数（默认 5）</span>
+          </el-form-item>
         </div>
 
         <el-divider />
@@ -620,6 +624,8 @@ const arrangeConfig = reactive({
   grade: '',
   gender: 'M',
   lanes: 8,
+  // 对抗重排次数：自检不通过时换随机种子重排的最大轮数（后端默认 5，可在 application.yml 调整）
+  adversarialRounds: 5,
   ruleConfig: {
     preferDiffHeat: true,
     preferDiffLane: true,
@@ -786,6 +792,7 @@ const executeArrange = async () => {
         grade: arrangeConfig.grade,
         gender: arrangeConfig.gender,
         lanes: arrangeConfig.lanes,
+        adversarialRounds: arrangeConfig.adversarialRounds,
         ruleConfig: arrangeConfig.ruleConfig
       }
     )
