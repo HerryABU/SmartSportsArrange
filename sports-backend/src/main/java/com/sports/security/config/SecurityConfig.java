@@ -92,6 +92,10 @@ public class SecurityConfig {
                         // 入场式得分：班主任可查，班主任端（现场报名）亦需读
                         .requestMatchers(HttpMethod.GET, "/api/parade-score/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
+                        // 自定义项目区：班主任/学生可查项目列表与得分，写（新建/编辑/删除项目）仅老师/超管
+                        .requestMatchers(HttpMethod.GET, "/api/custom-project/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/custom-project/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+
                         // ===== 体育老师端 - 管理 =====
                         .requestMatchers("/api/classes/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/athletes/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
