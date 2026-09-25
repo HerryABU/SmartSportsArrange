@@ -2,11 +2,14 @@ package com.sports.service.athlete;
 
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.meet.SportsMeet;
 import com.sports.repository.athlete.AthleteRepository;
 import com.sports.repository.clazz.ClassInfoRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.service.meet.MeetService;
+import com.sports.common.util.GradeMeetUtil;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +49,7 @@ public class AthleteService {
     private final ResultRepository resultRepository;
     private final RegistrationRepository registrationRepository;
     private final ArrangementRepository arrangementRepository;
+    private final MeetService meetService;
 
     /** 分页查询（className 支持按班级名称模糊筛选，便于「直接输入班级名」的检索） */
     @Transactional(readOnly = true)
@@ -53,10 +57,12 @@ public class AthleteService {
                               String className) {
         Page<Athlete> result = athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className), pageable);
         // 预加载 classInfo，避免序列化时懒加载导致班级信息为 null
+        SportsMeet meet = meetService.getActiveOrCreateDefault();
         result.getContent().forEach(a -> {
             if (a.getClassInfo() != null) {
                 try { a.getClassInfo().getName(); } catch (Exception ignored) {}
             }
+            decorate(a, meet);
         });
         return result;
     }
@@ -104,12 +110,15 @@ public class AthleteService {
 
     @Transactional(readOnly = true)
     public Athlete getById(Long id) {
-        return athleteRepository.findById(id)
+        Athlete a = athleteRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("运动员不存在: " + id));
+        decorate(a, meetService.getActiveOrCreateDefault());
+        return a;
     }
 
     public Athlete create(Athlete athlete) {
         athlete.setGrade(Grades.norm(athlete.getGrade()));   // 模糊年级：「10年级 / 高一年级」统一存「高一」
+        SportsMeet meet = meetService.getActiveOrCreateDefault();
         if (athlete.getClassInfo() != null && athlete.getClassInfo().getId() != null) {
             classInfoRepository.findById(athlete.getClassInfo().getId())
                     .orElseThrow(() -> new IllegalArgumentException("班级不存在"));
@@ -125,10 +134,14 @@ public class AthleteService {
             if (athleteRepository.findByNumber(athlete.getNumber()).isPresent())
                 throw new IllegalArgumentException("号码已存在: " + athlete.getNumber());
         }
+        // 毕业生判定：当前届年份 ≥ 毕业年份
+        athlete.setGraduated(GradeMeetUtil.isGraduated(athlete.getGraduateYear(), meet.getYear()));
         athlete.setCreatedAt(LocalDateTime.now());
         athlete.setUpdatedAt(LocalDateTime.now());
         if (athlete.getStatus() == null) athlete.setStatus("normal");
-        return athleteRepository.save(athlete);
+        Athlete saved = athleteRepository.save(athlete);
+        decorate(saved, meet);
+        return saved;
     }
 
     public Athlete update(Long id, Athlete updated) {
@@ -155,8 +168,25 @@ public class AthleteService {
         if (updated.getPhoto() != null) existing.setPhoto(updated.getPhoto());
         if (updated.getStatus() != null) existing.setStatus(updated.getStatus());
         if (updated.getRemark() != null) existing.setRemark(updated.getRemark());
+        // 毕业生判定：当前届年份 ≥ 毕业年份（若传入了毕业年份则重算）
+        if (updated.getGraduateYear() != null)
+            existing.setGraduated(GradeMeetUtil.isGraduated(existing.getGraduateYear(),
+                    meetService.getActiveOrCreateDefault().getYear()));
         existing.setUpdatedAt(LocalDateTime.now());
-        return athleteRepository.save(existing);
+        Athlete saved = athleteRepository.save(existing);
+        decorate(saved, meetService.getActiveOrCreateDefault());
+        return saved;
+    }
+
+    /**
+     * 按当前届注入瞬态展示字段：当前年级（自然升级递归）、入毕年份码、校验号。
+     * 当前年级 = 入学基准年级 +（当前届年份 − 入学年份）；毕业判定见 {@link GradeMeetUtil}。
+     */
+    private void decorate(Athlete a, SportsMeet meet) {
+        if (meet == null) return;
+        a.setYearCode(GradeMeetUtil.composeYearCode(a.getEnrollYear(), a.getGraduateYear()));
+        a.setCurrentGrade(GradeMeetUtil.currentGradeDisplay(a.getGrade(), meet.getYear(), a.getEnrollYear()));
+        a.setCheckNo(GradeMeetUtil.composeCheckNo(meet.getName(), a.getYearCode(), a.getCurrentGrade(), a.getStudentId()));
     }
 
     /**

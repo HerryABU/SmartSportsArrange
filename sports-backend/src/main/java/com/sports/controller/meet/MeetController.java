@@ -2,6 +2,7 @@ package com.sports.controller.meet;
 
 import com.sports.common.web.ApiResponse;
 import com.sports.entity.meet.SportsMeet;
+import com.sports.service.meet.MeetMaintenanceService;
 import com.sports.service.meet.MeetService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,7 @@ import java.util.Map;
 public class MeetController {
 
     private final MeetService meetService;
+    private final MeetMaintenanceService meetMaintenanceService;
 
     @GetMapping
     public ApiResponse<List<SportsMeet>> list() {
@@ -50,5 +52,12 @@ public class MeetController {
     public ApiResponse<Void> delete(@PathVariable Long id) {
         meetService.delete(id);
         return ApiResponse.success("删除成功", null);
+    }
+
+    /** 按当前届年份重算毕业生标记（切换当前届后建议调用） */
+    @PostMapping("/recompute-graduation")
+    public ApiResponse<Map<String, Object>> recomputeGraduation() {
+        int changed = meetMaintenanceService.recomputeGraduation();
+        return ApiResponse.success("重算完成", Map.of("changed", changed));
     }
 }

@@ -58,6 +58,20 @@ public class Athlete {
     @Builder.Default
     private Boolean graduated = false;
 
+    // ==================== 瞬态展示字段（不落库，由 AthleteService 按当前届注入） ====================
+
+    /** 当前届下的「当前年级」（入学基准年级 + 自然升级递归推导） */
+    @Transient
+    private String currentGrade;
+
+    /** 入毕年份码：如 20252028 */
+    @Transient
+    private String yearCode;
+
+    /** 校验号：第X届Y季节运动会-年份码-年级[-学号]，跨届身份对齐用 */
+    @Transient
+    private String checkNo;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "class_info_id")
     private ClassInfo classInfo;
