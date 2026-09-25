@@ -31,6 +31,7 @@ import com.sports.schedule.support.ScheduleSupport;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -85,8 +86,10 @@ public class ArrangementService {
     private static final int OPTIMIZATION_ROUNDS = 3;
     private static final int TIMEOUT_SECONDS = 20;
 
-    /** 对抗式自检最大重排轮数：编排完成后若独立校验发现硬约束违反，则换随机种子重排，最多尝试此次数 */
-    private static final int ADVERSARIAL_MAX_ROUNDS = 5;
+    /** 对抗式自检最大重排轮数：编排完成后若独立校验发现硬约束违反，则换随机种子重排，最多尝试此次数。
+     *  默认值取自 application.yml sports.schedule.adversarial-max-rounds，可被编排请求 config.adversarialRounds 覆盖。 */
+    @Value("${sports.schedule.adversarial-max-rounds:5}")
+    private int adversarialMaxRounds;
 
     public static final String ROUND_PRELIM = "preliminary";
     public static final String ROUND_FINAL = "final";
@@ -107,8 +110,17 @@ public class ArrangementService {
         String round = config.containsKey("round") && config.get("round") != null
                 ? String.valueOf(config.get("round")) : null;
 
+        // 对抗重排轮数：前端编排表单可逐次覆盖；缺省用配置值，钳制到 [1, 50] 防止误配。
+        int adversarialRounds = adversarialMaxRounds;
+        if (config.containsKey("adversarialRounds") && config.get("adversarialRounds") != null) {
+            try {
+                int r = ((Number) config.get("adversarialRounds")).intValue();
+                adversarialRounds = Math.max(1, Math.min(50, r));
+            } catch (Exception ignored) { }
+        }
+
         long startTime = System.currentTimeMillis();
-        Map<String, Object> result = arrange(eventId, grade, gender, lanes, ruleConfig, round);
+        Map<String, Object> result = arrange(eventId, grade, gender, lanes, ruleConfig, round, adversarialRounds);
         long elapsed = System.currentTimeMillis() - startTime;
         result.put("executionTimeMs", elapsed);
         return result;
@@ -383,7 +395,7 @@ public class ArrangementService {
         }
 
         Map<String, Object> finalResult = arrangePool(event, finalPool, grade, gender,
-                resolveLanes(event), null, ROUND_FINAL, qualifiers, lockedFinals);
+                resolveLanes(event), null, ROUND_FINAL, qualifiers, lockedFinals, adversarialMaxRounds);
 
         // 正式赛二次编排：把决赛作为独立赛程条目排入赛程表（预赛条目之后顺延），秩序册时间表随之体现
         EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size(), qualifiers);
@@ -697,8 +709,21 @@ public class ArrangementService {
      * @param round null/auto → 该项目已有预赛编排则只排晋级者进决赛，否则直接决赛；
      *              preliminary → 排预赛（全体报名者）；final → 排决赛（仅晋级者或全体）。
      */
+    /**
+     * 执行编排（默认对抗轮数，来自配置 application.yml sports.schedule.adversarial-max-rounds）。
+     */
     public Map<String, Object> arrange(Long eventId, String grade, String gender,
                                         int lanes, Map<String, Object> ruleConfig, String round) {
+        return arrange(eventId, grade, gender, lanes, ruleConfig, round, adversarialMaxRounds);
+    }
+
+    /**
+     * 执行编排（指定对抗重排轮数）。
+     * round 缺省 auto：已有预赛编排 → 只排晋级者进决赛；否则 → 直接决赛。
+     */
+    public Map<String, Object> arrange(Long eventId, String grade, String gender,
+                                        int lanes, Map<String, Object> ruleConfig, String round,
+                                        int adversarialRounds) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
@@ -762,7 +787,7 @@ public class ArrangementService {
         arrangementRepository.deleteNonManualByEventRoundGradeGender(eventId, targetRound, grade, gender);
 
         // U12/B18：把人工锁定项作为「已占位」传入，自动编排必须在锁定项之外找位置
-        return arrangePool(event, pool, grade, gender, lanes, ruleConfig, targetRound, qualifierRefs, locked);
+        return arrangePool(event, pool, grade, gender, lanes, ruleConfig, targetRound, qualifierRefs, locked, adversarialRounds);
     }
 
     /**
@@ -775,7 +800,8 @@ public class ArrangementService {
     private Map<String, Object> arrangePool(Event event, List<Athlete> pool,
                                             String grade, String gender, int lanes,
                                             Map<String, Object> ruleConfig, String round,
-                                            List<Arrangement> qualifierRefs, List<Arrangement> locked) {
+                                            List<Arrangement> qualifierRefs, List<Arrangement> locked,
+                                            int adversarialRounds) {
         List<Arrangement> lockedRows = locked == null ? List.of() : locked;
         log.info("编排: eventId={}, grade={}, gender={}, lanes={}, round={}, pool={}, locked={}",
                 event.getId(), grade, gender, lanes, round, pool.size(), lockedRows.size());
@@ -799,14 +825,14 @@ public class ArrangementService {
         List<String> hardViolations;
         int rearrange = 0;
         long baseSeed = System.nanoTime();
-        // 对抗式自检：生成 → 独立校验硬约束 → 若违反则以不同随机种子重排，最多 ADVERSARIAL_MAX_ROUNDS 轮
+        // 对抗式自检：生成 → 独立校验硬约束 → 若违反则以不同随机种子重排，最多 adversarialRounds 轮
         // 蛇形款型为确定性算法（无随机），单趟生成即可。
         do {
             placement = allocate(event, pool, lanes, lockedRows,
                     (snakeMode || rearrange == 0) ? null : (baseSeed + rearrange), lottery, styleRule, seedRank);
             hardViolations = validatePlacement(placement, lanes, snakeMode);
             rearrange++;
-        } while (!hardViolations.isEmpty() && rearrange < ADVERSARIAL_MAX_ROUNDS);
+        } while (!hardViolations.isEmpty() && rearrange < adversarialRounds);
         int heats = placement.heats;
 
         // 版本号：取该赛次当前最大版本 + 1
@@ -945,7 +971,7 @@ public class ArrangementService {
         selfCheck.put("valid", hardViolations.isEmpty());
         selfCheck.put("violations", hardViolations);
         selfCheck.put("rearrangeCount", Math.max(0, rearrange - 1));
-        selfCheck.put("maxRounds", ADVERSARIAL_MAX_ROUNDS);
+        selfCheck.put("maxRounds", adversarialRounds);
         selfCheck.put("algorithm", "adversarial");
         result.put("selfCheck", selfCheck);
         result.put("version", version);
