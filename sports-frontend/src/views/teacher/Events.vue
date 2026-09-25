@@ -141,6 +141,15 @@
       <el-table-column prop="gender" label="性别" width="100" align="center" />
       <el-table-column prop="gradeGroup" label="年级组" width="120" align="center" />
       <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />
+      <el-table-column label="场地" min-width="170">
+        <template #default="{ row }">
+          <template v-if="row.defaultVenue || row.defaultVenueCode">
+            <span>{{ row.defaultVenue || '—' }}</span>
+            <span v-if="row.defaultVenueCode" style="color: var(--el-color-primary); margin-left: 4px; font-size: 12px;">（{{ row.defaultVenueCode }}）</span>
+          </template>
+          <span v-else style="color: var(--el-text-color-secondary);">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="调度标记" width="180" align="center">
         <template #default="{ row }">
           <span v-if="!row.funSports && !row.cooperative && !row.occupiesTrack" class="txt-muted">—</span>
