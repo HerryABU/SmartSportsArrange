@@ -179,7 +179,8 @@ public final class Grades {
         return display(n);
     }
 
-    private static String display(int n) {
+    /** 年级序号 1..12 → 规范显示名（小学 X年级 / 初中 X / 高中 X） */
+    public static String display(int n) {
         if (n <= 6) return cn(n) + "年级";
         if (n <= 9) return "初" + cn(n - 6);
         return "高" + cn(n - 9);

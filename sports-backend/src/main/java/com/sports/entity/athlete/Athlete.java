@@ -37,8 +37,26 @@ public class Athlete {
     @Column(length = 1)
     private String gender;
 
+    /**
+     * 入学时年级（基准年级，如「高一」）。当前届下的「当前年级」由
+     * {@link com.sports.common.util.GradeMeetUtil#currentGradeDisplay} 依据入学年份与届年份递归推导
+     * （自然升级），本列只存基准，不做逐年变更。
+     */
     @Column(length = 20)
     private String grade;
+
+    /** 入学年份（如 2025），与毕业年份共同构成入毕年份码（20252028） */
+    @Column
+    private Integer enrollYear;
+
+    /** 毕业年份（如 2028） */
+    @Column
+    private Integer graduateYear;
+
+    /** 是否毕业生：当前届年份 ≥ 毕业年份时由升级/毕业处理置位（见 MeetMaintenanceService） */
+    @Column(nullable = false)
+    @Builder.Default
+    private Boolean graduated = false;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "class_info_id")
