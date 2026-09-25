@@ -51,6 +51,17 @@ public class StatisticsController {
         return ApiResponse.success(statisticsService.scoreStats());
     }
 
+    /**
+     * 跨届进步榜：同一学生跨多届同一项目的名次进步。
+     * eventId 指定项目（单项目榜）；留空则汇总全部项目（综合进步最大者）。
+     */
+    @GetMapping("/progress")
+    public ApiResponse<?> progressLeaderboard(@RequestParam(required = false) Long eventId,
+                                             @RequestParam(required = false) Integer limit) {
+        log.info("查询跨届进步榜: eventId={}, limit={}", eventId, limit);
+        return ApiResponse.success(statisticsService.getProgressLeaderboard(eventId, limit));
+    }
+
     @PostMapping("/order-book")
     public ApiResponse<?> generateOrderBook(@RequestBody(required = false) Map<String, Object> body) {
         String grade = body != null && body.get("grade") != null ? body.get("grade").toString() : null;

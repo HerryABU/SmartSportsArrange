@@ -6,6 +6,7 @@ import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.event.Event;
 import com.sports.entity.event.EventSchedule;
+import com.sports.entity.meet.SportsMeet;
 import com.sports.entity.registration.Registration;
 import com.sports.entity.result.Result;
 import com.sports.repository.arrange.ArrangementRepository;
@@ -15,6 +16,7 @@ import com.sports.repository.event.EventRepository;
 import com.sports.repository.event.EventScheduleRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
+import com.sports.service.meet.MeetService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,6 +38,7 @@ public class StatisticsService {
     private final ClassInfoRepository classInfoRepository;
     private final AthleteRepository athleteRepository;
     private final EventScheduleRepository scheduleRepository;
+    private final MeetService meetService;
 
     /**
      * 获取报名统计
@@ -483,6 +486,128 @@ public class StatisticsService {
         }
 
         return schedule;
+    }
+
+    /**
+     * 跨届进步榜（同一学生跨多届同一项目的排名进步）。
+     *
+     * <p>口径：取每位运动员在指定项目（或全部项目）上，<b>最近两届</b>的有效成绩，
+     * 比较名次变化 {@code 进步 = 上一届名次 − 本届名次}（正数=名次提前=进步）。
+     * 仅需 {@code totalRank} 非空的有效成绩。</p>
+     *
+     * @param eventId 指定项目（null=汇总：跨项目名次进步之和，体现综合进步最大的学生）
+     * @param limit   返回条数（null=全部）
+     */
+    public Map<String, Object> getProgressLeaderboard(Long eventId, Integer limit) {
+        List<SportsMeet> meets = meetService.list();   // year DESC
+        Map<Long, Integer> meetYear = new LinkedHashMap<>();
+        for (SportsMeet m : meets) meetYear.put(m.getId(), m.getYear());
+        Map<Long, SportsMeet> meetById = new LinkedHashMap<>();
+        for (SportsMeet m : meets) meetById.put(m.getId(), m);
+
+        List<Result> results = eventId != null
+                ? resultRepository.findByEventId(eventId)
+                : resultRepository.findAll();
+
+        // 运动员 → 项目 → 成绩列表
+        Map<Long, Map<Long, List<Result>>> byAthleteEvent = new LinkedHashMap<>();
+        for (Result r : results) {
+            if (r.getMeet() == null || r.getTotalRank() == null) continue;
+            if (r.getStatus() != null && !"valid".equals(r.getStatus())) continue;
+            if (r.getAthlete() == null || r.getEvent() == null) continue;
+            byAthleteEvent
+                    .computeIfAbsent(r.getAthlete().getId(), k -> new LinkedHashMap<>())
+                    .computeIfAbsent(r.getEvent().getId(), k -> new ArrayList<>())
+                    .add(r);
+        }
+
+        // 单项目模式：直接产出每个人的进步明细
+        if (eventId != null) {
+            List<Map<String, Object>> ranked = new ArrayList<>();
+            for (Map.Entry<Long, Map<Long, List<Result>>> ae : byAthleteEvent.entrySet()) {
+                for (Map.Entry<Long, List<Result>> e : ae.getValue().entrySet()) {
+                    Map<String, Object> row = buildProgressRow(e.getValue(), meetYear, meetById);
+                    if (row != null) ranked.add(row);
+                }
+            }
+            ranked.sort((a, b) -> Integer.compare((Integer) b.get("rankImprovement"), (Integer) a.get("rankImprovement")));
+            if (limit != null && ranked.size() > limit) ranked = ranked.subList(0, limit);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("eventId", eventId);
+            out.put("ranked", ranked);
+            out.put("meets", meets.stream().map(m -> Map.of(
+                    "id", m.getId(), "name", m.getName(), "year", m.getYear())).toList());
+            return out;
+        }
+
+        // 汇总模式：跨项目名次进步之和
+        List<Map<String, Object>> overall = new ArrayList<>();
+        for (Map.Entry<Long, Map<Long, List<Result>>> ae : byAthleteEvent.entrySet()) {
+            int total = 0;
+            int events = 0;
+            String name = null, className = null, grade = null;
+            for (Map.Entry<Long, List<Result>> e : ae.getValue().entrySet()) {
+                Map<String, Object> row = buildProgressRow(e.getValue(), meetYear, meetById);
+                if (row != null) {
+                    total += (Integer) row.get("rankImprovement");
+                    events++;
+                    if (name == null) {
+                        name = (String) row.get("athleteName");
+                        className = (String) row.get("className");
+                        grade = (String) row.get("grade");
+                    }
+                }
+            }
+            if (events > 0) {
+                Map<String, Object> agg = new LinkedHashMap<>();
+                agg.put("athleteId", ae.getKey());
+                agg.put("athleteName", name);
+                agg.put("className", className);
+                agg.put("grade", grade);
+                agg.put("events", events);
+                agg.put("totalImprovement", total);
+                overall.add(agg);
+            }
+        }
+        overall.sort((a, b) -> Integer.compare((Integer) b.get("totalImprovement"), (Integer) a.get("totalImprovement")));
+        if (limit != null && overall.size() > limit) overall = overall.subList(0, limit);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("eventId", null);
+        out.put("ranked", overall);
+        out.put("meets", meets.stream().map(m -> Map.of(
+                "id", m.getId(), "name", m.getName(), "year", m.getYear())).toList());
+        return out;
+    }
+
+    /** 取最近两届（按 meet.year 升序后取末两）计算进步；不足两届返回 null */
+    private Map<String, Object> buildProgressRow(List<Result> list, Map<Long, Integer> meetYear,
+                                                Map<Long, SportsMeet> meetById) {
+        if (list.size() < 2) return null;
+        list.sort(Comparator.comparingInt(r -> meetYear.getOrDefault(r.getMeet().getId(), 0)));
+        Result prev = list.get(list.size() - 2);
+        Result cur = list.get(list.size() - 1);
+        Integer prevRank = prev.getTotalRank();
+        Integer curRank = cur.getTotalRank();
+        if (prevRank == null || curRank == null) return null;
+        int improvement = prevRank - curRank;
+        SportsMeet prevMeet = meetById.get(prev.getMeet().getId());
+        SportsMeet curMeet = meetById.get(cur.getMeet().getId());
+        Map<String, Object> row = new LinkedHashMap<>();
+        Athlete a = cur.getAthlete();
+        row.put("athleteId", a.getId());
+        row.put("athleteName", a.getName());
+        row.put("className", a.getClassInfo() != null ? a.getClassInfo().getName() : "未知");
+        row.put("grade", a.getGrade());
+        row.put("eventId", cur.getEvent().getId());
+        row.put("eventName", cur.getEvent().getName());
+        row.put("prevMeet", prevMeet != null ? prevMeet.getName() : null);
+        row.put("prevYear", prevMeet != null ? prevMeet.getYear() : null);
+        row.put("curMeet", curMeet != null ? curMeet.getName() : null);
+        row.put("curYear", curMeet != null ? curMeet.getYear() : null);
+        row.put("prevRank", prevRank);
+        row.put("curRank", curRank);
+        row.put("rankImprovement", improvement);
+        return row;
     }
 
     // ============ Controller 兼容别名 + export ============
