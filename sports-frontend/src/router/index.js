@@ -105,6 +105,12 @@ const routes = [
         meta: { title: '合分排行' }
       },
       {
+        path: 'custom-projects',
+        name: 'TeacherCustomProjects',
+        component: () => import('@/views/teacher/CustomProjects.vue'),
+        meta: { title: '自定义项目区' }
+      },
+      {
         path: 'reports',
         name: 'TeacherReports',
         component: () => import('@/views/teacher/Reports.vue'),
