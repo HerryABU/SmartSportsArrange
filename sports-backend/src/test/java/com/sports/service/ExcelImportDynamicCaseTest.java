@@ -13,6 +13,7 @@ import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.event.EventScheduleRepository;
 import com.sports.repository.venue.VenueRepository;
 import com.sports.repository.referee.RefereeRepository;
+import com.sports.service.venue.VenueService;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.support.ExcelTestDataFactory;
@@ -60,6 +61,8 @@ class ExcelImportDynamicCaseTest {
     @Mock private EventRefereeRepository eventRefereeRepository;
     @Mock private RefereeRepository refereeRepository;
     @Mock private VenueRepository venueRepository;
+    /** ExcelService 新增依赖（场地表导入）——漏了会注入 null，场地行处理直接 NPE。 */
+    @Mock private VenueService venueService;
     /** ExcelService 新增依赖（年级表导入）——漏了会注入 null，年级行处理直接 NPE。 */
     @Mock private GradeService gradeService;
 

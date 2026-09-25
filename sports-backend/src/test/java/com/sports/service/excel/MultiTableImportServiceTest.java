@@ -15,6 +15,7 @@ import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.service.excel.ExcelService;
 import com.sports.service.clazz.GradeService;
+import com.sports.service.venue.VenueService;
 import com.sports.support.ExcelTestDataFactory;
 import com.sports.support.ExcelTestDataFactory.SheetSpec;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,6 +63,8 @@ class MultiTableImportServiceTest {
     @Mock private EventRefereeRepository eventRefereeRepository;
     @Mock private RefereeRepository refereeRepository;
     @Mock private VenueRepository venueRepository;
+    /** ExcelService 新增依赖（场地表导入）——漏了会注入 null，场地行处理直接 NPE。 */
+    @Mock private VenueService venueService;
     @Mock private GradeService gradeService;
 
     /** 用 Spy 包住真实 ExcelService：既能执行真实行处理，又能验证「按依赖顺序调用」。 */
