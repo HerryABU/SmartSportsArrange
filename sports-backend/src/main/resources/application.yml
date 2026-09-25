@@ -11,6 +11,12 @@ spring:
   application:
     name: sports-meet
 
+  # 终端 ANSI 颜色：默认 detect（连到真实终端才上色；重定向到文件/管道时自动关闭，
+  # 纯文本日志无色属预期）。显式写出以防被意外改成 never；若要强制上色可改 always。
+  output:
+    ansi:
+      enabled: detect
+
   # ======================== SQLite 数据库（默认）==========================
   # URL 末追加 ?foreign_keys=ON：SQLite 默认不强制外键，显式开启以保证「一旦存在 FK 约束
   # 就被强制」。注意：Hibernate 的 SQLite 方言以 ALTER TABLE ADD CONSTRAINT 建 FK，而
@@ -127,6 +133,9 @@ sports:
     ga-mutation-rate: 0.15
     # GA 初始种群里每个「多样化个体」的求解时间预算（毫秒）
     ga-individual-millis: 300
+    # 对抗式自检最大重排轮数：编排完成后若独立校验发现硬约束违反，则换随机种子重排，
+    # 最多尝试此次数；0 表示不做对抗重排（直接返回首轮结果）。前端编排表单可逐次覆盖。
+    adversarial-max-rounds: 5
 
 # ======================== 日志 ===========================================
 logging:
