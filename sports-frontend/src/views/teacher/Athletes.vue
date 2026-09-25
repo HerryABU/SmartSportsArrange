@@ -154,6 +154,30 @@
         <el-table-column prop="className" label="班级" width="120" align="center" />
         <el-table-column prop="studentNo" label="学号" width="140" align="center" />
         <el-table-column prop="eventCount" label="报名项目数" width="110" align="center" />
+        <el-table-column prop="yearCode" label="年份码" width="110" align="center">
+          <template #default="{ row }">
+            <span v-if="row.yearCode" class="mono">{{ row.yearCode }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="currentGrade" label="当前届年级" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.currentGrade">{{ row.currentGrade }}</span>
+            <span v-else class="muted">{{ row.grade }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="checkNo" label="校验号" min-width="230">
+          <template #default="{ row }">
+            <span v-if="row.checkNo" class="mono">{{ row.checkNo }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="毕业" width="84" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.graduated" type="warning" effect="plain">已毕业</el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="160" align="center" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="handleEdit(row)">
@@ -233,6 +257,12 @@
         </el-form-item>
         <el-form-item label="学号" prop="studentNo">
           <el-input v-model="formData.studentNo" placeholder="请输入学号" />
+        </el-form-item>
+        <el-form-item label="入学年份">
+          <el-input-number v-model="formData.enrollYear" :min="2000" :max="2100" controls-position="right" style="width:100%" placeholder="如 2025" />
+        </el-form-item>
+        <el-form-item label="毕业年份">
+          <el-input-number v-model="formData.graduateYear" :min="2000" :max="2100" controls-position="right" style="width:100%" placeholder="如 2028" />
         </el-form-item>
         <el-form-item label="出生日期" prop="birthDate">
           <el-date-picker
@@ -323,7 +353,9 @@ const formData = reactive({
   grade: '',
   classNameText: '',
   studentNo: '',
-  birthDate: ''
+  birthDate: '',
+  enrollYear: null,
+  graduateYear: null
 })
 
 // ==================== 计算属性 ====================
@@ -466,6 +498,8 @@ function handleEdit(row) {
   formData.grade = row.grade || ''
   formData.classNameText = row.className || ''
   formData.studentNo = row.studentNo || ''
+  formData.enrollYear = row.enrollYear ?? null
+  formData.graduateYear = row.graduateYear ?? null
 
   formData.birthDate = row.birthDate || ''
   dialogVisible.value = true
@@ -477,6 +511,8 @@ function resetForm() {
   formData.grade = ''
   formData.classNameText = ''
   formData.studentNo = ''
+  formData.enrollYear = null
+  formData.graduateYear = null
   formData.birthDate = ''
   if (formRef.value) {
     formRef.value.resetFields()
@@ -501,6 +537,8 @@ async function handleSubmit() {
       grade: formData.grade,
       studentNo: formData.studentNo,
       birthDate: formData.birthDate || null,
+      enrollYear: formData.enrollYear || null,
+      graduateYear: formData.graduateYear || null,
       classNameInput: formData.classNameText
     }
 
@@ -762,6 +800,9 @@ async function handleExport() {
 .table-card {
   min-height: 400px;
 }
+
+.mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; word-break: break-all; }
+.muted { color: #bbb; }
 
 .pagination-wrapper {
   display: flex;
