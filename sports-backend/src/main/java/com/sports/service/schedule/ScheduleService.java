@@ -340,18 +340,16 @@ public class ScheduleService {
         // 项目级指定场地时按需创建的独立并发池（key=场地编码），与主/田赛池并行
         Map<String, Pool> dedicatedPools = new LinkedHashMap<>();
 
-        List<EventSchedule> saved = new ArrayList<>();
-        List<String> warnings = new ArrayList<>();
+        // 场地相关前置告警（与放置顺序无关，先算好，最后合并进 warnings）
+        List<String> venueWarnings = new ArrayList<>();
         if (trackPool.venueShortage) {
-            warnings.add(String.format("径赛并数 %d 超过可用场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
+            venueWarnings.add(String.format("径赛并数 %d 超过可用场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
                     trackSlots, venues.size()));
         }
         if (fieldPool.venueShortage) {
-            warnings.add(String.format("田赛并数 %d 超过可用田赛场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
+            venueWarnings.add(String.format("田赛并数 %d 超过可用田赛场地数 %d，部分槽位将复用同一场地（并数取决于场地数量，请增加场地或调小并数）",
                     fieldSlots, fieldVenues.size()));
         }
-
-        scheduleRepository.deleteAllSchedules();
 
         // ===== 规则模式 / 优化模式分发（U39/B36：三级求解梯度的最低层——竞品规则引擎） =====
         // RULE（规则模式）：确定性 first-fit 规则编排（蛇形分组 + 固定分道 + 时间栅格 first-fit），
@@ -382,10 +380,6 @@ public class ScheduleService {
                     solverStat[0], solverStat[1]);
         }
 
-        int autoArrangeOk = 0;
-        List<String> autoArrangeFails = new ArrayList<>();
-        int[] orderCounter = {1};
-        Set<Integer> done = new HashSet<>();
         // U22/B19：先算好「确实有已审核报名的项目」，供下面区分两种「0 参与」：
         //   ① 项目整体无报名（数据的真问题，值得告警）；
         //   ② event.gradeGroup 缺失时按「年级 × 项目」笛卡尔积展开出的跨年级空单元
@@ -396,72 +390,52 @@ public class ScheduleService {
                 .filter(u -> u.participants > 0)
                 .map(u -> u.event.getId())
                 .collect(Collectors.toSet());
-        // U23/B20：兼项冲突规避的运行状态。
-        // busy = 运动员 → 已占用时间段（绝对分钟 = 天×1440 + 当日分钟），放置时据此避让；
-        // conflictStat = {零冲突放置的单元数, 残余冲突条数}，随结果返回，便于核对「到底规避掉多少」。
-        Map<Long, List<int[]>> busy = new HashMap<>();
-        int[] conflictStat = {0, 0};
 
-        for (int i = 0; i < units.size(); i++) {
-            if (done.contains(i)) continue;
-            Unit u = units.get(i);
-            if (u.participants <= 0) {
-                // U22/B19：只有项目「整体无报名」才告警；跨年级空单元（本就不该在该年级进行）静默跳过
-                if (!eventsWithRegs.contains(u.event.getId())) {
-                    warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
-                            u.event.getName(), u.grade == null ? "不分年级" : u.grade));
-                }
-                done.add(i);
-                continue;
-            }
+        // ===== U33/B30：兼项冲突规避——多策略自适应重试 =====
+        // 放置顺序会显著影响兼项冲突总数：先排「参与人数多 / 兼项度高」的项目，能让它们先占住
+        // 无冲突时段，后续项目据此避让（busy 记账按放置顺序累积），从而把残余兼项冲突压到更低。
+        // 这里跑多种排序策略，每趟独立 deleteAllSchedules + 重新放置（saveSchedule 即时落库），
+        // 保留「残余冲突最少」的那一趟作为最终结果；若某趟已压到 0 则提前结束——
+        // 不要傻傻地跑满固定次数，能归零就归零，归不了零才在最后如实告警。
+        int maxPasses = Math.min(8, Math.max(1, intVal(cfg.get("conflictAvoidancePasses"), 4)));
+        List<String> strategyNames = new ArrayList<>();
+        List<List<Integer>> strategies = buildScheduleOrderings(units, maxPasses, strategyNames);
 
-            Pool pool = buildComponent.resolvePool(u, trackPool, fieldPool, mainVenueCode,
-                    fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots);
-            // 分组：田赛或「小组合作」项目按 event2Group 分组（合作项目哪怕是径赛也并入同组并行）
-            String group = event2Group.get(u.event.getId());
-
-            if (group == null) {
-                // 普通单元：占用并发池中最空闲的一个槽位
-                placementComponent.placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, solvedPlacement);
-                autoArrangeOk += u.arranged;
-                done.add(i);
+        PlacementPassResult best = null;
+        List<Integer> bestOrder = null;
+        String winningStrategy = null;
+        boolean bestIsLastExecuted = false;
+        for (int p = 0; p < strategies.size(); p++) {
+            PlacementPassResult r = runPlacementPass(units, strategies.get(p), windows, trackSlots, fieldSlots,
+                    mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
+                    event2Group, defaultInterval, minInterval, compressionWarnRatio,
+                    solvedPlacement, eventsWithRegs);
+            if (best == null || passIsBetter(r, best)) {
+                best = r;
+                bestOrder = strategies.get(p);
+                winningStrategy = strategyNames.get(p);
+                bestIsLastExecuted = true;
             } else {
-                // 田赛分组：同组 + 同年级 的单元安排在同一时段并行进行
-                List<Integer> batch = new ArrayList<>();
-                for (int j = i; j < units.size(); j++) {
-                    if (done.contains(j)) continue;
-                    Unit v = units.get(j);
-                    // 同组并行：同年级 + 同组；合作项目允许径赛/田赛混合（场地池各自解析，仅时间协调）
-                    if (!sameGrade(v.grade, u.grade)) continue;
-                    if (!group.equals(event2Group.get(v.event.getId()))) continue;
-                    if (v.participants <= 0) {
-                        // U22/B19：同上——只有项目整体无报名才告警，跨年级空单元静默跳过
-                        if (!eventsWithRegs.contains(v.event.getId())) {
-                            warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
-                                    v.event.getName(), v.grade == null ? "不分年级" : v.grade));
-                        }
-                        done.add(j);
-                        continue;
-                    }
-                    batch.add(j);
-                }
-                if (batch.isEmpty()) { done.add(i); continue; }
-                // Bug1 修复：组内各单元先各自解析场地池（含 defaultVenueCode 绑定的专用池），
-                // 场地输出取各自池的场地名；时间协调跨池进行（同一时刻同时开赛）。
-                List<Pool> unitPools = new ArrayList<>();
-                for (Integer idx : batch) {
-                    unitPools.add(buildComponent.resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
-                            fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
-                }
-                placementComponent.placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        group, saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, solvedPlacement);
-                for (Integer idx : batch) {
-                    autoArrangeOk += units.get(idx).arranged;
-                    done.add(idx);
-                }
+                bestIsLastExecuted = false;
             }
+            // 残余冲突已归零，无需再试（自适应提前结束）
+            if (best.conflictStat[1] <= 0) break;
         }
+        // 保证最终落库的是最优一趟：若最优不是最后执行的，再跑一次把它落库
+        if (!bestIsLastExecuted) {
+            best = runPlacementPass(units, bestOrder, windows, trackSlots, fieldSlots,
+                    mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
+                    event2Group, defaultInterval, minInterval, compressionWarnRatio,
+                    solvedPlacement, eventsWithRegs);
+        }
+        List<EventSchedule> saved = best.saved;
+        List<String> warnings = new ArrayList<>(venueWarnings);
+        warnings.addAll(best.warnings);
+        int[] conflictStat = best.conflictStat;
+        int autoArrangeOk = best.autoArrangeOk;
+        List<String> autoArrangeFails = best.autoArrangeFails;
+        portfolioInfo.put("conflictAvoidancePasses", strategies.size());
+        portfolioInfo.put("winningStrategy", winningStrategy);
 
         log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}位并发, 田赛{}位并发, 田赛分组{}组",
                 saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
@@ -638,6 +612,174 @@ public class ScheduleService {
         queryExportComponent.auditAfterCommit(() -> auditService.record("SCHEDULE_AUTO", "SCHEDULE", null,
                 "自动编排完成 businessOk=" + businessOk + ", 赛程条目=" + saved.size()));
         return result;
+    }
+
+    // ==================== 兼项冲突规避：多策略自适应放置 ====================
+
+    /** 单趟放置结果：落库的赛程行 + 冲突统计 + 道次编排计数 + 放置相关告警 */
+    private static final class PlacementPassResult {
+        final List<EventSchedule> saved = new ArrayList<>();
+        final List<String> warnings = new ArrayList<>();
+        final List<String> autoArrangeFails = new ArrayList<>();
+        final int[] conflictStat = {0, 0};
+        int autoArrangeOk = 0;
+    }
+
+    /**
+     * 单趟赛程放置：独立 deleteAllSchedules + 按给定单元顺序放置，返回本趟结果。
+     * 每趟都即时落库（saveSchedule 内部 save），故「保留最优一趟」只需保证最后落库的是最优即可。
+     */
+    private PlacementPassResult runPlacementPass(
+            List<Unit> units, List<Integer> order,
+            List<Window> windows, int trackSlots, int fieldSlots,
+            String mainVenue, List<String> fieldVenues,
+            String mainVenueCode, Set<String> fieldVenueCodes,
+            Map<String, String> codeToName, Map<String, Integer> codeToParallelMax,
+            Map<Long, String> event2Group, int defaultInterval, int minInterval,
+            double compressionWarnRatio, Map<Unit, Placement> solvedPlacement,
+            Set<Long> eventsWithRegs) {
+        PlacementPassResult r = new PlacementPassResult();
+        scheduleRepository.deleteAllSchedules();
+        // 每趟重建池（游标状态不可复用）+ 专用池表（resolvePool 会按需新建并缓存）
+        Pool trackPool = new Pool("径赛", trackSlots, new ArrayList<>(List.of(mainVenue)));
+        Pool fieldPool = new Pool("田赛", fieldSlots, fieldVenues);
+        Map<String, Pool> dedicatedPools = new LinkedHashMap<>();
+        int[] orderCounter = {1};
+        Set<Integer> done = new HashSet<>();
+        Map<Long, List<int[]>> busy = new HashMap<>();
+
+        for (int pos = 0; pos < order.size(); pos++) {
+            int i = order.get(pos);
+            Unit u = units.get(i);
+            if (u.participants <= 0) {
+                // U22/B19：只有项目「整体无报名」才告警；跨年级空单元（本就不该在该年级进行）静默跳过
+                if (!eventsWithRegs.contains(u.event.getId())) {
+                    r.warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                            u.event.getName(), u.grade == null ? "不分年级" : u.grade));
+                }
+                done.add(i);
+                continue;
+            }
+
+            Pool pool = buildComponent.resolvePool(u, trackPool, fieldPool, mainVenueCode,
+                    fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots);
+            // 分组：田赛或「小组合作」项目按 event2Group 分组（合作项目哪怕是径赛也并入同组并行）
+            String group = event2Group.get(u.event.getId());
+
+            if (group == null) {
+                // 普通单元：占用并发池中最空闲的一个槽位
+                placementComponent.placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
+                        r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement);
+                r.autoArrangeOk += u.arranged;
+                done.add(i);
+            } else {
+                // 田赛分组：同组 + 同年级 的单元安排在同一时段并行进行
+                List<Integer> batch = new ArrayList<>();
+                for (int pos2 = 0; pos2 < order.size(); pos2++) {
+                    int j = order.get(pos2);
+                    if (done.contains(j)) continue;
+                    Unit v = units.get(j);
+                    // 同组并行：同年级 + 同组；合作项目允许径赛/田赛混合（场地池各自解析，仅时间协调）
+                    if (!sameGrade(v.grade, u.grade)) continue;
+                    if (!group.equals(event2Group.get(v.event.getId()))) continue;
+                    if (v.participants <= 0) {
+                        // U22/B19：同上——只有项目整体无报名才告警，跨年级空单元静默跳过
+                        if (!eventsWithRegs.contains(v.event.getId())) {
+                            r.warnings.add(String.format("项目「%s」（%s）暂无有效报名，已跳过",
+                                    v.event.getName(), v.grade == null ? "不分年级" : v.grade));
+                        }
+                        done.add(j);
+                        continue;
+                    }
+                    batch.add(j);
+                }
+                if (batch.isEmpty()) { done.add(i); continue; }
+                // Bug1 修复：组内各单元先各自解析场地池（含 defaultVenueCode 绑定的专用池），
+                // 场地输出取各自池的场地名；时间协调跨池进行（同一时刻同时开赛）。
+                List<Pool> unitPools = new ArrayList<>();
+                for (Integer idx : batch) {
+                    unitPools.add(buildComponent.resolvePool(units.get(idx), trackPool, fieldPool, mainVenueCode,
+                            fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
+                }
+                placementComponent.placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
+                        group, r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement);
+                for (Integer idx : batch) {
+                    r.autoArrangeOk += units.get(idx).arranged;
+                    done.add(idx);
+                }
+            }
+        }
+        return r;
+    }
+
+    /** 两趟放置结果比较：残余冲突更少优先；其次零冲突单元更多；最后放置失败更少 */
+    private boolean passIsBetter(PlacementPassResult a, PlacementPassResult b) {
+        if (a.conflictStat[1] != b.conflictStat[1]) return a.conflictStat[1] < b.conflictStat[1];
+        if (a.conflictStat[0] != b.conflictStat[0]) return a.conflictStat[0] > b.conflictStat[0];
+        return a.autoArrangeFails.size() < b.autoArrangeFails.size();
+    }
+
+    /**
+     * 构造多种放置顺序策略：原始顺序 / 按参与人数降序 / 按兼项度降序 / 若干固定种子随机扰动。
+     * 数量受 maxPasses 限制；随机扰动用固定种子保证可复现（同一份数据结果稳定，便于核对与回归）。
+     */
+    private List<List<Integer>> buildScheduleOrderings(List<Unit> units, int maxPasses, List<String> names) {
+        List<List<Integer>> list = new ArrayList<>();
+        list.add(identityOrder(units.size()));
+        names.add("original");
+        if (list.size() < maxPasses) { list.add(orderByParticipants(units)); names.add("byParticipantsDesc"); }
+        if (list.size() < maxPasses) { list.add(orderByDegree(units)); names.add("byDegreeDesc"); }
+        long seed = 0x9e3779b97f4a7c15L;
+        for (int k = 1; list.size() < maxPasses; k++) {
+            list.add(orderByShuffle(units.size(), seed + k * 0x85ebca6bL));
+            names.add("shuffle#" + k);
+        }
+        return list;
+    }
+
+    private List<Integer> identityOrder(int n) {
+        List<Integer> idx = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) idx.add(i);
+        return idx;
+    }
+
+    /** 参与人数多的项目先排，先占无冲突时段 */
+    private List<Integer> orderByParticipants(List<Unit> units) {
+        List<Integer> idx = new ArrayList<>();
+        for (int i = 0; i < units.size(); i++) idx.add(i);
+        idx.sort((x, y) -> {
+            int px = units.get(x).participants, py = units.get(y).participants;
+            if (px != py) return Integer.compare(py, px);
+            return Integer.compare(x, y);
+        });
+        return idx;
+    }
+
+    /** 与别的项目共享运动员越多的项目先排（兼项度高者先占位，余者避让） */
+    private List<Integer> orderByDegree(List<Unit> units) {
+        Map<Long, Integer> freq = new HashMap<>();
+        for (Unit u : units) for (Long a : u.athleteIds) freq.put(a, freq.getOrDefault(a, 0) + 1);
+        List<Integer> idx = new ArrayList<>();
+        for (int i = 0; i < units.size(); i++) idx.add(i);
+        idx.sort((x, y) -> {
+            int dx = degreeOf(units.get(x), freq), dy = degreeOf(units.get(y), freq);
+            if (dx != dy) return Integer.compare(dy, dx);
+            return Integer.compare(x, y);
+        });
+        return idx;
+    }
+
+    private int degreeOf(Unit u, Map<Long, Integer> freq) {
+        int d = 0;
+        for (Long a : u.athleteIds) if (freq.getOrDefault(a, 0) >= 2) d++;
+        return d;
+    }
+
+    private List<Integer> orderByShuffle(int n, long seed) {
+        List<Integer> idx = identityOrder(n);
+        // 固定种子可复现：同一份配置/数据下结果稳定，便于核对与回归
+        Collections.shuffle(idx, new Random(seed));
+        return idx;
     }
 
     /**

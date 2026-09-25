@@ -35,6 +35,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import com.sports.entity.result.Result;
 import com.sports.service.arrange.ArrangementService;
@@ -93,6 +94,11 @@ class ScheduleServiceTest {
             saved.add(s);
             return s;
         });
+        // 建模真实仓库语义：deleteAllSchedules 清空已落库行（多策略重试每趟都会先清再排）
+        doAnswer(inv -> {
+            saved.clear();
+            return null;
+        }).when(scheduleRepository).deleteAllSchedules();
         when(scheduleRepository.findByOrderByDayAscSortOrderAscStartTimeAsc())
                 .thenAnswer(inv -> new ArrayList<>(saved));
         when(scheduleVerifier.verify(any(), any(), anyInt()))
@@ -289,6 +295,27 @@ class ScheduleServiceTest {
         EventSchedule sb = find(12L);
         assertEquals(sa.getStartTime(), sb.getStartTime(), "同字母捆绑组应在同一时间开赛");
         assertEquals(sa.getTimeSlot(), sb.getTimeSlot(), "同字母捆绑组应在同一时段");
+    }
+
+    /**
+     * U33/B30：多策略自适应重试——最终落库行数仍等于参与项目数（多趟不得重复累加），
+     * 且结果暴露冲突规避趟数（conflictAvoidancePasses）供前端核对。
+     */
+    @Test
+    void multiPassRetryDoesNotDuplicateAndExposesPasses() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1), field(13L, "实心球", 1));
+        regs(11L, 2);
+        regs(12L, 2);
+        regs(13L, 2);
+
+        Map<String, Object> result = scheduleService.autoSchedule(null);
+
+        assertEquals(3, saved.size(), "多趟重试不得重复落库同一项目");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> portfolio = (Map<String, Object>) result.get("algorithmPortfolio");
+        assertNotNull(portfolio, "应暴露算法组合调度信息");
+        assertTrue((int) portfolio.get("conflictAvoidancePasses") >= 1, "应报告冲突规避趟数");
     }
 
     /** 场地支持 [{name, code}] 对象数组（新格式），编排应使用其中的场地名称 */
