@@ -97,8 +97,12 @@
             </el-table-column>
             <el-table-column prop="startTime" label="开始" width="90" align="center" />
             <el-table-column prop="endTime" label="结束" width="90" align="center" />
-            <el-table-column prop="venue" label="场地" width="110" align="center">
-              <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.venue }}</el-tag></template>
+            <el-table-column label="场地" min-width="150" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain">
+                  {{ row.venue }}<template v-if="venueCode(row.venue)">（{{ venueCode(row.venue) }}）</template>
+                </el-tag>
+              </template>
             </el-table-column>
             <el-table-column label="类别/道次" width="110" align="center">
               <template #default="{ row }">
@@ -423,6 +427,22 @@ const loading = ref(false)
 const arranging = ref(false)
 const savingConfig = ref(false)
 const items = ref([])
+
+// 场地名称 -> 编码 映射：赛程结果表同时展示「场地名称(编码)」
+const venueCodeMap = ref({})
+async function loadVenueCodes() {
+  const map = {}
+  try {
+    const vs = await request.get('/venues')
+    ;(Array.isArray(vs) ? vs : []).forEach(v => { if (v && v.name) map[v.name] = v.code })
+  } catch (e) { /* 场地接口不可用时仅显示名称 */ }
+  // 合并运动会配置里的场地（兜底旧流程：DB 场地表为空时沿用配置场地）
+  ;(meetForm.venues || []).forEach(v => { if (v && v.name && v.code) map[v.name] = v.code })
+  venueCodeMap.value = map
+}
+function venueCode(name) {
+  return name ? (venueCodeMap.value[name] || '') : ''
+}
 const showEditDialog = ref(false)
 const showConfigDialog = ref(false)
 const editingId = ref(null)
@@ -923,7 +943,7 @@ async function clearAll() {
   }
 }
 
-onMounted(() => { fetchList(); fetchEvents() })
+onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes() })
 </script>
 
 <style scoped>
