@@ -423,11 +423,15 @@ public class StatisticsService {
      * （不依赖手填/陈旧的 student_count 列，历史数据该列常为 0 导致进度恒 0%），
      * 分子取该年级<b>已有审核通过报名</b>的去重运动员数。单位统一为「人」，
      * 避免「报名人次 / 总人数」口径错配（人次会超过总人数）。
+     *
+     * <p>2026-09-25 修订：<b>未报名（一个项目都没报）的运动员不计入报名进度分母</b>——
+     * 分母改为「该年级至少有一个报名记录的去重运动员数」，仅作「已报名学生中审核通过占比」
+     * 语义；rosterTotal 仍保留在返回里作为「在册总数（含未报名）」参考，供前端按需展示。
      */
     public List<Map<String, Object>> getRegistrationProgress() {
         List<ClassInfo> classes = classInfoRepository.findByIsParticipatingTrue();
 
-        // 该年级在册运动员总数（剔除软删）
+        // 该年级在册运动员总数（剔除软删）——仅用于校验 grade 归属与提供参考值
         Map<String, Integer> rosterByGrade = new LinkedHashMap<>();
         for (ClassInfo ci : classes) {
             String grade = ci.getGrade() != null ? ci.getGrade() : "未知";
@@ -437,7 +441,17 @@ public class StatisticsService {
             rosterByGrade.merge(grade, (int) roster, Integer::sum);
         }
 
-        // 该年级已有审核通过报名的去重运动员数
+        // 分母：该年级「至少有一个报名记录」的去重运动员（未报名者不计入报名进度）
+        Map<String, Set<Long>> registeredAthleteByGrade = new HashMap<>();
+        for (Registration reg : registrationRepository.findAll()) {
+            Athlete a = reg.getAthlete();
+            if (a == null || a.getDeletedAt() != null) continue;
+            String grade = a.getGrade();
+            if (grade == null || !rosterByGrade.containsKey(grade)) continue;
+            registeredAthleteByGrade.computeIfAbsent(grade, k -> new HashSet<>()).add(a.getId());
+        }
+
+        // 分子：该年级已有审核通过报名的去重运动员数
         Map<String, Set<Long>> approvedAthleteByGrade = new HashMap<>();
         for (Registration reg : registrationRepository.findByStatus("approved")) {
             Athlete a = reg.getAthlete();
@@ -448,11 +462,12 @@ public class StatisticsService {
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
-        rosterByGrade.forEach((grade, total) -> {
+        rosterByGrade.forEach((grade, rosterTotal) -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", grade);
-            item.put("total", total);
+            item.put("total", registeredAthleteByGrade.getOrDefault(grade, Set.of()).size());
             item.put("registered", approvedAthleteByGrade.getOrDefault(grade, Set.of()).size());
+            item.put("rosterTotal", rosterTotal);
             result.add(item);
         });
         return result;
