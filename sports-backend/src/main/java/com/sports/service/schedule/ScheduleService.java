@@ -191,6 +191,11 @@ public class ScheduleService {
 
     /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
 
+    /** 无限轮模式的安全上限：无论如何不超过这么多趟，避免极端数据下死循环 */
+    private static final int UNLIMITED_PASS_CAP = 150;
+    /** 无限轮模式的收敛判据：连续这么多趟残余冲突都不再下降，即认定已收敛到该启发式下最低 */
+    private static final int UNLIMITED_CONVERGE_STALE = 16;
+
     // ==================== 自动编排 ====================
 
     /**
@@ -391,35 +396,48 @@ public class ScheduleService {
                 .map(u -> u.event.getId())
                 .collect(Collectors.toSet());
 
-        // ===== U33/B30：兼项冲突规避——多策略自适应重试 =====
+        // ===== U33/B30：兼项冲突规避——多策略自适应重试（0 轮=无限轮直至收敛）=====
         // 放置顺序会显著影响兼项冲突总数：先排「参与人数多 / 兼项度高」的项目，能让它们先占住
         // 无冲突时段，后续项目据此避让（busy 记账按放置顺序累积），从而把残余兼项冲突压到更低。
         // 这里跑多种排序策略，每趟独立 deleteAllSchedules + 重新放置（saveSchedule 即时落库），
         // 保留「残余冲突最少」的那一趟作为最终结果；若某趟已压到 0 则提前结束——
         // 不要傻傻地跑满固定次数，能归零就归零，归不了零才在最后如实告警。
-        int maxPasses = Math.min(8, Math.max(1, intVal(cfg.get("conflictAvoidancePasses"), 4)));
-        List<String> strategyNames = new ArrayList<>();
-        List<List<Integer>> strategies = buildScheduleOrderings(units, maxPasses, strategyNames);
+        // conflictAvoidancePasses：>0 跑这么多趟（上限 64）；=0 则无限轮——持续用不同随机顺序
+        // 重试，直到「连续 UNLIMITED_CONVERGE_STALE 趟残余冲突都不再下降」判定收敛，或安全上限封顶，
+        // 目标是把兼项冲突压到该排序启发式下的最低。
+        int requestedPasses = intVal(cfg.get("conflictAvoidancePasses"), 4);
+        boolean unlimited = requestedPasses <= 0;
+        int hardCap = unlimited ? UNLIMITED_PASS_CAP : Math.min(64, Math.max(1, requestedPasses));
+        int convergeStale = UNLIMITED_CONVERGE_STALE;
 
         PlacementPassResult best = null;
         List<Integer> bestOrder = null;
         String winningStrategy = null;
         boolean bestIsLastExecuted = false;
-        for (int p = 0; p < strategies.size(); p++) {
-            PlacementPassResult r = runPlacementPass(units, strategies.get(p), windows, trackSlots, fieldSlots,
+        int stale = 0;            // 连续未改进趟数（无限轮模式的收敛判据）
+        int passesRun = 0;
+        for (int p = 0; p < hardCap; p++) {
+            List<Integer> order = strategyAt(units, p);
+            String name = strategyNameAt(p);
+            PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
                     solvedPlacement, eventsWithRegs);
+            passesRun++;
             if (best == null || passIsBetter(r, best)) {
                 best = r;
-                bestOrder = strategies.get(p);
-                winningStrategy = strategyNames.get(p);
+                bestOrder = order;
+                winningStrategy = name;
                 bestIsLastExecuted = true;
+                stale = 0;
             } else {
                 bestIsLastExecuted = false;
+                stale++;
             }
             // 残余冲突已归零，无需再试（自适应提前结束）
             if (best.conflictStat[1] <= 0) break;
+            // 无限轮模式：连续 convergeStale 趟残余冲突都不再下降 → 已收敛到该启发式下最低，停止
+            if (unlimited && stale >= convergeStale) break;
         }
         // 保证最终落库的是最优一趟：若最优不是最后执行的，再跑一次把它落库
         if (!bestIsLastExecuted) {
@@ -434,8 +452,10 @@ public class ScheduleService {
         int[] conflictStat = best.conflictStat;
         int autoArrangeOk = best.autoArrangeOk;
         List<String> autoArrangeFails = best.autoArrangeFails;
-        portfolioInfo.put("conflictAvoidancePasses", strategies.size());
+        portfolioInfo.put("conflictAvoidancePasses", passesRun);
         portfolioInfo.put("winningStrategy", winningStrategy);
+        portfolioInfo.put("unlimitedMode", unlimited);
+        portfolioInfo.put("converged", unlimited && stale >= convergeStale);
 
         log.info("赛程自动编排完成: {}个单元, {}天, 径赛{}位并发, 田赛{}位并发, 田赛分组{}组",
                 saved.size(), windows.stream().mapToInt(w -> w.day).max().orElse(0),
@@ -720,21 +740,23 @@ public class ScheduleService {
     }
 
     /**
-     * 构造多种放置顺序策略：原始顺序 / 按参与人数降序 / 按兼项度降序 / 若干固定种子随机扰动。
-     * 数量受 maxPasses 限制；随机扰动用固定种子保证可复现（同一份数据结果稳定，便于核对与回归）。
+     * 第 p 套放置顺序策略（确定性、可复现）：0=原始顺序，1=按参与人数降序，2=按兼项度降序，
+     * 其后为固定种子随机扰动（种子随 p 递增）。供「多策略自适应重试」逐趟取用——
+     * 既支持有限轮（p 上限=请求轮数），也支持无限轮（p 一直递增直到收敛判据触发）。
+     * 随机扰动用固定种子保证同一份数据下结果稳定，便于核对与回归。
      */
-    private List<List<Integer>> buildScheduleOrderings(List<Unit> units, int maxPasses, List<String> names) {
-        List<List<Integer>> list = new ArrayList<>();
-        list.add(identityOrder(units.size()));
-        names.add("original");
-        if (list.size() < maxPasses) { list.add(orderByParticipants(units)); names.add("byParticipantsDesc"); }
-        if (list.size() < maxPasses) { list.add(orderByDegree(units)); names.add("byDegreeDesc"); }
-        long seed = 0x9e3779b97f4a7c15L;
-        for (int k = 1; list.size() < maxPasses; k++) {
-            list.add(orderByShuffle(units.size(), seed + k * 0x85ebca6bL));
-            names.add("shuffle#" + k);
-        }
-        return list;
+    private List<Integer> strategyAt(List<Unit> units, int p) {
+        if (p == 0) return identityOrder(units.size());
+        if (p == 1) return orderByParticipants(units);
+        if (p == 2) return orderByDegree(units);
+        return orderByShuffle(units.size(), 0x9e3779b97f4a7c15L + ((long) (p - 2)) * 0x85ebca6bL);
+    }
+
+    private String strategyNameAt(int p) {
+        if (p == 0) return "original";
+        if (p == 1) return "byParticipantsDesc";
+        if (p == 2) return "byDegreeDesc";
+        return "shuffle#" + (p - 2);
     }
 
     private List<Integer> identityOrder(int n) {

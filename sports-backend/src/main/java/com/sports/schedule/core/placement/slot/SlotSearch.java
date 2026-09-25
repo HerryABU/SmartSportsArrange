@@ -38,19 +38,29 @@ public final class SlotSearch {
             for (int wi = 0; wi < windows.size(); wi++) {
                 Window w = windows.get(wi);
                 int base = c.usedAt(wi);
-                int gap = base == 0 ? 0 : interval;             // 与 Cursor.place 的段前间隔口径一致
-                if (base + gap + u.duration > w.capacity) continue;
-                int start = w.startMinute + base + gap;
+                int lead = base == 0 ? 0 : interval;             // 与 Cursor.place 的段前间隔口径一致
+                if (base + lead + u.duration > w.capacity) continue;
+                int start = w.startMinute + base + lead;
                 int n = ClashCounter.countConflicts(u.athleteIds, w.day, start, u.duration, busy);
-                for (int off = base + gap + interval; n > 0 && off + u.duration <= w.capacity; off += interval) {
+                int bestGap = ClashCounter.minGapToBusy(u.athleteIds, w.day, start, u.duration, busy);
+                for (int off = base + lead + interval; off + u.duration <= w.capacity; off += interval) {
                     int s2 = w.startMinute + off;
                     int n2 = ClashCounter.countConflicts(u.athleteIds, w.day, s2, u.duration, busy);
                     if (n2 < n) {
+                        // 冲突更少：无条件更优
                         n = n2;
                         start = s2;
+                        bestGap = ClashCounter.minGapToBusy(u.athleteIds, w.day, s2, u.duration, busy);
+                    } else if (n2 == n) {
+                        // 冲突数相同：在当天空档里尽量拉开（间隔更大 → 运动员休息更足）
+                        int g2 = ClashCounter.minGapToBusy(u.athleteIds, w.day, s2, u.duration, busy);
+                        if (g2 > bestGap) {
+                            start = s2;
+                            bestGap = g2;
+                        }
                     }
                 }
-                Cand cand = new Cand(si, wi, start, n);
+                Cand cand = new Cand(si, wi, start, n, bestGap);
                 if (beats(cand, best)) best = cand;
             }
         }
@@ -66,6 +76,8 @@ public final class SlotSearch {
         if (b == null) return true;
         if (a.conflicts != b.conflicts) return a.conflicts < b.conflicts;
         if (a.windowIdx != b.windowIdx) return a.windowIdx < b.windowIdx;
+        // U45/B41：冲突数、时段相同后，优先间隔更大者（运动员休息更足），只在有空档时生效
+        if (a.gap != b.gap) return a.gap > b.gap;
         if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
         return a.slotIdx < b.slotIdx;
     }

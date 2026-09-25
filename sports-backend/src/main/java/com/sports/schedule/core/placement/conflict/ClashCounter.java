@@ -89,4 +89,32 @@ public final class ClashCounter {
         }
         return n;
     }
+
+    /**
+     * 把单元放到「第 day 天 startMinute 起、持续 duration 分钟」后，到其运动员最近一条已排占用
+     * （同一天）的最小间隔（分钟）。与 {@link #countConflicts} 同口径的对称间隔。
+     *
+     * <p>用途：在「能排得下、且当天有空档」时，尽量把项目拉开、让兼项运动员休息更足——
+     * 候选排序在「冲突数相同、同一时段」的前提下，优先选间隔更大的起点。</p>
+     *
+     * @return 最小间隔；若该单元运动员当天没有任何已排占用，返回极大值（视为整段空闲，不去无谓后移）
+     */
+    public static int minGapToBusy(Set<Long> athleteIds, int day, int startMinute, int duration,
+                                   Map<Long, List<int[]>> busy) {
+        if (athleteIds == null || athleteIds.isEmpty() || busy == null || busy.isEmpty()) {
+            return Integer.MAX_VALUE / 2;
+        }
+        int absStart = day * 1440 + startMinute;
+        int absEnd = absStart + duration;
+        int min = Integer.MAX_VALUE / 2;
+        for (Long aid : athleteIds) {
+            List<int[]> spans = busy.get(aid);
+            if (spans == null) continue;
+            for (int[] p : spans) {
+                int gap = Math.max(absStart - p[1], p[0] - absEnd);   // 与冲突计数同口径的对称间隔
+                if (gap < min) min = gap;
+            }
+        }
+        return min;
+    }
 }
