@@ -117,6 +117,18 @@ const routes = [
         meta: { title: '系统设置' }
       },
       {
+        path: 'meets',
+        name: 'TeacherMeets',
+        component: () => import('@/views/teacher/MeetManage.vue'),
+        meta: { title: '届 / 运动会' }
+      },
+      {
+        path: 'progress',
+        name: 'TeacherProgress',
+        component: () => import('@/views/teacher/Progress.vue'),
+        meta: { title: '跨届进步榜' }
+      },
+      {
         path: 'referees',
         name: 'TeacherReferees',
         component: () => import('@/views/teacher/Referees.vue'),

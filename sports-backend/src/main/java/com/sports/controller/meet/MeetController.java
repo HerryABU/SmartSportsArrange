@@ -33,6 +33,12 @@ public class MeetController {
         return ApiResponse.success(meetService.getActive().orElse(null));
     }
 
+    /** 当前届（兼容前端 app store 调用 /meets/current） */
+    @GetMapping("/current")
+    public ApiResponse<SportsMeet> current() {
+        return ApiResponse.success(meetService.getActive().orElse(null));
+    }
+
     @PostMapping
     public ApiResponse<SportsMeet> create(@RequestBody Map<String, Object> body) {
         return ApiResponse.success("创建成功", meetService.create(body));
