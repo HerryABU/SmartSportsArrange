@@ -46,6 +46,7 @@
   - [数据库迁移 DbMigration](#17-数据库迁移-dbmigration)
   - [建站向导 Setup](#18-建站向导-setup)
   - [入场式评分 ParadeScore](#19-入场式评分-paradescore)
+  - [届 / 运动会 Meets](#20-届--运动会-meets)
 - [数据库设计](#-数据库设计)
 - [部署指南](#-部署指南)
 - [开发指南](#-开发指南)
@@ -459,7 +460,7 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 ## 📡 API 接口完整参考
 
-后端共 **19 个 Controller、174 个路由端点**（下表为主要业务端点），统一前缀 `/api`。反向代理子路径部署时（如 `/sportmg/`），前端请求 `/sportmg/api/...` 由后端智能剥离前缀后路由到下列端点。
+后端共 **20 个 Controller、180+ 个路由端点**（下表为主要业务端点，含本届新增「届 / 运动会」控制器），统一前缀 `/api`。反向代理子路径部署时（如 `/sportmg/`），前端请求 `/sportmg/api/...` 由后端智能剥离前缀后路由到下列端点。
 
 ### 通用约定
 
@@ -993,6 +994,27 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ---
 
+### 20. 届 / 运动会 Meets
+
+前缀 `/api/meets`，8 个端点，要求 **T/SA**。运动会作为数据库一等公民：可创建多届、一键切换当前届，成绩 / 报名 / 入场式评分均绑定届次（历史数据自动归并默认届）；运动员的「当前年级 / 年份码 / 校验号 / 毕业标记」按当前届实时推算。
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/meets` | — | T/SA | 届次列表（按年份降序、届次降序） |
+| GET | `/api/meets/active` | — | T/SA | 当前启用届次 |
+| GET | `/api/meets/current` | — | T/SA | 当前届次（与 active 同义，供前端 appStore 拉取） |
+| POST | `/api/meets` | Body SportsMeet | T/SA | 创建届次（系统自动拼接名称「第X届Y季节运动会」） |
+| PUT | `/api/meets/{id}` | Path id, Body 待更新字段 | T/SA | 编辑届次（部分更新） |
+| POST | `/api/meets/{id}/activate` | Path id | T/SA | 设为当前届（同时取消其它届的 active） |
+| DELETE | `/api/meets/{id}` | Path id | T/SA | 删除届次 |
+| POST | `/api/meets/recompute-graduation` | — | T/SA | 立即按各运动员「毕业年份 vs 当前届年份」重算毕业标记 |
+
+**SportsMeet 关键字段**：`edition`（届次，如 3）、`season`（季节，**自由文本**，如 秋季 / 春季 / 运动会 / 田径运动会）、`year`（年份）、`name`（自动拼接：`第{edition}届{season}运动会`）、`location`（地点）、`active`（是否当前届）、`startDate` / `endDate` / `remark`。
+
+> 💡 前端入口：体育老师端「届 / 运动会」页（`/teacher/meets`）——列表 / 新建 / 编辑 / 设为当前届 / 删除；启动会经 `MeetDataInitializer` 自动保证至少存在一个默认届（第 1 届 / 秋季 / 本年 / 启用）。
+
+---
+
 ## 🗄 数据库设计
 
 ```
@@ -1001,11 +1023,13 @@ sys_user ──┐
            │       │
            │       ├── athlete (class_info_id)
            │       │       │
-           │       │       ├── registration (athlete_id + event_id)
+           │       │       ├── registration (athlete_id + event_id, meet_id)
            │       │       ├── arrangement  (athlete_id + event_id)
-           │       │       └── result       (athlete_id + event_id)
+           │       │       └── result       (athlete_id + event_id, meet_id)
            │       │
            │       └── event
+           │
+           ├── sports_meet  ──▶ result / registration / parade_score（经 meet_id 绑定届次）
            │
            └── system_config
 ```
@@ -1014,11 +1038,13 @@ sys_user ──┐
 |----|------|
 | `sys_user` | 用户/账号/角色，BCrypt 加密 |
 | `class_info` | 班级，关联班主任 userId |
-| `athlete` | 运动员，含学号、号码簿、班级关联 |
+| `athlete` | 运动员，含学号、号码簿、班级关联、`enrollYear`/`graduateYear`（入/毕年份，拼接为 `20252028` 形式）、`graduated`（毕业标记）；`currentGrade`/`yearCode`/`checkNo` 为按当前届实时推算的瞬态展示字段（不落库） |
 | `event` | 比赛项目，含预设模板 |
-| `registration` | 报名记录，联合唯一约束 |
+| `registration` | 报名记录，联合唯一约束；含 `meet_id`（绑定届次） |
 | `arrangement` | 编排结果，支持版本回滚 |
-| `result` | 成绩记录，多状态管理 |
+| `result` | 成绩记录，多状态管理；含 `meet_id`（绑定届次） |
+| `sports_meet` | **届 / 运动会**（数据库一等公民）：`edition`/`season`/`year`/`name`/`location`/`active`/`startDate`/`endDate`/`remark`；成绩 / 报名 / 入场式评分均经 `meet_id` 关联 |
+| `parade_score` | 入场式评分，独立计分；含 `meet_id`（绑定届次） |
 | `system_config` | 系统配置，JSON 存储 |
 
 支持的数据库：**SQLite（默认，零配置）**、MySQL 8.0（生产）、H2（开发）。运行时可通过「数据库迁移」在线切换。
@@ -1240,4 +1266,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.0.0 | **API 端点**: 19 Controller / 174 个 | **构建日期**: 2026-09-12
+> **版本**: v2.7.5 | **API 端点**: 20 Controller / 180+ 个 | **构建日期**: 2026-09-25
