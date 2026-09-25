@@ -349,4 +349,65 @@ class ExcelImportDynamicCaseTest {
         assertFalse(ev.getFunSports());
         assertFalse(ev.getOccupiesTrack(), "径赛本身不置 occupiesTrack");
     }
+
+    // ==================== 场地表（venue）导入 ====================
+
+    @Test
+    @DisplayName("场地表：编码/名称/类型/容量/并行数/排序/启用 全字段落库，且「是」解析为启用")
+    void venueImportFullFields() {
+        when(venueRepository.existsByCode(anyString())).thenReturn(false);
+        when(venueService.create(any(Venue.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.xlsx(
+                List.of("场地编码", "场地名称", "类型", "可容纳项目数", "最大并行数", "排序", "启用"),
+                new String[][]{
+                        {"TRACK", "主跑道", "径赛", "1", "8", "1", "是"},
+                        {"FIELD_A", "田赛A区", "田赛", "6", "3", "2", "是"}});
+        Map<String, String> map = Map.of(
+                "0", "code", "1", "name", "2", "type", "3", "capacity",
+                "4", "parallelMax", "5", "sortOrder", "6", "enabled");
+
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "场地表.xlsx"), mapping("venue", map));
+
+        assertEquals(2, result.get("success"), "两行场地都应导入成功: " + result);
+        assertEquals(0, result.get("failed"));
+
+        ArgumentCaptor<Venue> cap = ArgumentCaptor.forClass(Venue.class);
+        verify(venueService, times(2)).create(cap.capture());
+        Venue track = cap.getAllValues().get(0);
+        assertEquals("TRACK", track.getCode());
+        assertEquals("主跑道", track.getName());
+        assertEquals("径赛", track.getType());
+        assertEquals(1, track.getCapacity());
+        assertEquals(8, track.getParallelMax());
+        assertEquals(1, track.getSortOrder());
+        assertTrue(track.isEnabled(), "「是」应解析为启用");
+        Venue field = cap.getAllValues().get(1);
+        assertEquals("FIELD_A", field.getCode());
+        assertEquals(3, field.getParallelMax());
+        assertEquals(2, field.getSortOrder());
+    }
+
+    @Test
+    @DisplayName("场地表：编码缺失或重复应整行失败（不污染已落库场地）")
+    void venueImportRejectsBadCode() {
+        // 第一行 TRACK 不存在 → 成功；第二行重复 TRACK → 失败
+        when(venueRepository.existsByCode("TRACK")).thenReturn(false).thenReturn(true);
+        when(venueService.create(any(Venue.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.xlsx(
+                List.of("场地编码", "场地名称", "类型", "启用"),
+                new String[][]{
+                        {"TRACK", "主跑道", "径赛", "是"},
+                        {"TRACK", "重复跑道", "径赛", "是"}});
+        Map<String, String> map = Map.of("0", "code", "1", "name", "2", "type", "3", "enabled");
+
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "场地表.xlsx"), mapping("venue", map));
+
+        assertEquals(1, result.get("success"), "仅首行应成功: " + result);
+        assertEquals(1, result.get("failed"), "重复编码应失败: " + result);
+        verify(venueService, times(1)).create(any(Venue.class));
+    }
 }
