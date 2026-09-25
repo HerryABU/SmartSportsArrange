@@ -23,6 +23,7 @@ import com.sports.repository.event.EventScheduleRepository;
 import com.sports.repository.venue.VenueRepository;
 import com.sports.repository.referee.RefereeRepository;
 import com.sports.service.venue.VenueService;
+import com.sports.service.result.ResultService;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
 import jakarta.servlet.http.HttpServletResponse;
@@ -115,12 +116,12 @@ public class ExcelService {
      */
     public void getMultiWorkbookTemplate(HttpServletResponse response) {
         setExcelResponse(response, "多表导入模板.xlsx");
-        // 刻意不含「成绩表」：成绩在编排/比赛之后录入，且其样本行必须引用已存在的号码/学号，
-        // 放进来会让「下载即导入」出现一条必然失败的行（样板数据不自洽）。需要时自行加一张成绩表即可，
-        // 多表导入同样支持（按表头自动识别）。
+        // 成绩表内置（仅表头、不附示例行）：成绩在编排/比赛之后录入，示例行必然因引用不存在的号码/学号而失败；
+        // 故只给表头，由用户自行填写。多表导入按「Sheet 名 + 表头」自动识别为 score 类型。
         String[][] sheets = {
                 {"grade", "年级表"}, {"class", "班级表"}, {"roster", "全名单表"},
-                {"venue", "场地表"}, {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"}, {"signup", "报名表"}};
+                {"venue", "场地表"}, {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"},
+                {"signup", "报名表"}, {"score", "成绩表"}};
         try (OutputStream out = response.getOutputStream();
              com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
             int idx = 0;
@@ -128,20 +129,24 @@ public class ExcelService {
                 // 直接复用单表模板的行定义，避免「单表模板」与「多表模板」两份口径漂移
                 List<List<String>> rows = buildTemplate(pair[0]).rows();
                 List<List<String>> headCols = rows.get(0).stream().map(List::of).collect(Collectors.toList());
-                List<List<String>> dataRows = rows.size() > 1 ? rows.subList(1, rows.size()) : List.of();
+                // 成绩表只写表头（避免示例行在「下载即导入」时必然失败）；其余表带示例行
+                List<List<String>> dataRows = "score".equals(pair[0]) || rows.size() <= 1
+                        ? List.of() : rows.subList(1, rows.size());
                 writer.write(dataRows, EasyExcel.writerSheet(idx++, pair[1]).head(headCols).build());
             }
             List<List<String>> notes = new ArrayList<>();
-            notes.add(List.of("用法", "本工作簿含多张表：年级表/班级表/全名单表/运动项目表/项目表（表格2）/报名表。"
+            notes.add(List.of("用法", "本工作簿含多张表：年级表/班级表/全名单表/运动项目表/项目表（表格2）/报名表/成绩表。"
                     + "系统按「Sheet 名 + 表头」自动识别每张表的类型。"));
             notes.add(List.of("顺序", "Sheet 的先后不影响结果：导入按依赖顺序处理（年级→班级→名单→项目→报名→成绩）。"));
             notes.add(List.of("不用的表", "用不到的表请整表删除；空表会被自动跳过，不影响其它表。"));
-            notes.add(List.of("重跑", "同一份工作簿可重复导入：已存在的数据会计入「跳过」而不算失败。"));
+            notes.add(List.of("重跑", "同一份工作簿可重复导入：已存在的数据会计入「跳过」而不算失败；"
+                    + "成绩表支持重复导入修正（同一(项目,运动员)成绩一致则幂等跳过，不一致则更新）。"));
             notes.add(List.of("两张项目表", "「运动项目表」是 7 列精简版；「项目表（表格2）」是完整版"
                     + "（含性别限制/道数/计分规则/校纪录/组次裁判数等）。二选一即可；"
                     + "若两张都留，同一项目代码会被自动去重（重复行计入「跳过(重复)」）。"));
-            notes.add(List.of("成绩表", "成绩在编排之后录入。若要与本工作簿一起导入，自行增加一张「成绩表」Sheet 即可"
-                    + "（表头：项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注）。"));
+            notes.add(List.of("成绩表", "已内置（仅表头）。在表头下填写成绩行即可："
+                    + "项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注。"
+                    + "运动员号码可填号码布编号或学号；成绩支持 12.34 / 2:35.67 及 DNF/DNS/DSQ。"));
             writer.write(notes, EasyExcel.writerSheet(idx, "填写说明")
                     .head(List.of(List.of("字段"), List.of("填写说明"))).build());
         } catch (IOException e) {
@@ -692,8 +697,10 @@ public class ExcelService {
 
         if (event == null || athlete == null) throw new RuntimeException("缺少项目或运动员信息");
 
-        if (resultRepository.existsByEventIdAndAthleteId(event.getId(), athlete.getId()))
-            throw new RuntimeException("已有成绩记录");
+        // 与独立成绩导入（ScoreDataListener）保持一致的归一/严密性：识别 DNF/DNS/DSQ 非完赛标记，
+        // 其余走时间解析（空白留空待补录，畸形时间静默为 null 与既有行为一致）。
+        String nonFinishStatus = ResultService.normalizeNonFinishStatus(v.get("rawTime"));
+        Double timeSeconds = nonFinishStatus != null ? null : parseTimeToSeconds(v.get("rawTime"));
 
         Integer heat = parseIntSafe(v.get("heat"));
         Integer lane = parseIntSafe(v.get("lane"));
@@ -702,20 +709,58 @@ public class ExcelService {
             if (arr.isPresent()) { heat = arr.get().getHeat(); lane = arr.get().getLane(); }
         }
 
-        Result result = Result.builder()
-                .event(event).athlete(athlete).heat(heat).lane(lane)
-                .rawTime(v.get("rawTime"))
-                .timeSeconds(parseTimeToSeconds(v.get("rawTime")))
-                .status("valid").remark(v.get("remark"))
-                .enteredAt(LocalDateTime.now())
-                .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
-
-        if (v.get("windSpeed") != null) {
-            try { result.setWindSpeed(Double.parseDouble(v.get("windSpeed"))); }
-            catch (NumberFormatException ignored) {}
+        // U17：成绩导入幂等 upsert——已存在 (项目,运动员,赛次=final) 成绩则就地更新，
+        // 不再整行抛「已有成绩记录」失败（支持重复导入 / 修正录入）。成绩一致时幂等跳过。
+        String round = "final";
+        Optional<Result> existing = resultRepository.findByEventIdAndAthleteId(event.getId(), athlete.getId());
+        Result result;
+        if (existing.isPresent()) {
+            Result ex = existing.get();
+            String exRaw = ex.getRawTime() != null ? ex.getRawTime().trim() : "";
+            String inRaw = v.get("rawTime") != null ? v.get("rawTime").trim() : "";
+            if (exRaw.equals(inRaw) && !inRaw.isEmpty()) {
+                return; // 成绩一致，幂等跳过
+            }
+            ex.setHeat(heat);
+            ex.setLane(lane);
+            ex.setRawTime(v.get("rawTime"));
+            ex.setTimeSeconds(timeSeconds);
+            ex.setStatus(nonFinishStatus != null ? nonFinishStatus : "valid");
+            ex.setRemark(v.get("remark"));
+            ex.setIsRecord(isRecordRemark(v.get("remark")));
+            if (v.get("windSpeed") != null) {
+                try { ex.setWindSpeed(Double.parseDouble(v.get("windSpeed"))); }
+                catch (NumberFormatException ignored) {}
+            }
+            ex.setUpdatedAt(LocalDateTime.now());
+            result = ex;
+        } else {
+            result = Result.builder()
+                    .event(event).athlete(athlete).round(round).heat(heat).lane(lane)
+                    .rawTime(v.get("rawTime"))
+                    .timeSeconds(timeSeconds)
+                    .status(nonFinishStatus != null ? nonFinishStatus : "valid")
+                    .remark(v.get("remark"))
+                    .isRecord(isRecordRemark(v.get("remark")))
+                    .enteredAt(LocalDateTime.now())
+                    .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
+            if (v.get("windSpeed") != null) {
+                try { result.setWindSpeed(Double.parseDouble(v.get("windSpeed"))); }
+                catch (NumberFormatException ignored) {}
+            }
         }
 
         resultRepository.save(result);
+    }
+
+    /** 备注是否含破纪录标记（与 ScoreDataListener 同口径） */
+    private static boolean isRecordRemark(String remark) {
+        if (remark == null || remark.isBlank()) return false;
+        String r = remark.trim().toLowerCase();
+        return r.contains("破纪录") || r.contains("破记录")
+                || r.contains("新纪录") || r.contains("新记录")
+                || r.contains("纪录") || r.contains("记录")
+                || r.contains("record");
     }
 
     private void processRegistrationRow(Map<String, String> v) {

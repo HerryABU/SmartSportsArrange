@@ -86,4 +86,9 @@ public final class ExcelTestDataFactory {
     public static byte[] eventsimple(String[][] rows) {
         return xlsx(List.of("项目代码", "项目名称", "每组人数", "每批组数", "项目类型", "场地号", "每批所需时间(分)"), rows);
     }
+
+    /** 成绩表（8列：项目编码/运动员号码/运动员姓名/成绩/组别/道次/风速/备注）。 */
+    public static byte[] score(String[][] rows) {
+        return xlsx(List.of("项目编码", "运动员号码", "运动员姓名", "成绩", "组别", "道次", "风速", "备注"), rows);
+    }
 }

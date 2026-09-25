@@ -3,6 +3,7 @@ package com.sports.service;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.event.Event;
+import com.sports.entity.result.Result;
 import com.sports.entity.venue.Venue;
 import com.sports.entity.registration.Registration;
 import com.sports.repository.arrange.ArrangementRepository;
@@ -77,6 +78,9 @@ class ExcelImportDynamicCaseTest {
     private static final Map<String, String> EVENTSIMPLE_MAP = Map.of(
             "0", "eventCode", "1", "eventName", "2", "teamMembers", "3", "concurrency",
             "4", "category", "5", "defaultVenueCode", "6", "perBatchMinutes");
+    private static final Map<String, String> SCORE_MAP = Map.of(
+            "0", "eventCode", "1", "athleteNumber", "2", "athleteName", "3", "rawTime",
+            "4", "heat", "5", "lane", "6", "windSpeed", "7", "remark");
 
     private static MockMultipartFile file(byte[] bytes, String name) {
         return new MockMultipartFile("file", name,
@@ -409,5 +413,75 @@ class ExcelImportDynamicCaseTest {
         assertEquals(1, result.get("success"), "仅首行应成功: " + result);
         assertEquals(1, result.get("failed"), "重复编码应失败: " + result);
         verify(venueService, times(1)).create(any(Venue.class));
+    }
+
+    // ==================== 成绩表（score，upsert） ====================
+
+    @Test
+    @DisplayName("成绩表：新建成绩——(项目,运动员) 无记录时落库，时间解析为秒、状态 valid")
+    void scoreCreate() {
+        Event event = Event.builder().id(20L).code("100M").name("100米").build();
+        Athlete a = Athlete.builder().id(21L).name("张三").number("010101").build();
+        when(eventRepository.findByCode("100M")).thenReturn(Optional.of(event));
+        when(athleteRepository.findByNumber("010101")).thenReturn(Optional.of(a));
+        when(arrangementRepository.findByEventIdAndAthleteId(20L, 21L)).thenReturn(Optional.empty());
+        when(resultRepository.findByEventIdAndAthleteId(20L, 21L)).thenReturn(Optional.empty());
+        when(resultRepository.save(any(Result.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] xlsx = ExcelTestDataFactory.score(new String[][]{
+                {"100M", "010101", "张三", "12.34", "1", "3", "", ""}});
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "成绩表.xlsx"), mapping("score", SCORE_MAP));
+
+        assertEquals(1, result.get("success"), "成绩应导入成功: " + result);
+        assertEquals(0, result.get("failed"));
+        ArgumentCaptor<Result> cap = ArgumentCaptor.forClass(Result.class);
+        verify(resultRepository).save(cap.capture());
+        Result r = cap.getValue();
+        assertEquals("12.34", r.getRawTime());
+        assertEquals(12.34, r.getTimeSeconds(), 1e-9);
+        assertEquals("valid", r.getStatus());
+        assertEquals("final", r.getRound());
+        assertSame(event, r.getEvent());
+        assertSame(a, r.getAthlete());
+    }
+
+    @Test
+    @DisplayName("成绩表：重复导入同一(项目,运动员)——成绩一致则幂等跳过，不一致则就地更新")
+    void scoreUpsertUpdate() {
+        Event event = Event.builder().id(20L).code("100M").name("100米").build();
+        Athlete a = Athlete.builder().id(21L).name("张三").number("010101").build();
+        Result existing = Result.builder().id(99L).event(event).athlete(a)
+                .rawTime("11.00").timeSeconds(11.0).status("valid").round("final").build();
+        when(eventRepository.findByCode("100M")).thenReturn(Optional.of(event));
+        when(athleteRepository.findByNumber("010101")).thenReturn(Optional.of(a));
+        when(arrangementRepository.findByEventIdAndAthleteId(20L, 21L)).thenReturn(Optional.empty());
+        when(resultRepository.findByEventIdAndAthleteId(20L, 21L)).thenReturn(Optional.of(existing));
+        when(resultRepository.save(any(Result.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // 不一致的成绩 → 应更新已有记录（而非整行失败）
+        byte[] xlsx = ExcelTestDataFactory.score(new String[][]{
+                {"100M", "010101", "张三", "12.34", "1", "3", "", ""}});
+        Map<String, Object> result = excelService.importWithMapping(
+                file(xlsx, "成绩表.xlsx"), mapping("score", SCORE_MAP));
+
+        assertEquals(1, result.get("success"), "更新也应计为成功: " + result);
+        assertEquals(0, result.get("failed"));
+        verify(resultRepository).save(existing);            // 同一实例被更新
+        assertEquals("12.34", existing.getRawTime(), "成绩应被新值覆盖");
+        assertEquals(12.34, existing.getTimeSeconds(), 1e-9);
+        assertSame(event, existing.getEvent());
+        assertSame(a, existing.getAthlete());
+
+        // 一致的成绩 → 幂等跳过（不调用 save）
+        Result existing2 = Result.builder().id(99L).event(event).athlete(a)
+                .rawTime("12.34").timeSeconds(12.34).status("valid").round("final").build();
+        when(resultRepository.findByEventIdAndAthleteId(20L, 21L)).thenReturn(Optional.of(existing2));
+        byte[] xlsx2 = ExcelTestDataFactory.score(new String[][]{
+                {"100M", "010101", "张三", "12.34", "1", "3", "", ""}});
+        Map<String, Object> r2 = excelService.importWithMapping(
+                file(xlsx2, "成绩表.xlsx"), mapping("score", SCORE_MAP));
+        assertEquals(1, r2.get("success"));
+        verify(resultRepository, times(1)).save(any(Result.class)); // 跳过分支不落库
     }
 }
