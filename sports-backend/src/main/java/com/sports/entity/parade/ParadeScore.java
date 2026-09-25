@@ -10,6 +10,7 @@ import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
 import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.meet.SportsMeet;
 
 /**
  * 入场式（开幕式方阵）得分 —— 需手动录入或按 Excel 导入。
@@ -24,7 +25,8 @@ import com.sports.entity.clazz.ClassInfo;
         indexes = {
                 @Index(name = "idx_parade_score_class", columnList = "class_info_id"),
                 @Index(name = "idx_parade_score_class_grade", columnList = "class_info_id, grade"),
-                @Index(name = "idx_parade_score_grade", columnList = "grade")
+                @Index(name = "idx_parade_score_grade", columnList = "grade"),
+                @Index(name = "idx_parade_score_meet", columnList = "meet_id")
         })
 @SQLRestriction("deleted_at IS NULL")
 public class ParadeScore {
@@ -47,6 +49,11 @@ public class ParadeScore {
     /** 入场式得分（百分制或十分制由使用者约定） */
     @Column(nullable = false)
     private Double score;
+
+    /** 所属届；历史数据经 MeetBackfillInitializer 回填默认届 */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "meet_id")
+    private SportsMeet meet;
 
     /** 该班级入场式名次（可选，录入时可按分数自动排） */
     @Column

@@ -47,4 +47,10 @@ public interface ResultRepository extends JpaRepository<Result, Long>, JpaSpecif
 
     @Query("SELECT r FROM Result r WHERE r.athlete.id IN :athleteIds AND r.status = 'valid'")
     List<Result> findValidByAthleteIdIn(@Param("athleteIds") List<Long> athleteIds);
+
+    /** 某届下全部成绩（进步榜用） */
+    List<Result> findByMeetId(Long meetId);
+
+    /** 尚未归属届的成绩（历史回填用） */
+    List<Result> findByMeetIdIsNull();
 }

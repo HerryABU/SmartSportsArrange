@@ -3,12 +3,14 @@ package com.sports.service.registration;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.event.Event;
+import com.sports.entity.meet.SportsMeet;
 import com.sports.entity.registration.Registration;
 import com.sports.repository.athlete.AthleteRepository;
 import com.sports.repository.clazz.ClassInfoRepository;
 import com.sports.repository.event.EventRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.system.SystemConfigRepository;
+import com.sports.service.meet.MeetService;
 import com.alibaba.excel.EasyExcel;
 import com.sports.security.jwt.JwtUserDetails;
 import jakarta.persistence.criteria.Predicate;
@@ -53,6 +55,7 @@ public class RegistrationService {
     private final EventRepository eventRepository;
     private final ClassInfoRepository classInfoRepository;
     private final SystemConfigRepository systemConfigRepository;
+    private final MeetService meetService;
     private final NumberRuleService numberRuleService;
     private final AuditService auditService;
 
@@ -150,6 +153,7 @@ public class RegistrationService {
             throw new IllegalArgumentException("该运动员报名项目已达上限(" + maxPerAthlete + "项)");
         Registration reg = Registration.builder()
                 .athlete(athlete).event(event)
+                .meet(meetService.getActiveOrCreateDefault())
                 .status("pending")
                 .registrationTime(LocalDateTime.now())
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())

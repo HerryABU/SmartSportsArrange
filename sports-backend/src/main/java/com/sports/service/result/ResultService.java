@@ -3,11 +3,13 @@ package com.sports.service.result;
 import com.sports.entity.arrange.Arrangement;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.event.Event;
+import com.sports.entity.meet.SportsMeet;
 import com.sports.entity.result.Result;
 import com.sports.repository.arrange.ArrangementRepository;
 import com.sports.repository.event.EventRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.repository.system.SystemConfigRepository;
+import com.sports.service.meet.MeetService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -39,6 +41,7 @@ public class ResultService {
     private final SystemConfigRepository systemConfigRepository;
     private final ExcelService excelService;
     private final SystemService systemService;
+    private final MeetService meetService;
 
     /**
      * 录入成绩
@@ -75,6 +78,7 @@ public class ResultService {
                 Result result = Result.builder()
                         .event(event)
                         .athlete(arrangement.getAthlete())
+                        .meet(meetService.getActiveOrCreateDefault())
                         .heat(heat != null ? heat : arrangement.getHeat())
                         .lane(arrangement.getLane())
                         .rawTime(input.getRawTime())

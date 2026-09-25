@@ -9,6 +9,7 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.event.Event;
+import com.sports.entity.meet.SportsMeet;
 
 @Data
 @Builder
@@ -23,7 +24,8 @@ import com.sports.entity.event.Event;
         indexes = {
                 @Index(name = "idx_registration_athlete", columnList = "athlete_id"),
                 @Index(name = "idx_registration_event", columnList = "event_id"),
-                @Index(name = "idx_registration_status", columnList = "status")
+                @Index(name = "idx_registration_status", columnList = "status"),
+                @Index(name = "idx_registration_meet", columnList = "meet_id")
         })
 public class Registration {
 
@@ -38,6 +40,11 @@ public class Registration {
     @ManyToOne(optional = false)
     @JoinColumn(name = "event_id", nullable = false)
     private Event event;
+
+    /** 所属届；历史数据经 MeetBackfillInitializer 回填默认届 */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "meet_id")
+    private SportsMeet meet;
 
     @Column(length = 20, nullable = false)
     @Builder.Default

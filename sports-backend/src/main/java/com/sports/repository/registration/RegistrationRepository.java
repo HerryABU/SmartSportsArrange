@@ -58,4 +58,10 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
 
     @Query("SELECT r FROM Registration r WHERE r.event.id = :eventId AND r.athlete.classInfo.id = :classId")
     List<Registration> findByEventIdAndClassId(@Param("eventId") Long eventId, @Param("classId") Long classId);
+
+    /** 某届下全部报名（含各状态） */
+    List<Registration> findByMeetId(Long meetId);
+
+    /** 尚未归属届的报名（历史回填用） */
+    List<Registration> findByMeetIdIsNull();
 }

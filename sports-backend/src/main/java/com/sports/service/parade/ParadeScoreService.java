@@ -1,9 +1,11 @@
 package com.sports.service.parade;
 
 import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.meet.SportsMeet;
 import com.sports.entity.parade.ParadeScore;
 import com.sports.repository.clazz.ClassInfoRepository;
 import com.sports.repository.parade.ParadeScoreRepository;
+import com.sports.service.meet.MeetService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,7 @@ public class ParadeScoreService {
 
     private final ParadeScoreRepository paradeScoreRepository;
     private final ClassInfoRepository classInfoRepository;
+    private final MeetService meetService;
 
     /** 列表（可按年级过滤；模糊年级：传「高一年级 / 10年级」同样命中） */
     @Transactional(readOnly = true)
@@ -63,6 +66,7 @@ public class ParadeScoreService {
             ps.setClassName(ci.getName());
             ps.setGrade(ci.getGrade());
             ps.setScore(score);
+            ps.setMeet(meetService.getActiveOrCreateDefault());
             ps.setRemark(item.get("remark") != null ? String.valueOf(item.get("remark")) : ps.getRemark());
             ps.setUpdatedAt(LocalDateTime.now());
             if (ps.getCreatedAt() == null) ps.setCreatedAt(LocalDateTime.now());
@@ -156,6 +160,7 @@ public class ParadeScoreService {
                     ps.setClassName(ci.getName());
                     ps.setGrade(ci.getGrade());
                     ps.setScore(score);
+                    ps.setMeet(meetService.getActiveOrCreateDefault());
                     ps.setUpdatedAt(LocalDateTime.now());
                     if (ps.getCreatedAt() == null) ps.setCreatedAt(LocalDateTime.now());
                     paradeScoreRepository.save(ps);

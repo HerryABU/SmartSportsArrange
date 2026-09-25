@@ -20,4 +20,10 @@ public interface ParadeScoreRepository extends JpaRepository<ParadeScore, Long> 
 
     @Query("SELECT p FROM ParadeScore p WHERE p.grade = :grade AND p.deletedAt IS NULL ORDER BY p.score DESC")
     List<ParadeScore> findByGrade(@Param("grade") String grade);
+
+    /** 某届下全部入场式得分（含软删，回填用） */
+    List<ParadeScore> findByMeetId(Long meetId);
+
+    /** 尚未归属届的入场式得分（历史回填用） */
+    List<ParadeScore> findByMeetIdIsNull();
 }
