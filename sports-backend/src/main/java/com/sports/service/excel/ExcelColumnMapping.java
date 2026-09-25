@@ -122,6 +122,12 @@ public final class ExcelColumnMapping {
         // 年级表（1~2列）：年级 / 序号 —— 供「把年级拆成独立表」的场景（写入系统年级配置）
         TYPE_FIELDS.put("grade", new LinkedHashMap<>(Map.of(
             "name","年级","sortOrder","序号")));
+        // 场地表：场地编码/场地名称/类型/可容纳项目数/最大并行数/排序/启用
+        // 场地是编排引擎「并行上限」的数据来源；编码唯一，重跑计入跳过。
+        TYPE_FIELDS.put("venue", new LinkedHashMap<>(Map.of(
+            "code","场地编码","name","场地名称","type","类型",
+            "capacity","可容纳项目数","parallelMax","最大并行数",
+            "sortOrder","排序","enabled","启用")));
     }
 
     private ExcelColumnMapping() {
@@ -241,6 +247,24 @@ public final class ExcelColumnMapping {
         combined.put("组号", "teamTag");
         combined.put("队伍标识", "teamTag");
         TYPE_COLUMN_ALIASES.put("athlete_signup", combined);
+
+        // 场地表：处理器读 code/name/type/capacity/parallelMax/sortOrder/enabled。
+        // 全局「场地编码/场地号」会被误映射到 defaultVenueCode（项目表用）→ 必须给专属表纠正为 code。
+        Map<String, String> venue = new LinkedHashMap<>();
+        venue.put("场地编码", "code");
+        venue.put("场地号", "code");
+        venue.put("场地名称", "name");
+        venue.put("名称", "name");
+        venue.put("类型", "type");
+        venue.put("可容纳项目数", "capacity");
+        venue.put("容量", "capacity");
+        venue.put("最大并行数", "parallelMax");
+        venue.put("并行数", "parallelMax");
+        venue.put("排序", "sortOrder");
+        venue.put("顺序", "sortOrder");
+        venue.put("启用", "enabled");
+        venue.put("是否启用", "enabled");
+        TYPE_COLUMN_ALIASES.put("venue", venue);
     }
 
     /** 归一化：去空白/常见分隔符与大小写差异，便于「表头 ↔ 别名」比较。 */

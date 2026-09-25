@@ -13,6 +13,7 @@ import com.sports.entity.event.EventSchedule;
 import com.sports.entity.referee.Referee;
 import com.sports.entity.registration.Registration;
 import com.sports.entity.result.Result;
+import com.sports.entity.venue.Venue;
 import com.sports.repository.arrange.ArrangementRepository;
 import com.sports.repository.athlete.AthleteRepository;
 import com.sports.repository.clazz.ClassInfoRepository;
@@ -21,6 +22,7 @@ import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.event.EventScheduleRepository;
 import com.sports.repository.venue.VenueRepository;
 import com.sports.repository.referee.RefereeRepository;
+import com.sports.service.venue.VenueService;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
 import jakarta.servlet.http.HttpServletResponse;
@@ -65,6 +67,7 @@ public class ExcelService {
     private final EventRefereeRepository eventRefereeRepository;
     private final RefereeRepository refereeRepository;
     private final VenueRepository venueRepository;
+    private final VenueService venueService;
     /** 年级表导入需要写系统年级配置（与「班级表」同属基础数据） */
     private final GradeService gradeService;
 
@@ -117,7 +120,7 @@ public class ExcelService {
         // 多表导入同样支持（按表头自动识别）。
         String[][] sheets = {
                 {"grade", "年级表"}, {"class", "班级表"}, {"roster", "全名单表"},
-                {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"}, {"signup", "报名表"}};
+                {"venue", "场地表"}, {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"}, {"signup", "报名表"}};
         try (OutputStream out = response.getOutputStream();
              com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
             int idx = 0;
@@ -195,6 +198,14 @@ public class ExcelService {
                 sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30"));
                 sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90"));
                 sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300"));
+            }
+            case "venue" -> {
+                // 场地表：场地编码/场地名称/类型/可容纳项目数/最大并行数/排序/启用
+                // 编排引擎以各场地的 parallelMax 作为该场地同一时刻可并行进行的项目数上限（1=串行，n=并行）
+                fileName = "场地表导入模板.xlsx";
+                sheet.add(List.of("场地编码","场地名称","类型","可容纳项目数","最大并行数","排序","启用"));
+                sheet.add(List.of("TRACK","主跑道","径赛","1","8","1","是"));
+                sheet.add(List.of("FIELD_A","田赛A区","田赛","6","3","2","是"));
             }
             case "roster" -> {
                 // 全名单表（5列）：年级/班级/姓名/学号/性别 —— 运动员主数据
@@ -279,6 +290,15 @@ public class ExcelService {
                 notes.add(List.of("项目类型", "取值：径赛 / 田赛 / 趣味运动会 / 球类；用于推断是否占道次与趣味并行。"));
                 notes.add(List.of("场地号", "场地编码（与全局场地配置 code 对应），如 TRACK / FIELD_A；绑定独立并发池。"));
                 notes.add(List.of("每批所需时间(分)", "一批人同时上场的分钟数，如趣味项目一组5分钟。"));
+            }
+            case "venue" -> {
+                notes.add(List.of("场地编码", "唯一编码，如 TRACK / FIELD_A / SWIM；项目表的「场地号」须与之一致。"));
+                notes.add(List.of("场地名称", "展示用名称，如 主跑道 / 田赛A区 / 游泳馆。"));
+                notes.add(List.of("类型", "取值：径赛(track) / 田赛(field) / 游泳(pool) / 其它(other)。"));
+                notes.add(List.of("可容纳项目数", "冗余展示用，编排以「最大并行数」为准。"));
+                notes.add(List.of("最大并行数", "同一时刻可同时进行的项目数（1=串行，n=并行）；项目绑定该场地后，其并发数受此上限约束。"));
+                notes.add(List.of("排序", "场地在列表中的展示/出场顺序，可留空（留空按现有数量顺延）。"));
+                notes.add(List.of("启用", "填 是 / 否（默认 是）；停用后不参与编排。"));
             }
             case "roster" -> {
                 notes.add(List.of("年级", "如 高一年级；用于年级分组与统计。"));
@@ -406,6 +426,7 @@ public class ExcelService {
         // 按年级拆分的名单 Sheet 误判为年级主数据（那种 Sheet 由表头推断为 roster）。
         else if (l.contains("年级表") || l.contains("年级列表") || "年级".equals(l.trim())) return "grade";
         else if (l.contains("运动项目表")) return "eventsimple";
+        else if (l.contains("场地表") || l.contains("场馆") || l.contains("venue")) return "venue";
         else if (l.contains("event") || l.contains("项目")) return "event";
         return null;
     }
@@ -489,6 +510,7 @@ public class ExcelService {
             case "signup" -> processSignupRow(values);
             case "athlete_signup" -> processCombinedRow(values);
             case "grade" -> processGradeRow(values);
+            case "venue" -> processVenueRow(values);
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
     }
@@ -533,6 +555,48 @@ public class ExcelService {
         body.put("name", name);
         body.put("sortOrder", sortOrder != null ? sortOrder : grades.size() + 1);
         gradeService.addGrade(body);
+    }
+
+    // ==================== 场地表 ====================
+
+    /**
+     * 场地表行处理：创建场地（{@code Venue}）。
+     *
+     * <p>场地是编排引擎「并行上限」的数据来源：{@code parallelMax} 即该场地同一时刻可并行进行的项目数
+     * （1=串行，n=并行）；项目通过 {@code Event.defaultVenueCode} 绑定场地后受该上限约束。
+     * 编码唯一；重跑同一份工作簿时「已存在」计入跳过而不算失败。</p>
+     */
+    private void processVenueRow(Map<String, String> v) {
+        String code = trimToNull(v.get("code"));
+        if (code == null) throw new RuntimeException("场地编码不能为空");
+        if (venueRepository.existsByCode(code)) throw new RuntimeException("场地编码已存在: " + code);
+        String name = trimToNull(v.get("name"));
+        if (name == null) name = code;
+        String type = trimToNull(v.get("type"));
+        if (type == null) type = "other";
+        Integer capacity = parseIntSafe(v.get("capacity"), null);
+        Integer parallelMax = parseIntSafe(v.get("parallelMax"), null);
+        Integer sortOrder = parseIntSafe(v.get("sortOrder"), null);
+        Boolean enabled = parseBooleanSafe(v.get("enabled"), true);
+        venueService.create(Venue.builder()
+                .code(code).name(name).type(type)
+                .capacity(capacity != null ? capacity : 1)
+                .parallelMax(parallelMax != null ? parallelMax : 1)
+                .sortOrder(sortOrder != null ? sortOrder : 0)
+                .enabled(enabled != null ? enabled : true)
+                .build());
+    }
+
+    /** 布尔解析（场地「启用」列）：是/1/true/y/yes/启用 → true，否/0/false/n/no/停用 → false，其余取默认。 */
+    private Boolean parseBooleanSafe(String s, Boolean def) {
+        if (s == null) return def;
+        String t = s.trim().toLowerCase();
+        if (t.isEmpty()) return def;
+        if ("1".equals(t) || "true".equals(t) || "y".equals(t) || "yes".equals(t)
+                || "是".equals(t) || "启用".equals(t) || "开".equals(t)) return true;
+        if ("0".equals(t) || "false".equals(t) || "n".equals(t) || "no".equals(t)
+                || "否".equals(t) || "停用".equals(t) || "关".equals(t)) return false;
+        return def;
     }
 
     // ==================== 批量逐行导入（多表导入复用） ====================

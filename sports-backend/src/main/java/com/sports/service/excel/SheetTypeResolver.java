@@ -39,17 +39,18 @@ public final class SheetTypeResolver {
         PRIORITY.put("athlete", 3);
         PRIORITY.put("event", 4);
         PRIORITY.put("eventsimple", 5);
-        PRIORITY.put("user", 6);
-        PRIORITY.put("registration", 7);
-        PRIORITY.put("signup", 8);
+        PRIORITY.put("venue", 6);
+        PRIORITY.put("user", 7);
+        PRIORITY.put("registration", 8);
+        PRIORITY.put("signup", 9);
         // 合一表：既建运动员又写报名，报名依赖「项目」，故必须排在 event/eventsimple 之后、score 之前
-        PRIORITY.put("athlete_signup", 9);
-        PRIORITY.put("score", 10);
+        PRIORITY.put("athlete_signup", 10);
+        PRIORITY.put("score", 11);
     }
 
     /** 参与表头指纹判定的候选类型（顺序即平局时的优先级）。 */
     private static final List<String> CANDIDATES = List.of(
-            "grade", "class", "roster", "athlete", "event", "eventsimple", "signup", "registration", "athlete_signup", "score", "user");
+            "grade", "class", "roster", "athlete", "event", "eventsimple", "venue", "signup", "registration", "athlete_signup", "score", "user");
 
     private SheetTypeResolver() {
     }
@@ -83,6 +84,7 @@ public final class SheetTypeResolver {
         LABELS.put("athlete", "运动员表（12列）");
         LABELS.put("event", "项目表（表格2）");
         LABELS.put("eventsimple", "运动项目表（7列）");
+        LABELS.put("venue", "场地表");
         LABELS.put("user", "用户表");
         LABELS.put("registration", "报名表（旧：含号码）");
         LABELS.put("signup", "报名表（7列：含组号）");
