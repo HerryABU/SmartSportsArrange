@@ -15,6 +15,12 @@ public interface ParadeScoreRepository extends JpaRepository<ParadeScore, Long> 
     @Query("SELECT p FROM ParadeScore p WHERE p.classInfo.id = :classId AND p.deletedAt IS NULL")
     Optional<ParadeScore> findByClassId(@Param("classId") Long classId);
 
+    @Query("SELECT p FROM ParadeScore p WHERE p.projectCode = :projectCode AND p.deletedAt IS NULL ORDER BY p.score DESC")
+    List<ParadeScore> findByProjectCode(@Param("projectCode") String projectCode);
+
+    @Query("SELECT p FROM ParadeScore p WHERE p.projectCode = :projectCode AND p.classInfo.id = :classId AND p.deletedAt IS NULL")
+    Optional<ParadeScore> findByProjectCodeAndClassId(@Param("projectCode") String projectCode, @Param("classId") Long classId);
+
     @Query("SELECT p FROM ParadeScore p WHERE p.deletedAt IS NULL ORDER BY p.score DESC")
     List<ParadeScore> findAllActive();
 

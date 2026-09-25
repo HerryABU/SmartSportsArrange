@@ -2,6 +2,7 @@ package com.sports.service.parade;
 
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.meet.SportsMeet;
+import com.sports.entity.parade.CustomProject;
 import com.sports.entity.parade.ParadeScore;
 import com.sports.repository.clazz.ClassInfoRepository;
 import com.sports.repository.parade.ParadeScoreRepository;
@@ -22,7 +23,7 @@ import com.sports.common.util.FileEncoding;
 import com.sports.common.util.Grades;
 
 /**
- * 入场式得分服务：手动录入 / Excel 导入 / 查询。
+ * 自定义项目得分服务（班级打分）：手动录入 / Excel 导入 / 查询。按 projectCode 归属到具体项目。
  */
 @Slf4j
 @Service
@@ -33,21 +34,26 @@ public class ParadeScoreService {
     private final ParadeScoreRepository paradeScoreRepository;
     private final ClassInfoRepository classInfoRepository;
     private final MeetService meetService;
+    private final CustomProjectService customProjectService;
 
-    /** 列表（可按年级过滤；模糊年级：传「高一年级 / 10年级」同样命中） */
+    /** 列表（按项目 + 可选年级；按分数从高到低重排名次） */
     @Transactional(readOnly = true)
-    public List<ParadeScore> list(String grade) {
+    public List<ParadeScore> list(String projectCode, String grade) {
+        String code = normalizeCode(projectCode);
         String normGrade = Grades.norm(grade);
         List<ParadeScore> list = (normGrade == null || normGrade.isBlank())
-                ? paradeScoreRepository.findAllActive()
-                : paradeScoreRepository.findByGrade(normGrade);
-        // 按分数从高到低重新排定名次（1-based）
+                ? paradeScoreRepository.findByProjectCode(code)
+                : paradeScoreRepository.findByProjectCode(code).stream()
+                    .filter(p -> normGrade.equals(p.getGrade()))
+                    .toList();
         list.sort(Comparator.comparing(ParadeScore::getScore).reversed());
         return list;
     }
 
-    /** 批量保存/更新（手动录入：一表多行） */
-    public List<ParadeScore> saveAll(List<Map<String, Object>> items) {
+    /** 批量保存/更新（手动录入：一表多行），按 projectCode 归属 */
+    public List<ParadeScore> saveAll(String projectCode, List<Map<String, Object>> items) {
+        String code = normalizeCode(projectCode);
+        CustomProject project = resolveProject(code);
         List<ParadeScore> saved = new ArrayList<>();
         for (Map<String, Object> item : items) {
             Long classId = item.get("classId") instanceof Number n
@@ -60,40 +66,43 @@ public class ParadeScoreService {
             ClassInfo ci = classInfoRepository.findById(classId).orElse(null);
             if (ci == null) continue;
 
-            ParadeScore existing = paradeScoreRepository.findByClassId(classId).orElse(null);
+            ParadeScore existing = paradeScoreRepository.findByProjectCodeAndClassId(code, classId).orElse(null);
             ParadeScore ps = existing != null ? existing : new ParadeScore();
             ps.setClassInfo(ci);
             ps.setClassName(ci.getName());
             ps.setGrade(ci.getGrade());
             ps.setScore(score);
+            ps.setProjectCode(project.getCode());
+            ps.setProjectName(project.getName());
+            ps.setType(project.getType());
             ps.setMeet(meetService.getActiveOrCreateDefault());
             ps.setRemark(item.get("remark") != null ? String.valueOf(item.get("remark")) : ps.getRemark());
             ps.setUpdatedAt(LocalDateTime.now());
             if (ps.getCreatedAt() == null) ps.setCreatedAt(LocalDateTime.now());
             saved.add(paradeScoreRepository.save(ps));
         }
-        log.info("保存入场式得分: {} 条", saved.size());
+        log.info("保存项目[{}]得分: {} 条", code, saved.size());
         return saved;
     }
 
     /** 删除一条（软删除） */
     public void delete(Long id) {
         ParadeScore ps = paradeScoreRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("入场式得分记录不存在: " + id));
+                .orElseThrow(() -> new RuntimeException("项目得分记录不存在: " + id));
         ps.setDeletedAt(LocalDateTime.now());
         ps.setUpdatedAt(LocalDateTime.now());
         paradeScoreRepository.save(ps);
-        log.info("删除入场式得分: id={}", id);
+        log.info("删除项目得分: id={}", id);
     }
 
-    /** 清空（可按年级） */
-    public void clear(String grade) {
-        List<ParadeScore> all = list(grade);
+    /** 清空（按项目 + 可选年级） */
+    public void clear(String projectCode, String grade) {
+        List<ParadeScore> all = list(projectCode, grade);
         for (ParadeScore ps : all) {
             ps.setDeletedAt(LocalDateTime.now());
             paradeScoreRepository.save(ps);
         }
-        log.info("清空入场式得分: {} 条", all.size());
+        log.info("清空项目[{}]得分: {} 条", normalizeCode(projectCode), all.size());
     }
 
     /**
@@ -101,9 +110,11 @@ public class ParadeScoreService {
      * ① 班级 | 得分
      * ② 年级 | 班级 | 得分
      */
-    public Map<String, Object> importExcel(MultipartFile file) {
+    public Map<String, Object> importExcel(String projectCode, MultipartFile file) {
+        String code = normalizeCode(projectCode);
+        CustomProject project = resolveProject(code);
         String fn = file.getOriginalFilename();
-        log.info("导入入场式得分: {}", fn);
+        log.info("导入项目[{}]得分: {}", code, fn);
         int success = 0;
         List<Map<String, Object>> errors = new ArrayList<>();
         try {
@@ -154,12 +165,15 @@ public class ParadeScoreService {
                         errors.add(err);
                         continue;
                     }
-                    ParadeScore existing = paradeScoreRepository.findByClassId(ci.getId()).orElse(null);
+                    ParadeScore existing = paradeScoreRepository.findByProjectCodeAndClassId(code, ci.getId()).orElse(null);
                     ParadeScore ps = existing != null ? existing : new ParadeScore();
                     ps.setClassInfo(ci);
                     ps.setClassName(ci.getName());
                     ps.setGrade(ci.getGrade());
                     ps.setScore(score);
+                    ps.setProjectCode(project.getCode());
+                    ps.setProjectName(project.getName());
+                    ps.setType(project.getType());
                     ps.setMeet(meetService.getActiveOrCreateDefault());
                     ps.setUpdatedAt(LocalDateTime.now());
                     if (ps.getCreatedAt() == null) ps.setCreatedAt(LocalDateTime.now());
@@ -186,6 +200,16 @@ public class ParadeScoreService {
 
     // ==================== 辅助 ====================
 
+    private String normalizeCode(String projectCode) {
+        if (projectCode == null || projectCode.isBlank()) return CustomProject.DEFAULT_PARADE_CODE;
+        return projectCode.trim();
+    }
+
+    private CustomProject resolveProject(String code) {
+        return customProjectService.getByCode(code)
+                .orElseThrow(() -> new RuntimeException("自定义项目不存在: " + code));
+    }
+
     private static boolean isHeader(Map<Integer, String> row) {
         for (String v : row.values()) {
             if (v != null && isHeaderCell(v.trim())) return true;
@@ -207,7 +231,7 @@ public class ParadeScoreService {
 
     private List<Map<Integer, String>> readCsv(MultipartFile file) throws IOException {
         List<Map<Integer, String>> rows = new ArrayList<>();
-        String text = com.sports.common.util.FileEncoding.decode(file.getBytes());
+        String text = FileEncoding.decode(file.getBytes());
         String[] lines = text.split("\r?\n", -1);
         for (String line : lines) {
             if (line.trim().isEmpty()) continue;

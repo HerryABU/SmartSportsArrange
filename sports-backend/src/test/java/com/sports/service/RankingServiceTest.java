@@ -3,9 +3,11 @@ package com.sports.service;
 import com.sports.entity.athlete.Athlete;
 import com.sports.entity.clazz.ClassInfo;
 import com.sports.entity.event.Event;
+import com.sports.entity.parade.CustomProject;
 import com.sports.entity.parade.ParadeScore;
 import com.sports.entity.result.Result;
 import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.parade.CustomProjectRepository;
 import com.sports.repository.parade.ParadeScoreRepository;
 import com.sports.repository.result.ResultRepository;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,7 @@ class RankingServiceTest {
     @Mock private ResultRepository resultRepository;
     @Mock private ClassInfoRepository classInfoRepository;
     @Mock private ParadeScoreRepository paradeScoreRepository;
+    @Mock private CustomProjectRepository customProjectRepository;
     @Mock private SystemService systemService;
 
     @InjectMocks private RankingService rankingService;
@@ -292,6 +295,36 @@ class RankingServiceTest {
         assertEquals(Boolean.FALSE, b.get("hasParade"));
         assertEquals(6.0, (Double) b.get("totalWithParade"), 0.001);
         assertEquals(2, b.get("rank"));
+    }
+
+    /**
+     * #28 回归：合分排行只计入 countInTotal=true 的自定义项目；
+     * countInTotal=false（如「广播操比赛」选择不计总分）的得分不纳入 paradeScore / totalWithParade。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void getScoreBoard_excludesCustomProjectWhenCountInTotalFalse() {
+        ClassInfo ca = ClassInfo.builder().id(1L).name("高一1班").grade("高一").build();
+        List<Result> all = List.of(result(1L, 9.0, 1, ca));
+        CustomProject parade = CustomProject.builder().id(1L).code("parade").name("入场式")
+                .countInTotal(true).build();
+        CustomProject gym = CustomProject.builder().id(2L).code("gym").name("广播操比赛")
+                .countInTotal(false).build();
+        when(customProjectRepository.findAllActive()).thenReturn(List.of(parade, gym));
+        when(paradeScoreRepository.findAllActive()).thenReturn(List.of(
+                ParadeScore.builder().id(1L).classInfo(ca).grade("高一").score(5.0).projectCode("parade").build(),
+                ParadeScore.builder().id(2L).classInfo(ca).grade("高一").score(3.0).projectCode("gym").build()));
+        when(resultRepository.findAllValid()).thenReturn(all);
+        when(systemService.getScoringRule()).thenReturn(defaultRule("class", "total_score"));
+
+        Map<String, Object> board = rankingService.getScoreBoard(null, true, 0, false, null);
+        List<Map<String, Object>> rows = (List<Map<String,Object>>) board.get("rows");
+        Map<String, Object> a = rows.get(0);
+
+        // paradeScore 仅合计计入总分的入场式（5.0），广播操（3.0）不计入
+        assertEquals(5.0, (Double) a.get("paradeScore"), 0.001, "countInTotal=false 的项目不得计入 paradeScore");
+        // totalWithParade = 赛事 9 + 入场式 5 = 14（广播操 3 不计入）
+        assertEquals(14.0, (Double) a.get("totalWithParade"), 0.001, "countInTotal=false 的项目不得计入总分");
     }
 
     @Test

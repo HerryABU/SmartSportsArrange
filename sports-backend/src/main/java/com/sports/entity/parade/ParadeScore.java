@@ -26,7 +26,8 @@ import com.sports.entity.meet.SportsMeet;
                 @Index(name = "idx_parade_score_class", columnList = "class_info_id"),
                 @Index(name = "idx_parade_score_class_grade", columnList = "class_info_id, grade"),
                 @Index(name = "idx_parade_score_grade", columnList = "grade"),
-                @Index(name = "idx_parade_score_meet", columnList = "meet_id")
+                @Index(name = "idx_parade_score_meet", columnList = "meet_id"),
+                @Index(name = "idx_parade_score_project", columnList = "project_code")
         })
 @SQLRestriction("deleted_at IS NULL")
 public class ParadeScore {
@@ -45,6 +46,18 @@ public class ParadeScore {
 
     @Column(length = 20)
     private String grade;
+
+    /** 所属自定义项目编码（入场式=parade）；自定义项目区下每班每项目一条 */
+    @Column(length = 40)
+    private String projectCode;
+
+    /** 项目名称冗余（序列化给前端，便于展示） */
+    @Column(length = 60)
+    private String projectName;
+
+    /** 项目类型：PARADE / GYMNASTICS / CUSTOM（冗余，便于统计） */
+    @Column(length = 20)
+    private String type;
 
     /** 入场式得分（百分制或十分制由使用者约定） */
     @Column(nullable = false)

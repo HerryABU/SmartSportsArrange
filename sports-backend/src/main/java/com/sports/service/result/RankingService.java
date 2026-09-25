@@ -1,9 +1,11 @@
 package com.sports.service.result;
 
 import com.sports.entity.clazz.ClassInfo;
+import com.sports.entity.parade.CustomProject;
 import com.sports.entity.parade.ParadeScore;
 import com.sports.entity.result.Result;
 import com.sports.repository.clazz.ClassInfoRepository;
+import com.sports.repository.parade.CustomProjectRepository;
 import com.sports.repository.parade.ParadeScoreRepository;
 import com.sports.repository.result.ResultRepository;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,7 @@ public class RankingService {
     private final ResultRepository resultRepository;
     private final ClassInfoRepository classInfoRepository;
     private final ParadeScoreRepository paradeScoreRepository;
+    private final CustomProjectRepository customProjectRepository;
     private final SystemService systemService;
 
     /**
@@ -214,10 +217,24 @@ public class RankingService {
             else gr.other += score;
         }
 
-        // 入场式得分（班-分映射）
+        // 入场式/自定义项目得分（班-分映射）：仅计入 countInTotal=true 的项目；
+        // 历史未归属项目（projectCode 为空）按旧的「入场式」口径纳入，保证存量数据不丢分。
+        Set<String> countedProjectCodes = customProjectRepository.findAllActive().stream()
+                .filter(CustomProject::getCountInTotal)
+                .map(CustomProject::getCode)
+                .collect(Collectors.toSet());
         Map<Long, Double> paradeByClass = new HashMap<>();
         for (ParadeScore ps : paradeScoreRepository.findAllActive()) {
-            if (ps.getClassInfo() != null) paradeByClass.put(ps.getClassInfo().getId(), ps.getScore());
+            if (ps.getClassInfo() == null || ps.getProjectCode() == null) {
+                // 旧数据（未回填 projectCode）或缺失归属：按入场式口径计入
+                if (ps.getClassInfo() != null) {
+                    paradeByClass.merge(ps.getClassInfo().getId(), ps.getScore(), Double::sum);
+                }
+                continue;
+            }
+            if (countedProjectCodes.contains(ps.getProjectCode())) {
+                paradeByClass.merge(ps.getClassInfo().getId(), ps.getScore(), Double::sum);
+            }
         }
 
         List<BoardRow> values = new ArrayList<>(byClass.values());
