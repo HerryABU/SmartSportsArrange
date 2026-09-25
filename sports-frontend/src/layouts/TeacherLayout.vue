@@ -29,6 +29,7 @@
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
           <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
+          <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会</span></el-menu-item>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
@@ -74,6 +75,7 @@
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
           <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
+          <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会</span></el-menu-item>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
