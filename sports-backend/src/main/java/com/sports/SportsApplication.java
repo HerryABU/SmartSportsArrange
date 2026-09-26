@@ -279,6 +279,8 @@ public class SportsApplication {
     /**
      * 读取运行目录下的 .env 文件（若存在），将其中的数据库相关配置写入 System properties，
      * 供 Spring Boot 通过 relaxed binding 覆盖 application.yml 的默认数据源。
+     * 若 .env 不存在（首次运行），则先生成一个默认模板（SQLite 默认，MySQL/H2 以注释示例给出），
+     * 用户可编辑后重启生效；生成的模板与 application.yml 默认值一致，首次运行行为不变。
      * 支持的键（标准 Spring 环境变量名）：
      *   SPRING_DATASOURCE_URL                JDBC 连接串
      *   SPRING_DATASOURCE_USERNAME           用户名
@@ -291,7 +293,10 @@ public class SportsApplication {
      */
     private static void applyEnvFile() {
         File env = new File("./.env");
-        if (!env.exists()) return;
+        if (!env.exists()) {
+            writeDefaultEnv(env);
+        }
+        if (!env.exists()) return; // 模板生成失败则回退默认配置
         try {
             List<String> lines = Files.readAllLines(env.toPath(), StandardCharsets.UTF_8);
             boolean any = false;
@@ -325,6 +330,50 @@ public class SportsApplication {
             System.err.println("[env] 读取 .env 失败，回退默认配置: " + e.getMessage());
         }
     }
+
+    /** 首次运行：在运行目录生成 .env 默认模板（SQLite 默认，MySQL/H2 以注释示例给出） */
+    private static void writeDefaultEnv(File env) {
+        try {
+            Files.writeString(env.toPath(), DEFAULT_ENV_TEMPLATE, StandardCharsets.UTF_8);
+            System.out.println("[env] 首次运行：已在运行目录生成 .env 模板（默认 SQLite），可编辑后重启生效");
+        } catch (Exception e) {
+            System.err.println("[env] 生成 .env 模板失败，回退默认配置: " + e.getMessage());
+        }
+    }
+
+    /** .env 默认模板：SQLite 默认生效；MySQL/H2 以注释示例给出，切换时务必带 SPRING_JPA_DATABASE_PLATFORM */
+    private static final String DEFAULT_ENV_TEMPLATE = """
+# ============================================================================
+# 运动会智能编排系统 (SmartSportsArrange) — 运行目录数据库 / 运行配置
+# ============================================================================
+# 用法：编辑本文件后重启 java -jar 即生效（无需 source / export）。
+# 也可直接 export 这些变量后启动（Spring Boot 原生支持 OS 环境变量）。
+# 优先级：命令行 --spring.*  >  本文件(.env)  >  data/db-config.json（界面热迁移）  >  application.yml
+#
+# 切换数据库时务必同时设置 SPRING_JPA_DATABASE_PLATFORM（Hibernate 方言），
+# 否则会用默认的 SQLiteDialect 去连 MySQL/H2 而报错。
+# 注：本文件已被 .gitignore 忽略，不会随仓库提交（避免泄露数据库密码）。
+# ============================================================================
+
+# ---------- ① SQLite（默认，零配置）----------
+SPRING_DATASOURCE_URL=jdbc:sqlite:./sports_meet.db?foreign_keys=ON
+SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.sqlite.JDBC
+SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect
+
+# ---------- ② MySQL（生产环境，需先建库）----------
+# SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/sports_meet?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+# SPRING_DATASOURCE_USERNAME=root
+# SPRING_DATASOURCE_PASSWORD=your_mysql_password
+# SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.mysql.cj.jdbc.Driver
+# SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.MySQLDialect
+
+# ---------- ③ H2（嵌入式，文件模式）----------
+# SPRING_DATASOURCE_URL=jdbc:h2:./data/sports_meet;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+# SPRING_DATASOURCE_USERNAME=sa
+# SPRING_DATASOURCE_PASSWORD=
+# SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.h2.Driver
+# SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.H2Dialect
+""";
 
     /** 去除值两侧的引号（' 或 "），支持含空格/特殊字符的值 */
     private static String unquote(String s) {
