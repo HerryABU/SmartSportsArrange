@@ -246,10 +246,14 @@
               <el-input-number v-model="arrangeRuleForm.params.max_attempts" :min="100" :max="100000" :step="100" />
             </el-form-item>
             <el-form-item label="超时时间(秒)">
-              <el-input-number v-model="arrangeRuleForm.params.timeout_seconds" :min="5" :max="120" />
+              <el-input-number v-model="arrangeRuleForm.params.timeout_seconds" :min="0" :max="600" />
+              <el-button size="small" style="margin-left:8px" @click="arrangeRuleForm.params.timeout_seconds = 0">设为不限时</el-button>
+              <span class="rule-desc">0 = 不限时（不限制求解时长）</span>
             </el-form-item>
             <el-form-item label="局部优化轮数">
-              <el-input-number v-model="arrangeRuleForm.params.optimization_rounds" :min="1" :max="20" />
+              <el-input-number v-model="arrangeRuleForm.params.optimization_rounds" :min="0" :max="50" />
+              <el-button size="small" style="margin-left:8px" @click="arrangeRuleForm.params.optimization_rounds = 0">设为无限轮</el-button>
+              <span class="rule-desc">0 = 无限轮（持续用不同随机顺序收敛到最优）</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="saveArrangeRule">保存编排规则</el-button>
