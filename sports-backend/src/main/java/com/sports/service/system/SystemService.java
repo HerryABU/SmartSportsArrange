@@ -289,11 +289,28 @@ public class SystemService {
 
     private static final String APP_CONFIG_FILE = "./data/app-config.json";
 
+    /** 解析合法端口（1-65535），非法返回 null */
+    private Integer parsePort(String s) {
+        try {
+            int p = Integer.parseInt(s);
+            return (p > 0 && p < 65536) ? p : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 取字符串配置值，空则回退默认值 */
+    private String str(Object v, String def) {
+        return v != null && !String.valueOf(v).isBlank() ? String.valueOf(v) : def;
+    }
+
     /** 读取应用运行配置（含默认值兜底） */
     @Transactional(readOnly = true)
     public Map<String, Object> getAppConfig() {
         Map<String, Object> def = new LinkedHashMap<>();
         def.put("port", 8080);
+        def.put("bindMode", "all");
+        def.put("host", "");
         File cfg = new File(APP_CONFIG_FILE);
         if (cfg.exists()) {
             try {
@@ -303,21 +320,71 @@ public class SystemService {
                 log.warn("读取应用运行配置失败，使用默认值", e);
             }
         }
+        // 未显式存储 bindMode 时，根据 host 推导（兼容旧版仅 host 的配置）
+        Object hostObj = def.get("host");
+        String host = hostObj != null ? String.valueOf(hostObj) : "";
+        Object modeObj = def.get("bindMode");
+        String mode = modeObj != null ? String.valueOf(modeObj) : "";
+        if (mode.isBlank()) {
+            def.put("bindMode", deriveBindMode(host));
+        }
         return def;
     }
 
     /** 保存应用运行配置（写入 data/app-config.json，重启后生效） */
     public Map<String, Object> saveAppConfig(Map<String, Object> body) {
+        // 合并已有配置，避免覆盖未涉及的字段（如未来扩展项）
+        Map<String, Object> merged = new LinkedHashMap<>();
         File cfg = new File(APP_CONFIG_FILE);
+        if (cfg.exists()) {
+            try {
+                Map<String, Object> saved = objectMapper.readValue(cfg, new TypeReference<Map<String, Object>>() {});
+                if (saved != null) merged.putAll(saved);
+            } catch (Exception ignored) { /* 解析失败则覆盖重建 */ }
+        }
+        // 端口（1-65535，非法回退 8080）
+        Integer port = parsePort(str(body.get("port"), "8080"));
+        merged.put("port", port != null ? port : 8080);
+        // 绑定模式（ipv4 / ipv6 / localhost / all / ip）
+        String bindMode = str(body.get("bindMode"), "all").trim().toLowerCase();
+        merged.put("bindMode", bindMode);
+        // host：ip 模式用自定义地址，其余由 bindMode 推导（保持 app-config.json 中 host 与 bindMode 一致）
+        if ("ip".equals(bindMode)) {
+            merged.put("host", str(body.get("host"), "").trim());
+        } else {
+            String derived = hostForBindMode(bindMode);
+            merged.put("host", derived == null ? "" : derived);
+        }
         File parent = cfg.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
         try {
-            objectMapper.writeValue(cfg, body);
+            objectMapper.writeValue(cfg, merged);
         } catch (Exception e) {
             throw new RuntimeException("保存应用运行配置失败: " + e.getMessage());
         }
-        log.info("应用运行配置已保存: {}", body);
+        log.info("应用运行配置已保存: {}", merged);
         return getAppConfig();
+    }
+
+    /** 根据 host 反推 bindMode（旧配置兼容） */
+    private String deriveBindMode(String host) {
+        if (host == null || host.isBlank()) return "all";
+        return switch (host.trim()) {
+            case "0.0.0.0" -> "ipv4";
+            case "::" -> "ipv6";
+            case "127.0.0.1", "localhost", "loopback" -> "localhost";
+            default -> "ip";
+        };
+    }
+
+    /** 绑定模式 → server.address 实际值（null 表示不显式设置） */
+    private String hostForBindMode(String mode) {
+        return switch (mode) {
+            case "ipv4" -> "0.0.0.0";
+            case "ipv6" -> "::";
+            case "localhost", "loopback" -> "127.0.0.1";
+            default -> null; // all / ip / 未知
+        };
     }
 
     // ==================== 运动会日程配置（meet_schedule）====================

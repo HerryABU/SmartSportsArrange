@@ -7,15 +7,16 @@
         <p class="setup-sub">欢迎使用。请在几分钟内完成站点初始化配置。</p>
       </div>
 
-      <el-steps :active="step" align-center finish-status="success" class="setup-steps">
+      <el-steps v-if="!installed" :active="step" align-center finish-status="success" class="setup-steps">
         <el-step title="数据库配置" />
         <el-step title="站点信息" />
         <el-step title="管理员账号" />
+        <el-step title="服务端口与网络" />
       </el-steps>
 
       <div class="setup-body">
         <!-- Step 1：数据库配置 -->
-        <div v-if="step === 0">
+        <div v-if="!installed && step === 0">
           <h3 class="step-title">选择数据库</h3>
           <div class="db-cards">
             <div class="db-card" :class="{ on: dbForm.type === 'sqlite' }" @click="dbForm.type = 'sqlite'">
@@ -50,7 +51,7 @@
         </div>
 
         <!-- Step 2：站点信息 -->
-        <div v-if="step === 1">
+        <div v-if="!installed && step === 1">
           <h3 class="step-title">站点信息</h3>
           <el-form :model="siteForm" label-width="100px">
             <el-form-item label="站点名称" required>
@@ -68,7 +69,7 @@
         </div>
 
         <!-- Step 3：管理员账号 -->
-        <div v-if="step === 2">
+        <div v-if="!installed && step === 2">
           <h3 class="step-title">设置管理员账号</h3>
           <el-form :model="adminForm" label-width="100px">
             <el-form-item label="用户名" required>
@@ -85,11 +86,40 @@
             title="安装完成后，安装向导将永久锁定，任何人无法再次进入。" style="margin-bottom:16px" />
           <div class="step-actions">
             <el-button @click="step = 1">上一步</el-button>
+            <el-button type="primary" @click="step = 3">下一步</el-button>
+          </div>
+        </div>
+
+        <!-- Step 4：服务端口与网络 -->
+        <div v-if="!installed && step === 3">
+          <h3 class="step-title">服务端口与网络</h3>
+          <el-form :model="netForm" label-width="120px">
+            <el-form-item label="服务端口">
+              <el-input-number v-model="netForm.port" :min="1" :max="65535" controls-position="right" style="width:200px" />
+              <span style="font-size:12px;color:#909399;margin-left:8px">自定义访问端口，重启后生效（默认 8080）</span>
+            </el-form-item>
+            <el-form-item label="网络绑定">
+              <el-select v-model="netForm.bindMode" style="width:220px">
+                <el-option label="全部网卡（默认）" value="all" />
+                <el-option label="仅 IPv4 (0.0.0.0)" value="ipv4" />
+                <el-option label="IPv6 双栈 (::)" value="ipv6" />
+                <el-option label="仅本机 (127.0.0.1)" value="localhost" />
+                <el-option label="指定网卡 IP" value="ip" />
+              </el-select>
+              <el-input v-if="netForm.bindMode === 'ip'" v-model="netForm.host" placeholder="如 192.168.1.10"
+                        style="width:200px;margin-left:8px" />
+              <span style="font-size:12px;color:#909399;margin-left:8px">服务监听的网络栈，重启后生效</span>
+            </el-form-item>
+          </el-form>
+          <el-alert type="info" :closable="false" show-icon
+            title="端口与网络绑定将写入运行配置，安装完成后重启应用生效。" style="margin-bottom:16px" />
+          <div class="step-actions">
+            <el-button @click="step = 2">上一步</el-button>
             <el-button type="primary" :loading="installing" @click="doInstall">立即安装</el-button>
           </div>
         </div>
 
-        <!-- 安装结果 -->
+        <!-- 安装结果（独立换页：安装完成后仅显示本页，不再显示上方步骤与步骤体） -->
         <div v-if="installed">
           <el-result icon="success" title="安装完成！" :sub-title="installMessage">
             <template #extra>
@@ -125,6 +155,7 @@ const dbForm = reactive({
 })
 const siteForm = reactive({ siteName: '', siteDescription: '' })
 const adminForm = reactive({ adminUsername: 'admin', adminPassword: '', adminPassword2: '' })
+const netForm = reactive({ port: 8080, bindMode: 'all', host: '' })
 
 onMounted(async () => {
   try {
@@ -165,7 +196,10 @@ async function doInstall() {
       siteName: siteForm.siteName,
       siteDescription: siteForm.siteDescription,
       adminUsername: adminForm.adminUsername,
-      adminPassword: adminForm.adminPassword
+      adminPassword: adminForm.adminPassword,
+      port: netForm.port,
+      bindMode: netForm.bindMode,
+      host: netForm.bindMode === 'ip' ? netForm.host : ''
     })
     installed.value = true
     installMessage.value = res.message || '安装完成'
@@ -182,11 +216,12 @@ async function doInstall() {
 }
 
 function goLogin() {
-  // hash 模式下跳转登录页（appBase 已含反代帽子前缀，如 /sportmg）
-  window.location.href = appBase() + '/#/login'
+  // 整页跳转登录页（appBase 已含反代帽子前缀，如 /sportmg）；
+  // 用 origin 拼接避免相对路径解析问题，并强制整页重载以重置安装状态缓存
+  window.location.href = window.location.origin + appBase() + '/#/login'
 }
 function reloadPage() {
-  window.location.href = appBase() + '/#/'
+  window.location.href = window.location.origin + appBase() + '/#/'
 }
 </script>
 

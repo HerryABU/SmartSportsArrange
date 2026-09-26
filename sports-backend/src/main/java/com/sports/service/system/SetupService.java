@@ -38,6 +38,7 @@ public class SetupService {
     private static final String FLAG_FILE = "./data/installed.flag";
     private static final String SETUP_CONFIG_FILE = "./data/setup-config.json";
     private static final String DB_CONFIG_FILE = "./data/db-config.json";
+    private static final String APP_CONFIG_FILE = "./data/app-config.json";
 
     private final UserRepository userRepository;
     private final SystemConfigRepository systemConfigRepository;
@@ -123,6 +124,9 @@ public class SetupService {
         setupConfig.put("adminUsername", adminUsername.trim());
         setupConfig.put("adminPasswordHash", passwordEncoder.encode(adminPassword));
 
+        // 2.1 服务端口与网络绑定（参考 NVS .env 风格）：合并写入 data/app-config.json
+        Map<String, Object> appConfig = buildAppConfig(body);
+
         // 3. 在当前库创建管理员账号（SQLite 场景立即可用；MySQL 场景重启后由 ensureInstalledData 重建）
         createAdmin(adminUsername.trim(), adminPassword);
 
@@ -138,6 +142,7 @@ public class SetupService {
                     writeJsonFile(DB_CONFIG_FILE, body.get("db"));
                 }
                 writeJsonFile(SETUP_CONFIG_FILE, setupConfig);
+                writeJsonFile(APP_CONFIG_FILE, appConfig);
                 writeFlag();
                 log.info("建站向导安装完成（已落盘）: siteName={}, dbType={}, admin={}", siteName, dbType, adminUsername);
             }
@@ -216,6 +221,61 @@ public class SetupService {
     private void saveSiteConfig(String name, String desc) {
         putConfig("siteName", name);
         putConfig("siteDescription", desc);
+    }
+
+    /** 构建安装时的应用运行配置（服务端口 + 网络绑定），合并已有 app-config.json */
+    private Map<String, Object> buildAppConfig(Map<String, Object> body) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        File existing = new File(APP_CONFIG_FILE);
+        if (existing.exists()) {
+            try {
+                Map<String, Object> saved = objectMapper.readValue(existing, new TypeReference<Map<String, Object>>() {});
+                if (saved != null) merged.putAll(saved);
+            } catch (Exception ignored) { /* 解析失败则覆盖重建 */ }
+        }
+        // 端口（1-65535，非法回退 8080）
+        Integer port = parsePort(str(body.get("port"), "8080"));
+        merged.put("port", port != null ? port : 8080);
+        // 绑定模式（ipv4 / ipv6 / localhost / all / ip）
+        String bindMode = str(body.get("bindMode"), "all").trim().toLowerCase();
+        merged.put("bindMode", bindMode);
+        if ("ip".equals(bindMode)) {
+            merged.put("host", str(body.get("host"), "").trim());
+        } else {
+            merged.put("host", hostForBindMode(bindMode));
+        }
+        return merged;
+    }
+
+    /** 根据 host 反推 bindMode（旧配置兼容） */
+    private String deriveBindMode(String host) {
+        if (host == null || host.isBlank()) return "all";
+        return switch (host.trim()) {
+            case "0.0.0.0" -> "ipv4";
+            case "::" -> "ipv6";
+            case "127.0.0.1", "localhost", "loopback" -> "localhost";
+            default -> "ip";
+        };
+    }
+
+    /** 绑定模式 → server.address 实际值（null 表示不显式设置） */
+    private String hostForBindMode(String mode) {
+        return switch (mode) {
+            case "ipv4" -> "0.0.0.0";
+            case "ipv6" -> "::";
+            case "localhost", "loopback" -> "127.0.0.1";
+            default -> null; // all / ip / 未知
+        };
+    }
+
+    /** 解析合法端口（1-65535），非法返回 null */
+    private Integer parsePort(String s) {
+        try {
+            int p = Integer.parseInt(s);
+            return (p > 0 && p < 65536) ? p : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private void putConfig(String key, String val) {

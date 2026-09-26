@@ -46,8 +46,20 @@
               <el-input-number v-model="appConfig.port" :min="1" :max="65535" controls-position="right" style="width:200px" />
               <span class="rule-desc">自定义应用访问端口，保存后重启生效（当前端口 {{ currentPort }}）</span>
             </el-form-item>
+            <el-form-item label="网络绑定">
+              <el-select v-model="appConfig.bindMode" style="width:220px">
+                <el-option label="全部网卡（默认）" value="all" />
+                <el-option label="仅 IPv4 (0.0.0.0)" value="ipv4" />
+                <el-option label="IPv6 双栈 (::)" value="ipv6" />
+                <el-option label="仅本机 (127.0.0.1)" value="localhost" />
+                <el-option label="指定网卡 IP" value="ip" />
+              </el-select>
+              <el-input v-if="appConfig.bindMode === 'ip'" v-model="appConfig.host" placeholder="如 192.168.1.10"
+                        style="width:200px;margin-left:8px" />
+              <span class="rule-desc">选择服务监听的网络栈，保存后重启生效</span>
+            </el-form-item>
             <el-form-item label="访问地址">
-              <el-input :model-value="'http://localhost:' + appConfig.port" disabled style="max-width:300px" />
+              <el-input :model-value="previewAccessUrl" disabled style="max-width:340px" />
             </el-form-item>
 
             <el-form-item>
@@ -762,7 +774,7 @@ const editingUser = ref(null)
 const editingGrade = ref(null)
 
 const basicForm = reactive({ name:'', dateRange:[], location:'', organizer:'', status:'PREPARING' })
-const appConfig = reactive({ port: 8080 })
+const appConfig = reactive({ port: 8080, bindMode: 'all', host: '' })
 const currentPort = ref(window.location.port || '8080')
 const scoringForm = reactive({ '0':9,'1':7,'2':6,'3':5,'4':4,'5':3,'6':2,'7':1 })
 const recordBonus = ref(5)
@@ -1212,18 +1224,34 @@ async function saveBasic() {
   finally { loading.value = false }
 }
 
-// ---- 应用运行配置（服务端口） ----
+// ---- 应用运行配置（服务端口 + 网络绑定） ----
+const previewAccessUrl = computed(() => {
+  const mode = appConfig.bindMode
+  let hostPart = window.location.hostname || 'localhost'
+  if (mode === 'localhost') hostPart = '127.0.0.1'
+  else if (mode === 'ipv6') hostPart = '[::]'
+  else if (mode === 'ip') hostPart = appConfig.host || '指定IP'
+  return `http://${hostPart}:${appConfig.port}`
+})
 async function fetchAppConfig() {
   try {
     const res = await request.get('/system/app-config')
-    if (res && res.port) appConfig.port = Number(res.port) || 8080
+    if (res) {
+      if (res.port) appConfig.port = Number(res.port) || 8080
+      if (res.bindMode) appConfig.bindMode = res.bindMode
+      if (res.host != null) appConfig.host = res.host
+    }
   } catch (e) { console.error(e) }
 }
 async function saveAppConfig() {
   loading.value = true
   try {
-    await request.put('/system/app-config', { port: appConfig.port })
-    ElMessage.success('端口配置已保存，重启应用后生效')
+    await request.put('/system/app-config', {
+      port: appConfig.port,
+      bindMode: appConfig.bindMode,
+      host: appConfig.host
+    })
+    ElMessage.success('运行配置已保存，重启应用后生效')
   } catch (e) { console.error(e) }
   finally { loading.value = false }
 }

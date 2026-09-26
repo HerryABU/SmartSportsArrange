@@ -83,6 +83,7 @@ public class SportsApplication {
             "    --app.host=192.168.1.10   仅绑定指定网卡 IP",
             "    也可用 data/app-config.json 的 host 字段，或标准 --server.address=...",
             "    不设置时绑定全部网卡。",
+            "    运行目录 .env 文件同样支持 SERVER_PORT / SERVER_ADDRESS 键（重启生效）。",
             "",
             "  访问地址示例： http://<本机IP>:<port>/",
             "",
@@ -189,7 +190,15 @@ public class SportsApplication {
         if (cliHost != null && cliHost.isBlank()) cliHost = null;
         if (cliHost != null) { host = cliHost; hostSource = "命令行 --app.host"; }
         else if (cfg != null && cfg.get("host") != null && !String.valueOf(cfg.get("host")).isBlank()) {
-            host = String.valueOf(cfg.get("host")); hostSource = "data/app-config.json";
+            host = String.valueOf(cfg.get("host")); hostSource = "data/app-config.json(host)";
+        }
+        // 未显式指定 host 时，按 bindMode 推导（ipv4 / ipv6 / localhost / all / ip）
+        if (host == null && cfg != null) {
+            String mode = str(cfg.get("bindMode"), null);
+            if (mode != null && !mode.isBlank()) {
+                String derived = hostForBindMode(mode);
+                if (derived != null) { host = derived; hostSource = "data/app-config.json(bindMode)"; }
+            }
         }
         if (host != null) {
             System.setProperty("server.address", host);
@@ -217,6 +226,24 @@ public class SportsApplication {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * 将网络绑定模式转换为 server.address 实际值。
+     *   ipv4      -> 0.0.0.0（仅 IPv4 全部网卡）
+     *   ipv6      -> ::     （IPv6 双栈，可同时接受 IPv4-mapped）
+     *   localhost -> 127.0.0.1（仅本机回环）
+     *   all       -> null  （不显式设置 = 框架默认绑定全部网卡）
+     *   ip        -> null  （自定义 IP 需配合 host 字段，本函数不推导）
+     * 返回 null 表示「不显式设置绑定地址」。
+     */
+    private static String hostForBindMode(String mode) {
+        return switch (mode.toLowerCase()) {
+            case "ipv4" -> "0.0.0.0";
+            case "ipv6" -> "::";
+            case "localhost", "loopback" -> "127.0.0.1";
+            default -> null; // all / ip / 未知：不显式设置
+        };
     }
 
     /** 读取 data/app-config.json；不存在或解析失败返回 null */
@@ -319,6 +346,10 @@ public class SportsApplication {
                         System.setProperty("spring.datasource.driver-class-name", val); any = true; break;
                     case "SPRING_JPA_DATABASE_PLATFORM":
                         System.setProperty("spring.jpa.database-platform", val); any = true; break;
+                    case "SERVER_PORT":
+                        System.setProperty("server.port", val); any = true; break;
+                    case "SERVER_ADDRESS":
+                        System.setProperty("server.address", val); any = true; break;
                     default:
                         if (key.startsWith("SPRING_")) {
                             System.setProperty(key.toLowerCase().replace('_', '.'), val); any = true;
@@ -373,6 +404,14 @@ SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect
 # SPRING_DATASOURCE_PASSWORD=
 # SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.h2.Driver
 # SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.H2Dialect
+
+# ---------- ④ 服务端口与网络绑定（参考 NVS .env 风格）----------
+# 也可用 data/app-config.json 的 port / host / bindMode 字段（系统设置界面保存，重启生效）。
+#   SERVER_PORT    服务端口（默认 8080）
+#   SERVER_ADDRESS 绑定地址：0.0.0.0=全部 IPv4 网卡；::=IPv6 双栈；127.0.0.1=仅本机；或指定网卡 IP
+# 等价写法（优先级更高）：--app.port=8899  --app.host=::
+# SERVER_PORT=8080
+# SERVER_ADDRESS=0.0.0.0
 """;
 
     /** 去除值两侧的引号（' 或 "），支持含空格/特殊字符的值 */
