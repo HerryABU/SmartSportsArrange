@@ -692,8 +692,15 @@ public class ExcelService {
                 .orElseThrow(() -> new RuntimeException("项目编码不存在: " + eventCode)) : null;
 
         String athleteNumber = v.get("athleteNumber");
-        Athlete athlete = athleteNumber != null ? athleteRepository.findByNumber(athleteNumber)
-                .orElseThrow(() -> new RuntimeException("号码簿不存在: " + athleteNumber)) : null;
+        Athlete athlete = null;
+        if (athleteNumber != null) {
+            // 与独立成绩导入（ScoreDataListener）对齐：号码布 或 学号 都能匹配，
+            // 否则号码簿未生成时「按学号导出再回导」会整体失败（模板说明允许填学号）。
+            athlete = athleteRepository.findByNumber(athleteNumber)
+                    .or(() -> athleteRepository.findByStudentId(athleteNumber))
+                    .orElseThrow(() -> new RuntimeException(
+                            "号码布/学号 '" + athleteNumber + "' 不存在（该列可填号码布编号或学号）"));
+        }
 
         if (event == null || athlete == null) throw new RuntimeException("缺少项目或运动员信息");
 
@@ -769,8 +776,15 @@ public class ExcelService {
                 .orElseThrow(() -> new RuntimeException("项目编码不存在: " + eventCode)) : null;
 
         String athleteNumber = v.get("athleteNumber");
-        Athlete athlete = athleteNumber != null ? athleteRepository.findByNumber(athleteNumber)
-                .orElseThrow(() -> new RuntimeException("号码簿不存在: " + athleteNumber)) : null;
+        Athlete athlete = null;
+        if (athleteNumber != null) {
+            // 与独立成绩导入（ScoreDataListener）对齐：号码布 或 学号 都能匹配，
+            // 否则号码簿未生成时「按学号导出再回导」会整体失败（模板说明允许填学号）。
+            athlete = athleteRepository.findByNumber(athleteNumber)
+                    .or(() -> athleteRepository.findByStudentId(athleteNumber))
+                    .orElseThrow(() -> new RuntimeException(
+                            "号码布/学号 '" + athleteNumber + "' 不存在（该列可填号码布编号或学号）"));
+        }
 
         if (event == null || athlete == null) throw new RuntimeException("缺少项目或运动员信息");
 
