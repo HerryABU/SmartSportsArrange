@@ -243,7 +243,9 @@
 
             <el-divider content-position="left">⚙️ 算法参数</el-divider>
             <el-form-item label="最大尝试次数">
-              <el-input-number v-model="arrangeRuleForm.params.max_attempts" :min="100" :max="100000" :step="100" />
+              <el-input-number v-model="arrangeRuleForm.params.max_attempts" :min="0" :max="64" :step="1" />
+              <el-button size="small" style="margin-left:8px" @click="arrangeRuleForm.params.max_attempts = 0">设为无限次</el-button>
+              <span class="rule-desc">0 = 无限轮（持续用不同随机顺序收敛到最优，内置安全上限）</span>
             </el-form-item>
             <el-form-item label="超时时间(秒)">
               <el-input-number v-model="arrangeRuleForm.params.timeout_seconds" :min="0" :max="600" />
@@ -816,7 +818,7 @@ const arrangeRuleForm = reactive({
     same_class_max_per_heat: 0
   },
   params: {
-    max_attempts: 1000,
+    max_attempts: 4,
     timeout_seconds: 30,
     optimization_rounds: 3
   }

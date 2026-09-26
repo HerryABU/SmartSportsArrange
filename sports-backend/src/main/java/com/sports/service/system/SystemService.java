@@ -548,7 +548,7 @@ public class SystemService {
         soft.put("same_class_max_per_heat", 3);
         def.put("soft_constraints", soft);
         def.put("algorithm_params", new LinkedHashMap<>(Map.of(
-                "max_attempts", 1000, "timeout_seconds", 30, "optimization_rounds", 3)));
+                "max_attempts", 4, "timeout_seconds", 30, "optimization_rounds", 3)));
         Map<String, Object> rule = readJsonConfig("arrange_rule", def);
         // 向后兼容：升级前持久化的旧键 l1_rule / l1Rule 迁移到新键 style_rule / styleRule（老数据无缝过渡）
         if (!rule.containsKey("style_rule") && !rule.containsKey("styleRule")) {

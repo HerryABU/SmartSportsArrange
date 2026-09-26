@@ -208,6 +208,23 @@ public class ScheduleService {
     public Map<String, Object> autoSchedule(Map<String, Object> override) {
         Map<String, Object> cfg = buildComponent.mergeConfig(override);
 
+        // U33/B30 配套：把「系统设置 → 编排规则」里保存的「最大尝试次数」并入编排配置，
+        // 使「设为无限次」真正生效——此前该参数只落库、从未被读取。
+        // 优先级：本次前端覆盖（override）> 已存编排规则 > 内置默认。
+        try {
+            Map<String, Object> rule = systemService.getArrangeRule();
+            Object algRaw = rule == null ? null : rule.get("algorithm_params");
+            if (algRaw instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> alg = (Map<String, Object>) algRaw;
+                if (cfg.get("max_attempts") == null && alg.get("max_attempts") != null) {
+                    cfg.put("max_attempts", alg.get("max_attempts"));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("读取编排规则算法参数失败，将沿用默认值: {}", ex.toString());
+        }
+
         List<String> gradeOrder = strList(cfg.get("gradeOrder"));
         // 并发位数：1 = 串行（同一时刻只进行 1 个项目）；n = 同时进行 n 个项目
         int trackSlots = Math.max(1, intVal(cfg.get("trackSlots"), 1));
@@ -405,7 +422,16 @@ public class ScheduleService {
         // conflictAvoidancePasses：>0 跑这么多趟（上限 64）；=0 则无限轮——持续用不同随机顺序
         // 重试，直到「连续 UNLIMITED_CONVERGE_STALE 趟残余冲突都不再下降」判定收敛，或安全上限封顶，
         // 目标是把兼项冲突压到该排序启发式下的最低。
-        int requestedPasses = intVal(cfg.get("conflictAvoidancePasses"), 4);
+        // 放置趟数（兼项冲突规避的多策略重试）：以「最大尝试次数」(max_attempts) 为准，
+        // 0 = 无限轮（持续用不同随机顺序收敛到最优，内置 UNLIMITED_PASS_CAP 安全上限）。
+        // 未配置 max_attempts（老数据 / 旧客户端）时回退 conflictAvoidancePasses（默认 4）。
+        Object rawMa = cfg.get("max_attempts");
+        int requestedPasses;
+        if (rawMa == null) {
+            requestedPasses = intVal(cfg.get("conflictAvoidancePasses"), 4);
+        } else {
+            requestedPasses = intVal(rawMa, 0);   // 0 = 无限轮
+        }
         boolean unlimited = requestedPasses <= 0;
         int hardCap = unlimited ? UNLIMITED_PASS_CAP : Math.min(64, Math.max(1, requestedPasses));
         int convergeStale = UNLIMITED_CONVERGE_STALE;

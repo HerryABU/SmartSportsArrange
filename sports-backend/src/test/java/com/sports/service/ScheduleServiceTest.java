@@ -345,6 +345,54 @@ class ScheduleServiceTest {
         assertTrue((int) portfolio.get("conflictAvoidancePasses") >= 1, "应报告冲突规避趟数");
     }
 
+    /**
+     * U33/B30 配套：系统设置里保存的「最大尝试次数」(max_attempts) 必须真正生效——
+     * 设为 0 时应进入无限轮模式（unlimitedMode=true），而不是被当成 0 趟直接跳过。
+     */
+    @Test
+    void maxAttemptsZeroEntersUnlimitedMode() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("algorithm_params", Map.of("max_attempts", 0));
+        when(systemService.getArrangeRule()).thenReturn(rule);
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1), track(21L, "100米"));
+        regs(11L, 20);
+        regs(12L, 20);
+        regs(21L, 8);
+
+        Map<String, Object> result = scheduleService.autoSchedule(null);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> portfolio = (Map<String, Object>) result.get("algorithmPortfolio");
+        assertTrue((Boolean) portfolio.get("unlimitedMode"),
+                "max_attempts=0 必须进入无限轮模式（持续用不同随机顺序收敛到最优）");
+    }
+
+    /**
+     * U33/B30 配套：max_attempts 为有限值时，实际跑的趟数必须被封顶到该值
+     * （且不进入无限轮模式），与「无限轮」按钮的语义严格区分。
+     */
+    @Test
+    void maxAttemptsFiniteCapsPassCount() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("algorithm_params", Map.of("max_attempts", 2));
+        when(systemService.getArrangeRule()).thenReturn(rule);
+        events(field(11L, "跳远", 1), field(12L, "铅球", 1), track(21L, "100米"));
+        regs(11L, 20);
+        regs(12L, 20);
+        regs(21L, 8);
+
+        Map<String, Object> result = scheduleService.autoSchedule(null);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> portfolio = (Map<String, Object>) result.get("algorithmPortfolio");
+        assertFalse((Boolean) portfolio.get("unlimitedMode"),
+                "max_attempts=2 不应进入无限轮模式");
+        int passes = (int) portfolio.get("conflictAvoidancePasses");
+        assertTrue(passes <= 2, "有限 max_attempts 必须把趟数封顶到该值，实际跑了 " + passes + " 趟");
+    }
+
     /** 场地支持 [{name, code}] 对象数组（新格式），编排应使用其中的场地名称 */
     @Test
     void venueObjectArraySupported() {
