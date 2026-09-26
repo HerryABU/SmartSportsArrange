@@ -9,8 +9,11 @@
         </div>
       </div>
       <el-menu :default-active="activeMenu" router class="sidebar-menu">
+        <el-menu-item-group title="① 运动会设置">
+          <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会（届次·季节）</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="① 导入报名">
+        <el-menu-item-group title="② 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
           <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
@@ -18,23 +21,22 @@
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
           <el-menu-item index="/teacher/bulk-import"><el-icon><Files /></el-icon><span>多表导入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="② 编排比赛">
+        <el-menu-item-group title="③ 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
           <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="③ 统计排名">
+        <el-menu-item-group title="④ 统计排名">
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
           <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
           <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="④ 自定义项目区">
+        <el-menu-item-group title="⑤ 自定义项目区">
           <el-menu-item index="/teacher/custom-projects"><el-icon><Star /></el-icon><span>自定义项目区</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会</span></el-menu-item>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
         <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
@@ -58,8 +60,11 @@
         <div class="logo"><span class="logo-icon">🏟️</span><span class="logo-text">运动会编排</span></div>
       </template>
       <el-menu :default-active="activeMenu" router class="sidebar-menu" @select="drawerVisible = false">
+        <el-menu-item-group title="① 运动会设置">
+          <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会（届次·季节）</span></el-menu-item>
+        </el-menu-item-group>
         <el-menu-item index="/teacher/dashboard"><el-icon><HomeFilled /></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item-group title="① 导入报名">
+        <el-menu-item-group title="② 导入报名">
           <el-menu-item index="/teacher/classes"><el-icon><School /></el-icon><span>班级管理</span></el-menu-item>
           <el-menu-item index="/teacher/athletes"><el-icon><UserFilled /></el-icon><span>运动员名单</span></el-menu-item>
           <el-menu-item index="/teacher/events"><el-icon><Trophy /></el-icon><span>比赛项目（表格2）</span></el-menu-item>
@@ -67,23 +72,22 @@
           <el-menu-item index="/teacher/registrations"><el-icon><Document /></el-icon><span>报名表导入·审核</span></el-menu-item>
           <el-menu-item index="/teacher/bulk-import"><el-icon><Files /></el-icon><span>多表导入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="② 编排比赛">
+        <el-menu-item-group title="③ 编排比赛">
           <el-menu-item index="/teacher/schedule"><el-icon><Calendar /></el-icon><span>赛程编排</span></el-menu-item>
           <el-menu-item index="/teacher/arrange"><el-icon><Grid /></el-icon><span>道次编排</span></el-menu-item>
           <el-menu-item index="/teacher/rules"><el-icon><MagicStick /></el-icon><span>规则注入</span></el-menu-item>
           <el-menu-item index="/teacher/scores"><el-icon><EditPen /></el-icon><span>成绩录入</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="③ 统计排名">
+        <el-menu-item-group title="④ 统计排名">
           <el-menu-item index="/teacher/ranking"><el-icon><TrendCharts /></el-icon><span>合分排行</span></el-menu-item>
           <el-menu-item index="/teacher/reports"><el-icon><DataAnalysis /></el-icon><span>报表中心</span></el-menu-item>
           <el-menu-item index="/screen?mode=overview"><el-icon><Monitor /></el-icon><span>数据大屏</span></el-menu-item>
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
           <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="④ 自定义项目区">
+        <el-menu-item-group title="⑤ 自定义项目区">
           <el-menu-item index="/teacher/custom-projects"><el-icon><Star /></el-icon><span>自定义项目区</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item index="/teacher/meets"><el-icon><Collection /></el-icon><span>届 / 运动会</span></el-menu-item>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
         <el-menu-item index="/teacher/referee-board"><el-icon><Medal /></el-icon><span>裁判工作安排</span></el-menu-item>
@@ -107,6 +111,14 @@
           <el-breadcrumb><el-breadcrumb-item>{{ isAdmin?'管理员端':'体育老师端' }}</el-breadcrumb-item><el-breadcrumb-item v-if="title">{{ title }}</el-breadcrumb-item></el-breadcrumb>
         </div>
         <div class="header-right">
+          <el-tooltip :content="hasActiveMeet ? '点击设置 / 切换当前届（编排、赛程、成绩均归属此届）' : '尚未设置运动会，请先到「届 / 运动会」创建并设为当前届'" placement="bottom">
+            <el-tag v-if="hasActiveMeet" class="meet-pill" type="warning" effect="light" @click="goMeets">
+              <el-icon><Collection /></el-icon><span>当前届：{{ meetName }}</span>
+            </el-tag>
+            <el-tag v-else class="meet-pill meet-pill--warn" type="danger" effect="dark" @click="goMeets">
+              <el-icon><WarningFilled /></el-icon><span>未设置运动会，点此创建</span>
+            </el-tag>
+          </el-tooltip>
           <el-button :icon="isDark ? 'Sunny' : 'Moon'" circle size="small" @click="toggleDark" class="theme-toggle" />
           <el-dropdown trigger="click" @command="handleCmd">
             <div class="user-trigger">
@@ -148,12 +160,14 @@
 import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useAppStore } from '@/stores/app'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Guide, Location, Medal } from '@element-plus/icons-vue'
+import { Expand, Guide, Location, Medal, Collection, WarningFilled } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 
 const route = useRoute(); const router = useRouter(); const authStore = useAuthStore()
+const appStore = useAppStore()
 const activeMenu = ref('/teacher/dashboard'); const title = computed(()=>route.meta?.title||'')
 const isAdmin = computed(()=>authStore.isAdmin)
 const showPwd = ref(false); const pwdLoading = ref(false)
@@ -161,6 +175,11 @@ const isDark = ref(document.documentElement.classList.contains('dark'))
 const drawerVisible = ref(false)
 const guideVisible = ref(false)
 const pf = reactive({old:'',new1:'',new2:''})
+
+// 当前届：编排/赛程/成绩都归属它；点击直接跳到「届/运动会」设置与切换
+const meetName = computed(() => appStore.meetName)
+const hasActiveMeet = computed(() => !!appStore.currentMeet)
+function goMeets() { router.push('/teacher/meets') }
 
 function toggleDark() {
   isDark.value = !isDark.value
@@ -213,6 +232,10 @@ watch(() => route.fullPath, (p) => { activeMenu.value = p }, { immediate: true }
 .main-container { flex:1; display:flex; flex-direction:column; overflow:hidden; }
 .header { height:52px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:var(--bg-header); backdrop-filter:blur(12px); border-bottom:1px solid var(--border-light); flex-shrink:0; }
 .header-right { display:flex; align-items:center; gap:8px; }
+.meet-pill { display:inline-flex; align-items:center; gap:4px; cursor:pointer; font-weight:600; border-radius:10px; padding:0 10px; height:28px; transition:all .2s; }
+.meet-pill:hover { filter:brightness(.96); transform:translateY(-1px); }
+.meet-pill--warn { animation:pulseWarn 1.4s ease-in-out infinite; }
+@keyframes pulseWarn { 0%,100%{ box-shadow:0 0 0 0 rgba(245,108,108,.5);} 50%{ box-shadow:0 0 0 6px rgba(245,108,108,0);} }
 .theme-toggle { border:1px solid var(--border-light); background:var(--bg-card); }
 .user-trigger { display:flex; align-items:center; gap:8px; cursor:pointer; padding:4px 10px; border-radius:10px; transition:background var(--transition-fast); }
 .user-trigger:hover { background:rgba(0,0,0,.04); }
