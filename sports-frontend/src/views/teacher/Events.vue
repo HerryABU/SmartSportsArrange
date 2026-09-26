@@ -139,7 +139,21 @@
         </template>
       </el-table-column>
       <el-table-column prop="gender" label="性别" width="100" align="center" />
-      <el-table-column prop="gradeGroup" label="年级组" width="120" align="center" />
+      <el-table-column label="年级组" width="160" align="center">
+        <template #default="{ row }">
+          <template v-if="row.gradeGroup">
+            <el-tag
+              v-for="g in String(row.gradeGroup).split(',').filter(Boolean)"
+              :key="g"
+              size="small"
+              type="info"
+              effect="plain"
+              style="margin: 1px"
+            >{{ g }}</el-tag>
+          </template>
+          <span v-else style="color: var(--el-text-color-secondary)">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />
       <el-table-column label="场地" min-width="170">
         <template #default="{ row }">
@@ -375,7 +389,7 @@
           </div>
         </el-form-item>
         <el-form-item label="年级组" prop="gradeGroup">
-          <el-select v-model="formData.gradeGroup" placeholder="请选择年级组" style="width: 100%" filterable>
+          <el-select v-model="formData.gradeGroup" placeholder="可多选年级组" style="width: 100%" filterable multiple collapse-tags collapse-tags-tooltip>
             <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
@@ -472,7 +486,7 @@
             </el-select>
           </el-form-item>
           <el-form-item label="年级组">
-            <el-select v-model="batchAddForm.gradeGroup" placeholder="选择年级组" clearable filterable style="width: 100%">
+            <el-select v-model="batchAddForm.gradeGroup" placeholder="可多选年级组" clearable filterable multiple collapse-tags collapse-tags-tooltip style="width: 100%">
               <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
             </el-select>
           </el-form-item>
@@ -547,8 +561,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="年级组">
-          <el-select v-model="batchPatch.gradeGroup" placeholder="不修改" clearable filterable style="width: 100%">
-            <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
+            <el-select v-model="batchPatch.gradeGroup" placeholder="不修改（多选覆盖）" clearable filterable multiple collapse-tags collapse-tags-tooltip style="width: 100%">
+              <el-option v-for="g in gradeOptions" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
         <el-form-item label="道次">
@@ -616,7 +630,7 @@ interface EventItem {
   name: string
   eventType: string
   gender: string
-  gradeGroup: string
+  gradeGroup: string | string[]
   maxParticipants: number
   description: string
   sortOrder: number
@@ -718,7 +732,7 @@ const formData = reactive<EventItem>({
   name: '',
   eventType: '',
   gender: '',
-  gradeGroup: '',
+  gradeGroup: [] as string[],
   maxParticipants: 1,
   description: '',
   sortOrder: 0,
@@ -929,7 +943,7 @@ function selectTemplate(tpl: TemplateItem) {
   formData.name = tpl.name
   formData.eventType = tpl.eventType
   formData.gender = tpl.gender
-  formData.gradeGroup = ''
+  formData.gradeGroup = []
   formData.maxParticipants = 1
   formData.description = ''
   formData.sortOrder = 0
@@ -962,7 +976,7 @@ function resetFormData() {
   formData.name = ''
   formData.eventType = ''
   formData.gender = ''
-  formData.gradeGroup = ''
+  formData.gradeGroup = []
   formData.maxParticipants = 1
   formData.description = ''
   formData.sortOrder = 0
@@ -1004,6 +1018,9 @@ function buildPayload() {
     maxPerHeat: isTrack ? (formData.maxPerHeat ?? formData.laneCount ?? 8) : 1,
     refereesPerGroup: formData.refereesPerGroup ?? 0,
     drawLots: formData.drawLots === true,
+    gradeGroup: Array.isArray(formData.gradeGroup)
+      ? (formData.gradeGroup as string[]).join(',')
+      : (formData.gradeGroup || ''),
   }
 }
 
@@ -1013,7 +1030,7 @@ function fillFormFromRow(row: EventItem) {
   formData.name = row.name
   formData.eventType = row.eventType
   formData.gender = row.gender
-  formData.gradeGroup = row.gradeGroup
+  formData.gradeGroup = row.gradeGroup ? String(row.gradeGroup).split(',').map((s: string) => s.trim()).filter(Boolean) : []
   formData.maxParticipants = row.maxParticipants
   formData.description = row.description ?? ''
   formData.sortOrder = row.sortOrder ?? 0
@@ -1153,7 +1170,7 @@ const batchItems = ref<{ name: string; code?: string }[]>([])
 const batchAddForm = reactive({
   eventType: '径赛',
   gender: '男子组',
-  gradeGroup: '',
+  gradeGroup: [] as string[],
   teamSize: 0,
   needHeats: true,
   advanceCount: 8,
@@ -1165,7 +1182,7 @@ const batchAddForm = reactive({
 const batchPatch = reactive<Record<string, any>>({
   eventType: undefined,
   gender: undefined,
-  gradeGroup: undefined,
+  gradeGroup: [] as string[],
   laneCount: null,
   teamSize: null,
   concurrency: undefined,
@@ -1205,7 +1222,7 @@ function removePreviewItem(i: number) {
 
 function openBatchAdd() {
   Object.assign(batchAddForm, {
-    eventType: '径赛', gender: '男子组', gradeGroup: '', teamSize: 0,
+    eventType: '径赛', gender: '男子组', gradeGroup: [] as string[], teamSize: 0,
     needHeats: true, advanceCount: 8, maxParticipants: 1, defaultVenue: '', defaultVenueCode: '',
   })
   batchAddNames.value = ''
@@ -1235,7 +1252,7 @@ function buildBatchItem(it: { name: string; code?: string }, idx: number) {
     sortOrder: pagination.total + idx,
   }
   if (it.code) item.code = it.code
-  if (batchAddForm.gradeGroup) item.gradeGroup = batchAddForm.gradeGroup
+  if (batchAddForm.gradeGroup && Array.isArray(batchAddForm.gradeGroup) && batchAddForm.gradeGroup.length) item.gradeGroup = batchAddForm.gradeGroup.join(',')
   return item
 }
 
@@ -1262,7 +1279,7 @@ async function submitBatchAdd() {
 
 function openBatchEdit() {
   Object.assign(batchPatch, {
-    eventType: undefined, gender: undefined, gradeGroup: undefined,
+    eventType: undefined, gender: undefined, gradeGroup: [] as string[],
     laneCount: null, teamSize: null, concurrency: undefined, groupSize: undefined, bundleGroup: undefined,
     refereesPerGroup: undefined, drawLots: undefined, defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
   })
@@ -1278,7 +1295,7 @@ function buildPatchPayload(): Record<string, any> {
     if (!isTrack) { p.laneCount = 0; p.needHeats = false }
   }
   if (batchPatch.gender) p.gender = batchPatch.gender
-  if (batchPatch.gradeGroup) p.gradeGroup = batchPatch.gradeGroup
+  if (batchPatch.gradeGroup && Array.isArray(batchPatch.gradeGroup) && batchPatch.gradeGroup.length) p.gradeGroup = batchPatch.gradeGroup.join(',')
   if (batchPatch.laneCount !== undefined && batchPatch.laneCount !== null) p.laneCount = batchPatch.laneCount
   if (batchPatch.teamSize !== undefined && batchPatch.teamSize !== null) {
     p.teamSize = batchPatch.teamSize

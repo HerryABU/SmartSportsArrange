@@ -47,10 +47,23 @@ public class EventService {
     public List<Event> list(String grade, String gender, String eventType) {
         List<Event> all = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         return all.stream()
-                .filter(e -> grade == null || grade.isBlank() || grade.equals(e.getGradeGroup()))
+                .filter(e -> grade == null || grade.isBlank() || containsToken(e.getGradeGroup(), grade))
                 .filter(e -> gender == null || gender.isBlank() || gender.equals(e.getGenderLimit()))
                 .filter(e -> eventType == null || eventType.isBlank() || eventType.equals(e.getCategory()))
                 .toList();
+    }
+
+    /**
+     * 年级组为逗号分隔的多值串（如 "高一,高二"）。判断其中是否包含某个年级组 token。
+     * 用于「年级组多选」后，单值筛选仍能命中多值项目。
+     */
+    private static boolean containsToken(String csv, String token) {
+        if (csv == null || token == null) return false;
+        String t = token.trim();
+        for (String s : csv.split(",")) {
+            if (s.trim().equals(t)) return true;
+        }
+        return false;
     }
 
     /** 根据ID查询 */
