@@ -16,6 +16,7 @@ import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
+import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.rule.RuleBasedScheduler;
 import com.sports.schedule.rule.RuleScheduleConfig;
@@ -92,6 +93,7 @@ public class ScheduleService {
                             LowerBoundEstimator lowerBoundEstimator,
                             LnsImprover lnsImprover,
                             GeneticAlgorithm geneticAlgorithm,
+                            MultiNeighborhoodAnnealer mnsaAnnealer,
                             ScheduleCollaborationService collaborationService,
                             RuleBasedScheduler ruleBasedScheduler,
                             AuditService auditService) {
@@ -108,13 +110,15 @@ public class ScheduleService {
         this.lowerBoundEstimator = lowerBoundEstimator;
         this.lnsImprover = lnsImprover;
         this.geneticAlgorithm = geneticAlgorithm;
+        this.mnsaAnnealer = mnsaAnnealer;
         this.collaborationService = collaborationService;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
-        this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover, buildComponent,
-                lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis);
+        this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
+                mnsaAnnealer, buildComponent,
+                lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis, mnsaIterations);
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
         this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository, collaborationService, auditService);
     }
@@ -149,6 +153,11 @@ public class ScheduleService {
      * 与「多起点波次」的区别是解之间会繁殖——好的落位模式被交叉重组，而不是各自为战。
      */
     private final GeneticAlgorithm geneticAlgorithm;
+    /**
+     * 多邻域模拟退火：六种邻域移动 + UCB1 自适应切换 + SA 接受准则，
+     * 在 GA/LNS 之后以「单步移动 + 快速评分」的粒度持续扰动残余冲突。
+     */
+    private final MultiNeighborhoodAnnealer mnsaAnnealer;
     /** 协作中心：编排/调整落库后广播版本号，让「开着同一页面的他人」尽早发现改动、冲突提前暴露 */
     private final ScheduleCollaborationService collaborationService;
     /**
@@ -188,6 +197,10 @@ public class ScheduleService {
     /** 遗传算法初始种群里每个「多样化个体」的求解时间预算（毫秒） */
     @Value("${sports.schedule.ga-individual-millis:300}")
     private long gaIndividualMillis;
+
+    /** 多邻域模拟退火步数（0 = 关闭）。步数越多探索越充分，代价只是快速评分（不跑求解器） */
+    @Value("${sports.schedule.mnsa-iterations:60}")
+    private int mnsaIterations;
 
     /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
 

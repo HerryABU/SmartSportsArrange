@@ -9,6 +9,7 @@ import com.sports.schedule.opt.solver.SchedulePlan;
 import com.sports.schedule.opt.solver.ScheduleUnit;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
+import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.rule.RuleBasedScheduler;
 import com.sports.schedule.rule.RuleScheduleConfig;
@@ -49,6 +50,7 @@ public class ScheduleSolveComponent {
     private final RuleBasedScheduler ruleBasedScheduler;
     private final GeneticAlgorithm geneticAlgorithm;
     private final LnsImprover lnsImprover;
+    private final MultiNeighborhoodAnnealer mnsaAnnealer;
     private final ScheduleBuildComponent buildComponent;
 
     // 算法调参（与 facade 的 @Value 同源，由构造器注入；仅 fillSolvedFromSolver 使用）
@@ -58,22 +60,26 @@ public class ScheduleSolveComponent {
     private final int gaGenerations;
     private final double gaMutationRate;
     private final long gaIndividualMillis;
+    private final int mnsaIterations;
 
     public ScheduleSolveComponent(ScheduleOptimizer scheduleOptimizer,
                                   RuleBasedScheduler ruleBasedScheduler,
                                   GeneticAlgorithm geneticAlgorithm,
                                   LnsImprover lnsImprover,
+                                  MultiNeighborhoodAnnealer mnsaAnnealer,
                                   ScheduleBuildComponent buildComponent,
                                   int lnsRounds,
                                   long lnsRoundMillis,
                                   int gaPopulation,
                                   int gaGenerations,
                                   double gaMutationRate,
-                                  long gaIndividualMillis) {
+                                  long gaIndividualMillis,
+                                  int mnsaIterations) {
         this.scheduleOptimizer = scheduleOptimizer;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.geneticAlgorithm = geneticAlgorithm;
         this.lnsImprover = lnsImprover;
+        this.mnsaAnnealer = mnsaAnnealer;
         this.buildComponent = buildComponent;
         this.lnsRounds = lnsRounds;
         this.lnsRoundMillis = lnsRoundMillis;
@@ -81,6 +87,7 @@ public class ScheduleSolveComponent {
         this.gaGenerations = gaGenerations;
         this.gaMutationRate = gaMutationRate;
         this.gaIndividualMillis = gaIndividualMillis;
+        this.mnsaIterations = mnsaIterations;
     }
 
     // ==================== 以下方法由 scripts/refactor_extract_solve_component.py 从 ScheduleService 迁入 ====================
@@ -294,6 +301,32 @@ public class ScheduleSolveComponent {
             }
         } catch (Exception ex) {
             log.warn("LNS 精修失败（保留算法组合层的结果）: {}", ex.toString());
+        }
+
+        // ④d **多邻域模拟退火精修（MNSA）**：六种邻域移动（换位/迁移/时长/压缩/拔除冲突/补排空缺）
+        //     + UCB1 自适应切换 + SA 接受准则。与 LNS 的区别在粒度与代价：LNS 每轮要跑一次求解器、
+        //     改得深但步数少；MNSA 一步只是「改一两个单元的落位/时长 + 快速评分」，能在同样预算里
+        //     做几十上百步。中途允许暂时变差（退火爬坡），但只把严格更优的解交给下游。
+        try {
+            if (mnsaIterations > 0) {
+                int iters = Math.min(mnsaIterations, 200);
+                SchedulePlan before = solvedPlan;
+                Map<String, Object> mnsaInfo = new LinkedHashMap<>();
+                Optional<SchedulePlan> annealed =
+                        mnsaAnnealer.anneal(before, iters, ScheduleOptimizer.RANDOM_SEED, mnsaInfo);
+                if (annealed.isPresent()) {
+                    solvedPlan = annealed.get();
+                    if (portfolioInfo != null) {
+                        portfolioInfo.put("mnsa", "已启用：" + iters + " 步多邻域退火（六邻域 UCB1 自适应）");
+                        portfolioInfo.put("mnsaScore", String.valueOf(mnsaInfo.get("score")));
+                        portfolioInfo.put("mnsaStats", mnsaInfo.get("moveStats"));
+                    }
+                } else if (portfolioInfo != null) {
+                    portfolioInfo.put("mnsa", iters + " 步退火后无改进（当前解已局部稳定）");
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("MNSA 精修失败（保留上游算法的结果）: {}", ex.toString());
         }
 
         // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是
