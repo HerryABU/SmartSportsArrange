@@ -138,7 +138,12 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="gender" label="性别" width="100" align="center" />
+      <el-table-column label="性别" width="100" align="center">
+        <template #default="{ row }">
+          <span v-if="row.gender && String(row.gender).trim()">{{ row.gender }}</span>
+          <span v-else style="color: var(--el-text-color-secondary)">不限</span>
+        </template>
+      </el-table-column>
       <el-table-column label="年级组" width="170" align="center">
         <template #default="{ row }">
           <template v-if="row.gradeGroup && String(row.gradeGroup).trim().toLowerCase() !== 'all'">
@@ -154,7 +159,12 @@
           <el-tag v-else size="small" type="success" effect="plain">全年级</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />
+      <el-table-column label="最大报名人数" width="120" align="center">
+        <template #default="{ row }">
+          <span v-if="row.maxParticipants && Number(row.maxParticipants) > 0">{{ row.maxParticipants }}</span>
+          <span v-else style="color: var(--el-text-color-secondary)">不限</span>
+        </template>
+      </el-table-column>
       <el-table-column label="场地" min-width="170">
         <template #default="{ row }">
           <template v-if="row.defaultVenue || row.defaultVenueCode">
@@ -785,12 +795,12 @@ function downloadTemplate() {
   // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(=项目内并发)/
   // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时/P间隔
   const csv =
-    '代码,项目,是否田径(是/否),道次(田赛写0),顺序号,每组次几人,捆绑字母(同字母同批并行),并行数(项目内并发人),场地编码,性别,年级组,是否团体(是/否),团体人数,场地,最大用时(分),间隔(分),组次裁判数量,抽签(是/否)\n' +
-    '100M,100米,是,8,1,8,,8,TRACK,男子组,高一年级,否,0,田径场,20,10,2,否\n' +
-    '100F,100米(女子),是,8,2,8,,8,TRACK,女子组,高一年级,否,0,田径场,20,10,2,否\n' +
-    '4X100M,4×100米接力,是,8,3,4,,8,TRACK,男子组,高一年级,是,4,田径场,30,15,3,否\n' +
-    'TY_F,跳远(女子),否,0,4,1,A,1,FIELD_A,女子组,高一年级,否,0,田赛A区,90,10,5,否\n' +
-    'SWIM_M,50米蛙泳(男子),是,8,5,4,,4,SWIM,男子组,高一年级,否,0,游泳馆,25,10,2,是\n'
+    '代码,项目,是否田径(是/否),道次(田赛写0),顺序号,每组次几人,捆绑字母(同字母同批并行),并行数(项目内并发人),场地编码,性别,年级组,是否团体(是/否),团体人数,场地,最大用时(分),间隔(分),组次裁判数量,抽签(是/否),最大报名人数\n' +
+    '100M,100米,是,8,1,8,,8,TRACK,男子组,高一年级,否,0,田径场,20,10,2,否,\n' +
+    '100F,100米(女子),是,8,2,8,,8,TRACK,女子组,高一年级,否,0,田径场,20,10,2,否,\n' +
+    '4X100M,4×100米接力,是,8,3,4,,8,TRACK,男子组,高一年级,是,4,田径场,30,15,3,否,\n' +
+    'TY_F,跳远(女子),否,0,4,1,A,1,FIELD_A,女子组,高一年级,否,0,田赛A区,90,10,5,否,\n' +
+    'SWIM_M,50米蛙泳(男子),是,8,5,4,,4,SWIM,男子组,高一年级,否,0,游泳馆,25,10,2,是,\n'
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -818,6 +828,7 @@ const eventSimpleUploadData = {
   columnMap: JSON.stringify({
     0: 'eventCode', 1: 'eventName', 2: 'teamMembers', 3: 'concurrency',
     4: 'category', 5: 'defaultVenueCode', 6: 'perBatchMinutes',
+    7: 'gender', 8: 'maxParticipants',
   }),
 }
 

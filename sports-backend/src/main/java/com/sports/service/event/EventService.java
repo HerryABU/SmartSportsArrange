@@ -408,6 +408,7 @@ public class EventService {
                 // Q 列：组次裁判数量；R 列：抽签（随机道次）
                 .refereesPerGroup(nullIfBlankInt(val(row, 16)))
                 .drawLots(parseYesNo(val(row, 17), false))
+                .maxParticipants(nullIfBlankInt(val(row, 18)))
                 .needHeats(true)
                 .maxPerHeat(isTrack ? lanes : 1)
                 .scoringType("global")
@@ -585,7 +586,7 @@ public class EventService {
             // 表格2 折中布局（保留全部字段，顺序号/每组次几人/捆绑字母/并行数/场地编码 紧挨排布）：
             // A代码/B项目/C是否田径/D道次/E顺序号/F每组次几人/G捆绑字母/H并行数/I场地编码/
             // J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)
-            data.add(java.util.List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码","性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量","抽签"));
+            data.add(java.util.List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码","性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量","抽签","最大报名人数"));
             for (Event e : events) {
                 boolean isTrack = !Boolean.FALSE.equals(e.getTrack());
                 int concurrency = e.getConcurrency() != null && e.getConcurrency() > 0
@@ -610,7 +611,8 @@ public class EventService {
                 e.getMaxDurationMinutes() != null ? String.valueOf(e.getMaxDurationMinutes()) : "",
                 e.getIntervalMinutes() != null ? String.valueOf(e.getIntervalMinutes()) : "",
                 e.getRefereesPerGroup() != null ? String.valueOf(e.getRefereesPerGroup()) : "",
-                Boolean.TRUE.equals(e.getDrawLots()) ? "是" : "否"));
+                Boolean.TRUE.equals(e.getDrawLots()) ? "是" : "否",
+                e.getMaxParticipants() != null ? String.valueOf(e.getMaxParticipants()) : ""));
             }
             java.util.List<java.util.List<String>> headCols = data.get(0).stream()
                     .map(java.util.List::of).collect(java.util.stream.Collectors.toList());

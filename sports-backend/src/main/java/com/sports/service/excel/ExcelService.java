@@ -195,14 +195,14 @@ public class ExcelService {
                 sheet.add(List.of("teacher01","123456","张老师","TEACHER","13800138000"));
             }
             case "eventsimple" -> {
-                // 运动项目表（7列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间
-                // 复用 Event 现有字段，不新增列；与「表格2」17列模板互补，面向只需登记基础编排参数的老师
+                // 运动项目表（9列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间/性别/最大报名人数
+                // 复用 Event 现有字段；与「表格2」模板互补，面向只需登记基础编排参数的老师
                 fileName = "运动项目表导入模板.xlsx";
-                sheet.add(List.of("项目代码","项目名称","每组人数","每批组数","项目类型","场地号","每批所需时间(分)"));
-                sheet.add(List.of("100M","100米","1","6","径赛","TRACK","20"));
-                sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30"));
-                sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90"));
-                sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300"));
+                sheet.add(List.of("项目代码","项目名称","每组人数","每批组数","项目类型","场地号","每批所需时间(分)","性别","最大报名人数"));
+                sheet.add(List.of("100M","100米","1","6","径赛","TRACK","20","男子组",""));
+                sheet.add(List.of("4X100M","4×100米接力","4","8","径赛","TRACK","30","男子组",""));
+                sheet.add(List.of("TY_LJ","立定跳远","1","4","田赛","FIELD_A","90","女子组",""));
+                sheet.add(List.of("TUG","拔河","15","1","趣味运动会","FIELD_B","300","混合组",""));
             }
             case "venue" -> {
                 // 场地表：场地编码/场地名称/类型/可容纳项目数/最大并行数/排序/启用
@@ -240,17 +240,19 @@ public class ExcelService {
             case "event" -> {
                 // 表格2 折中布局（与 EventService.parseTable2Row 列完全对齐）：
                 // A代码/B项目/C是否田径/D道次(田赛0)/E顺序号/F每组次几人/G捆绑字母/H并行数(1=串行,n=并行)/
-                // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)/Q组次裁判数量
+                // I场地编码/J性别/K年级组/L是否团体/M团体人数/N场地/O最大用时(分)/P间隔(分)/Q组次裁判数量/
+                // R抽签(随机道次)/S最大报名人数
                 // 并行数=项目内并发人数（径赛=每组人数即道次，田赛=工位数，游泳=泳道数）；
                 // 项目绑定场地后受该场地 parallelMax 约束（上限=可用场地/泳道数）
                 // 组次裁判数量=每个组次（heat/组/轮）需安排的裁判人数，留空/0=不安排裁判
+                // 最大报名人数=全校可报名总人数上限，留空/0=不限人数
                 fileName = "项目表导入模板_表格2.xlsx";
                 sheet.add(List.of("代码","项目","是否田径","道次","顺序号","每组次几人","捆绑字母","并行数","场地编码",
-                        "性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量"));
-                sheet.add(List.of("100M","100米","是","8","1","8","","8","TRACK","男子组","高一年级","否","0","田径场","20","10","2"));
-                sheet.add(List.of("4X100M","4×100米接力","是","8","2","4","","8","TRACK","男子组","高一年级","是","4","田径场","30","15","3"));
-                sheet.add(List.of("TY_F","跳远(女子)","否","0","3","1","A","1","FIELD_A","女子组","高一年级","否","0","田赛A区","90","10","1"));
-                sheet.add(List.of("SWIM_M","50米蛙泳(男子)","是","8","4","4","","4","SWIM","男子组","高一年级","否","0","游泳馆","25","10","2"));
+                        "性别","年级组","是否团体","团体人数","场地","最大用时(分)","间隔(分)","组次裁判数量","抽签(是/否)","最大报名人数"));
+                sheet.add(List.of("100M","100米","是","8","1","8","","8","TRACK","男子组","高一年级","否","0","田径场","20","10","2","否",""));
+                sheet.add(List.of("4X100M","4×100米接力","是","8","2","4","","8","TRACK","男子组","高一年级","是","4","田径场","30","15","3","否",""));
+                sheet.add(List.of("TY_F","跳远(女子)","否","0","3","1","A","1","FIELD_A","女子组","高一年级","否","0","田赛A区","90","10","1","否",""));
+                sheet.add(List.of("SWIM_M","50米蛙泳(男子)","是","8","4","4","","4","SWIM","男子组","高一年级","否","0","游泳馆","25","10","2","是",""));
             }
             default -> {
                 fileName = "导入模板.xlsx";
@@ -287,6 +289,7 @@ public class ExcelService {
                 notes.add(List.of("每组次几人", "径赛=每组人数即道次，田赛=工位数，游泳=泳道数。"));
                 notes.add(List.of("并行数", "项目内并发人数（1=串行，n=并行）；绑定场地后受该场地并行上限约束。"));
                 notes.add(List.of("捆绑字母", "同字母的田赛项目安排在同一时段并行。"));
+                notes.add(List.of("最大报名人数", "选填：全校可报名总人数上限；留空或 0=不限人数。"));
             }
             case "eventsimple" -> {
                 notes.add(List.of("项目代码", "唯一编码，如 100M；导入后作为项目主键。"));
@@ -295,6 +298,8 @@ public class ExcelService {
                 notes.add(List.of("项目类型", "取值：径赛 / 田赛 / 趣味运动会 / 球类；用于推断是否占道次与趣味并行。"));
                 notes.add(List.of("场地号", "场地编码（与全局场地配置 code 对应），如 TRACK / FIELD_A；绑定独立并发池。"));
                 notes.add(List.of("每批所需时间(分)", "一批人同时上场的分钟数，如趣味项目一组5分钟。"));
+                notes.add(List.of("性别", "选填：男子组 / 女子组 / 混合组；留空=不限性别。"));
+                notes.add(List.of("最大报名人数", "选填：该项目全校可报名总人数上限；留空或 0=不限人数。"));
             }
             case "venue" -> {
                 notes.add(List.of("场地编码", "唯一编码，如 TRACK / FIELD_A / SWIM；项目表的「场地号」须与之一致。"));
@@ -857,6 +862,8 @@ public class ExcelService {
         Integer concurrency = parseIntSafe(v.get("concurrency"), null);
         Integer perBatch = parseIntSafe(v.get("perBatchMinutes"), null);
         String venueCode = trimToNull(v.get("defaultVenueCode"));
+        String gender = trimToNull(v.get("gender"));
+        Integer maxParticipants = parseIntSafe(v.get("maxParticipants"), null);
 
         // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味/球类，复用现有字段
         boolean isTrack = "径赛".equals(category);
@@ -872,6 +879,8 @@ public class ExcelService {
                 .concurrency(concurrency)
                 .perBatchMinutes(perBatch)
                 .defaultVenueCode(venueCode)
+                .genderLimit(gender)
+                .maxParticipants(maxParticipants)
                 .laneCount(laneCount)
                 .defaultLanes(laneCount)
                 .isEnabled(true).sortOrder(0);
