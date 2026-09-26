@@ -108,6 +108,9 @@ class ScheduleServiceTest {
                 .thenAnswer(inv -> new ArrayList<>(saved));
         when(scheduleVerifier.verify(any(), any(), anyInt()))
                 .thenReturn(new ScheduleVerifier.Result(true, 0, 0, List.of(), List.of(), null, null));
+        // 兼项冲突事后计数（autoSchedule 的 Phase-2 精修会调用）：本类验证贪心兜底主流程，
+        // 冲突消解的真实口径由 ConflictMathTest 独立覆盖，这里给「零冲突」桩让精修直接跳过。
+        when(conflictService.countConflicts()).thenReturn(new int[]{0, 0});
     }
 
     // ==================== 夹具 ====================

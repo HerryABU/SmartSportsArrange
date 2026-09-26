@@ -465,6 +465,42 @@ public class ScheduleService {
             // 无限轮模式：连续 convergeStale 趟残余冲突都不再下降 → 已收敛到该启发式下最低，停止
             if (unlimited && stale >= convergeStale) break;
         }
+
+        // ===== U33/B30 增强：用「真实事后冲突数」(与 GET /api/arrange/conflicts 同口径) 做精修 =====
+        // Phase 1 用的是放置期内存计数（conflictStat），可能与事后检测口径存在偏差；这里用真实口径
+        // 重新评估每趟落库后的冲突数并继续扰动，直到真实冲突归零或连续 stale 趟不再下降（收敛）。
+        // 尊重求解器「纪律」：本段纯属服务层编排，不触碰纯求解器（RuleBasedScheduler / ScheduleOptimizer）内部。
+        int[] realBest = conflictService.countConflicts();
+        int realStale = 0;
+        final int REAL_REFINE_CAP = unlimited ? 60 : Math.min(24, Math.max(6, hardCap));
+        final int REAL_CONVERGE_STALE = 8;
+        if (realBest[0] > 0) {
+            for (int q = 0; q < REAL_REFINE_CAP; q++) {
+                List<Integer> order = orderByShuffle(units.size(), 0xC0FFEEL + ((long) q) * 0x85ebca6bL);
+                PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
+                        mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
+                        event2Group, defaultInterval, minInterval, compressionWarnRatio,
+                        solvedPlacement, eventsWithRegs);
+                int[] rc = conflictService.countConflicts();
+                boolean better = rc[0] < realBest[0] || (rc[0] == realBest[0] && rc[1] < realBest[1]);
+                if (better) {
+                    best = r;
+                    bestOrder = order;
+                    winningStrategy = "refine#" + q;
+                    realBest = rc;
+                    realStale = 0;
+                    bestIsLastExecuted = true;   // 本趟是最优且已即时落库
+                    if (rc[0] == 0) break;       // 真实冲突已归零，无需再试
+                } else {
+                    bestIsLastExecuted = false;  // 本趟非最优，DB 当前是更差的一趟
+                    realStale++;
+                    if (realStale >= REAL_CONVERGE_STALE) break;   // 已收敛到该扰动下最低
+                }
+            }
+        }
+        portfolioInfo.put("realConflictRefine", Map.of(
+                "cap", REAL_REFINE_CAP, "finalRealTotal", realBest[0], "finalRealSevere", realBest[1]));
+
         // 保证最终落库的是最优一趟：若最优不是最后执行的，再跑一次把它落库
         if (!bestIsLastExecuted) {
             best = runPlacementPass(units, bestOrder, windows, trackSlots, fieldSlots,
@@ -828,6 +864,19 @@ public class ScheduleService {
         // 固定种子可复现：同一份配置/数据下结果稳定，便于核对与回归
         Collections.shuffle(idx, new Random(seed));
         return idx;
+    }
+
+    /**
+     * 自动消解兼项冲突（一键编排的「冲突最小化」专精入口）。
+     *
+     * <p>在 {@link #autoSchedule} 的基础上强制「无限轮」(max_attempts=0)，把真实事后冲突数
+     * （与 GET /api/arrange/conflicts 同口径）作为目标函数，持续用不同随机顺序重排并保留最优，
+     * 直到真实冲突归零或收敛到该扰动下的最低——即「检测后继续尝试，直到兼项冲突没有」。</p>
+     */
+    public Map<String, Object> resolveConflicts(Map<String, Object> override) {
+        Map<String, Object> cfg = override == null ? new LinkedHashMap<>() : new LinkedHashMap<>(override);
+        cfg.put("max_attempts", 0);   // 无限轮：跑到底把真实冲突压到最低 / 归零
+        return autoSchedule(cfg);
     }
 
     /**

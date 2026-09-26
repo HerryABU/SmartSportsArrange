@@ -34,6 +34,18 @@ public class ScheduleController {
         return ApiResponse.success("赛程编排完成", scheduleService.autoSchedule(config));
     }
 
+    /**
+     * 自动消解兼项冲突。
+     *
+     * <p>在 {@link #autoSchedule} 的基础上，强制 {@code max_attempts=0}（无限轮重排），
+     * 以「真实兼项冲突数归零」为目标，直到冲突为 0 或收敛到不可再降的最低值。</p>
+     */
+    @PostMapping("/resolve-conflicts")
+    public ApiResponse<?> resolveConflicts(@RequestBody(required = false) Map<String, Object> config) {
+        log.info("自动消解兼项冲突: config={}", config);
+        return ApiResponse.success("兼项冲突消解完成", scheduleService.resolveConflicts(config));
+    }
+
     /** 手动保存赛程（替换全部） */
     @PostMapping("/save")
     public ApiResponse<?> save(@RequestBody List<Map<String, Object>> items) {

@@ -220,12 +220,20 @@ public class ClassService {
             List<List<String>> data = new ArrayList<>();
             data.add(List.of("班级名称", "班级编码", "年级", "班主任", "学生人数", "是否参赛"));
             for (ClassInfo c : classes) {
+                // 人数取花名册真实运动员数（countByClassId），与「班级管理」页一致，
+                // 不用手填的静态 studentCount（常年为 0 或过期占位值）。
+                long realCount = 0;
+                try {
+                    realCount = athleteRepository.countByClassId(c.getId());
+                } catch (Exception ex) {
+                    log.warn("导出班级人数失败: classId={}, {}", c.getId(), ex.toString());
+                }
                 data.add(List.of(
                     c.getName() != null ? c.getName() : "",
                     c.getCode() != null ? c.getCode() : "",
                     c.getGrade() != null ? c.getGrade() : "",
                     c.getTeacherName() != null ? c.getTeacherName() : "",
-                    c.getStudentCount() != null ? String.valueOf(c.getStudentCount()) : "",
+                    String.valueOf(realCount),
                     c.getIsParticipating() != null && c.getIsParticipating() ? "是" : "否"
                 ));
             }

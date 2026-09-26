@@ -18,6 +18,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import com.sports.common.util.ExportNaming;
+import com.sports.schedule.core.math.ConflictMath;
 import com.sports.service.schedule.ScheduleService;
 
 /**
@@ -102,7 +103,7 @@ public class ConflictService {
                     if (sa == null || sb == null) continue;
                     for (EventSchedule x : sa) {
                         for (EventSchedule y : sb) {
-                            Gap gap = gapOf(x, y);
+                            ConflictMath.Gap gap = gapOf(x, y);
                             if (gap == null) continue;      // 不同天 / 无法解析
                             String key = aid + "|" + x.getId() + "|" + y.getId();
                             if (!seen.add(key)) continue;
@@ -140,6 +141,37 @@ public class ConflictService {
         return m;
     }
 
+    /**
+     * 真实兼项冲突计数（与 {@link #detectConflicts()} 命中条数一致、与 GET /api/arrange/conflicts 同口径）。
+     * 供编排消解循环作为目标函数反复评估「当前落库赛程」的冲突数，而不必组装完整清单。
+     *
+     * <p>口径：同一天、两段区间重叠（或同场地同时开赛）记严重；仅间隔小于
+     * {@link #CONFLICT_BUFFER_MIN} 分钟记一般；否则不计——由纯函数 {@link ConflictMath} 统一执行。</p>
+     *
+     * @return {@code int[]{total, severe}}，severe = 严重（重叠 / 同场地同时开赛）冲突数
+     */
+    @Transactional(readOnly = true)
+    public int[] countConflicts() {
+        List<EventSchedule> schedules = eventScheduleRepository.findAll();
+        Map<Long, Set<Long>> athleteEvents = new HashMap<>();
+        for (Arrangement a : arrangementRepository.findAll()) {
+            if (a.getAthlete() == null || a.getEvent() == null) continue;
+            athleteEvents.computeIfAbsent(a.getAthlete().getId(), k -> new HashSet<>())
+                    .add(a.getEvent().getId());
+        }
+        List<ConflictMath.SchedEntry> entries = new ArrayList<>();
+        for (EventSchedule s : schedules) {
+            if (s.getEvent() == null || s.getStartTime() == null || s.getEndTime() == null) continue;
+            Integer xs = toMin(s.getStartTime()), xe = toMin(s.getEndTime());
+            if (xs == null || xe == null) continue;
+            entries.add(new ConflictMath.SchedEntry(
+                    s.getId() != null ? s.getId() : -1L,
+                    s.getEvent().getId() != null ? s.getEvent().getId() : -1L,
+                    s.getDay() == null ? 1 : s.getDay(), xs, xe, s.getVenue()));
+        }
+        return ConflictMath.countConflicts(entries, athleteEvents, CONFLICT_BUFFER_MIN);
+    }
+
     private int countSevere(List<Map<String, Object>> conflicts) {
         int n = 0;
         for (Map<String, Object> c : conflicts) {
@@ -148,26 +180,13 @@ public class ConflictService {
         return n;
     }
 
-    /** 冲突判定结果：类型 + 严重度 + 实际间隔（分钟，重叠时为 0） */
-    private static class Gap {
-        final String type;
-        final String severity;
-        final int gapMinutes;
-
-        Gap(String type, String severity, int gapMinutes) {
-            this.type = type;
-            this.severity = severity;
-            this.gapMinutes = gapMinutes;
-        }
-    }
-
     /**
      * 判定两个赛程条目是否冲突；不同天返回 null。
      *
-     * <p>对称间隔：{@code gap = max(yStart - xEnd, xStart - yEnd)}。两段不重叠时，
-     * 该式恰好等于真实间隔（无论谁在前）；重叠时为负值。</p>
+     * <p>冲突判定统一委托给纯函数 {@link ConflictMath#gapOf}（对称间隔口径一致），
+     * 使「检测端」与「编排消解端」共用唯一的冲突真理源，杜绝口径漂移。</p>
      */
-    private Gap gapOf(EventSchedule x, EventSchedule y) {
+    private ConflictMath.Gap gapOf(EventSchedule x, EventSchedule y) {
         int dx = x.getDay() == null ? 1 : x.getDay();
         int dy = y.getDay() == null ? 1 : y.getDay();
         if (dx != dy) return null; // 不同天，不可能冲突
@@ -176,32 +195,44 @@ public class ConflictService {
         Integer ys = toMin(y.getStartTime()), ye = toMin(y.getEndTime());
         if (xs == null || xe == null || ys == null || ye == null)
             return null; // 时间非法/缺失，无法判定冲突，跳过（与「不同天返回 null」一致）
-        if (xe <= xs) xe = xs + 1;   // 容错：结束时间缺失/非法时按 1 分钟处理
-        if (ye <= ys) ye = ys + 1;
+        ConflictMath.SchedEntry xa = new ConflictMath.SchedEntry(
+                x.getId() != null ? x.getId() : -1L,
+                x.getEvent() != null && x.getEvent().getId() != null ? x.getEvent().getId() : -1L,
+                dx, xs, xe, x.getVenue());
+        ConflictMath.SchedEntry yb = new ConflictMath.SchedEntry(
+                y.getId() != null ? y.getId() : -1L,
+                y.getEvent() != null && y.getEvent().getId() != null ? y.getEvent().getId() : -1L,
+                dy, ys, ye, y.getVenue());
+        return ConflictMath.gapOf(xa, yb, CONFLICT_BUFFER_MIN);
+    }
 
-        boolean overlapping = xs < ye && ys < xe;
-        int gap = Math.max(ys - xe, xs - ye);   // 对称间隔
+    /** 把纯函数 {@link ConflictMath.Kind} 映射回检测端严重度文本 */
+    private static String toSeverity(ConflictMath.Gap gap) {
+        return switch (gap.kind()) {
+            case OVERLAP, SAME_VENUE_START -> SEVERITY_BLOCKER;
+            default -> SEVERITY_WARN;
+        };
+    }
 
-        if (overlapping) {
-            boolean sameVenueSameStart = sameText(x.getVenue(), y.getVenue()) && xs == ys;
-            return new Gap(sameVenueSameStart ? TYPE_SAME_VENUE : TYPE_OVERLAP,
-                    SEVERITY_BLOCKER, 0);
-        }
-        if (gap < CONFLICT_BUFFER_MIN) {
-            return new Gap(TYPE_TIGHT_GAP, SEVERITY_WARN, gap);
-        }
-        return null;
+    /** 把纯函数 {@link ConflictMath.Kind} 映射回检测端类型文本 */
+    private static String toType(ConflictMath.Gap gap) {
+        return switch (gap.kind()) {
+            case SAME_VENUE_START -> TYPE_SAME_VENUE;
+            case OVERLAP -> TYPE_OVERLAP;
+            case TIGHT -> TYPE_TIGHT_GAP;
+            default -> TYPE_TIGHT_GAP;
+        };
     }
 
     private Map<String, Object> buildConflict(Long aid, Map<String, Object> ath,
-                                              EventSchedule x, EventSchedule y, Gap gap) {
+                                              EventSchedule x, EventSchedule y, ConflictMath.Gap gap) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("athleteId", aid);
         m.put("athleteName", ath.get("name"));
         m.put("athleteNumber", ath.get("number"));
-        m.put("severity", gap.severity);
-        m.put("type", gap.type);
-        m.put("gapMinutes", gap.gapMinutes);
+        m.put("severity", toSeverity(gap));
+        m.put("type", toType(gap));
+        m.put("gapMinutes", gap.gapMinutes());
         m.put("eventA", eventSummary(x));
         m.put("eventB", eventSummary(y));
         m.put("windowA", windowStr(x));
@@ -211,16 +242,16 @@ public class ConflictService {
     }
 
     /** 按根因给出可执行的调整动作，避免「请错开」这种无法落地的建议 */
-    private String suggestion(Map<String, Object> ath, EventSchedule x, EventSchedule y, Gap gap) {
+    private String suggestion(Map<String, Object> ath, EventSchedule x, EventSchedule y, ConflictMath.Gap gap) {
         String name = String.valueOf(ath.get("name"));
         String ea = nameOf(x);
         String eb = nameOf(y);
-        if (TYPE_SAME_VENUE.equals(gap.type)) {
+        if (gap.kind() == ConflictMath.Kind.SAME_VENUE_START) {
             return String.format("「%s」同时报了「%s」与「%s」，两者同在 %s、同在 %s 开始："
                             + "建议把「%s」调整到其它场地（或把两项拆到不同时段），否则该运动员只能二选一。",
                     name, ea, eb, x.getVenue(), x.getStartTime(), eb);
         }
-        if (TYPE_OVERLAP.equals(gap.type)) {
+        if (gap.kind() == ConflictMath.Kind.OVERLAP) {
             return String.format("「%s」的「%s」（%s~%s @%s）与「%s」（%s~%s @%s）时间重叠："
                             + "建议把「%s」整体后移到「%s」结束之后，或更换该项场地/时段。",
                     name, ea, x.getStartTime(), x.getEndTime(), x.getVenue(),
@@ -228,7 +259,7 @@ public class ConflictService {
         }
         return String.format("「%s」的「%s」与「%s」之间仅间隔 %d 分钟（小于 %d 分钟缓冲）："
                         + "建议拉开两项间隔，给检录、换场地留出时间。",
-                name, ea, eb, gap.gapMinutes, CONFLICT_BUFFER_MIN);
+                name, ea, eb, gap.gapMinutes(), CONFLICT_BUFFER_MIN);
     }
 
     private Map<String, Object> eventSummary(EventSchedule s) {
@@ -316,10 +347,6 @@ public class ConflictService {
     }
 
     private static String n(Object s) { return s != null ? String.valueOf(s) : ""; }
-
-    private static boolean sameText(String a, String b) {
-        return a != null && b != null && a.trim().equals(b.trim());
-    }
 
     /**
      * 解析 "HH:mm" → 当日分钟；时间非法或缺失返回 {@code null}（不再返回 0）。

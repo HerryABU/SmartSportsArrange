@@ -215,6 +215,9 @@ public class StatisticsService {
         }
 
         // 班级信息
+        // 人数统一取「花名册真实运动员数」（athleteRepository.countByClassId），
+        // 而非手填的静态 studentCount 字段——否则报表/导出会与「班级管理」页对不齐，
+        // 且静态值常年为 0 或过期占位值（如误填的 8），造成「班级人数全部显示 8」之类的不符。
         List<Map<String, Object>> classList = new ArrayList<>();
         for (ClassInfo ci : classes) {
             Map<String, Object> classInfo = new LinkedHashMap<>();
@@ -222,7 +225,13 @@ public class StatisticsService {
             classInfo.put("name", ci.getName());
             classInfo.put("grade", ci.getGrade());
             classInfo.put("teacherName", ci.getTeacherName());
-            classInfo.put("studentCount", ci.getStudentCount());
+            long realCount = 0;
+            try {
+                realCount = athleteRepository.countByClassId(ci.getId());
+            } catch (Exception ex) {
+                log.warn("统计班级人数失败: classId={}, {}", ci.getId(), ex.toString());
+            }
+            classInfo.put("studentCount", realCount);
             classList.add(classInfo);
         }
 
