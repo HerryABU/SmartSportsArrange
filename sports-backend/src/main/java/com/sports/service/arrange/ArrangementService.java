@@ -735,7 +735,18 @@ public class ArrangementService {
         List<Registration> registrations = registrationRepository
                 .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
         if (registrations.isEmpty()) {
-            throw new RuntimeException("没有符合条件的已审核报名记录");
+            // 该项目该性别组暂无已审核报名：这是正常的业务条件（不代表系统错误），
+            // 返回友好的「跳过」结果而非抛异常——避免单接口 500，也避免被上层 @Transactional
+            // 标记为 rollback-only 后提交时抛 UnexpectedRollbackException 把整张赛程回滚。
+            log.info("编排跳过：eventId={}, grade={}, gender={} 暂无已审核报名", eventId, grade, gender);
+            Map<String, Object> skipped = new LinkedHashMap<>();
+            skipped.put("eventId", eventId);
+            skipped.put("grade", grade);
+            skipped.put("gender", gender);
+            skipped.put("arranged", 0);
+            skipped.put("skipped", true);
+            skipped.put("message", "该项目「" + grade + "·" + gender + "」暂无已审核报名，已跳过");
+            return skipped;
         }
         List<Athlete> athletes = registrations.stream()
                 .map(Registration::getAthlete)
@@ -1001,7 +1012,18 @@ public class ArrangementService {
         List<Registration> registrations = registrationRepository
                 .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
         if (registrations.isEmpty()) {
-            throw new RuntimeException("没有符合条件的已审核报名记录");
+            // 该项目该性别组暂无已审核报名：这是正常的业务条件（不代表系统错误），
+            // 返回友好的「跳过」结果而非抛异常——避免单接口 500，也避免被上层 @Transactional
+            // 标记为 rollback-only 后提交时抛 UnexpectedRollbackException 把整张赛程回滚。
+            log.info("编排跳过：eventId={}, grade={}, gender={} 暂无已审核报名", eventId, grade, gender);
+            Map<String, Object> skipped = new LinkedHashMap<>();
+            skipped.put("eventId", eventId);
+            skipped.put("grade", grade);
+            skipped.put("gender", gender);
+            skipped.put("arranged", 0);
+            skipped.put("skipped", true);
+            skipped.put("message", "该项目「" + grade + "·" + gender + "」暂无已审核报名，已跳过");
+            return skipped;
         }
 
         List<Athlete> athletes = registrations.stream()

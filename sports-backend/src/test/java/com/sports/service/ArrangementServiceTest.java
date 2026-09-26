@@ -354,16 +354,23 @@ class ArrangementServiceTest {
         assertEquals(4, seen.size());
     }
 
+    /**
+     * 无已审核报名时，编排应「友好跳过」返回 skipped=true 的 Map，而非抛 500。
+     * 见 ArrangementService.arrange 的友好跳过分支（原 RuntimeException 已改为跳过）。
+     */
     @Test
-    void arrange_emptyRegistrations_throws() {
+    void arrange_emptyRegistrations_skipsFriendly() {
         Event event = Event.builder().id(100L).name("100m").defaultLanes(4).build();
         when(eventRepository.findById(100L)).thenReturn(Optional.of(event));
         when(registrationRepository.findApprovedByEventGradeGender(100L, "高一", "高一", "男"))
                 .thenReturn(List.of());
 
-        RuntimeException ex = assertThrows(RuntimeException.class,
-                () -> arrangementService.arrange(100L, "高一", "男", 4, null));
-        assertTrue(ex.getMessage().contains("没有符合条件"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) arrangementService.arrange(100L, "高一", "男", 4, null);
+        assertNotNull(result, "无报名时应返回跳过结果 Map 而非抛异常");
+        assertEquals(true, result.get("skipped"), "应标记 skipped=true");
+        assertEquals(0, result.get("arranged"));
+        assertTrue(String.valueOf(result.get("message")).contains("暂无已审核报名"));
     }
 
     @Test
