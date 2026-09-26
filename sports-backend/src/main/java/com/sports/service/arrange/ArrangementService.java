@@ -211,7 +211,7 @@ public class ArrangementService {
                     String[] parts = pair.split("\\|");
                     String grade = parts[0];
                     String gender = parts[1];
-                    int lanes = event.getDefaultLanes() != null ? event.getDefaultLanes() : 8;
+                    int lanes = Math.max(1, resolveLanes(event));
                     try {
                         arrange(eventId, grade, gender, lanes, null, null);
                         success++;
@@ -395,7 +395,7 @@ public class ArrangementService {
         }
 
         Map<String, Object> finalResult = arrangePool(event, finalPool, grade, gender,
-                resolveLanes(event), null, ROUND_FINAL, qualifiers, lockedFinals, adversarialMaxRounds);
+                Math.max(1, resolveLanes(event)), null, ROUND_FINAL, qualifiers, lockedFinals, adversarialMaxRounds);
 
         // 正式赛二次编排：把决赛作为独立赛程条目排入赛程表（预赛条目之后顺延），秩序册时间表随之体现
         EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size(), qualifiers);
@@ -727,6 +727,10 @@ public class ArrangementService {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
+        // 防御：lanes<=0（如批量编排传入田赛导入的 defaultLanes=0）时，回退到项目自身并发口径，
+        // 避免落入「每人独占一组」（形同未编排）或除零；田赛据此按工位数分组，径赛按道次数。
+        if (lanes <= 0) lanes = Math.max(1, resolveLanes(event));
+
         List<Registration> registrations = registrationRepository
                 .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
         if (registrations.isEmpty()) {
@@ -846,7 +850,7 @@ public class ArrangementService {
             }
         }
 
-        // 田赛（track=false）：resolveLanes 返回 1 道，每人独占一组，heat 号即出场顺序，
+        // 田赛（track=false）：resolveLanes 返回工位数（X 人一组），heat 号即出场顺序，
         // 故 position 落库为 h+1；径赛 position 恒为 null（以 lane 表达道次）。
         boolean isField = Boolean.FALSE.equals(event.getTrack());
         List<Arrangement> arrangements = new ArrayList<>();
@@ -989,6 +993,9 @@ public class ArrangementService {
     public Map<String, Object> preview(Long eventId, String grade, String gender, int lanes) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+
+        // 防御：lanes<=0 时回退到项目并发口径（田赛按工位数分组），与正式编排保持一致。
+        if (lanes <= 0) lanes = Math.max(1, resolveLanes(event));
 
         List<Registration> registrations = registrationRepository
                 .findApprovedByEventGradeGender(eventId, grade, Grades.shortName(grade), gender);
@@ -1901,14 +1908,26 @@ public class ArrangementService {
         return a != null && a.getClassInfo() != null ? a.getClassInfo().getId() : 0L;
     }
 
+    /** 田赛缺省工位数（X 人一组）：导入时「道次列填 0」会使 defaultLanes=0，绝不能据此返回 0/1 */
+    private static final int DEFAULT_FIELD_GROUP = 8;
+
     private int resolveLanes(Event e) {
         // 项目内并发人数优先：田赛 = 同时进行的工位数（X 人一批）；径赛 = 每组道次数
         Integer c = e.getConcurrency();
         if (c != null && c > 0) return c;
-        if (Boolean.FALSE.equals(e.getTrack())) return 1;
+        if (Boolean.FALSE.equals(e.getTrack())) {
+            // 田赛回退链：groupSize（每组工位数）> 默认工位数。
+            // 注意：导入时「道次列填 0」令 defaultLanes=0，绝不能返回 0/1，否则批量编排落入
+            // 「每人独占一组」（形同未编排）或除零；故缺失时给合理默认工位数 8。
+            Integer gs = e.getGroupSize();
+            if (gs != null && gs > 0) return gs;
+            return DEFAULT_FIELD_GROUP;
+        }
         Integer lc = e.getLaneCount();
         if (lc != null && lc > 0) return lc;
-        return e.getDefaultLanes() != null ? e.getDefaultLanes() : 8;
+        Integer dl = e.getDefaultLanes();
+        if (dl != null && dl > 0) return dl;
+        return 8;
     }
 
     private List<Map<String, Object>> qualifierView(List<Arrangement> qualifiers) {

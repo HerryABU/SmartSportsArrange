@@ -163,6 +163,29 @@ class ArrangementServiceTest {
         assertEquals(6, seen.size());
     }
 
+    /**
+     * 田赛 lanes=0（导入时「道次列填 0」令 defaultLanes=0 的历史口径）也应按默认工位数分组，
+     * 而非每人独占一组（形同未编排）或除零。回归：修复前 lanes=0 → allocate 钳成 1 → 16 人 16 组。
+     */
+    @Test
+    void arrange_fieldEvent_lanesZero_groupsByDefaultConcurrency() {
+        Event event = Event.builder().id(200L).name("男子跳远").track(false).category("田赛")
+                .laneCount(0).defaultLanes(0).concurrency(null).build();
+        List<Registration> regs = new ArrayList<>();
+        for (long i = 1; i <= 16; i++) {
+            int cls = (int) ((i - 1) % 4 + 1);   // 4 个班各 4 人 → 最大单班 4，不会因同班约束抬组数
+            regs.add(reg(athlete(i, "运动员" + i, (long) cls, "高一" + cls + "班")));
+        }
+        stubDirectArrange(event, regs);
+        // 模拟批量编排传入 lanes=0
+        Map<String, Object> result = arrangementService.arrange(200L, "高一年级", "男", 0, null);
+        Map<String, Object> stats = (Map<String, Object>) result.get("statistics");
+        assertEquals(16, stats.get("totalAthletes"));
+        int heats = (int) stats.get("totalHeats");
+        assertTrue(heats < 16, "田赛 lanes=0 应按默认工位数(8)分组，而非每人一组；实际组数=" + heats);
+        assertTrue(heats >= 2, "田赛应至少分成 2 组；实际组数=" + heats);
+    }
+
     /** 「蛇形排布」模式：按年级/班级排序 S 形分散，且有意放开「同组不同班」硬约束（自检仍有效）。 */
     @Test
     void arrange_snakeMode_usesGradeClassSnakeAndRelaxesSameClassRule() {
