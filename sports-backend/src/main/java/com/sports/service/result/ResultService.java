@@ -6,6 +6,7 @@ import com.sports.entity.event.Event;
 import com.sports.entity.meet.SportsMeet;
 import com.sports.entity.result.Result;
 import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.athlete.AthleteRepository;
 import com.sports.repository.event.EventRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.repository.system.SystemConfigRepository;
@@ -37,6 +38,7 @@ public class ResultService {
 
     private final ResultRepository resultRepository;
     private final ArrangementRepository arrangementRepository;
+    private final AthleteRepository athleteRepository;
     private final EventRepository eventRepository;
     private final SystemConfigRepository systemConfigRepository;
     private final ExcelService excelService;
@@ -55,14 +57,19 @@ public class ResultService {
 
         for (ResultInput input : inputs) {
             try {
-                // 验证运动员存在且已编排
+                // 验证运动员存在且已编排（未编排也可录入：小运动会常先录成绩后补道次，
+                // 此时按「无道次」方式落库——heat 取传入值或默认 1，lane 为空）
                 Arrangement arrangement = arrangementRepository
                         .findByEventIdAndAthleteId(eventId, input.getAthleteId())
                         .orElse(null);
 
+                Integer lane = arrangement != null ? arrangement.getLane() : null;
+                Integer finalHeat = heat != null ? heat
+                        : (arrangement != null ? arrangement.getHeat() : 1);
+
                 if (arrangement == null) {
-                    errors.add("运动员ID=" + input.getAthleteId() + " 未编排到此项目");
-                    continue;
+                    log.warn("成绩录入：运动员ID={} 未编排到此项目，按无道次方式录入（heat={}）",
+                            input.getAthleteId(), finalHeat);
                 }
 
                 // 检查是否已有成绩
@@ -77,10 +84,10 @@ public class ResultService {
 
                 Result result = Result.builder()
                         .event(event)
-                        .athlete(arrangement.getAthlete())
+                        .athlete(arrangement != null ? arrangement.getAthlete() : athleteRepository.findById(input.getAthleteId()).orElse(null))
                         .meet(meetService.getActiveOrCreateDefault())
-                        .heat(heat != null ? heat : arrangement.getHeat())
-                        .lane(arrangement.getLane())
+                        .heat(finalHeat)
+                        .lane(lane)
                         .rawTime(input.getRawTime())
                         .timeSeconds(nonFinish != null ? null : timeSeconds)
                         .windSpeed(input.getWindSpeed())
@@ -90,6 +97,12 @@ public class ResultService {
                         .createdAt(LocalDateTime.now())
                         .updatedAt(LocalDateTime.now())
                         .build();
+
+                // 运动员不存在则无法落库
+                if (result.getAthlete() == null) {
+                    errors.add("运动员ID=" + input.getAthleteId() + " 不存在");
+                    continue;
+                }
 
                 results.add(resultRepository.save(result));
             } catch (Exception e) {

@@ -50,7 +50,20 @@
             >
               <el-button :disabled="!selectedEventId">
                 <el-icon><Upload /></el-icon>
-                导入成绩
+                导入本项成绩
+              </el-button>
+            </el-upload>
+            <el-upload
+              :action="uploadAllUrl"
+              :headers="uploadHeaders"
+              :show-file-list="false"
+              :on-success="onImportSuccess"
+              accept=".xlsx,.xls"
+              style="display: inline-block; margin-left: 8px"
+            >
+              <el-button type="warning" plain>
+                <el-icon><Upload /></el-icon>
+                批量导入全部项目成绩
               </el-button>
             </el-upload>
           </div>
@@ -59,8 +72,8 @@
     </el-card>
 
     <!-- 未编排提示 -->
-    <el-alert v-if="selectedEventId && !eventHeats.length" type="warning" show-icon :closable="false"
-      title="该项目暂无编排道次：请先到「📅 赛程编排」点“一键生成赛程”（会自动排道次），或到「道次编排」为该项目执行编排后回来录入成绩。" />
+    <el-alert v-if="selectedEventId && !eventHeats.length && !noArrangementMode" type="warning" show-icon :closable="false"
+      title="该项目暂无编排道次：可先到「📅 赛程编排」点“一键生成赛程”（会自动排道次），或到「道次编排」为该项目执行编排后回来录入成绩；亦可直接按「已报名运动员」名单录入（无道次）。" />
 
     <!-- Score Entry Table -->
     <el-card class="table-card" shadow="never" v-if="scoreData.length">
@@ -161,9 +174,15 @@ const unitLabel = computed(() => isTrackEvent.value ? '秒' : '米')
 const scorePlaceholder = computed(() => isTrackEvent.value ? '如：12.34' : '如：5.20')
 
 const uploadUrl = computed(() => apiBase() + '/results/import?eventId=' + selectedEventId.value + '&heat=' + (selectedHeat.value || ''))
+// 批量导入全部项目成绩：不绑定单个项目，后端按「项目编码」路由到各项目（见 ExcelService.importScores）
+const uploadAllUrl = computed(() => apiBase() + '/results/import')
 const uploadHeaders = computed(() => ({
   Authorization: `Bearer ${localStorage.getItem('token')}`
 }))
+
+// 无编排（道次）模式：该项目尚未生成道次时，仍可按「已报名运动员」直接录入成绩
+const noArrangementMode = ref(false)
+const registeredAthletes = ref([])
 
 function rankType(rank) {
   if (rank === 1) return 'danger'
@@ -209,11 +228,14 @@ async function fetchEvents() {
   }
 }
 
-/** 项目切换：取编排 heats（决赛优先），自动选第一组并加载成绩表 */
+/** 项目切换：取编排 heats（决赛优先），自动选第一组并加载成绩表；
+ * 若该项目尚无编排道次，则回退到「已报名运动员」名单，仍可直接录入成绩（无需先编排） */
 async function onEventChange(eventId) {
   selectedHeat.value = null
   eventHeats.value = []
   scoreData.value = []
+  noArrangementMode.value = false
+  registeredAthletes.value = []
   if (!eventId) return
   try {
     const res = await request.get(`/arrange/events/${eventId}`)
@@ -231,11 +253,38 @@ async function onEventChange(eventId) {
       selectedHeat.value = eventHeats.value[0].heat ?? eventHeats.value[0].heatNo ?? 1
       await fetchScores()
     } else {
-      ElMessage.warning('该项目暂无编排道次，请先编排（赛程编排-一键生成 或 道次编排）')
+      // 无编排：拉取已审核报名运动员，作为可直接录入成绩的名单
+      await loadRegisteredAthletes(eventId)
     }
   } catch (e) {
     eventHeats.value = []
     ElMessage.warning('读取编排信息失败：' + (e?.message || '请先为该项目生成道次'))
+  }
+}
+
+/** 无编排时，按项目拉取已审核报名运动员，作为成绩录入名单（后端录入已支持无道次方式落库） */
+async function loadRegisteredAthletes(eventId) {
+  try {
+    const reg = await request.get('/registrations', {
+      params: { eventId, status: 'approved', size: 10000, page: 1 }
+    })
+    const list = Array.isArray(reg) ? reg : (reg?.records || [])
+    registeredAthletes.value = list.map(r => ({
+      athleteId: r.athleteId ?? (r.athlete && r.athlete.id),
+      athleteName: r.athleteName ?? (r.athlete && r.athlete.name) ?? '',
+      athleteNumber: r.athleteNumber ?? (r.athlete && r.athlete.number) ?? '',
+      className: r.className ?? (r.athlete && r.athlete.className) ?? (r.athlete && r.athlete.classInfo && r.athlete.classInfo.name) ?? ''
+    })).filter(a => a.athleteId != null)
+    if (registeredAthletes.value.length) {
+      noArrangementMode.value = true
+      selectedHeat.value = 1
+      ElMessage.info('该项目暂无编排道次：已按「已报名运动员」生成成绩表，可直接录入（无道次）')
+      await fetchScores()
+    } else {
+      ElMessage.warning('该项目暂无编排道次，且无已审核报名记录，请先报名或编排')
+    }
+  } catch (e) {
+    ElMessage.warning('读取报名名单失败：' + (e?.message || ''))
   }
 }
 
@@ -249,23 +298,39 @@ function onHeatChange() {
  */
 async function fetchScores() {
   if (!selectedEventId.value || !selectedHeat.value) return
-  const heatObj = eventHeats.value.find(h => (h.heat ?? h.heatNo) === selectedHeat.value)
-  if (!heatObj) { scoreData.value = []; return }
   loading.value = true
   try {
-    const lanes = (heatObj.lanes || []).filter(l => l && l.athleteId)
-    scoreData.value = lanes.map(l => ({
-      athleteId: l.athleteId,
-      laneNumber: l.lane,
-      athleteNumber: l.number || '',
-      athleteName: l.athleteName || '',
-      className: l.className || '',
-      score: '',
-      rank: null,
-      points: null,
-      remark: '',
-      _status: 'normal'
-    }))
+    if (noArrangementMode.value) {
+      // 无编排：成绩表骨架 = 已报名运动员名单（无道次）
+      scoreData.value = registeredAthletes.value.map(a => ({
+        athleteId: a.athleteId,
+        laneNumber: null,
+        athleteNumber: a.athleteNumber || '',
+        athleteName: a.athleteName || '',
+        className: a.className || '',
+        score: '',
+        rank: null,
+        points: null,
+        remark: '',
+        _status: 'normal'
+      }))
+    } else {
+      const heatObj = eventHeats.value.find(h => (h.heat ?? h.heatNo) === selectedHeat.value)
+      if (!heatObj) { scoreData.value = []; return }
+      const lanes = (heatObj.lanes || []).filter(l => l && l.athleteId)
+      scoreData.value = lanes.map(l => ({
+        athleteId: l.athleteId,
+        laneNumber: l.lane,
+        athleteNumber: l.number || '',
+        athleteName: l.athleteName || '',
+        className: l.className || '',
+        score: '',
+        rank: null,
+        points: null,
+        remark: '',
+        _status: 'normal'
+      }))
+    }
     // 合并已保存成绩（尽力而为：字段按 Result JSON 读取）
     try {
       const saved = await request.get('/results', {
