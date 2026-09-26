@@ -63,6 +63,18 @@
             @keyup.enter="handleSearch"
           />
         </el-form-item>
+        <el-form-item label="名单范围">
+          <el-switch
+            v-model="searchForm.registeredOnly"
+            active-text="仅已报名"
+            inactive-text="全名单"
+            inline-prompt
+            style="--el-switch-on-color: #67c23a"
+          />
+          <span class="rule-desc" style="margin-left:8px">
+            开=仅显示已报名（approved）运动员；关=显示全部导入人员
+          </span>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="handleSearch">
             <el-icon><Search /></el-icon>
@@ -333,7 +345,8 @@ const searchForm = reactive({
   grade: '',
   className: '',
   gender: '',
-  keyword: ''
+  keyword: '',
+  registeredOnly: true   // 默认仅显示已报名运动员（名单/全名单分离）
 })
 
 // 表格数据
@@ -421,6 +434,7 @@ async function loadTableData() {
     if (searchForm.className) params.className = searchForm.className
     if (searchForm.gender) params.gender = searchForm.gender
     if (searchForm.keyword) params.keyword = searchForm.keyword
+    if (searchForm.registeredOnly) params.registeredOnly = true
 
     const data = await request.get('/athletes', { params })
     // 响应拦截器已解包 data，可能是 { records, total } 或数组
@@ -644,6 +658,7 @@ async function handleSelectAllByFilter() {
     if (searchForm.className) params.className = searchForm.className
     if (searchForm.gender) params.gender = searchForm.gender
     if (searchForm.keyword) params.keyword = searchForm.keyword
+    if (searchForm.registeredOnly) params.registeredOnly = true
     const ids = await request.get('/athletes/ids', { params })
     if (!Array.isArray(ids) || ids.length === 0) {
       ElMessage.info('当前筛选条件下没有可删除的运动员')

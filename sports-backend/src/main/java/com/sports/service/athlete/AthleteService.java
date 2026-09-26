@@ -51,11 +51,12 @@ public class AthleteService {
     private final ArrangementRepository arrangementRepository;
     private final MeetService meetService;
 
-    /** 分页查询（className 支持按班级名称模糊筛选，便于「直接输入班级名」的检索） */
+    /** 分页查询（className 支持按班级名称模糊筛选，便于「直接输入班级名」的检索）
+     * @param registeredOnly 仅返回已报名（approved）运动员——管理员/体育老师名单与全名单分离 */
     @Transactional(readOnly = true)
     public Page<Athlete> list(Pageable pageable, String grade, Long classId, String gender, String keyword,
-                              String className) {
-        Page<Athlete> result = athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className), pageable);
+                              String className, Boolean registeredOnly) {
+        Page<Athlete> result = athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className, registeredOnly), pageable);
         // 预加载 classInfo，避免序列化时懒加载导致班级信息为 null
         SportsMeet meet = meetService.getActiveOrCreateDefault();
         result.getContent().forEach(a -> {
@@ -70,14 +71,14 @@ public class AthleteService {
     /** 按筛选条件返回全部匹配 id（供「全选筛选结果」批量删除） */
     @Transactional(readOnly = true)
     public List<Long> findIdsByFilter(String grade, Long classId, String gender, String keyword, String className) {
-        return athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className)).stream()
+        return athleteRepository.findAll(buildSpec(grade, classId, gender, keyword, className, null)).stream()
                 .map(Athlete::getId)
                 .toList();
     }
 
-    /** 统一的筛选条件（年级/班级/性别/关键词），分页查询与全选删除复用 */
+    /** 统一的筛选条件（年级/班级/性别/关键词/仅已报名），分页查询与全选删除复用 */
     private Specification<Athlete> buildSpec(String grade, Long classId, String gender, String keyword,
-                                             String className) {
+                                             String className, Boolean registeredOnly) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (grade != null && !grade.isBlank())
@@ -103,6 +104,17 @@ public class AthleteService {
                         cb.like(root.get("name"), pattern),
                         cb.like(root.get("number"), pattern),
                         cb.like(root.get("studentId"), pattern)));
+            }
+            // 仅显示已报名（approved）运动员：用去重后的已报名 id 集合做 IN 过滤，
+            // 使管理员/体育老师名单与「全名单」分离——名单里只出现真正报了项目的运动员。
+            if (Boolean.TRUE.equals(registeredOnly)) {
+                List<Long> registeredIds = registrationRepository.findDistinctApprovedAthleteIds();
+                if (registeredIds.isEmpty()) {
+                    // 没有任何已报名记录时，结果为空（避免 IN () 语法问题）
+                    predicates.add(cb.disjunction());
+                } else {
+                    predicates.add(root.get("id").in(registeredIds));
+                }
             }
             return cb.and(predicates.toArray(new Predicate[0]));
         };

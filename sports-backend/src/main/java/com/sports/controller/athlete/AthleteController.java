@@ -37,11 +37,12 @@ public class AthleteController {
             @RequestParam(required = false) Long classId,
             @RequestParam(required = false) String gender,
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String className) {
-        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, gender={}, keyword={}, className={}",
-                page, size, grade, classId, gender, keyword, className);
+            @RequestParam(required = false) String className,
+            @RequestParam(required = false) Boolean registeredOnly) {
+        log.info("查询运动员列表: page={}, size={}, grade={}, classId={}, gender={}, keyword={}, className={}, registeredOnly={}",
+                page, size, grade, classId, gender, keyword, className, registeredOnly);
         Pageable pageable = PageRequest.of(page - 1, size);
-        Page<Athlete> result = athleteService.list(pageable, grade, classId, gender, keyword, className);
+        Page<Athlete> result = athleteService.list(pageable, grade, classId, gender, keyword, className, registeredOnly);
         return ApiResponse.page(result);
     }
 

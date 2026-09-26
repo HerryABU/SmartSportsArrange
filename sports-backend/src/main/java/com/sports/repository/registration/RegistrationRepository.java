@@ -64,4 +64,8 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
 
     /** 尚未归属届的报名（历史回填用） */
     List<Registration> findByMeetIdIsNull();
+
+    /** 已报名（approved）运动员去重 id 列表——供「仅显示已报名运动员」名单过滤 */
+    @Query("SELECT DISTINCT r.athlete.id FROM Registration r WHERE r.status = 'approved'")
+    List<Long> findDistinctApprovedAthleteIds();
 }
