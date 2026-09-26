@@ -147,6 +147,20 @@
               :disabled="!conflictList.length" @click="exportConflicts">
               导出清单
             </el-button>
+            <el-tooltip placement="top" effect="light">
+              <template #content>
+                <div style="max-width: 300px; line-height: 1.7">
+                  检测到兼项冲突后，点击此处触发「无限轮重排」：以真实冲突口径反复扰动重排，
+                  直到冲突归零或收敛到当前配置下的最低值（上限 60 趟精修）。完成后自动刷新冲突清单。
+                </div>
+              </template>
+              <el-button size="small" type="danger" plain :icon="MagicStick"
+                :loading="resolveLoading"
+                :disabled="!items.length || !(conflictSummary && conflictSummary.total)"
+                @click="resolveConflicts">
+                一键消解
+              </el-button>
+            </el-tooltip>
           </div>
         </div>
       </template>
@@ -816,6 +830,7 @@ async function saveMeetConfig() {
 const conflictList = ref([])
 const conflictSummary = ref(null)
 const conflictLoading = ref(false)
+const resolveLoading = ref(false)
 const conflictPage = ref(1)
 const conflictPageSize = ref(20)
 const conflictPaged = computed(() => {
@@ -858,6 +873,40 @@ async function exportConflicts() {
     ElMessage.success('导出成功')
   } catch (e) {
     ElMessage.error(e?.message || '导出失败，请重新登录后再试')
+  }
+}
+
+// ==================== 一键消解兼项冲突 ====================
+// 调用后端「无限轮重排」接口：以真实冲突口径反复扰动重排，直到归零或收敛到最低，完成后自动刷新冲突清单
+async function resolveConflicts() {
+  if (!items.value.length) return
+  resolveLoading.value = true
+  try {
+    const res = await request.post('/schedule/resolve-conflicts', { mode: arrangeMode.value })
+    items.value = res.items || []
+    lastArrangeMode.value = res.mode || arrangeMode.value
+    lastRuleInfo.value = res.algorithmPortfolio?.rule || null
+    // 消解后自动重新检测，刷新表格与计数（权威来源为后端 detectConflicts 同口径）
+    await loadConflicts()
+    const auto = res.autoArrange || null
+    let autoTip = ''
+    if (auto) {
+      autoTip = `；已自动生成道次编排 ${auto.ok} 个（性别组）${auto.failed ? '，' + auto.failed + ' 个失败' : ''}`
+    }
+    const modeTag = lastArrangeMode.value === 'rule' ? '【规则模式】' : '【优化模式】'
+    const left = (conflictSummary.value && conflictSummary.value.total) || 0
+    const severe = (conflictSummary.value && conflictSummary.value.blocker) || 0
+    if (left === 0) {
+      ElMessage.success(modeTag + '兼项冲突已消解至 0 处！' + autoTip)
+    } else {
+      ElMessage.warning(
+        modeTag + `已尽可能优化，残余兼项冲突 ${left} 处（严重 ${severe}），已达当前配置下最低` + autoTip
+      )
+    }
+  } catch (e) {
+    if (e && e.message) ElMessage.error(e.message)
+  } finally {
+    resolveLoading.value = false
   }
 }
 
