@@ -14,6 +14,7 @@ import com.sports.entity.referee.Referee;
 import com.sports.entity.registration.Registration;
 import com.sports.entity.result.Result;
 import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.schedule.core.math.ScheduleAnalysisMath;
 import com.sports.repository.arrange.ArrangementReservationRepository;
 import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.event.EventRepository;
@@ -1908,8 +1909,8 @@ public class ArrangementService {
         return a != null && a.getClassInfo() != null ? a.getClassInfo().getId() : 0L;
     }
 
-    /** 田赛缺省工位数（X 人一组）：导入时「道次列填 0」会使 defaultLanes=0，绝不能据此返回 0/1 */
-    private static final int DEFAULT_FIELD_GROUP = 8;
+    /** 田赛缺省工位数（X 人一组）：与 ScheduleAnalysisMath.DEFAULT_FIELD_GROUP 单一真相源保持一致 */
+    private static final int DEFAULT_FIELD_GROUP = ScheduleAnalysisMath.DEFAULT_FIELD_GROUP;
 
     private int resolveLanes(Event e) {
         // 项目内并发人数优先：田赛 = 同时进行的工位数（X 人一批）；径赛 = 每组道次数

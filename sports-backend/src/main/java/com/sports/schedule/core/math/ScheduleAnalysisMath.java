@@ -33,18 +33,25 @@ public final class ScheduleAnalysisMath {
         }
     }
 
+    /** 田赛缺显式并发时的默认工位数（与 ArrangementService.resolveLanes 的 DEFAULT_FIELD_GROUP 保持一致） */
+    public static final int DEFAULT_FIELD_GROUP = 8;
+
     /**
      * 项目内并发人数（不含任何场地并行上限）：
-     * 显式 concurrency 优先；田赛回退 groupSize（每组工位）；径赛回退 groupSize（泳道）> laneCount > defaultLanes。
+     * 显式 concurrency 优先；田赛回退 groupSize（每组工位）> 默认工位数(8)；径赛回退 groupSize（泳道）> laneCount > defaultLanes。
+     *
+     * <p>田赛缺配置时回退 8（而非 1）：现实中田赛是「多名运动员同时在多个工位」进行（如 8 个立定跳远垫、
+     * 8 个铅球投掷位），1 人依次进行会把时长虚高成「人数×每人次」、并把道次编排退化成「每人一组」。
+     * 该默认值必须与 {@code ArrangementService.resolveLanes} 对齐，否则赛程时长估算与道次编排会不一致。</p>
      */
     public static int concurrencyOf(Event e) {
         Integer c = e.getConcurrency();
         if (c != null && c > 0) return c;
         if (Boolean.FALSE.equals(e.getTrack())) {
-            // 田赛回退链：显式 groupSize（每组次几人，如田赛工位数）> 1
+            // 田赛回退链：显式 groupSize（每组次几人，如田赛工位数）> 默认工位数(8)
             Integer gs = e.getGroupSize();
             if (gs != null && gs > 0) return gs;
-            return 1;
+            return DEFAULT_FIELD_GROUP;
         }
         // 径赛回退链：groupSize（每组次几人/泳道数，如游泳）> 道次数 > 默认道次
         Integer gs = e.getGroupSize();

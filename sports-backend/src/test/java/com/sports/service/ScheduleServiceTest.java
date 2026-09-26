@@ -35,7 +35,12 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import com.sports.entity.result.Result;
 import com.sports.service.arrange.ArrangementService;
@@ -169,6 +174,28 @@ class ScheduleServiceTest {
         assertEquals(1, saved.size());
         assertEquals(15, saved.get(0).getDurationMinutes());
         assertEquals("08:00", saved.get(0).getStartTime());
+    }
+
+    /**
+     * 回归：赛程自动编排时，田赛也应自动生成组次（道次编排），且按「项目内并发/工位数」分组——
+     * 缺配置时并发数取默认工位数 8（而非旧实现只编排径赛而把田赛跳过、或退化成每人一组）。
+     */
+    @Test
+    void fieldEventAutoArrangedDuringSchedule_withDefaultConcurrency() {
+        when(systemService.getMeetSchedule()).thenReturn(cfg(1, 2));
+        // 田赛且不设 concurrency（模拟导入时「道次列填 0」→ defaultLanes=0）→ 走默认工位数 8
+        Event f = Event.builder().id(11L).name("立定跳远").code("F11")
+                .track(false).laneCount(0).concurrency(null).category("田赛")
+                .genderLimit("男子组").gradeGroup("高一年级").isEnabled(true)
+                .sortOrder(11).build();
+        events(f);
+        regs(11L, 24); // 24 人 → 默认 8 人一组 = 3 组
+
+        scheduleService.autoSchedule(null);
+
+        // 田赛必须触发自动道次编排（旧实现 if(u.track) 会跳过）；lanes=8（默认工位数）证明按轮数分组
+        verify(arrangementService, atLeastOnce()).arrange(
+                eq(11L), eq("高一年级"), anyString(), eq(8), isNull(), eq("final"));
     }
 
     /**

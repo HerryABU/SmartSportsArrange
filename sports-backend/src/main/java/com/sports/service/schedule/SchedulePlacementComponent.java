@@ -245,7 +245,7 @@ public class SchedulePlacementComponent {
         }
     }
 
-    /** 登记一条赛程：径赛排入后立即复用编排引擎生成道次（needHeats 项目=预赛，其余=决赛） */
+    /** 登记一条赛程：排入后立即复用编排引擎生成道次/组次（needHeats 项目=预赛，其余=决赛）。径赛与田赛都在此自动编排——田赛按「项目内并发/工位数」自动分组成次（X 人一组），不再因 u.track 判断而被跳过。 */
     public void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails,
                               List<String> warnings, double compressionWarnRatio,
@@ -289,17 +289,20 @@ public class SchedulePlacementComponent {
             }
         }
 
-        if (u.track && u.participants > 0) {
+        // 径赛与田赛都自动生成道次/组次编排：田赛按「项目内并发/工位数」分组成次（X 人一组），
+        // 与手动道次编排的 resolveLanes 默认工位数(8) 保持一致，不再退化成每人一组。
+        if (u.participants > 0) {
             u.arranged = autoArrangeFor(u, autoArrangeFails);
         }
     }
 
     /**
-     * 为单个径赛单元自动生成道次（先清理该 事件×年级×性别 的旧记录再重排）：
+     * 为单个单元（径赛或田赛）自动生成道次/组次（先清理该 事件×年级×性别 的旧记录再重排）：
      * <ul>
      *   <li>needHeats（需预赛）项目 → 生成<b>预赛</b>道次（round=preliminary），
      *       录入预赛成绩并计算晋级后由 {@code computeQualifiers} 追加决赛道次与独立决赛赛程条目；</li>
-     *   <li>其余项目 → 直接生成<b>决赛</b>道次（round=final）。</li>
+     *   <li>其余项目（含田赛）→ 直接生成<b>决赛</b>道次（round=final）。田赛按 {@code concurrencyOf} 返回的
+     *       项目内并发/工位数分组（缺配置时默认 8 人一组），与手动道次编排的 resolveLanes 保持一致。</li>
      * </ul>
      *
      * @return 成功生成的 性别组 数量（男/女各计 1）
@@ -307,7 +310,9 @@ public class SchedulePlacementComponent {
     public int autoArrangeFor(Unit u, List<String> arrFails) {
         Event e = u.event;
         int lanes = ScheduleAnalysisMath.concurrencyOf(e);
-        String round = Boolean.TRUE.equals(e.getNeedHeats())
+        // 轮次判定与 saveSchedule 的赛程条目保持一致：仅径赛按 needHeats 走预赛，田赛恒为决赛（单轮组次）。
+        // 旧实现只看 needHeats（该字段对所有项目默认 true），导致田赛被错误判为预赛、与赛程条目的 final 不一致。
+        String round = (u.track && Boolean.TRUE.equals(e.getNeedHeats()))
                 ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL;
         // U22/B19 根因修复：性别组必须从「真实已审核报名」推导，不能只看 event.genderLimit。
         // 现实中 genderLimit 常为空（项目名写着「男子组/女子组」，但该字段没落库/导入时缺失），
