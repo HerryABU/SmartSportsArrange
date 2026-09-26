@@ -15,6 +15,7 @@ import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
+import com.sports.schedule.opt.alns.AlnsImprover;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
@@ -94,6 +95,7 @@ public class ScheduleService {
                             LnsImprover lnsImprover,
                             GeneticAlgorithm geneticAlgorithm,
                             MultiNeighborhoodAnnealer mnsaAnnealer,
+                            AlnsImprover alnsImprover,
                             ScheduleCollaborationService collaborationService,
                             RuleBasedScheduler ruleBasedScheduler,
                             AuditService auditService) {
@@ -111,14 +113,16 @@ public class ScheduleService {
         this.lnsImprover = lnsImprover;
         this.geneticAlgorithm = geneticAlgorithm;
         this.mnsaAnnealer = mnsaAnnealer;
+        this.alnsImprover = alnsImprover;
         this.collaborationService = collaborationService;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
         this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
-                mnsaAnnealer, buildComponent,
-                lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis, mnsaIterations);
+                mnsaAnnealer, alnsImprover, buildComponent,
+                lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis,
+                mnsaIterations, alnsRounds);
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
         this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository, collaborationService, auditService);
     }
@@ -158,6 +162,8 @@ public class ScheduleService {
      * 在 GA/LNS 之后以「单步移动 + 快速评分」的粒度持续扰动残余冲突。
      */
     private final MultiNeighborhoodAnnealer mnsaAnnealer;
+    /** 自适应大邻域搜索：破坏-修复循环 + UCB1 双老虎机，四种破坏算子按实际收益自适应 */
+    private final AlnsImprover alnsImprover;
     /** 协作中心：编排/调整落库后广播版本号，让「开着同一页面的他人」尽早发现改动、冲突提前暴露 */
     private final ScheduleCollaborationService collaborationService;
     /**
@@ -201,6 +207,10 @@ public class ScheduleService {
     /** 多邻域模拟退火步数（0 = 关闭）。步数越多探索越充分，代价只是快速评分（不跑求解器） */
     @Value("${sports.schedule.mnsa-iterations:60}")
     private int mnsaIterations;
+
+    /** ALNS 破坏-修复轮数（0 = 关闭）。破坏/修复算子由 UCB1 老虎机自适应选择 */
+    @Value("${sports.schedule.alns-rounds:4}")
+    private int alnsRounds;
 
     /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
 

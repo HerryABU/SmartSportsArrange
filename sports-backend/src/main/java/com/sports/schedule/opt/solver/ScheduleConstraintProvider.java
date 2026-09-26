@@ -299,10 +299,20 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
 
     /** 运动员是否有两个项目赶不上（跨天用绝对分钟比较；口径同 ConflictService） */
     public static boolean athleteClash(ScheduleUnit a, ScheduleUnit b) {
-        int aS = a.getPlacement().getAbsoluteStartMinute();
-        int aE = aS + a.getDuration();
-        int bS = b.getPlacement().getAbsoluteStartMinute();
-        int bE = bS + b.getDuration();
-        return aS < bE + CONFLICT_BUFFER_MIN && bS < aE + CONFLICT_BUFFER_MIN;
+        if (a.getPlacement() == null || b.getPlacement() == null
+                || a.getDuration() == null || b.getDuration() == null) {
+            return false;   // 未排入的单元不参与冲突判定（约束流/修复算子在混合状态下也会调用）
+        }
+        return athleteClash(a.getPlacement().getAbsoluteStartMinute(), a.getDuration(),
+                b.getPlacement().getAbsoluteStartMinute(), b.getDuration());
+    }
+
+    /**
+     * 运动员冲突判定的绝对分钟重载：供「候选落位评估」复用同一公式——
+     * 被修复的单元还没有落位，只能用候选位置的绝对起点参与判定。
+     */
+    public static boolean athleteClash(int absStartA, int durationA, int absStartB, int durationB) {
+        return absStartA < absStartB + durationB + CONFLICT_BUFFER_MIN
+                && absStartB < absStartA + durationA + CONFLICT_BUFFER_MIN;
     }
 }

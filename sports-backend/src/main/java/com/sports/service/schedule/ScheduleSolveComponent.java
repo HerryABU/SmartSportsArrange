@@ -7,6 +7,7 @@ import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.opt.solver.SchedulePlan;
 import com.sports.schedule.opt.solver.ScheduleUnit;
+import com.sports.schedule.opt.alns.AlnsImprover;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
@@ -51,6 +52,7 @@ public class ScheduleSolveComponent {
     private final GeneticAlgorithm geneticAlgorithm;
     private final LnsImprover lnsImprover;
     private final MultiNeighborhoodAnnealer mnsaAnnealer;
+    private final AlnsImprover alnsImprover;
     private final ScheduleBuildComponent buildComponent;
 
     // 算法调参（与 facade 的 @Value 同源，由构造器注入；仅 fillSolvedFromSolver 使用）
@@ -61,12 +63,14 @@ public class ScheduleSolveComponent {
     private final double gaMutationRate;
     private final long gaIndividualMillis;
     private final int mnsaIterations;
+    private final int alnsRounds;
 
     public ScheduleSolveComponent(ScheduleOptimizer scheduleOptimizer,
                                   RuleBasedScheduler ruleBasedScheduler,
                                   GeneticAlgorithm geneticAlgorithm,
                                   LnsImprover lnsImprover,
                                   MultiNeighborhoodAnnealer mnsaAnnealer,
+                                  AlnsImprover alnsImprover,
                                   ScheduleBuildComponent buildComponent,
                                   int lnsRounds,
                                   long lnsRoundMillis,
@@ -74,12 +78,14 @@ public class ScheduleSolveComponent {
                                   int gaGenerations,
                                   double gaMutationRate,
                                   long gaIndividualMillis,
-                                  int mnsaIterations) {
+                                  int mnsaIterations,
+                                  int alnsRounds) {
         this.scheduleOptimizer = scheduleOptimizer;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.geneticAlgorithm = geneticAlgorithm;
         this.lnsImprover = lnsImprover;
         this.mnsaAnnealer = mnsaAnnealer;
+        this.alnsImprover = alnsImprover;
         this.buildComponent = buildComponent;
         this.lnsRounds = lnsRounds;
         this.lnsRoundMillis = lnsRoundMillis;
@@ -88,6 +94,7 @@ public class ScheduleSolveComponent {
         this.gaMutationRate = gaMutationRate;
         this.gaIndividualMillis = gaIndividualMillis;
         this.mnsaIterations = mnsaIterations;
+        this.alnsRounds = alnsRounds;
     }
 
     // ==================== 以下方法由 scripts/refactor_extract_solve_component.py 从 ScheduleService 迁入 ====================
@@ -327,6 +334,34 @@ public class ScheduleSolveComponent {
             }
         } catch (Exception ex) {
             log.warn("MNSA 精修失败（保留上游算法的结果）: {}", ex.toString());
+        }
+
+        // ⑤ **自适应大邻域搜索精修（ALNS）**：破坏-修复循环 + UCB1 双老虎机。
+        //     与 ④c 固定轮换邻域的 LNS 相比：破坏端四种算子（随机/冲突簇/最忙运动员/窗口）
+        //     由老虎机按实际收益选择——冲突簇破坏直接利用兼项冲突的图结构；修复端
+        //     贪心/随机插入代替完整求解，单轮成本降低一个数量级，同样预算能做更多轮。
+        try {
+            if (alnsRounds > 0) {
+                int rounds = Math.min(alnsRounds, 30);
+                SchedulePlan before = solvedPlan;
+                Map<String, Object> alnsInfo = new LinkedHashMap<>();
+                Optional<SchedulePlan> improved =
+                        alnsImprover.improve(before, rounds, ScheduleOptimizer.RANDOM_SEED, alnsInfo);
+                if (improved.isPresent()) {
+                    solvedPlan = improved.get();
+                    if (portfolioInfo != null) {
+                        portfolioInfo.put("alns", "已启用：" + rounds + " 轮破坏-修复（UCB1 自适应算子选择）");
+                        portfolioInfo.put("alnsScore", String.valueOf(alnsInfo.get("score")));
+                        portfolioInfo.put("alnsStats", Map.of(
+                                "destroy", alnsInfo.get("destroyStats"),
+                                "repair", alnsInfo.get("repairStats")));
+                    }
+                } else if (portfolioInfo != null) {
+                    portfolioInfo.put("alns", rounds + " 轮未改进（当前解已局部稳定）");
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("ALNS 精修失败（保留上游算法的结果）: {}", ex.toString());
         }
 
         // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是
