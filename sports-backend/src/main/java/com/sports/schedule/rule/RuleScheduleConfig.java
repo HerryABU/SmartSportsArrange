@@ -33,8 +33,8 @@ public record RuleScheduleConfig(
     /** 优化模式标识 */
     public static final String MODE_OPTIMIZE = "optimize";
 
-    /** 与 ConflictService.CONFLICT_BUFFER_MIN 保持一致的缺省缓冲 */
-    public static final int DEFAULT_CONFLICT_BUFFER = 15;
+    /** 缺省缓冲：直接引用 ConflictService 单一真相源，避免两处 15 漂移导致编排/检测口径分裂 */
+    public static final int DEFAULT_CONFLICT_BUFFER = ConflictService.CONFLICT_BUFFER_MIN;
     /** 与 Event.advanceCount 缺省一致 */
     public static final int DEFAULT_ADVANCE_COUNT = 8;
 

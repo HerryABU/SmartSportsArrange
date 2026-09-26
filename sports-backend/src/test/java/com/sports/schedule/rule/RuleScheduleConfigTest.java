@@ -1,6 +1,7 @@
 package com.sports.schedule.rule;
 
 import com.sports.schedule.rule.grouping.FixedLaneAssignment.Policy;
+import com.sports.service.arrange.ConflictService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -61,5 +62,15 @@ class RuleScheduleConfigTest {
         RuleScheduleConfig rc = RuleScheduleConfig.from(cfg);
         assertEquals(25, rc.conflictBufferMinutes());
         assertEquals(RuleScheduleConfig.DEFAULT_ADVANCE_COUNT, rc.advanceCount());
+    }
+
+    @Test
+    @DisplayName("兼项缓冲缺省值与 ConflictService 单一真相源对齐（防编排/检测口径漂移）")
+    void conflictBufferSingleSource() {
+        assertEquals(ConflictService.CONFLICT_BUFFER_MIN, RuleScheduleConfig.DEFAULT_CONFLICT_BUFFER,
+                "规则模式缺省缓冲必须等于检测端 CONFLICT_BUFFER_MIN，否则『排时不冲突、检出来冲突』");
+        assertEquals(ConflictService.CONFLICT_BUFFER_MIN,
+                RuleScheduleConfig.from(null).conflictBufferMinutes(),
+                "未显式传 ruleConflictBufferMinutes 时必须回落到同一真相源");
     }
 }
