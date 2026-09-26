@@ -6,6 +6,7 @@ import ai.timefold.solver.core.config.localsearch.LocalSearchType;
 import ai.timefold.solver.core.config.localsearch.decider.acceptor.AcceptorType;
 import ai.timefold.solver.core.config.localsearch.decider.acceptor.LocalSearchAcceptorConfig;
 import ai.timefold.solver.core.config.solver.EnvironmentMode;
+import ai.timefold.solver.core.config.solver.PreviewFeature;
 import ai.timefold.solver.core.config.solver.SolverConfig;
 import ai.timefold.solver.core.config.solver.termination.TerminationConfig;
 import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
@@ -38,6 +39,10 @@ public final class SolverConfigFactory {
                 .withSolutionClass(SchedulePlan.class)
                 .withEntityClasses(ScheduleUnit.class)
                 .withConstraintProviderClass(ScheduleConstraintProvider.class)
+                // DIVERSIFIED_LATE_ACCEPTANCE 是 Timefold 预览特性：不显式开启会在求解构建期
+                // 抛 IllegalStateException，被上层 catch 后静默降级为贪心编排（症状隐蔽、求解质量下降）。
+                // 开启后该候选算法可正常使用（仅当 兼项密集 时被 AlgorithmPortfolio 选中）。
+                .withPreviewFeature(PreviewFeature.DIVERSIFIED_LATE_ACCEPTANCE)
                 // NO_ASSERT：生产模式，跳过逐阶段断言（PHASE_ASSERT 只用于开发期自检）。
                 // 结果可复现性由「固定随机种子 + 单线程求解」保证，不依赖断言模式。
                 .withEnvironmentMode(EnvironmentMode.NO_ASSERT)
