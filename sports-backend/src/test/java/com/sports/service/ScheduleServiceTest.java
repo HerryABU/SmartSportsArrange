@@ -15,6 +15,7 @@ import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.verify.ScheduleVerifier;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -65,6 +66,9 @@ class ScheduleServiceTest {
     @Mock private SystemService systemService;
     @Mock private VenueRepository venueRepository;
     @Mock private ConflictService conflictService;
+    /** 一键清空的连带清理对象：道次编排要连裁判分配与预留空位一起清，缺 @Mock 会注入 null */
+    @Mock private com.sports.repository.event.EventRefereeRepository eventRefereeRepository;
+    @Mock private com.sports.repository.arrange.ArrangementReservationRepository arrangementReservationRepository;
     /**
      * 约束求解器 mock：本测试类验证的是**贪心兜底路径**（求解器返回空 → 完整走原有贪心），
      * 因此这里保持默认 stub（Optional 返回空）即可，不引入真实求解耗时。
@@ -634,5 +638,16 @@ class ScheduleServiceTest {
     private static int toMin(String hhmm) {
         String[] p = hhmm.split(":");
         return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
+    }
+
+    @Test
+    @DisplayName("一键清空赛程时同步清空道次编排（含裁判分配/预留空位）——推倒重来必须连根拔")
+    void clearAlsoPurgesArrangements() {
+        scheduleService.clear();
+
+        verify(scheduleRepository).deleteAllSchedules();
+        verify(arrangementRepository).deleteAllInBatch();
+        verify(eventRefereeRepository).deleteAllInBatch();
+        verify(arrangementReservationRepository).deleteAllInBatch();
     }
 }

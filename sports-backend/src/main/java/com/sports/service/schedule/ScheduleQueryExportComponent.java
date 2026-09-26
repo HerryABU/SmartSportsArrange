@@ -4,6 +4,8 @@ import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.event.Event;
 import com.sports.entity.event.EventSchedule;
 import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.arrange.ArrangementReservationRepository;
+import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.event.EventRepository;
 import com.sports.repository.event.EventScheduleRepository;
 
@@ -43,17 +45,23 @@ public class ScheduleQueryExportComponent {
     private final EventScheduleRepository scheduleRepository;
     private final EventRepository eventRepository;
     private final ArrangementRepository arrangementRepository;
+    private final EventRefereeRepository eventRefereeRepository;
+    private final ArrangementReservationRepository arrangementReservationRepository;
     private final ScheduleCollaborationService collaborationService;
     private final AuditService auditService;
 
     public ScheduleQueryExportComponent(EventScheduleRepository scheduleRepository,
                                         EventRepository eventRepository,
                                         ArrangementRepository arrangementRepository,
+                                        EventRefereeRepository eventRefereeRepository,
+                                        ArrangementReservationRepository arrangementReservationRepository,
                                         ScheduleCollaborationService collaborationService,
                                         AuditService auditService) {
         this.scheduleRepository = scheduleRepository;
         this.eventRepository = eventRepository;
         this.arrangementRepository = arrangementRepository;
+        this.eventRefereeRepository = eventRefereeRepository;
+        this.arrangementReservationRepository = arrangementReservationRepository;
         this.collaborationService = collaborationService;
         this.auditService = auditService;
     }
@@ -147,11 +155,19 @@ public class ScheduleQueryExportComponent {
 
     public void clear() {
         scheduleRepository.deleteAllSchedules();
-        log.info("清空项目赛程");
+        // 一键清空同步清道次编排：赛程表清了而道次编排（heat/lane）残留，
+        // 重新编排后新旧批次会错位——清空就是「推倒重来」，必须连根拔。
+        // 与 ArrangementService.clearArrangement 同口径：编排 + 裁判分配 + 预留空位一起清。
+        arrangementRepository.deleteAllInBatch();
+        eventRefereeRepository.deleteAllInBatch();
+        arrangementReservationRepository.deleteAllInBatch();
+        log.info("清空项目赛程与道次编排（含裁判分配/预留空位）");
         collaborationService.notify("schedule", "deleted", "EventSchedule", null);
+        collaborationService.notify("arrangement", "deleted", "Arrangement", null);
         // M5 修复（同 autoSchedule）：审计写入改到 afterCommit，规避 SQLite 单写者锁竞争；
         // 无活动事务时（单测直调）直接落审计。
-        auditAfterCommit(() -> auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null, "清空全部项目赛程"));
+        auditAfterCommit(() -> auditService.record("SCHEDULE_CLEAR", "SCHEDULE", null,
+                "清空全部项目赛程与道次编排（含裁判分配/预留空位）"));
     }
 
     /**

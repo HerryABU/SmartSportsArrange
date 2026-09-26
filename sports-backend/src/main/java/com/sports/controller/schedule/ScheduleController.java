@@ -68,11 +68,11 @@ public class ScheduleController {
         return ApiResponse.success(scheduleService.verifyCurrentSchedule());
     }
 
-    /** 清空赛程 */
+    /** 清空赛程（同步清空道次编排，含裁判分配与预留空位） */
     @DeleteMapping
     public ApiResponse<?> clear() {
         scheduleService.clear();
-        return ApiResponse.success("赛程已清空", null);
+        return ApiResponse.success("赛程与道次编排已清空", null);
     }
 
     /** 导出赛程 Excel */

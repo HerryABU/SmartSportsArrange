@@ -983,10 +983,12 @@ async function exportSheet() {
 
 async function clearAll() {
   try {
-    await ElMessageBox.confirm('确定清空全部项目赛程吗？', '确认清空', { type: 'warning' })
+    await ElMessageBox.confirm(
+      '确定清空全部项目赛程吗？道次编排（含裁判分配与预留空位）将一并清空，需重新编排。',
+      '确认清空', { type: 'warning' })
     await request.delete('/schedule')
     items.value = []
-    ElMessage.success('赛程已清空')
+    ElMessage.success('赛程与道次编排已清空')
   } catch (e) {
     if (e !== 'cancel') console.error(e)
   }

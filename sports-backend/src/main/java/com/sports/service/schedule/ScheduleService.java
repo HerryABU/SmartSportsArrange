@@ -10,6 +10,8 @@ import com.sports.repository.event.EventRepository;
 import com.sports.repository.event.EventScheduleRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.arrange.ArrangementRepository;
+import com.sports.repository.arrange.ArrangementReservationRepository;
+import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.venue.VenueRepository;
 import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleOptimizer;
@@ -90,6 +92,8 @@ public class ScheduleService {
                             SystemService systemService,
                             ConflictService conflictService,
                             VenueRepository venueRepository,
+                            EventRefereeRepository eventRefereeRepository,
+                            ArrangementReservationRepository arrangementReservationRepository,
                             ScheduleOptimizer scheduleOptimizer,
                             ScheduleVerifier scheduleVerifier,
                             LowerBoundEstimator lowerBoundEstimator,
@@ -109,6 +113,8 @@ public class ScheduleService {
         this.systemService = systemService;
         this.conflictService = conflictService;
         this.venueRepository = venueRepository;
+        this.eventRefereeRepository = eventRefereeRepository;
+        this.arrangementReservationRepository = arrangementReservationRepository;
         this.scheduleOptimizer = scheduleOptimizer;
         this.scheduleVerifier = scheduleVerifier;
         this.lowerBoundEstimator = lowerBoundEstimator;
@@ -127,7 +133,8 @@ public class ScheduleService {
                 lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis,
                 mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis);
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
-        this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository, collaborationService, auditService);
+        this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository,
+                eventRefereeRepository, arrangementReservationRepository, collaborationService, auditService);
     }
 
 
@@ -139,6 +146,10 @@ public class ScheduleService {
     private final SystemService systemService;
     private final ConflictService conflictService;
     private final VenueRepository venueRepository;
+    /** 裁判分配（一键清空赛程时与道次编排一起清，避免重新编排后新旧分配错位） */
+    private final EventRefereeRepository eventRefereeRepository;
+    /** 编排预留空位（同上，一键清空的连带清理对象） */
+    private final ArrangementReservationRepository arrangementReservationRepository;
     /** 约束求解器（Timefold）。求解失败/超时时自动降级为贪心编排 */
     private final ScheduleOptimizer scheduleOptimizer;
     /**
