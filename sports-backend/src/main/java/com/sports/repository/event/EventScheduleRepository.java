@@ -16,7 +16,7 @@ public interface EventScheduleRepository extends JpaRepository<EventSchedule, Lo
 
     List<EventSchedule> findByDayOrderBySortOrderAscStartTimeAsc(Integer day);
 
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("DELETE FROM EventSchedule")
     void deleteAllSchedules();
 
