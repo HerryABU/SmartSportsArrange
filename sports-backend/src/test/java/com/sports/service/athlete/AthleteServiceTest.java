@@ -10,7 +10,10 @@ import com.sports.repository.clazz.ClassInfoRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.result.ResultRepository;
 import com.sports.service.excel.ExcelService;
+import com.sports.entity.meet.SportsMeet;
+import com.sports.service.meet.MeetService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -40,8 +43,21 @@ class AthleteServiceTest {
     @Mock private ResultRepository resultRepository;
     @Mock private RegistrationRepository registrationRepository;
     @Mock private ArrangementRepository arrangementRepository;
+    @Mock private MeetService meetService;
 
     @InjectMocks private AthleteService athleteService;
+
+    @BeforeEach
+    void setUp() {
+        when(meetService.getActiveOrCreateDefault()).thenReturn(stubMeet());
+    }
+
+    private SportsMeet stubMeet() {
+        SportsMeet m = new SportsMeet();
+        m.setYear(2026);
+        m.setName("测试运动会");
+        return m;
+    }
 
     private Athlete athlete(Long id, String name) {
         Athlete a = new Athlete();

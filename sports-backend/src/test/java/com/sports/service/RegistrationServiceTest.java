@@ -10,7 +10,10 @@ import com.sports.repository.event.EventRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.repository.system.SystemConfigRepository;
 import com.sports.security.jwt.JwtUserDetails;
+import com.sports.entity.meet.SportsMeet;
+import com.sports.service.meet.MeetService;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -48,8 +51,17 @@ class RegistrationServiceTest {
     @Mock private ClassInfoRepository classInfoRepository;
     @Mock private SystemConfigRepository systemConfigRepository;
     @Mock private NumberRuleService numberRuleService;
+    @Mock private MeetService meetService;
 
     @InjectMocks private RegistrationService registrationService;
+
+    @BeforeEach
+    void stubMeet() {
+        SportsMeet m = new SportsMeet();
+        m.setYear(2026);
+        m.setName("测试运动会");
+        lenient().when(meetService.getActiveOrCreateDefault()).thenReturn(m);
+    }
 
     @AfterEach
     void clearAuth() {
