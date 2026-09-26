@@ -9,6 +9,7 @@ import com.sports.schedule.opt.solver.SchedulePlan;
 import com.sports.schedule.opt.solver.ScheduleUnit;
 import com.sports.schedule.opt.alns.AlnsImprover;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
+import com.sports.schedule.opt.fixopt.FixAndOptimizer;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
@@ -53,6 +54,7 @@ public class ScheduleSolveComponent {
     private final LnsImprover lnsImprover;
     private final MultiNeighborhoodAnnealer mnsaAnnealer;
     private final AlnsImprover alnsImprover;
+    private final FixAndOptimizer fixAndOptimizer;
     private final ScheduleBuildComponent buildComponent;
 
     // 算法调参（与 facade 的 @Value 同源，由构造器注入；仅 fillSolvedFromSolver 使用）
@@ -64,6 +66,8 @@ public class ScheduleSolveComponent {
     private final long gaIndividualMillis;
     private final int mnsaIterations;
     private final int alnsRounds;
+    private final int fixoptRounds;
+    private final long fixoptSliceMillis;
 
     public ScheduleSolveComponent(ScheduleOptimizer scheduleOptimizer,
                                   RuleBasedScheduler ruleBasedScheduler,
@@ -71,6 +75,7 @@ public class ScheduleSolveComponent {
                                   LnsImprover lnsImprover,
                                   MultiNeighborhoodAnnealer mnsaAnnealer,
                                   AlnsImprover alnsImprover,
+                                  FixAndOptimizer fixAndOptimizer,
                                   ScheduleBuildComponent buildComponent,
                                   int lnsRounds,
                                   long lnsRoundMillis,
@@ -79,13 +84,16 @@ public class ScheduleSolveComponent {
                                   double gaMutationRate,
                                   long gaIndividualMillis,
                                   int mnsaIterations,
-                                  int alnsRounds) {
+                                  int alnsRounds,
+                                  int fixoptRounds,
+                                  long fixoptSliceMillis) {
         this.scheduleOptimizer = scheduleOptimizer;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.geneticAlgorithm = geneticAlgorithm;
         this.lnsImprover = lnsImprover;
         this.mnsaAnnealer = mnsaAnnealer;
         this.alnsImprover = alnsImprover;
+        this.fixAndOptimizer = fixAndOptimizer;
         this.buildComponent = buildComponent;
         this.lnsRounds = lnsRounds;
         this.lnsRoundMillis = lnsRoundMillis;
@@ -95,6 +103,8 @@ public class ScheduleSolveComponent {
         this.gaIndividualMillis = gaIndividualMillis;
         this.mnsaIterations = mnsaIterations;
         this.alnsRounds = alnsRounds;
+        this.fixoptRounds = fixoptRounds;
+        this.fixoptSliceMillis = fixoptSliceMillis;
     }
 
     // ==================== 以下方法由 scripts/refactor_extract_solve_component.py 从 ScheduleService 迁入 ====================
@@ -362,6 +372,34 @@ public class ScheduleSolveComponent {
             }
         } catch (Exception ex) {
             log.warn("ALNS 精修失败（保留上游算法的结果）: {}", ex.toString());
+        }
+
+        // ⑥ **Fix-and-Optimize 局部精确修复**：把残余兼项冲突切成连通分量切片，
+        //     逐片「冻结其余（@PlanningPin）+ 小预算精确重排」。轻手法（MNSA/ALNS）之后
+        //     仍有顽固冲突链时，只有放开整条链才有自由度真正错开——解多个小规模子问题
+        //     优于解一个大问题，与 Benders「告诉求解器病在哪」的思想同源。
+        try {
+            if (fixoptRounds > 0) {
+                int rounds = Math.min(fixoptRounds, 10);
+                long sliceMillis = Math.max(200, fixoptSliceMillis);
+                SchedulePlan before = solvedPlan;
+                Map<String, Object> fixoptInfo = new LinkedHashMap<>();
+                Optional<SchedulePlan> repaired = fixAndOptimizer.optimize(
+                        before, rounds, java.time.Duration.ofMillis(sliceMillis),
+                        ScheduleOptimizer.RANDOM_SEED, fixoptInfo);
+                if (repaired.isPresent()) {
+                    solvedPlan = repaired.get();
+                    if (portfolioInfo != null) {
+                        portfolioInfo.put("fixopt", "已启用：" + fixoptInfo.get("slicesTreated")
+                                + "/" + fixoptInfo.get("slicesTotal") + " 个冲突切片精确重排，每片 " + sliceMillis + "ms");
+                        portfolioInfo.put("fixoptScore", String.valueOf(fixoptInfo.get("score")));
+                    }
+                } else if (portfolioInfo != null) {
+                    portfolioInfo.put("fixopt", "无冲突切片或重排后无改进（当前解已局部稳定）");
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Fix-and-Optimize 精修失败（保留上游算法的结果）: {}", ex.toString());
         }
 
         // ⑤ 回填：位置与时长一起生效。时长写回 u.duration 之后，compressionReport 反映的就是

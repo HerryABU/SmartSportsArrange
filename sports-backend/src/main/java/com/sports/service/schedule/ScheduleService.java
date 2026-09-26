@@ -16,6 +16,7 @@ import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.alns.AlnsImprover;
+import com.sports.schedule.opt.fixopt.FixAndOptimizer;
 import com.sports.schedule.opt.lns.LnsImprover;
 import com.sports.schedule.opt.mnsa.MultiNeighborhoodAnnealer;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
@@ -96,6 +97,7 @@ public class ScheduleService {
                             GeneticAlgorithm geneticAlgorithm,
                             MultiNeighborhoodAnnealer mnsaAnnealer,
                             AlnsImprover alnsImprover,
+                            FixAndOptimizer fixAndOptimizer,
                             ScheduleCollaborationService collaborationService,
                             RuleBasedScheduler ruleBasedScheduler,
                             AuditService auditService) {
@@ -114,15 +116,16 @@ public class ScheduleService {
         this.geneticAlgorithm = geneticAlgorithm;
         this.mnsaAnnealer = mnsaAnnealer;
         this.alnsImprover = alnsImprover;
+        this.fixAndOptimizer = fixAndOptimizer;
         this.collaborationService = collaborationService;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
         this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
-                mnsaAnnealer, alnsImprover, buildComponent,
+                mnsaAnnealer, alnsImprover, fixAndOptimizer, buildComponent,
                 lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis,
-                mnsaIterations, alnsRounds);
+                mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis);
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
         this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository, collaborationService, auditService);
     }
@@ -164,6 +167,8 @@ public class ScheduleService {
     private final MultiNeighborhoodAnnealer mnsaAnnealer;
     /** 自适应大邻域搜索：破坏-修复循环 + UCB1 双老虎机，四种破坏算子按实际收益自适应 */
     private final AlnsImprover alnsImprover;
+    /** Fix-and-Optimize：冻结解的大部分，只对兼项冲突连通分量切片做小预算精确重排 */
+    private final FixAndOptimizer fixAndOptimizer;
     /** 协作中心：编排/调整落库后广播版本号，让「开着同一页面的他人」尽早发现改动、冲突提前暴露 */
     private final ScheduleCollaborationService collaborationService;
     /**
@@ -211,6 +216,13 @@ public class ScheduleService {
     /** ALNS 破坏-修复轮数（0 = 关闭）。破坏/修复算子由 UCB1 老虎机自适应选择 */
     @Value("${sports.schedule.alns-rounds:4}")
     private int alnsRounds;
+
+    /** Fix-and-Optimize 最多精确重排的冲突切片数（0 = 关闭） */
+    @Value("${sports.schedule.fixopt-rounds:2}")
+    private int fixoptRounds;
+    /** Fix-and-Optimize 每个切片的精确重排时间预算（毫秒） */
+    @Value("${sports.schedule.fixopt-slice-millis:600}")
+    private long fixoptSliceMillis;
 
     /** 单项目时长缩放下限比例：再挤也不该把一个大项压到不足真实用时的 35% */
 
