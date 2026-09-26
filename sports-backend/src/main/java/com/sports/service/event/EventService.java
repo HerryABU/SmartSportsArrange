@@ -47,10 +47,21 @@ public class EventService {
     public List<Event> list(String grade, String gender, String eventType) {
         List<Event> all = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
         return all.stream()
-                .filter(e -> grade == null || grade.isBlank() || containsToken(e.getGradeGroup(), grade))
+                .filter(e -> isGradeVisible(e.getGradeGroup(), grade))
                 .filter(e -> gender == null || gender.isBlank() || gender.equals(e.getGenderLimit()))
                 .filter(e -> eventType == null || eventType.isBlank() || eventType.equals(e.getCategory()))
                 .toList();
+    }
+
+    /**
+     * 年级组可见性：项目年级组为空 / "all" / 空白 表示「全年级」，对任何年级筛选均可见；
+     * 否则按逗号多值匹配。配合前端「全年级」显示，使 all/空 与具体年级并列、不被年级筛选剔除。
+     */
+    private static boolean isGradeVisible(String gradeGroup, String grade) {
+        if (grade == null || grade.isBlank()) return true;                 // 未筛选年级 → 全部可见
+        if (gradeGroup == null || gradeGroup.isBlank()) return true;        // 项目不限年级 → 任何筛选都可见
+        if ("all".equalsIgnoreCase(gradeGroup.trim())) return true;         // 显式 all → 全年级
+        return containsToken(gradeGroup, grade);
     }
 
     /**

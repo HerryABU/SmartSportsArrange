@@ -139,9 +139,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="gender" label="性别" width="100" align="center" />
-      <el-table-column label="年级组" width="160" align="center">
+      <el-table-column label="年级组" width="170" align="center">
         <template #default="{ row }">
-          <template v-if="row.gradeGroup">
+          <template v-if="row.gradeGroup && String(row.gradeGroup).trim().toLowerCase() !== 'all'">
             <el-tag
               v-for="g in String(row.gradeGroup).split(',').filter(Boolean)"
               :key="g"
@@ -151,7 +151,7 @@
               style="margin: 1px"
             >{{ g }}</el-tag>
           </template>
-          <span v-else style="color: var(--el-text-color-secondary)">—</span>
+          <el-tag v-else size="small" type="success" effect="plain">全年级</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="maxParticipants" label="最大报名人数" width="120" align="center" />

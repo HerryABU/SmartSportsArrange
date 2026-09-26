@@ -149,6 +149,29 @@ class EventServiceTest {
         assertEquals("SWIM", dataRow.get(8), "导出的第 I 列（场地编码）应为 SWIM");
     }
 
+    /**
+     * 年级筛选语义：项目年级组为空 / "all" / 空白 表示「全年级」，按任意具体年级筛选均可见；
+     * 含该具体年级的项目也可见；其它年级的项目被剔除。无年级筛选时全部可见。
+     */
+    @Test
+    void listGradeAllAndEmptyMatchAnyGradeFilter() {
+        Event all = Event.builder().id(1L).code("A").name("A").gradeGroup("all").isEnabled(true).build();
+        Event empty = Event.builder().id(2L).code("B").name("B").gradeGroup("").isEnabled(true).build();
+        Event specific = Event.builder().id(3L).code("C").name("C").gradeGroup("高一年级").isEnabled(true).build();
+        Event other = Event.builder().id(4L).code("D").name("D").gradeGroup("高二年级").isEnabled(true).build();
+        when(eventRepository.findByIsEnabledTrueOrderBySortOrderAsc()).thenReturn(List.of(all, empty, specific, other));
+
+        List<Event> r1 = eventService.list("高一年级", null, null);
+        assertEquals(3, r1.size(), "all/空/高一年级 应命中，高二年级 应剔除");
+        assertTrue(r1.stream().anyMatch(e -> "A".equals(e.getCode())), "all 项目应可见");
+        assertTrue(r1.stream().anyMatch(e -> "B".equals(e.getCode())), "空年级项目应可见");
+        assertTrue(r1.stream().anyMatch(e -> "C".equals(e.getCode())), "高一年级项目应可见");
+        assertFalse(r1.stream().anyMatch(e -> "D".equals(e.getCode())), "高二年级项目应被剔除");
+
+        List<Event> r2 = eventService.list(null, null, null);
+        assertEquals(4, r2.size(), "不筛选年级时全部可见");
+    }
+
     /** 最小 MultipartFile 桩，仅支撑 CSV 导入路径（getBytes / getOriginalFilename） */
     static class CsvMultipartFile implements MultipartFile {
         private final String name;
