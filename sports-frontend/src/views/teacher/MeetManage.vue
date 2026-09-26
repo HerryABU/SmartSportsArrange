@@ -107,8 +107,8 @@ async function load() {
   try {
     list.value = await request.get('/meets')
     currentMeet.value = await request.get('/meets/current')
-    appStore.meetList.value = list.value
-    appStore.currentMeet.value = currentMeet.value
+    appStore.setMeetList(list.value)
+    appStore.setCurrentMeet(currentMeet.value)
   } catch (e) {} finally { loading.value = false }
 }
 

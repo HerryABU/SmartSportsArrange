@@ -201,6 +201,8 @@ async function doPwd() {
 }
 onMounted(()=>{
   activeMenu.value=route.fullPath
+  // 每次加载/进入都从后端重新拉取当前届，避免「已设置当前届却仍显示未设置」的脏状态
+  appStore.fetchCurrentMeet().catch(()=>{})
   // 首次部署后自动弹出新手引导（Setup 安装成功时写入 sp_just_installed）
   try {
     const justInstalled = localStorage.getItem('sp_just_installed')

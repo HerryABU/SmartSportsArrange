@@ -62,6 +62,10 @@ export const useAppStore = defineStore('app', () => {
     currentMeet.value = meet
   }
 
+  async function setMeetList(meets) {
+    meetList.value = Array.isArray(meets) ? meets : []
+  }
+
   async function fetchSystemConfig() {
     try {
       const res = await request.get('/system/config')
@@ -85,6 +89,7 @@ export const useAppStore = defineStore('app', () => {
     fetchCurrentMeet,
     fetchMeetList,
     setCurrentMeet,
+    setMeetList,
     fetchSystemConfig
   }
 })
