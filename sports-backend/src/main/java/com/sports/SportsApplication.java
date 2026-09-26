@@ -12,6 +12,8 @@ import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +31,8 @@ public class SportsApplication {
             printHelp();
             System.exit(0);
         }
+        // === 运行目录 .env 文件：提供数据库/运行配置（被下方 db-config.json 覆盖）===
+        applyEnvFile();
         // === 数据库热迁移：若存在外部连接配置，启动时自动切换数据源 ===
         applyExternalDbConfig();
         // === 应用运行配置：自定义端口/绑定地址（--app.port / --app.host 等）===
@@ -95,16 +99,20 @@ public class SportsApplication {
             "",
             "  ③ MySQL（生产环境，需先建库）",
             "        java -jar sports-2.7.3.jar --spring.profiles.active=mysql",
-            "        或设置环境变量：",
-            "          MYSQL_URL=jdbc:mysql://host:3306/sports_meet?...",
-            "          MYSQL_USER=root",
-            "          MYSQL_PASS=root",
-            "        适合多实例 / 高并发场景。",
+            "",
+            "  ▶ 通过 .env 文件配置（推荐部署方式）：",
+            "        在 jar 同目录放置 .env，启动自动读取，例如切换 MySQL：",
+            "          SPRING_DATASOURCE_URL=jdbc:mysql://host:3306/sports_meet?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true",
+            "          SPRING_DATASOURCE_USERNAME=root",
+            "          SPRING_DATASOURCE_PASSWORD=root",
+            "          SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.mysql.cj.jdbc.Driver",
+            "          SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.MySQLDialect",
+            "        也可直接 export 这些变量后启动（Spring 原生支持 OS 环境变量）。",
             "",
             "  数据库热迁移（在线切换，无需改代码）：",
             "        系统设置 -> 数据库迁移 中操作，写入 data/db-config.json；",
-            "        重启应用后自动按该文件切换数据源（SQLite / H2 / MySQL 互转）。",
-            "        迁移过程不中断服务。",
+            "        重启应用后自动按该文件切换数据源（SQLite / H2 / MySQL 互转），",
+            "        且优先级高于 .env 文件。迁移过程不中断服务。",
             "",
             "--------------------------------------------------------------",
             "三、其它常用选项",
@@ -266,6 +274,65 @@ public class SportsApplication {
         } catch (Exception e) {
             System.err.println("[db-config] 读取数据库配置失败，回退默认配置: " + e.getMessage());
         }
+    }
+
+    /**
+     * 读取运行目录下的 .env 文件（若存在），将其中的数据库相关配置写入 System properties，
+     * 供 Spring Boot 通过 relaxed binding 覆盖 application.yml 的默认数据源。
+     * 支持的键（标准 Spring 环境变量名）：
+     *   SPRING_DATASOURCE_URL                JDBC 连接串
+     *   SPRING_DATASOURCE_USERNAME           用户名
+     *   SPRING_DATASOURCE_PASSWORD           密码
+     *   SPRING_DATASOURCE_DRIVER_CLASS_NAME  JDBC 驱动类
+     *   SPRING_JPA_DATABASE_PLATFORM         Hibernate 方言（切换 MySQL/H2 时必须设置）
+     * 其它以 SPRING_ 开头的键会按 relaxed binding 规则（下划线转点、转小写）原样透传。
+     * 优先级（高 -> 低）：命令行 --spring.datasource.url > 本文件(.env) > data/db-config.json（界面迁移）> application.yml。
+     * 注：Spring Boot 原生亦支持 OS 环境变量，故 export 上述变量后启动同样生效；本函数仅为“放下 .env 即生效”提供便利。
+     */
+    private static void applyEnvFile() {
+        File env = new File("./.env");
+        if (!env.exists()) return;
+        try {
+            List<String> lines = Files.readAllLines(env.toPath(), StandardCharsets.UTF_8);
+            boolean any = false;
+            for (String raw : lines) {
+                String line = raw.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                String key = line.substring(0, eq).trim();
+                String val = unquote(line.substring(eq + 1).trim());
+                if (key.isEmpty()) continue;
+                switch (key) {
+                    case "SPRING_DATASOURCE_URL":
+                        System.setProperty("spring.datasource.url", val); any = true; break;
+                    case "SPRING_DATASOURCE_USERNAME":
+                        System.setProperty("spring.datasource.username", val); any = true; break;
+                    case "SPRING_DATASOURCE_PASSWORD":
+                        System.setProperty("spring.datasource.password", val); any = true; break;
+                    case "SPRING_DATASOURCE_DRIVER_CLASS_NAME":
+                        System.setProperty("spring.datasource.driver-class-name", val); any = true; break;
+                    case "SPRING_JPA_DATABASE_PLATFORM":
+                        System.setProperty("spring.jpa.database-platform", val); any = true; break;
+                    default:
+                        if (key.startsWith("SPRING_")) {
+                            System.setProperty(key.toLowerCase().replace('_', '.'), val); any = true;
+                        }
+                }
+            }
+            if (any) System.out.println("[env] 已加载运行目录 .env 数据库配置");
+        } catch (Exception e) {
+            System.err.println("[env] 读取 .env 失败，回退默认配置: " + e.getMessage());
+        }
+    }
+
+    /** 去除值两侧的引号（' 或 "），支持含空格/特殊字符的值 */
+    private static String unquote(String s) {
+        if (s.length() >= 2
+                && ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'")))) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
     }
 
     private static String str(Object v, String def) {
