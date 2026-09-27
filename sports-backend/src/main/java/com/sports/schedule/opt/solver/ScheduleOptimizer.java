@@ -103,8 +103,15 @@ public class ScheduleOptimizer {
      * <p>失败是安全的：某个候选算法抛异常只会被跳过，不影响其余候选。</p>
      */
     public Optional<SchedulePlan> solveWithPortfolio(SchedulePlan plan, AlgorithmPortfolio.Features features) {
+        // 自适应总预算（2026-09-27）：默认 4s 按「小实例」标定，项目数多的真实学校数据
+        // 按单元数放大（每单元 ~250ms，上限 10s）——配置的 solver-seconds 是下限，
+        // 大实例自动获得更多搜索时间（残留冲突与解质量的主要瓶颈是预算不足，而非算法选择）。
+        long total = defaultBudget.toMillis();
+        if (features != null && features.unitCount() > 0) {
+            total = Math.max(total, Math.min(features.unitCount() * 250L, 10_000L));
+        }
         List<AlgorithmPortfolio.Plan> plans =
-                AlgorithmPortfolio.planFor(features, defaultBudget.toMillis());
+                AlgorithmPortfolio.planFor(features, total);
         SchedulePlan best = null;
         String winner = null;
         for (AlgorithmPortfolio.Plan p : plans) {

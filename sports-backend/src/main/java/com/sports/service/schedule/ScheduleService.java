@@ -220,15 +220,18 @@ public class ScheduleService {
     @Value("${sports.schedule.ga-individual-millis:300}")
     private long gaIndividualMillis;
 
-    /** 多邻域模拟退火步数（0 = 关闭）。步数越多探索越充分，代价只是快速评分（不跑求解器） */
-    @Value("${sports.schedule.mnsa-iterations:60}")
+    /** 多邻域模拟退火步数（0 = 关闭）。步数越多探索越充分，代价只是快速评分（不跑求解器）。
+     *  2026-09-27：60 → 120——用户反馈「残留硬冲突/分配质量不佳」，退火步数是最便宜的探索增量。 */
+    @Value("${sports.schedule.mnsa-iterations:120}")
     private int mnsaIterations;
 
-    /** ALNS 破坏-修复轮数（0 = 关闭）。破坏/修复算子由 UCB1 老虎机自适应选择 */
-    @Value("${sports.schedule.alns-rounds:4}")
+    /** ALNS 破坏-修复轮数（0 = 关闭）。破坏/修复算子由 UCB1 老虎机自适应选择。
+     *  2026-09-27：4 → 8——冲突簇破坏算子需要更多轮次才能吃透兼项密集的实例。 */
+    @Value("${sports.schedule.alns-rounds:8}")
     private int alnsRounds;
 
-    /** Fix-and-Optimize 最多精确重排的冲突切片数（0 = 关闭） */
+    /** Fix-and-Optimize 最大重排轮数（0 = 关闭）。每轮放开至多 10 个冲突切片、
+     *  预算逐轮翻倍（封顶 ×4），切片全部消除或整轮无接受即停。 */
     @Value("${sports.schedule.fixopt-rounds:2}")
     private int fixoptRounds;
     /** Fix-and-Optimize 每个切片的精确重排时间预算（毫秒） */

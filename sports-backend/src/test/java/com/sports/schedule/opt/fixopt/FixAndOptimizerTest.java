@@ -116,6 +116,51 @@ class FixAndOptimizerTest {
         }
     }
 
+    // ==================== 多轮升级重排（2026-09-27） ====================
+
+    @Test
+    @DisplayName("多轮重排：预算逐轮翻倍不破坏「绝不更差」，统计含轮数与切片数")
+    void multiPass_escalatingBudget_neverWorse() {
+        SchedulePlan base = optimizer.solve(problem(), Duration.ofMillis(400)).orElseThrow();
+        Map<String, Object> info = new HashMap<>();
+
+        Optional<SchedulePlan> result =
+                fixopt.optimizeMultiPass(base, 3, 10, Duration.ofMillis(300), 21L, info);
+
+        result.ifPresent(p -> {
+            assertTrue(p.getScore().compareTo(base.getScore()) >= 0,
+                    "多轮重排返回了更差的解：" + base.getScore() + " → " + p.getScore());
+            assertTrue(p.getScore().isFeasible(), "结果必须仍然可行：" + p.getScore());
+            assertNotNull(info.get("passes"), "应报告实际使用轮数");
+            assertNotNull(info.get("slicesTotal"));
+            assertNotNull(info.get("slicesTreated"));
+            assertTrue((Integer) info.get("accepted") <= (Integer) info.get("slicesTreated"),
+                    "接受数不得超过治疗数");
+        });
+    }
+
+    @Test
+    @DisplayName("多轮重排：0 轮或 0 切片 = 关闭，安全返回空")
+    void multiPass_disabledGuards() {
+        SchedulePlan solved = optimizer.solve(problem(), Duration.ofMillis(400)).orElseThrow();
+        assertTrue(fixopt.optimizeMultiPass(solved, 0, 10, Duration.ofMillis(300), 21L, null).isEmpty(),
+                "maxPasses=0 应返回空");
+        assertTrue(fixopt.optimizeMultiPass(solved, 3, 0, Duration.ofMillis(300), 21L, null).isEmpty(),
+                "slicesPerPass=0 应返回空");
+    }
+
+    @Test
+    @DisplayName("多轮重排：同种子两次运行结果完全一致（可复现性）")
+    void multiPass_deterministicWithSameSeed() {
+        SchedulePlan base = optimizer.solve(problem(), Duration.ofMillis(400)).orElseThrow();
+        Optional<SchedulePlan> first =
+                fixopt.optimizeMultiPass(base, 2, 5, Duration.ofMillis(300), 9L, null);
+        Optional<SchedulePlan> second =
+                fixopt.optimizeMultiPass(base, 2, 5, Duration.ofMillis(300), 9L, null);
+        assertEquals(first.isPresent(), second.isPresent());
+        first.ifPresent(p -> assertEquals(p.getScore(), second.get().getScore(), "同种子必须同结果"));
+    }
+
     // ==================== 夹具 ====================
 
     private static SchedulePlan problem() {

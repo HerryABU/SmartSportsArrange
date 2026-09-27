@@ -378,20 +378,23 @@ public class ScheduleSolveComponent {
         //     逐片「冻结其余（@PlanningPin）+ 小预算精确重排」。轻手法（MNSA/ALNS）之后
         //     仍有顽固冲突链时，只有放开整条链才有自由度真正错开——解多个小规模子问题
         //     优于解一个大问题，与 Benders「告诉求解器病在哪」的思想同源。
+        //     2026-09-27 升级为多轮重排：每轮治至多 10 个切片、预算逐轮翻倍（封顶 ×4），
+        //     切片全部消除或整轮无接受即停——旧实现只治一轮、剩余切片原样残留。
         try {
             if (fixoptRounds > 0) {
-                int rounds = Math.min(fixoptRounds, 10);
+                int passes = Math.min(fixoptRounds, 5);
                 long sliceMillis = Math.max(200, fixoptSliceMillis);
                 SchedulePlan before = solvedPlan;
                 Map<String, Object> fixoptInfo = new LinkedHashMap<>();
-                Optional<SchedulePlan> repaired = fixAndOptimizer.optimize(
-                        before, rounds, java.time.Duration.ofMillis(sliceMillis),
+                Optional<SchedulePlan> repaired = fixAndOptimizer.optimizeMultiPass(
+                        before, passes, 10, java.time.Duration.ofMillis(sliceMillis),
                         ScheduleOptimizer.RANDOM_SEED, fixoptInfo);
                 if (repaired.isPresent()) {
                     solvedPlan = repaired.get();
                     if (portfolioInfo != null) {
-                        portfolioInfo.put("fixopt", "已启用：" + fixoptInfo.get("slicesTreated")
-                                + "/" + fixoptInfo.get("slicesTotal") + " 个冲突切片精确重排，每片 " + sliceMillis + "ms");
+                        portfolioInfo.put("fixopt", "已启用：" + passes + " 轮升级重排（预算逐轮翻倍），治疗 "
+                                + fixoptInfo.get("slicesTreated") + "/" + fixoptInfo.get("slicesTotal")
+                                + " 个冲突切片，接受 " + fixoptInfo.get("accepted") + " 个");
                         portfolioInfo.put("fixoptScore", String.valueOf(fixoptInfo.get("score")));
                     }
                 } else if (portfolioInfo != null) {
