@@ -31,9 +31,9 @@ public class SportsApplication {
             printHelp();
             System.exit(0);
         }
-        // === 运行目录 .env 文件：提供数据库/运行配置（被下方 db-config.json 覆盖）===
+        // === 运行目录 .env 文件：提供数据库/运行配置（覆盖下方 db-config.json）===
         applyEnvFile();
-        // === 数据库热迁移：若存在外部连接配置，启动时自动切换数据源 ===
+        // === 数据库热迁移：若存在外部连接配置，启动时自动切换数据源（.env 已指定数据源时让位）===
         applyExternalDbConfig();
         // === 应用运行配置：自定义端口/绑定地址（--app.port / --app.host 等）===
         applyAppConfig(args);
@@ -72,8 +72,9 @@ public class SportsApplication {
             "  端口（port）设置优先级（高 -> 低）：",
             "    1) 命令行  --app.port=8899          本次运行生效（推荐）",
             "    2) 环境变量 SERVER_PORT=8899        docker -e 等场景",
-            "    3) 文件 data/app-config.json 的 port 字段  设置界面保存，重启生效",
-            "    4) 默认 8080",
+            "    3) 运行目录 .env 的 SERVER_PORT=8899 文件版环境变量，重启生效",
+            "    4) 文件 data/app-config.json 的 port 字段  设置界面保存，重启生效",
+            "    5) 默认 8080",
             "    （标准 Spring 参数 --server.port=8899 亦可用，优先级更高）",
             "",
             "  网口 / 绑定地址（host）设置：",
@@ -113,7 +114,8 @@ public class SportsApplication {
             "  数据库热迁移（在线切换，无需改代码）：",
             "        系统设置 -> 数据库迁移 中操作，写入 data/db-config.json；",
             "        重启应用后自动按该文件切换数据源（SQLite / H2 / MySQL 互转），",
-            "        且优先级高于 .env 文件。迁移过程不中断服务。",
+            "        但 .env 中启用数据源键时以 .env 为准（注释掉 .env 的",
+            "        SPRING_DATASOURCE_* 键即可让界面迁移接管）。迁移过程不中断服务。",
             "",
             "--------------------------------------------------------------",
             "三、其它常用选项",
@@ -145,8 +147,9 @@ public class SportsApplication {
      * 支持的用户接口（优先级从高到低）：
      *   1) 命令行 --app.port=8899 --app.host=::（本次运行生效，推荐）
      *   2) 环境变量 SERVER_PORT（docker -e 等）
-     *   3) data/app-config.json 的 port / host 字段（系统设置界面保存，重启生效）
-     *   4) 默认端口 8080、绑定全部网卡
+     *   3) 运行目录 .env 的 SERVER_PORT / SERVER_ADDRESS（文件版环境变量，重启生效）
+     *   4) data/app-config.json 的 port / host 字段（系统设置界面保存，重启生效）
+     *   5) 默认端口 8080、绑定全部网卡
      * 标准 Spring 参数 --server.port / --server.address 仍可直接使用（优先级更高）。
      */
     private static void applyAppConfig(String[] args) {
@@ -173,6 +176,13 @@ public class SportsApplication {
                 if (p != null) { port = p; portSource = "环境变量 SERVER_PORT"; }
             }
         }
+        if (portSource.equals("默认")) {
+            String envFilePort = ENV_FILE.get("SERVER_PORT");
+            if (envFilePort != null && !envFilePort.isBlank()) {
+                Integer p = parsePort(envFilePort.trim());
+                if (p != null) { port = p; portSource = ".env SERVER_PORT"; }
+            }
+        }
         if (portSource.equals("默认") && cfg != null) {
             Object cp = cfg.get("port");
             if (cp != null) {
@@ -189,6 +199,9 @@ public class SportsApplication {
         String cliHost = argValue(args, "app.host");
         if (cliHost != null && cliHost.isBlank()) cliHost = null;
         if (cliHost != null) { host = cliHost; hostSource = "命令行 --app.host"; }
+        else if (ENV_FILE.get("SERVER_ADDRESS") != null && !ENV_FILE.get("SERVER_ADDRESS").isBlank()) {
+            host = ENV_FILE.get("SERVER_ADDRESS").trim(); hostSource = ".env SERVER_ADDRESS";
+        }
         else if (cfg != null && cfg.get("host") != null && !String.valueOf(cfg.get("host")).isBlank()) {
             host = String.valueOf(cfg.get("host")); hostSource = "data/app-config.json(host)";
         }
@@ -261,10 +274,20 @@ public class SportsApplication {
     /**
      * 读取 data/db-config.json（数据库迁移后写入），覆盖数据源连接与方言。
      * 迁移完成后重启应用即自动切换至目标数据库，无需手动改配置。
+     * 优先级低于 .env：.env 中启用了数据源键（URL/驱动/方言任一）时本文件让位，
+     * 需要让界面迁移接管时，注释 .env 中的 SPRING_DATASOURCE_* / SPRING_JPA_DATABASE_PLATFORM 键即可。
      */
     private static void applyExternalDbConfig() {
         File cfg = new File("./data/db-config.json");
         if (!cfg.exists()) return;
+        boolean envHasDb = ENV_FILE.containsKey("SPRING_DATASOURCE_URL")
+                || ENV_FILE.containsKey("SPRING_DATASOURCE_DRIVER_CLASS_NAME")
+                || ENV_FILE.containsKey("SPRING_JPA_DATABASE_PLATFORM");
+        if (envHasDb) {
+            System.out.println("[db-config] .env 已指定数据源（优先级更高），忽略 data/db-config.json；"
+                    + "如需界面迁移生效，请注释 .env 中的 SPRING_DATASOURCE_* 键");
+            return;
+        }
         try {
             Map<String, Object> c = new com.fasterxml.jackson.databind.ObjectMapper().readValue(cfg, Map.class);
             String type = String.valueOf(c.getOrDefault("type", "")).toLowerCase();
@@ -304,18 +327,21 @@ public class SportsApplication {
     }
 
     /**
-     * 读取运行目录下的 .env 文件（若存在），将其中的数据库相关配置写入 System properties，
-     * 供 Spring Boot 通过 relaxed binding 覆盖 application.yml 的默认数据源。
-     * 若 .env 不存在（首次运行），则先生成一个默认模板（SQLite 默认，MySQL/H2 以注释示例给出），
-     * 用户可编辑后重启生效；生成的模板与 application.yml 默认值一致，首次运行行为不变。
+     * 读取运行目录下的 .env 文件（若存在），将其中的运行配置写入 System properties，
+     * 供 Spring Boot 通过 relaxed binding 覆盖 application.yml 的默认数据源/端口。
+     * 若 .env 不存在（首次运行），则先生成一个默认模板（键默认注释，SQLite 走 application.yml 默认），
+     * 用户取消注释/编辑后重启生效。
      * 支持的键（标准 Spring 环境变量名）：
      *   SPRING_DATASOURCE_URL                JDBC 连接串
      *   SPRING_DATASOURCE_USERNAME           用户名
      *   SPRING_DATASOURCE_PASSWORD           密码
      *   SPRING_DATASOURCE_DRIVER_CLASS_NAME  JDBC 驱动类
-     *   SPRING_JPA_DATABASE_PLATFORM         Hibernate 方言（切换 MySQL/H2 时必须设置）
+     *   SPRING_JPA_DATABASE_PLATFORM         Hibernate 方言（切换 MySQL/H2 时必须设置；
+     *                                        会同步写入 spring.jpa.properties.hibernate.dialect，
+     *                                        避免 application.yml 钉死的 SQLiteDialect 覆盖方言）
+     *   SERVER_PORT / SERVER_ADDRESS         服务端口 / 绑定地址
      * 其它以 SPRING_ 开头的键会按 relaxed binding 规则（下划线转点、转小写）原样透传。
-     * 优先级（高 -> 低）：命令行 --spring.datasource.url > 本文件(.env) > data/db-config.json（界面迁移）> application.yml。
+     * 优先级（高 -> 低）：命令行 --spring.* > OS 环境变量 > 本文件(.env) > data/db-config.json（界面迁移）> application.yml。
      * 注：Spring Boot 原生亦支持 OS 环境变量，故 export 上述变量后启动同样生效；本函数仅为“放下 .env 即生效”提供便利。
      */
     private static void applyEnvFile() {
@@ -325,41 +351,76 @@ public class SportsApplication {
         }
         if (!env.exists()) return; // 模板生成失败则回退默认配置
         try {
-            List<String> lines = Files.readAllLines(env.toPath(), StandardCharsets.UTF_8);
-            boolean any = false;
-            for (String raw : lines) {
-                String line = raw.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                int eq = line.indexOf('=');
-                if (eq < 0) continue;
-                String key = line.substring(0, eq).trim();
-                String val = unquote(line.substring(eq + 1).trim());
-                if (key.isEmpty()) continue;
-                switch (key) {
-                    case "SPRING_DATASOURCE_URL":
-                        System.setProperty("spring.datasource.url", val); any = true; break;
-                    case "SPRING_DATASOURCE_USERNAME":
-                        System.setProperty("spring.datasource.username", val); any = true; break;
-                    case "SPRING_DATASOURCE_PASSWORD":
-                        System.setProperty("spring.datasource.password", val); any = true; break;
-                    case "SPRING_DATASOURCE_DRIVER_CLASS_NAME":
-                        System.setProperty("spring.datasource.driver-class-name", val); any = true; break;
-                    case "SPRING_JPA_DATABASE_PLATFORM":
-                        System.setProperty("spring.jpa.database-platform", val); any = true; break;
-                    case "SERVER_PORT":
-                        System.setProperty("server.port", val); any = true; break;
-                    case "SERVER_ADDRESS":
-                        System.setProperty("server.address", val); any = true; break;
-                    default:
-                        if (key.startsWith("SPRING_")) {
-                            System.setProperty(key.toLowerCase().replace('_', '.'), val); any = true;
-                        }
-                }
+            Map<String, String> kv = parseEnvLines(Files.readAllLines(env.toPath(), StandardCharsets.UTF_8));
+            StringBuilder applied = new StringBuilder();
+            for (Map.Entry<String, String> e : kv.entrySet()) {
+                String key = e.getKey();
+                String val = e.getValue();
+                String prop = envKeyToProperty(key);
+                if (prop == null) continue; // 不支持的键忽略
+                System.setProperty(prop, val);
+                ENV_FILE.put(key, val);
+                if (applied.length() > 0) applied.append(", ");
+                // 密码脱敏打印
+                applied.append(key).append('=')
+                        .append(key.contains("PASSWORD") ? "******" : val);
             }
-            if (any) System.out.println("[env] 已加载运行目录 .env 数据库配置");
+            // 方言双写：application.yml 钉死了 spring.jpa.properties.hibernate.dialect，
+            // 只设 database-platform 会被它覆盖 → 切 MySQL/H2 时方言不跟随。与 db-config 路径保持一致。
+            String dialect = ENV_FILE.get("SPRING_JPA_DATABASE_PLATFORM");
+            if (dialect != null && !dialect.isBlank()) {
+                System.setProperty("spring.jpa.properties.hibernate.dialect", dialect);
+            }
+            if (!ENV_FILE.isEmpty()) {
+                System.out.println("[env] 已读取运行目录 .env（" + ENV_FILE.size() + " 项生效）: " + applied);
+            } else {
+                System.out.println("[env] 已读取运行目录 .env（无生效项：键均被注释或未支持）");
+            }
         } catch (Exception e) {
             System.err.println("[env] 读取 .env 失败，回退默认配置: " + e.getMessage());
         }
+    }
+
+    /** 本次启动从 .env 实际生效的键值（applyEnvFile 填充），供端口/数据源优先级仲裁 */
+    static final Map<String, String> ENV_FILE = new java.util.LinkedHashMap<>();
+
+    /**
+     * 解析 .env 文本行为键值映射（纯函数，便于单测）：
+     * 跳过注释/空行/无 = 行；支持 export 前缀、单双引号包裹值、键值两侧空白、首行 UTF-8 BOM。
+     */
+    static Map<String, String> parseEnvLines(List<String> rawLines) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < rawLines.size(); i++) {
+            String line = rawLines.get(i).trim();
+            if (i == 0 && line.startsWith("\uFEFF")) line = line.substring(1).trim(); // 去 UTF-8 BOM
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            if (line.startsWith("export ")) line = line.substring(7).trim();
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            String key = line.substring(0, eq).trim();
+            String val = unquote(line.substring(eq + 1).trim());
+            if (!key.isEmpty()) out.put(key, val);
+        }
+        return out;
+    }
+
+    /**
+     * .env 键 → Spring 系统属性名；不支持的键返回 null（忽略）。
+     * 注意：default 分支是机械转换（下划线一律转点），词内含下划线的键
+     * （如 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE）会得到错误的属性名
+     * （应为 maximum-pool-size）——此类键必须像上方 case 一样显式映射。
+     */
+    static String envKeyToProperty(String key) {
+        return switch (key) {
+            case "SPRING_DATASOURCE_URL" -> "spring.datasource.url";
+            case "SPRING_DATASOURCE_USERNAME" -> "spring.datasource.username";
+            case "SPRING_DATASOURCE_PASSWORD" -> "spring.datasource.password";
+            case "SPRING_DATASOURCE_DRIVER_CLASS_NAME" -> "spring.datasource.driver-class-name";
+            case "SPRING_JPA_DATABASE_PLATFORM" -> "spring.jpa.database-platform";
+            case "SERVER_PORT" -> "server.port";
+            case "SERVER_ADDRESS" -> "server.address";
+            default -> key.startsWith("SPRING_") ? key.toLowerCase().replace('_', '.') : null;
+        };
     }
 
     /** 首次运行：在运行目录生成 .env 默认模板（SQLite 默认，MySQL/H2 以注释示例给出） */
@@ -387,9 +448,11 @@ public class SportsApplication {
 # ============================================================================
 
 # ---------- ① SQLite（默认，零配置）----------
-SPRING_DATASOURCE_URL=jdbc:sqlite:./sports_meet.db?foreign_keys=ON
-SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.sqlite.JDBC
-SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect
+# 默认不启用（与 application.yml 默认值一致，走 yml 即可）；启用 .env 数据源后，
+# 其优先级高于界面迁移(db-config.json)。取消注释即切换为由本文件接管数据源。
+# SPRING_DATASOURCE_URL=jdbc:sqlite:./sports_meet.db?foreign_keys=ON
+# SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.sqlite.JDBC
+# SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect
 
 # ---------- ② MySQL（生产环境，需先建库）----------
 # SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/sports_meet?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true

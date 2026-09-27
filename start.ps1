@@ -25,10 +25,17 @@ if ($Port -lt 0) {
 }
 if ($Port -lt 0) { $Port = 8080 }
 
-$extra = @("--app.port=$Port")
-if ($Host -ne "") { $extra += "--app.host=$Host" }
+# 仅当端口被显式解析（-Port 参数 / app-config.json）时才作为命令行注入；
+# 兜底 8080 交给 jar 内部优先级链（OS 环境变量 > .env SERVER_PORT > 默认），否则会压住 .env。
+$extra = @()
+if ($Port -gt 0) { $extra += @("--app.port=$Port") }
+if ($Host -ne "") { $extra += @("--app.host=$Host") }
 
-Write-Host "=== Starting on port $Port ($(if ($Host -ne '') { "host $Host" } else { 'all interfaces' })) ===" -ForegroundColor Green
-Write-Host "    Open: http://localhost:$Port" -ForegroundColor Cyan
+if ($Port -gt 0) {
+  Write-Host "=== Starting on port $Port ($(if ($Host -ne '') { "host $Host" } else { 'all interfaces' })) ===" -ForegroundColor Green
+  Write-Host "    Open: http://localhost:$Port" -ForegroundColor Cyan
+} else {
+  Write-Host "=== Port: following OS env / .env SERVER_PORT (default 8080) ===" -ForegroundColor Green
+}
 Write-Host ""
 java -jar $jar @extra
