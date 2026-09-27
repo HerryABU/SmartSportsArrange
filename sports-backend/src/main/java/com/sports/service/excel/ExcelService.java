@@ -1111,8 +1111,11 @@ public class ExcelService {
         try (InputStream in = file.getInputStream()) {
             ScoreDataListener listener = new ScoreDataListener(
                     resultRepository, eventRepository, athleteRepository, arrangementRepository);
-            // U13：读取全部 Sheet——支持「每个项目一个 Sheet」的成绩表，同时兼容单 Sheet
-            EasyExcel.read(in, ScoreExcelModel.class, listener).doReadAll();
+            // U13：读取全部 Sheet——支持「每个项目一个 Sheet」的成绩表，同时兼容单 Sheet。
+            // 表头驱动（2026-09-27）：无模型类 + headRowNumber(0)，单元格全按 String 读，
+            // 由 ScoreDataListener 按列别名（ExcelColumnMapping）定位——任意列序、多余列（年级/班级）、
+            // 「高一」等文本值都不会再触发 Integer 转换异常炸掉整次导入；无表头时退回旧固定列序。
+            EasyExcel.read(in).headRowNumber(0).registerReadListener(listener).doReadAll();
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("total", listener.getSuccessCount() + listener.getErrorCount());
             result.put("success", listener.getSuccessCount());

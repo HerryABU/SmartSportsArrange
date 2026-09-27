@@ -1,6 +1,7 @@
 package com.sports.dto.excel;
 
 import com.alibaba.excel.context.AnalysisContext;
+import com.alibaba.excel.exception.ExcelDataConvertException;
 import com.alibaba.excel.read.listener.ReadListener;
 import com.sports.entity.arrange.Arrangement;
 import com.sports.entity.athlete.Athlete;
@@ -10,17 +11,34 @@ import com.sports.repository.arrange.ArrangementRepository;
 import com.sports.repository.athlete.AthleteRepository;
 import com.sports.repository.event.EventRepository;
 import com.sports.repository.result.ResultRepository;
+import com.sports.service.excel.ExcelColumnMapping;
 import com.sports.service.result.ResultService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * 成绩 Excel 导入监听器
+ * 成绩 Excel 导入监听器（表头驱动版）。
+ *
+ * <p>旧实现按 {@code @ExcelProperty(index)} 固定列号 + Integer 类型字段读所有 Sheet：
+ * 真实学校的成绩表只要列序不同（如第 4/5 列是「年级/班级」文本「高一」），
+ * EasyExcel 的 IntegerStringConverter 就抛 {@code NumberFormatException}，整次导入被炸掉。</p>
+ *
+ * <p>新版规则：</p>
+ * <ul>
+ *   <li><b>全 String 读取</b>：无模型类读 Map&lt;Integer,String&gt;，从根上消除 Integer 转换异常；</li>
+ *   <li><b>表头别名定位</b>：每 Sheet 首行按 {@link ExcelColumnMapping} 别名识别列
+ *       （任意列序、多余列「年级/班级」自动忽略）；识别不出（&lt;2 核心列）时退回旧固定列序兜底；</li>
+ *   <li><b>容错解析</b>：组别/道次「第3组」「3组」「A」「高一」→ 提取数字或回退编排信息；
+ *       风速「1.5m/s」→ 提取数值；</li>
+ *   <li><b>项目定位</b>：编码优先、名称兜底（成绩表常填「100米」而非「100M」）；</li>
+ *   <li><b>运动员定位</b>：号码布 或 学号 或 姓名（与多表导入 processScoreRow 同口径）。</li>
+ * </ul>
  */
 @Slf4j
-public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
+public class ScoreDataListener implements ReadListener<Map<Integer, String>> {
 
     private final ResultRepository resultRepository;
     private final EventRepository eventRepository;
@@ -37,6 +55,26 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     private final Map<String, String> seenRawByKey = new HashMap<>();
     private static final int BATCH_SIZE = 500;
 
+    // ==================== 表头驱动的列定位 ====================
+
+    /** 本监听器关心的列键；顺序即同名列的裁决顺序（先到先得） */
+    private static final List<String> SCORE_KEYS = List.of(
+            "eventCode", "athleteNumber", "studentId", "athleteName",
+            "rawTime", "heat", "lane", "windSpeed", "remark", "grade", "className");
+    /** 判定「这行是表头」所需的最少核心列数 */
+    private static final int MIN_CORE_COLS = 2;
+    private static final List<String> CORE_KEYS =
+            List.of("eventCode", "athleteNumber", "studentId", "athleteName", "rawTime");
+    /** 无表头/表头不可识别时的兜底列序（与旧 ScoreExcelModel 固定 index 完全一致） */
+    private static final Map<String, Integer> FIXED_INDEX = Map.of(
+            "eventCode", 0, "athleteNumber", 1, "athleteName", 2,
+            "rawTime", 3, "heat", 4, "lane", 5, "windSpeed", 6, "remark", 7);
+
+    private boolean sheetInitialized = false;
+    private Integer currentSheetNo = null;
+    private boolean headerChecked = false;
+    private Map<String, Integer> cols = FIXED_INDEX;
+
     public ScoreDataListener(ResultRepository resultRepository, EventRepository eventRepository,
                              AthleteRepository athleteRepository, ArrangementRepository arrangementRepository) {
         this.resultRepository = resultRepository;
@@ -46,68 +84,135 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
     }
 
     @Override
-    public void invoke(ScoreExcelModel model, AnalysisContext context) {
+    public void invoke(Map<Integer, String> row, AnalysisContext context) {
         int rowNum = context.readRowHolder().getRowIndex() + 1;
+        Integer sheetNo = context.readSheetHolder() != null
+                ? context.readSheetHolder().getSheetNo() : null;
         String sheetName = context.readSheetHolder() != null
                 ? context.readSheetHolder().getSheetName() : null;
 
         // B02/U13 修复：成绩导入走 doReadAll() 读取全部 Sheet，而模板与导出表都会带一个
-        // 「填写说明」Sheet。说明行的第 0 列是字段名（如「项目编码」「运动员号码」），
-        // 会被当作项目编码去查库并抛出「项目编码 '项目编码' 不存在」——
-        // 于是「导出的模板/成绩表无法原样回导」，用户拿到的模板本身是坏的。
-        // 说明/辅助 Sheet 直接整表跳过（不产生任何 error）。
+        // 「填写说明」Sheet。说明/辅助 Sheet 直接整表跳过（不产生任何 error）。
         if (isAuxiliarySheet(sheetName)) {
             return;
         }
 
+        // 每 Sheet 独立定位列：换 Sheet 即重置（headRowNumber(0) 下首行即表头行）
+        boolean newSheet = !sheetInitialized
+                || (sheetNo != null && !sheetNo.equals(currentSheetNo));
+        if (newSheet) {
+            sheetInitialized = true;
+            currentSheetNo = sheetNo;
+            headerChecked = false;
+            cols = FIXED_INDEX;
+        }
+
+        if (!headerChecked) {
+            headerChecked = true;
+            Map<String, Integer> byHeader = resolveColumnsByHeader(row);
+            if (byHeader != null) {
+                cols = byHeader;
+                log.info("成绩导入: Sheet[{}] 按表头定位列 {}", sheetName, byHeader);
+                return; // 表头行消费掉
+            }
+            cols = FIXED_INDEX;
+            log.warn("成绩导入: Sheet[{}] 首行未识别出表头，退回固定列序 "
+                    + "(0项目编码/1号码/2姓名/3成绩/4组别/5道次/6风速/7备注)", sheetName);
+            // 表头识别失败：本行按数据行处理（无表头文件兼容）
+        }
+        processRow(row, rowNum, sheetName);
+    }
+
+    /**
+     * 按表头文本定位列：精确别名匹配（大小写不敏感），一列只归一键、一键只占一列。
+     * 核心列（项目编码/号码/学号/姓名/成绩）命中 ≥ {@value MIN_CORE_COLS} 才认定是表头。
+     */
+    private Map<String, Integer> resolveColumnsByHeader(Map<Integer, String> headerRow) {
+        if (headerRow == null || headerRow.isEmpty()) return null;
+        Map<String, Integer> found = new LinkedHashMap<>();
+        int core = 0;
+        for (Map.Entry<Integer, String> cell : headerRow.entrySet()) {
+            String text = cell.getValue() == null ? "" : cell.getValue().trim();
+            if (text.isEmpty()) continue;
+            for (String key : SCORE_KEYS) {
+                if (found.containsKey(key)) continue;
+                if (matchesAlias(key, text)) {
+                    found.put(key, cell.getKey());
+                    if (CORE_KEYS.contains(key)) core++;
+                    break;
+                }
+            }
+        }
+        return core >= MIN_CORE_COLS ? found : null;
+    }
+
+    private boolean matchesAlias(String key, String header) {
+        for (String alias : ExcelColumnMapping.COLUMN_ALIASES.getOrDefault(key, List.of())) {
+            if (alias.equalsIgnoreCase(header)) return true;
+        }
+        return false;
+    }
+
+    // ==================== 数据行处理 ====================
+
+    private void processRow(Map<Integer, String> row, int rowNum, String sheetName) {
+        String eventRef = str(row, "eventCode");
+        String athleteNumber = str(row, "athleteNumber");
+        String studentId = str(row, "studentId");
+        String athleteName = str(row, "athleteName");
+        String rawTime = str(row, "rawTime");
+
         // 空行跳过
-        boolean blank = isBlank(model.getEventCode()) && isBlank(model.getAthleteNumber())
-                && isBlank(model.getAthleteName());
+        boolean blank = isBlank(eventRef) && isBlank(athleteNumber)
+                && isBlank(studentId) && isBlank(athleteName);
         if (blank) {
             return;
         }
 
-        // 成绩行必须能定位到运动员（号码布或姓名）；否则视为说明/汇总行，计入 skipped 而非 error，
+        // 成绩行必须能定位到运动员（号码布/学号/姓名）；否则视为说明/汇总行，计入 skipped 而非 error，
         // 既不污染错误清单，也不静默丢弃。
-        if (isBlank(model.getAthleteNumber()) && isBlank(model.getAthleteName())) {
+        if (isBlank(athleteNumber) && isBlank(studentId) && isBlank(athleteName)) {
             Map<String, Object> skip = new LinkedHashMap<>();
             skip.put("row", rowNum);
             skip.put("sheet", sheetName);
-            skip.put("value", model.getEventCode());
+            skip.put("value", eventRef);
             skip.put("reason", "无运动员标识（说明行或汇总行）");
             skipped.add(skip);
             return;
         }
 
         try {
-            // 查找项目
+            // 查找项目：编码优先、名称兜底
             Event event = null;
-            if (model.getEventCode() != null && !model.getEventCode().isBlank()) {
-                event = eventRepository.findByCode(model.getEventCode().trim())
-                        .orElseThrow(() -> new RuntimeException("项目编码 '" + model.getEventCode() + "' 不存在"));
+            if (!isBlank(eventRef)) {
+                String ref = eventRef.trim();
+                event = eventRepository.findByCode(ref)
+                        .or(() -> eventRepository.findByNameAndIsEnabledTrue(ref))
+                        .orElseThrow(() -> new RuntimeException(
+                                "项目 '" + ref + "' 不存在（编码与名称均未匹配）"));
             }
 
-            // 查找运动员
+            // 查找运动员：号码布/学号 优先，姓名兜底
             Athlete athlete = null;
-            if (model.getAthleteNumber() != null && !model.getAthleteNumber().isBlank()) {
+            if (!isBlank(athleteNumber) || !isBlank(studentId)) {
                 // B02/U02：按「号码布 或 学号」匹配——导入模板「填写说明」明确写了
                 // 「运动员号码：填号码布编号；也可填学号（系统按号码/学号匹配运动员）」，
                 // 但旧实现只调 findByNumber，学号分支从未生效。
                 // 而号码布是「系统按规则生成」的，未生成时 number 全空、导出列会回填学号，
                 // 于是导出的成绩表回导时报「号码簿 '102002' 不存在」——文档与实现对不上。
-                String ref = model.getAthleteNumber().trim();
+                String ref = !isBlank(athleteNumber) ? athleteNumber.trim() : studentId.trim();
                 athlete = athleteRepository.findByNumber(ref)
                         .or(() -> athleteRepository.findByStudentId(ref))
                         .orElseThrow(() -> new RuntimeException(
                                 "号码布/学号 '" + ref + "' 不存在（该列可填号码布编号或学号）"));
-            } else if (model.getAthleteName() != null && !model.getAthleteName().isBlank()) {
-                List<Athlete> byName = athleteRepository.findByName(model.getAthleteName().trim());
+            } else {
+                List<Athlete> byName = athleteRepository.findByName(athleteName.trim());
                 if (byName.size() == 1) {
                     athlete = byName.get(0);
                 } else if (byName.isEmpty()) {
-                    throw new RuntimeException("运动员 '" + model.getAthleteName() + "' 不存在");
+                    throw new RuntimeException("运动员 '" + athleteName + "' 不存在");
                 } else {
-                    throw new RuntimeException("运动员 '" + model.getAthleteName() + "' 存在 " + byName.size()
+                    throw new RuntimeException("运动员 '" + athleteName + "' 存在 " + byName.size()
                             + " 个重名，请改用号码布编号或学号填写「运动员号码」列");
                 }
             }
@@ -117,7 +222,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             }
 
             String key = event.getId() + "_" + athlete.getId();
-            String inRaw = model.getRawTime() != null ? model.getRawTime().trim() : "";
+            String inRaw = rawTime != null ? rawTime.trim() : "";
 
             // 修复（优化层）：批量导入性能 + 导入内幂等/冲突判定。原实现逐行 save 且依赖「DB 实时落库」做去重；
             // 现用内存 seenRawByKey 维护本次导入已处理的 (项目,运动员)→成绩 映射，既支持批量 saveAll，
@@ -152,21 +257,21 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             // R-2 严密性：DNF/DNS/DSQ 等非完赛标记——模板填写说明承诺支持，但此前被当成畸形时间
             // 静默转 null 仍以 valid 落库，导致弃赛者被算作「有效成绩」且名次排到冠军前。
             // 现识别为独立状态（dnf/dns/dsq），自动退出计分（findAllValid 只取 valid）并排在项目末尾。
-            String nonFinishStatus = ResultService.normalizeNonFinishStatus(model.getRawTime());
+            String nonFinishStatus = ResultService.normalizeNonFinishStatus(rawTime);
             // R-3 严密性：非完赛标记已归一为 dnf/dns/dsq（timeSeconds=null）；
             // 否则走 resolveTimeSeconds——空白时间留空待补录，非空白但无法解析或越界一律抛异常，
             // 由外层统一计入 errors，杜绝「畸形时间静默以 valid 落库」的旧问题。
-            Double timeSeconds = nonFinishStatus != null ? null : resolveTimeSeconds(model.getRawTime());
+            Double timeSeconds = nonFinishStatus != null ? null : resolveTimeSeconds(rawTime);
 
-            // 查找编排信息
-            Integer heat = model.getHeat();
-            Integer lane = model.getLane();
+            // 组别/道次容错解析（「第3组」→3、「高一」「A」→null）+ 编排信息回退
+            Integer heat = parseIntTolerant(str(row, "heat"));
+            Integer lane = parseIntTolerant(str(row, "lane"));
             if (heat == null || lane == null) {
                 Optional<Arrangement> arr = arrangementRepository
                         .findByEventIdAndAthleteId(event.getId(), athlete.getId());
                 if (arr.isPresent()) {
-                    heat = arr.get().getHeat();
-                    lane = arr.get().getLane();
+                    if (heat == null) heat = arr.get().getHeat();
+                    if (lane == null) lane = arr.get().getLane();
                 }
             }
 
@@ -175,10 +280,10 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
                     .athlete(athlete)
                     .heat(heat)
                     .lane(lane)
-                    .rawTime(model.getRawTime())
+                    .rawTime(inRaw)
                     .timeSeconds(timeSeconds)
                     .status(nonFinishStatus != null ? nonFinishStatus : "valid")
-                    .remark(model.getRemark())
+                    .remark(str(row, "remark"))
                     .enteredAt(java.time.LocalDateTime.now())
                     .createdAt(java.time.LocalDateTime.now())
                     .updatedAt(java.time.LocalDateTime.now())
@@ -186,14 +291,16 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
 
             // 备注含破纪录标记（破纪录/纪录/记录/record，不区分大小写）→ 标记为破纪录成绩，
             // 使「破纪录」可由成绩导入 备注 列直接带入，records 榜与团体加分据此计算。
-            if (isRecordRemark(model.getRemark())) {
+            if (isRecordRemark(result.getRemark())) {
                 result.setIsRecord(true);
             }
 
-            if (model.getWindSpeed() != null && !model.getWindSpeed().isBlank()) {
-                try {
-                    result.setWindSpeed(Double.parseDouble(model.getWindSpeed().trim()));
-                } catch (NumberFormatException ignored) {}
+            String wind = str(row, "windSpeed");
+            if (!isBlank(wind)) {
+                Double w = parseDoubleTolerant(wind);
+                if (w != null) {
+                    result.setWindSpeed(w);
+                }
             }
 
             // 修复（优化层）：批量累积，达到阈值后一次性 saveAll，避免逐条 save 的 N 次写库开销
@@ -208,6 +315,7 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
             errorCount++;
             Map<String, Object> error = new LinkedHashMap<>();
             error.put("row", rowNum);
+            error.put("sheet", sheetName);
             error.put("message", e.getMessage());
             errors.add(error);
             log.warn("行 {} 导入成绩失败: {}", rowNum, e.getMessage());
@@ -219,6 +327,67 @@ public class ScoreDataListener implements ReadListener<ScoreExcelModel> {
         flush();
         log.info("成绩导入完成: 成功 {} 条, 失败 {} 条, 跳过(说明/汇总行) {} 条",
                 successCount, errorCount, skipped.size());
+    }
+
+    /**
+     * 安全网：单元格级转换异常（如极少数无法字符串化的特殊类型）只跳过该行并计错，
+     * 绝不再炸掉整次导入（旧实现的痛点正是「一个坏单元格 → 全部失败」）。
+     */
+    @Override
+    public void onException(Exception exception, AnalysisContext context) throws Exception {
+        if (exception instanceof ExcelDataConvertException ce) {
+            errorCount++;
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("row", (ce.getRowIndex() != null ? ce.getRowIndex() : -1) + 1);
+            error.put("message", "第 " + (ce.getColumnIndex() != null ? ce.getColumnIndex() + 1 : "?")
+                    + " 列单元格格式无法解析，已跳过该行: " + ce.getCellData());
+            errors.add(error);
+            log.warn("成绩导入: 行 {} 单元格转换失败已跳过: {}", ce.getRowIndex(), ce.getCellData());
+            return;
+        }
+        throw exception;
+    }
+
+    // ==================== 工具方法 ====================
+
+    /** 按定位好的列取单元格值（trim；列未识别出返回 null） */
+    private String str(Map<Integer, String> row, String key) {
+        Integer idx = cols.get(key);
+        if (idx == null) return null;
+        String v = row.get(idx);
+        return v == null ? null : v.trim();
+    }
+
+    /** 容错整数解析：提取首个数字串（「第3组」→3、「3组」→3）；纯文本（「高一」「A」）→ null */
+    private static final Pattern INT_TOKEN = Pattern.compile("\\d+");
+
+    private static Integer parseIntTolerant(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        if (t.isEmpty()) return null;
+        Matcher m = INT_TOKEN.matcher(t);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
+    /** 容错浮点解析：提取首个数值串（「1.5m/s」→1.5）；无法提取 → null */
+    private static final Pattern DOUBLE_TOKEN = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?");
+
+    private static Double parseDoubleTolerant(String s) {
+        if (s == null) return null;
+        Matcher m = DOUBLE_TOKEN.matcher(s.trim());
+        if (m.find()) {
+            try {
+                return Double.parseDouble(m.group());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
     }
 
     /** 修复（优化层）：将累积的 Result 批次一次性落库（避免逐条 save 的 N 次写库开销） */

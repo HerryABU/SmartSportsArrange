@@ -575,7 +575,7 @@ public class ResultService {
                         r.getRawTime() != null ? r.getRawTime() : "",
                         // 组别 = 该成绩所在组次（Result.heat）。
                         // 旧实现写的是 event.gradeGroup（项目所属年级组），既语义错位、
-                        // 又与导入端 ScoreExcelModel.heat(Integer) 的类型不符——组次信息丢失。
+                        // 又与导入端按列名容错解析的类型相悖——组次信息丢失。
                         r.getHeat() != null ? String.valueOf(r.getHeat()) : "",
                         r.getLane() != null ? String.valueOf(r.getLane()) : "",
                         r.getWindSpeed() != null ? String.valueOf(r.getWindSpeed()) : "",
