@@ -208,6 +208,23 @@ public class ArrangementController {
         return ApiResponse.success(arrangementService.viewQualifiers(eventId, grade, gender));
     }
 
+    /**
+     * 再次排道（赛程编排页行内入口）：按 项目×年级×轮次 重排道次。
+     * body: {grade, round}——round 传赛程行的轮次（preliminary/final，缺省 auto）。
+     * 与自动编排同口径：该年级实际出现的性别逐组重排，人工锁定项保留。
+     */
+    @PostMapping("/events/{eventId}/rearrange")
+    public ApiResponse<?> rearrange(@PathVariable Long eventId,
+                                    @RequestBody(required = false) Map<String, Object> body) {
+        String grade = body == null ? null : (String) body.get("grade");
+        String round = body == null ? null : (String) body.get("round");
+        log.info("再次排道: eventId={}, grade={}, round={}", eventId, grade, round);
+        Object r = arrangementService.rearrangeByGrade(eventId, grade, round);
+        auditService.record("ARRANGE_REARRANGE", "EVENT", eventId,
+                "再次排道: grade=" + grade + ", round=" + round + ", 结果=" + r);
+        return ApiResponse.success("道次已重排", r);
+    }
+
     // ==================== 裁判分配（智能编排产出 + 手工调整） ====================
 
     /** 查看某项目全部组次裁判分配（含裁判姓名） */

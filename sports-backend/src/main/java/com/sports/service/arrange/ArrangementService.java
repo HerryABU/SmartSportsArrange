@@ -127,6 +127,57 @@ public class ArrangementService {
         return result;
     }
 
+    /**
+     * 按项目×年级×轮次重排道次（赛程编排页「再次排道」入口）。
+     *
+     * <p>与自动编排（autoArrangeFor）同口径：从已审核报名推导该年级实际出现的性别，逐性别组
+     * 重排；道次数取项目自身并发口径（{@link #resolveLanes}）；人工锁定项（isManual）由
+     * {@link #arrange} 内部保留并排除出自动编排池。round 传赛程行的轮次：
+     * preliminary → 重排预赛（全体报名者）；final → 重排决赛（已有预赛则仅晋级者）；
+     * null/auto → 已有预赛编排则只排晋级者进决赛，否则直接决赛。</p>
+     *
+     * @return genders 参与重排的性别组、arranged 成功组数、failed/fails 失败明细；
+     *         全部失败时抛异常（部分失败视为成功并带明细返回，与批量编排语义一致）
+     */
+    public Map<String, Object> rearrangeByGrade(Long eventId, String grade, String round) {
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
+        String g = (grade == null || grade.isBlank()) ? null : grade.trim();
+        Set<String> genders = new LinkedHashSet<>();
+        for (Registration r : registrationRepository.findApprovedByEventId(eventId)) {
+            Athlete a = r.getAthlete();
+            if (a == null || a.getGender() == null || a.getGender().isBlank()) continue;
+            if (g != null && !Grades.same(a.getGrade(), g)) continue;   // 年级匹配必须过 Grades 等价归一化
+            genders.add(a.getGender());
+        }
+        String targetRound = (round == null || round.isBlank() || "auto".equals(round)) ? null : round.trim();
+        int ok = 0;
+        List<String> fails = new ArrayList<>();
+        for (String gender : genders) {
+            try {
+                arrange(eventId, g, gender, Math.max(1, resolveLanes(event)), null, targetRound);
+                ok++;
+            } catch (Exception ex) {
+                fails.add(gender + "：" + (ex.getMessage() == null ? ex.toString() : ex.getMessage()));
+                log.warn("再次排道失败: eventId={}, grade={}, gender={}, round={}", eventId, g, gender, targetRound, ex);
+            }
+        }
+        if (ok == 0 && !fails.isEmpty()) {
+            throw new RuntimeException("重排道次全部失败: " + String.join("；", fails));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("eventId", eventId);
+        out.put("grade", g);
+        out.put("round", targetRound);
+        out.put("genders", new ArrayList<>(genders));
+        out.put("arranged", ok);
+        out.put("failed", fails.size());
+        out.put("fails", fails);
+        log.info("再次排道完成: eventId={}, grade={}, round={}, genders={}, 成功 {} 组, 失败 {} 组",
+                eventId, g, targetRound, genders, ok, fails.size());
+        return out;
+    }
+
     /** 预览编排（不保存） */
     public Map<String, Object> previewArrangement(Map<String, Object> config) {
         Long eventId = config.containsKey("eventId") ? ((Number) config.get("eventId")).longValue() : null;

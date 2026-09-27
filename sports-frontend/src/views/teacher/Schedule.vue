@@ -119,9 +119,14 @@
                 <span class="row-remark">{{ row.remark || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="90" align="center" fixed="right">
+            <el-table-column label="操作" width="205" align="center" fixed="right">
               <template #default="{ row }">
                 <el-button type="primary" link size="small" :icon="EditPen" @click="openEdit(row)">调整</el-button>
+                <!-- 已录入成绩的项目：查看成绩 / 再次排道 -->
+                <template v-if="hasResult(row)">
+                  <el-button type="success" link size="small" @click="openResults(row)">查看成绩</el-button>
+                  <el-button type="warning" link size="small" @click="rearrangeRow(row)">再次排道</el-button>
+                </template>
               </template>
             </el-table-column>
           </el-table>
@@ -424,6 +429,46 @@
       <template #footer>
         <el-button @click="showEditDialog = false">取消</el-button>
         <el-button type="primary" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看成绩：赛程行上对已录入成绩的项目弹窗展示（预赛/决赛轮次一并列出） -->
+    <el-dialog v-model="resultsDialog.visible" :title="resultsDialogTitle" width="860px" top="6vh">
+      <el-table :data="resultsDialog.rows" size="small" border stripe max-height="480" v-loading="resultsDialog.loading">
+        <el-table-column label="轮次" width="76" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.round === 'preliminary' ? 'warning' : 'primary'" effect="plain">
+              {{ row.round === 'preliminary' ? '预赛' : '决赛' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="组次/道次" width="100" align="center">
+          <template #default="{ row }">
+            {{ row.heat ? `第${row.heat}组` : '—' }}<template v-if="row.lane"> / {{ row.lane }}道</template>
+          </template>
+        </el-table-column>
+        <el-table-column prop="number" label="号码布" width="90" align="center" />
+        <el-table-column prop="athleteName" label="姓名" width="96" />
+        <el-table-column prop="className" label="班级" min-width="110" show-overflow-tooltip />
+        <el-table-column prop="grade" label="年级" width="96" show-overflow-tooltip />
+        <el-table-column label="成绩" width="100" align="center">
+          <template #default="{ row }">
+            <span :class="{ 'result-dnf': isNonFinish(row.rawTime) }">{{ row.rawTime || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="组内名次" width="88" align="center">
+          <template #default="{ row }">{{ row.heatRank || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="总名次" width="80" align="center">
+          <template #default="{ row }">{{ row.rank || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
+      </el-table>
+      <div v-if="!resultsDialog.loading && !resultsDialog.rows.length" class="results-empty">
+        该项目暂无已录入的成绩
+      </div>
+      <template #footer>
+        <el-button @click="resultsDialog.visible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -994,7 +1039,73 @@ async function clearAll() {
   }
 }
 
-onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes() })
+// ==================== 已录入成绩的项目：行上「查看成绩 / 再次排道」 ====================
+const resultEventIds = ref(new Set())
+const resultsDialog = reactive({ visible: false, loading: false, eventName: '', round: '', rows: [] })
+const resultsDialogTitle = computed(() => {
+  const r = resultsDialog.round === 'preliminary' ? '预赛' : '决赛'
+  return `「${resultsDialog.eventName}」${r}成绩`
+})
+
+function hasResult(row) { return !!row?.eventId && resultEventIds.value.has(row.eventId) }
+
+/** 进页面拉一次全量成绩，聚合出「已录入成绩的项目 id」集合（失败不阻塞编排页） */
+async function loadResultEventIds() {
+  try {
+    const rows = await request.get('/results')
+    resultEventIds.value = new Set((Array.isArray(rows) ? rows : []).map(r => r.eventId).filter(Boolean))
+  } catch (e) { /* 静默：拉不到成绩清单时按钮不显示，不影响编排主流程 */ }
+}
+
+async function openResults(row) {
+  resultsDialog.eventName = row.eventName
+  resultsDialog.round = row.round
+  resultsDialog.rows = []
+  resultsDialog.visible = true
+  resultsDialog.loading = true
+  try {
+    const rows = await request.get('/results', { params: { eventId: row.eventId } })
+    const list = Array.isArray(rows) ? rows : []
+    // 行是项目×年级×轮次：同轮次成绩排前，其余轮次附后；组次、道次升序
+    list.sort((a, b) =>
+      ((a.round === row.round ? 0 : 1) - (b.round === row.round ? 0 : 1))
+      || (a.heat || 0) - (b.heat || 0) || (a.lane || 0) - (b.lane || 0))
+    resultsDialog.rows = list
+  } catch (e) {
+    ElMessage.error(e?.message || '成绩查询失败，请重新登录后再试')
+  } finally {
+    resultsDialog.loading = false
+  }
+}
+
+/** 再次排道：按该行（项目×年级×轮次）重排道次。该年级各性别组按当前报名重排，人工锁定项保留；已录入的成绩记录挂运动员，不受影响 */
+async function rearrangeRow(row) {
+  try {
+    await ElMessageBox.confirm(
+      `将重新生成「${row.eventName}」（${row.grade || '不分年级'}）`
+      + `${row.round === 'preliminary' ? '预赛' : '决赛'}的组次与道次：`
+      + `该年级各性别组按当前报名重排，人工锁定的道次保留；已录入的成绩记录不受影响。继续？`,
+      '再次排道', { type: 'warning', confirmButtonText: '重排', cancelButtonText: '取消' })
+  } catch { return }
+  try {
+    const r = await request.post(`/arrange/events/${row.eventId}/rearrange`,
+      { grade: row.grade, round: row.round }) || {}
+    if (r.failed > 0) {
+      ElMessage.warning(`道次已重排 ${r.arranged} 组，失败 ${r.failed} 组：${(r.fails || []).join('；')}`)
+    } else {
+      ElMessage.success(`道次已重排完成（${(r.genders || []).length} 个性别组）`)
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '再次排道失败')
+  }
+}
+
+/** DNF/DNS/DSQ 等未完赛标记的展示样式 */
+function isNonFinish(t) {
+  return typeof t === 'string' && /^(DNF|DNS|DSQ|DQ)$/i.test(t.trim())
+}
+
+onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes(); loadResultEventIds() })
 </script>
 
 <style scoped>
@@ -1021,6 +1132,8 @@ onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes() })
   margin-right: 4px;
 }
 .row-remark { font-size: 12px; color: #909399; }
+.result-dnf { color: #f56c6c; font-weight: 600; }
+.results-empty { text-align: center; color: #909399; padding: 24px 0; font-size: 13px; }
 .day-config-block {
   border: 1px solid #e4e7ed;
   border-radius: 8px;
