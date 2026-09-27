@@ -2,6 +2,7 @@ package com.sports.service.schedule;
 
 import com.sports.common.util.Grades;
 import com.sports.collab.ScheduleCollaborationService;
+import com.sports.entity.arrange.Arrangement;
 import com.sports.entity.event.Event;
 import com.sports.entity.event.EventSchedule;
 import com.sports.entity.registration.Registration;
@@ -519,6 +520,18 @@ public class ScheduleService {
         // Phase 1 用的是放置期内存计数（conflictStat），可能与事后检测口径存在偏差；这里用真实口径
         // 重新评估每趟落库后的冲突数并继续扰动，直到真实冲突归零或连续 stale 趟不再下降（收敛）。
         // 尊重求解器「纪律」：本段纯属服务层编排，不触碰纯求解器（RuleBasedScheduler / ScheduleOptimizer）内部。
+        //
+        // ★ 口径一致性修复（2026-09-27，「越消解冲突反而越多」主根因）：
+        //   每趟 runPlacementPass 落库的都是「无决赛条目」的中间态（deleteAllSchedules 把决赛条目一并删了，
+        //   决赛条目要等 restoreFinalScheduleRows 从编排表补回），若此时直接 countConflicts 会系统性低估；
+        //   循环内选出的「最优趟」在最终补回决赛条目后冲突跳升——决赛条目按「预赛结束+45min」追加，
+        //   与重排后的其它项目时间窗紧贴/重叠，制造新的兼项冲突，且这部分从未被任何一趟的评估看见。
+        //   修复：初值、每趟、重跑最优趟三处都先补回决赛条目再计数，保证「评估口径 ≡ 交付口径」。
+        try {
+            arrangementService.restoreFinalScheduleRows();
+        } catch (Exception ex) {
+            log.warn("精修初值评估前补回决赛条目失败，将按无决赛条目口径评估: {}", ex.getMessage());
+        }
         int[] realBest = conflictService.countConflicts();
         int realStale = 0;
         final int REAL_REFINE_CAP = unlimited ? 60 : Math.min(24, Math.max(6, hardCap));
@@ -530,6 +543,11 @@ public class ScheduleService {
                         mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                         event2Group, defaultInterval, minInterval, compressionWarnRatio,
                         solvedPlacement, eventsWithRegs);
+                try {
+                    arrangementService.restoreFinalScheduleRows();   // ★ 补回决赛条目再评估（口径=交付）
+                } catch (Exception ex) {
+                    log.warn("精修趟 {} 补回决赛条目失败: {}", q, ex.getMessage());
+                }
                 int[] rc = conflictService.countConflicts();
                 boolean better = rc[0] < realBest[0] || (rc[0] == realBest[0] && rc[1] < realBest[1]);
                 if (better) {
@@ -556,6 +574,11 @@ public class ScheduleService {
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
                     solvedPlacement, eventsWithRegs);
+            try {
+                arrangementService.restoreFinalScheduleRows();   // ★ 重跑最优趟后同样补回（口径=交付）
+            } catch (Exception ex) {
+                log.warn("重跑最优趟后补回决赛条目失败: {}", ex.getMessage());
+            }
         }
         List<EventSchedule> saved = best.saved;
         List<String> warnings = new ArrayList<>(venueWarnings);
@@ -921,11 +944,79 @@ public class ScheduleService {
      * <p>在 {@link #autoSchedule} 的基础上强制「无限轮」(max_attempts=0)，把真实事后冲突数
      * （与 GET /api/arrange/conflicts 同口径）作为目标函数，持续用不同随机顺序重排并保留最优，
      * 直到真实冲突归零或收敛到该扰动下的最低——即「检测后继续尝试，直到兼项冲突没有」。</p>
+     *
+     * <p><b>单调保底（2026-09-27）</b>：消解的全部重排趟都以「无决赛条目」的中间态过账，
+     * 决赛条目在补回后才计入冲突；若补回后的最终交付口径仍劣于入口（极端实例下重排全面劣化、
+     * 或精修扰动跳不出劣化区间），则回滚到入口快照——保证「消解永不变差」：本入口返回后的
+     * 兼项冲突数（total/severe）不高于调用前。同时把基线/终值/是否回滚写入
+     * algorithmPortfolio.resolveConflictGuard，供前端与日志核对。</p>
      */
     public Map<String, Object> resolveConflicts(Map<String, Object> override) {
         Map<String, Object> cfg = override == null ? new LinkedHashMap<>() : new LinkedHashMap<>(override);
         cfg.put("max_attempts", 0);   // 无限轮：跑到底把真实冲突压到最低 / 归零
-        return autoSchedule(cfg);
+        // 入口基线：交付口径冲突数 + 赛程/编排快照（两表均为无外键引用的派生表，可安全整表重建）
+        int[] entryConflict = conflictService.countConflicts();
+        List<EventSchedule> entrySchedules = scheduleRepository.findAll();
+        List<Arrangement> entryArrangements = arrangementRepository.findAll();
+        Map<String, Object> result = autoSchedule(cfg);
+        int[] finalConflict = conflictService.countConflicts();
+        boolean worse = finalConflict[0] > entryConflict[0]
+                || (finalConflict[0] == entryConflict[0] && finalConflict[1] > entryConflict[1]);
+        if (worse) {
+            restoreScheduleSnapshot(entrySchedules, entryArrangements);
+            log.warn("兼项冲突消解结果劣于入口（total/severe {} -> {}），已回滚到消解前的赛程表与编排表",
+                    Arrays.toString(entryConflict), Arrays.toString(finalConflict));
+            // 回滚后 result 里的 conflicts/warnings 反映的是被放弃的重排方案，按恢复后的库重算
+            result.put("conflicts", conflictService.detectConflicts());
+            if (result.get("warnings") instanceof List<?> ws) {
+                @SuppressWarnings("unchecked")
+                List<String> warnings = (List<String>) ws;
+                warnings.add(String.format(
+                        "兼项冲突消解未找到优于当前方案的解（冲突 %d 处，尝试后为 %d 处），已保留消解前的赛程表",
+                        entryConflict[0], finalConflict[0]));
+            }
+        }
+        if (result.get("algorithmPortfolio") instanceof Map<?, ?> pfRaw) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pf = (Map<String, Object>) pfRaw;
+            pf.put("resolveConflictGuard", Map.of(
+                    "entryTotal", entryConflict[0], "entrySevere", entryConflict[1],
+                    "finalTotal", finalConflict[0], "finalSevere", finalConflict[1],
+                    "rolledBack", worse));
+        }
+        return result;
+    }
+
+    /**
+     * 消解单调保底的快照恢复：整表重建赛程行与编排行（字段逐项一致，行 id 重新分配——
+     * 经核查两表均无任何外键引用者，id 变化不影响业务）。
+     */
+    private void restoreScheduleSnapshot(List<EventSchedule> scheduleRows, List<Arrangement> arrangementRows) {
+        scheduleRepository.deleteAllSchedules();
+        for (EventSchedule s : scheduleRows) {
+            scheduleRepository.save(EventSchedule.builder()
+                    .event(s.getEvent())
+                    .day(s.getDay()).scheduleDate(s.getScheduleDate()).grade(s.getGrade())
+                    .timeSlot(s.getTimeSlot()).startTime(s.getStartTime()).endTime(s.getEndTime())
+                    .venue(s.getVenue()).sortOrder(s.getSortOrder())
+                    .durationMinutes(s.getDurationMinutes()).round(s.getRound()).remark(s.getRemark())
+                    .createdAt(s.getCreatedAt() != null ? s.getCreatedAt() : LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build());
+        }
+        arrangementRepository.deleteAll();
+        for (Arrangement a : arrangementRows) {
+            arrangementRepository.save(Arrangement.builder()
+                    .event(a.getEvent()).athlete(a.getAthlete())
+                    .grade(a.getGrade()).gender(a.getGender())
+                    .heat(a.getHeat()).lane(a.getLane()).position(a.getPosition()).round(a.getRound())
+                    .qualified(a.getQualified()).prelimRank(a.getPrelimRank())
+                    .prelimTime(a.getPrelimTime()).prelimTimeSeconds(a.getPrelimTimeSeconds())
+                    .teamNo(a.getTeamNo()).isManual(a.getIsManual()).remark(a.getRemark())
+                    .createdAt(a.getCreatedAt() != null ? a.getCreatedAt() : LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build());
+        }
     }
 
     /**
