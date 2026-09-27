@@ -1,4 +1,4 @@
-param([switch]$SkipFrontend, [switch]$SkipBackend)
+﻿param([switch]$SkipFrontend, [switch]$SkipBackend)
 $ErrorActionPreference = "Continue"
 $root = $PSScriptRoot
 
