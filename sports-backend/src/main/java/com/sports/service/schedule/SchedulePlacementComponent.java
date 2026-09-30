@@ -58,12 +58,15 @@ public class SchedulePlacementComponent {
     public boolean applySolved(Unit u, Pool pool, Placement p, List<Window> windows, int interval,
                                 List<EventSchedule> saved, List<String> warnings, int[] orderCounter,
                                 List<String> autoArrangeFails, double compressionWarnRatio,
-                                Map<Long, List<int[]>> busy, int[] conflictStat) {
+                                Map<Long, List<int[]>> busy, int[] conflictStat,
+                                Map<Long, List<int[]>> eventBlocked) {
         if (p.getWindowIdx() < 0 || p.getWindowIdx() >= windows.size()) return false;
         if (p.getSlotIdx() < 0 || p.getSlotIdx() >= pool.cursors.size()) return false;
         Window w = windows.get(p.getWindowIdx());
         int rel = p.getStartMinute() - w.startMinute;
         if (rel < 0 || rel + u.duration > w.capacity) return false;
+        // 行政时间保护：本项目（TEACHER 个人时段）在该时刻受保护 → 拒绝求解结果，回退贪心放置
+        if (isBlocked(u.event.getId(), w.day, p.getStartMinute(), u.duration, eventBlocked)) return false;
         if (!pool.cursors.get(p.getSlotIdx()).reserve(p.getWindowIdx(), rel, u.duration, interval)) {
             return false;
         }
@@ -78,18 +81,19 @@ public class SchedulePlacementComponent {
                           double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
                           int[] orderCounter, List<String> autoArrangeFails,
                           Map<Long, List<int[]>> busy, int[] conflictStat,
-                          Map<Unit, Placement> solved) {
+                          Map<Unit, Placement> solved, Map<Long, List<int[]>> eventBlocked) {
         int interval = Math.max(SchedulePlacementMath.intervalOf(u, defaultInterval), minInterval);
+        List<int[]> blocked = eventBlocked == null ? null : eventBlocked.get(u.event.getId());
         // U28/B25：优先采用约束求解结果（求解器已联合决定「位置 + 时长」）。
         // 落位失败（该位置已被占用）或该单元没有解时才回退贪心——两条路径都经过同一个 Cursor
         // 记账，因此后续单元的可用空间判断始终是准确的。
         Placement fixed = solved == null ? null : solved.get(u);
         if (fixed != null && fixed.getPoolLabel().equals(pool.label)
                 && applySolved(u, pool, fixed, windows, interval, saved, warnings, orderCounter,
-                        autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
+                        autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked)) {
             return;
         }
-        Cand best = SchedulePlacementMath.findBestSlot(u, pool, windows, interval, busy);
+        Cand best = SchedulePlacementMath.findBestSlot(u, pool, windows, interval, busy, blocked);
         if (best == null) {
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
@@ -122,7 +126,8 @@ public class SchedulePlacementComponent {
                             int defaultInterval, int minInterval, double compressionWarnRatio, String group,
                             List<EventSchedule> saved, List<String> warnings,
                             int[] orderCounter, List<String> autoArrangeFails,
-                            Map<Long, List<int[]>> busy, int[] conflictStat, Map<Unit, Placement> solved) {
+                            Map<Long, List<int[]>> busy, int[] conflictStat, Map<Unit, Placement> solved,
+                            Map<Long, List<int[]>> eventBlocked) {
         // U28/B25：组内单元全部拿到求解结果时直接按解落库——「同组同时开赛」由求解器的硬约束
         // 保证（同 groupKey 必须落在同一天同一分钟），无需再做波次编排。个别落位失败只回退该单元，
         // 不牵连整组。
@@ -137,9 +142,10 @@ public class SchedulePlacementComponent {
                     Pool sp = unitPools.get(k);
                     int iv = Math.max(SchedulePlacementMath.intervalOf(su, defaultInterval), minInterval);
                     if (!applySolved(su, sp, solved.get(su), windows, iv, saved, warnings, orderCounter,
-                            autoArrangeFails, compressionWarnRatio, busy, conflictStat)) {
+                            autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked)) {
                         placeOne(su, sp, windows, defaultInterval, minInterval, compressionWarnRatio,
-                                saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, null);
+                                saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, null,
+                                eventBlocked);
                     }
                 }
                 return;
@@ -243,6 +249,20 @@ public class SchedulePlacementComponent {
             warnings.add(String.format("占道冲突告警：以下占用跑道的项目时间重叠（跑道被同时占用，需错开）：%s",
                     String.join("；", clashes)));
         }
+    }
+
+    /** 该项目在 (day, start, duration) 是否落入行政时间保护（TEACHER 个人时段）区间 */
+    private static boolean isBlocked(Long eventId, int day, int startMin, int duration,
+                                     Map<Long, List<int[]>> eventBlocked) {
+        if (eventBlocked == null || eventBlocked.isEmpty()) return false;
+        List<int[]> blocked = eventBlocked.get(eventId);
+        if (blocked == null || blocked.isEmpty()) return false;
+        for (int[] b : blocked) {
+            if (b == null || b.length < 3) continue;
+            if (b[0] != -1 && b[0] != day) continue;
+            if (startMin < b[2] && b[1] < startMin + duration) return true;
+        }
+        return false;
     }
 
     /** 登记一条赛程：排入后立即复用编排引擎生成道次/组次（needHeats 项目=预赛，其余=决赛）。径赛与田赛都在此自动编排——田赛按「项目内并发/工位数」自动分组成次（X 人一组），不再因 u.track 判断而被跳过。 */

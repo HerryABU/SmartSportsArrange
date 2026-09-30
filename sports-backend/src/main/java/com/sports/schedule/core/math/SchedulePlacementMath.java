@@ -88,7 +88,13 @@ public final class SchedulePlacementMath {
     /** 在池的各槽位内扫描候选起点，返回排序最优者（冲突最少 → 窗口靠前 → 起点靠前 → 槽位号小） */
     public static Cand findBestSlot(Unit u, Pool pool, List<Window> windows, int interval,
                                     Map<Long, List<int[]>> busy) {
-        return SlotSearch.findBestSlot(u, pool, windows, interval, busy);
+        return findBestSlot(u, pool, windows, interval, busy, null);
+    }
+
+    /** 同上，额外传入本项目受行政时间保护（TEACHER 个人时段）的区间列表（null = 无保护） */
+    public static Cand findBestSlot(Unit u, Pool pool, List<Window> windows, int interval,
+                                    Map<Long, List<int[]>> busy, List<int[]> blockedIntervals) {
+        return SlotSearch.findBestSlot(u, pool, windows, interval, busy, blockedIntervals);
     }
 
     /** 候选排序：冲突少者优先（尽量避开兼项）→ 窗口靠前 → 起点靠前 → 槽位号小 */

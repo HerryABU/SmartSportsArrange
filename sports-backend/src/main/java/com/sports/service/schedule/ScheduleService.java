@@ -58,6 +58,9 @@ import com.sports.schedule.core.primitive.Window;
 import com.sports.service.arrange.ArrangementService;
 import com.sports.service.arrange.ConflictService;
 import com.sports.service.audit.AuditService;
+import com.sports.service.protection.AdminTimeProtectionService;
+import com.sports.schedule.support.protection.ProtectionMath;
+import com.sports.entity.protection.AdminTimeProtection;
 import com.sports.service.system.SetupService;
 import com.sports.service.system.SystemService;
 
@@ -106,7 +109,8 @@ public class ScheduleService {
                             FixAndOptimizer fixAndOptimizer,
                             ScheduleCollaborationService collaborationService,
                             RuleBasedScheduler ruleBasedScheduler,
-                            AuditService auditService) {
+                            AuditService auditService,
+                            AdminTimeProtectionService protectionService) {
         this.scheduleRepository = scheduleRepository;
         this.eventRepository = eventRepository;
         this.registrationRepository = registrationRepository;
@@ -128,6 +132,7 @@ public class ScheduleService {
         this.collaborationService = collaborationService;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
+        this.protectionService = protectionService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
         this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
@@ -194,6 +199,8 @@ public class ScheduleService {
     private final RuleBasedScheduler ruleBasedScheduler;
     /** 操作审计（M5 修复：赛程编排高层操作此前无审计，破坏性操作 clear 无留痕） */
     private final AuditService auditService;
+    /** 行政时间保护：GLOBAL 避让时段切分时间窗、TEACHER 个人时段按项目阻挡（对编排率先影响） */
+    private final AdminTimeProtectionService protectionService;
 
     private final ScheduleBuildComponent buildComponent;
 
@@ -380,6 +387,19 @@ public class ScheduleService {
             throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
         }
 
+        // ===== 行政时间保护（规避时间，对编排率先影响）=====
+        // GLOBAL 避让时段 → 切分时间窗（硬约束：整段不可排任何项目）；
+        // TEACHER 个人时段 → 展开为「项目 id → 受保护区间」黑名单，放置时按项目阻挡。
+        List<AdminTimeProtection> globalBlocks = protectionService.globalBlocks();
+        if (!globalBlocks.isEmpty()) {
+            windows = ProtectionMath.splitWindows(windows, globalBlocks);
+            log.info("行政时间保护：{} 个全校避让时段已切分时间窗", globalBlocks.size());
+        }
+        Map<Long, List<int[]>> eventBlocked = teacherEventBlocksToIntervals(protectionService.teacherEventBlocks());
+        if (!eventBlocked.isEmpty()) {
+            log.info("行政时间保护：{} 个项目受班主任个人时段保护", eventBlocked.size());
+        }
+
         // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
         // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
         // 这里在放置之前先算清楚：本项目类别真正需要多少分钟、时段总共能提供多少分钟、
@@ -523,7 +543,7 @@ public class ScheduleService {
             PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                    solvedPlacement, eventsWithRegs);
+                    solvedPlacement, eventsWithRegs, eventBlocked);
             passesRun++;
             if (best == null || passIsBetter(r, best)) {
                 best = r;
@@ -567,7 +587,7 @@ public class ScheduleService {
                 PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                         mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                         event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                        solvedPlacement, eventsWithRegs);
+                        solvedPlacement, eventsWithRegs, eventBlocked);
                 try {
                     arrangementService.restoreFinalScheduleRows();   // ★ 补回决赛条目再评估（口径=交付）
                 } catch (Exception ex) {
@@ -598,7 +618,7 @@ public class ScheduleService {
             best = runPlacementPass(units, bestOrder, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                    solvedPlacement, eventsWithRegs);
+                    solvedPlacement, eventsWithRegs, eventBlocked);
             try {
                 arrangementService.restoreFinalScheduleRows();   // ★ 重跑最优趟后同样补回（口径=交付）
             } catch (Exception ex) {
@@ -806,6 +826,22 @@ public class ScheduleService {
         int autoArrangeOk = 0;
     }
 
+    /** 把「项目 id → 保护列表」展开为「项目 id → 受保护区间」，区间为 {day(-1=全天), startMin, endMin} */
+    private Map<Long, List<int[]>> teacherEventBlocksToIntervals(Map<Long, List<AdminTimeProtection>> blocks) {
+        Map<Long, List<int[]>> out = new HashMap<>();
+        for (Map.Entry<Long, List<AdminTimeProtection>> e : blocks.entrySet()) {
+            List<int[]> iv = new ArrayList<>();
+            for (AdminTimeProtection p : e.getValue()) {
+                int s = ProtectionMath.toMin(p.getStartTime());
+                int en = ProtectionMath.toMin(p.getEndTime());
+                if (s < 0 || en < 0 || en <= s) continue;
+                iv.add(new int[]{p.getDay() == null ? -1 : p.getDay(), s, en});
+            }
+            if (!iv.isEmpty()) out.put(e.getKey(), iv);
+        }
+        return out;
+    }
+
     /**
      * 单趟赛程放置：独立 deleteAllSchedules + 按给定单元顺序放置，返回本趟结果。
      * 每趟都即时落库（saveSchedule 内部 save），故「保留最优一趟」只需保证最后落库的是最优即可。
@@ -818,7 +854,7 @@ public class ScheduleService {
             Map<String, String> codeToName, Map<String, Integer> codeToParallelMax,
             Map<Long, String> event2Group, int defaultInterval, int minInterval,
             double compressionWarnRatio, Map<Unit, Placement> solvedPlacement,
-            Set<Long> eventsWithRegs) {
+            Set<Long> eventsWithRegs, Map<Long, List<int[]>> eventBlocked) {
         PlacementPassResult r = new PlacementPassResult();
         scheduleRepository.deleteAllSchedules();
         // 每趟重建池（游标状态不可复用）+ 专用池表（resolvePool 会按需新建并缓存）
@@ -850,7 +886,8 @@ public class ScheduleService {
             if (group == null) {
                 // 普通单元：占用并发池中最空闲的一个槽位
                 placementComponent.placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement);
+                        r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement,
+                        eventBlocked);
                 r.autoArrangeOk += u.arranged;
                 done.add(i);
             } else {
@@ -883,7 +920,8 @@ public class ScheduleService {
                             fieldVenueCodes, codeToName, codeToParallelMax, dedicatedPools, trackSlots, fieldSlots));
                 }
                 placementComponent.placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
-                        group, r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement);
+                        group, r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement,
+                        eventBlocked);
                 for (Integer idx : batch) {
                     r.autoArrangeOk += units.get(idx).arranged;
                     done.add(idx);
