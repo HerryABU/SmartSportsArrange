@@ -114,6 +114,11 @@ public interface ArrangementRepository extends JpaRepository<Arrangement, Long>,
     @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId")
     void deleteByEventId(@Param("eventId") Long eventId);
 
+    /** 兼项冲突消解：取消某运动员某项目时，同步移出该运动员该项目全部轮次的编排 */
+    @Modifying
+    @Query("DELETE FROM Arrangement a WHERE a.athlete.id = :athleteId AND a.event.id = :eventId")
+    void deleteByAthleteIdAndEventId(@Param("athleteId") Long athleteId, @Param("eventId") Long eventId);
+
     @Modifying
     @Query("DELETE FROM Arrangement a WHERE a.event.id = :eventId AND a.version = :version")
     void deleteByEventIdAndVersion(@Param("eventId") Long eventId, @Param("version") Integer version);

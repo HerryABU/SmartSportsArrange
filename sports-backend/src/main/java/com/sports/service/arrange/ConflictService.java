@@ -265,6 +265,7 @@ public class ConflictService {
     private Map<String, Object> eventSummary(EventSchedule s) {
         Event e = s.getEvent();
         Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", e != null && e.getId() != null ? e.getId() : null);
         m.put("code", e != null && e.getCode() != null ? e.getCode() : "");
         m.put("name", e != null && e.getName() != null ? e.getName() : "");
         m.put("venue", s.getVenue() != null ? s.getVenue() : "");

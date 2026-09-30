@@ -6,6 +6,7 @@ import com.sports.service.arrange.ArrangementService;
 import com.sports.service.audit.AuditService;
 import com.sports.service.arrange.ConflictService;
 import com.sports.service.arrange.EventCooccurrenceService;
+import com.sports.service.arrange.ConflictResolutionService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +32,7 @@ public class ArrangementController {
     private final ArrangementService arrangementService;
     private final ConflictService conflictService;
     private final EventCooccurrenceService eventCooccurrenceService;
+    private final ConflictResolutionService conflictResolutionService;
     private final AuditService auditService;
     private final com.sports.service.system.SystemService systemService;
     private final com.sports.schedule.rule.inject.RuleInjectionService ruleInjectionService;
@@ -402,5 +404,36 @@ public class ArrangementController {
     public ApiResponse<?> coOccurrence() {
         log.info("兼项高频统计");
         return ApiResponse.success("兼项高频统计完成", eventCooccurrenceService.analyze());
+    }
+
+    // ==================== 兼项冲突消解（取消某人某项目 + 通知班主任） ====================
+
+    /** 统计「哪些项目与哪些项目冲突」（事件对汇总，供统一取消前决策） */
+    @GetMapping("/conflicts/statistics")
+    public ApiResponse<?> conflictStatistics() {
+        log.info("兼项冲突事件对统计");
+        return ApiResponse.success("统计完成", conflictResolutionService.statistics());
+    }
+
+    /**
+     * 取消若干 (运动员 × 项目)：退报名 + 同步移出编排 + 通知班主任（内通知）。
+     * body: {items:[{athleteId, eventId}], notifyTeacher:true}
+     */
+    @PostMapping("/conflicts/cancel")
+    public ApiResponse<?> cancelConflicts(@RequestBody Map<String, Object> body) {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
+        boolean notifyTeacher = body.get("notifyTeacher") == null
+                || Boolean.TRUE.equals(body.get("notifyTeacher"));
+        log.info("兼项冲突取消: {}条, notifyTeacher={}", items != null ? items.size() : 0, notifyTeacher);
+        return ApiResponse.success("取消完成",
+                conflictResolutionService.cancel(items != null ? items : List.of(), notifyTeacher));
+    }
+
+    /** 外通知：按班级汇总的兼项冲突统计表（Excel），转交班主任 */
+    @GetMapping("/conflicts/class-export")
+    public void exportClassConflicts(HttpServletResponse response) throws IOException {
+        log.info("导出按班级兼项冲突统计表");
+        conflictResolutionService.exportClassConflictSheet(response);
     }
 }
