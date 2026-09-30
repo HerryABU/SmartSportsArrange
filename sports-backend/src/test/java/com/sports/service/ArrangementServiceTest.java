@@ -35,6 +35,7 @@ import static org.mockito.Mockito.*;
 import com.sports.service.arrange.ArrangementService;
 import com.sports.service.export.WordOrderBookService;
 import com.sports.service.system.SystemService;
+import com.sports.service.protection.AdminTimeProtectionService;
 
 /**
  * 编排服务测试。
@@ -58,6 +59,7 @@ class ArrangementServiceTest {
     @Mock private SystemService systemService;
     @Mock private ScheduleCollaborationService collaborationService;
     @Mock private RuleInjectionService ruleInjectionService;
+    @Mock private AdminTimeProtectionService protectionService;
 
     @InjectMocks private ArrangementService arrangementService;
 

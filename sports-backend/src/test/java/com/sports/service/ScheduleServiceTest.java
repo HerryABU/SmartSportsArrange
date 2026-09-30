@@ -48,6 +48,7 @@ import com.sports.service.arrange.ArrangementService;
 import com.sports.service.arrange.ConflictService;
 import com.sports.service.schedule.ScheduleService;
 import com.sports.service.system.SystemService;
+import com.sports.service.protection.AdminTimeProtectionService;
 
 /**
  * 赛程编排测试（并发位模型）。
@@ -89,6 +90,7 @@ class ScheduleServiceTest {
 
     /** 协作中心的桩：本测试验证编排主流程，实时协作逻辑由 ScheduleCollaborationServiceTest 覆盖 */
     @Mock private ScheduleCollaborationService collaborationService;
+    @Mock private AdminTimeProtectionService protectionService;
 
     @InjectMocks private ScheduleService scheduleService;
 

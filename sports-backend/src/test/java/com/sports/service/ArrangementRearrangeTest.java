@@ -15,6 +15,7 @@ import com.sports.schedule.rule.inject.RuleInjectionService;
 import com.sports.service.arrange.ArrangementService;
 import com.sports.service.export.WordOrderBookService;
 import com.sports.service.system.SystemService;
+import com.sports.service.protection.AdminTimeProtectionService;
 import com.sports.collab.ScheduleCollaborationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,7 @@ class ArrangementRearrangeTest {
     @Mock private SystemService systemService;
     @Mock private ScheduleCollaborationService collaborationService;
     @Mock private RuleInjectionService ruleInjectionService;
+    @Mock private AdminTimeProtectionService protectionService;
 
     /** spy：真实执行 rearrangeByGrade，短路重型的 arrange（道次编排本身由 ArrangementServiceTest 覆盖） */
     @Spy

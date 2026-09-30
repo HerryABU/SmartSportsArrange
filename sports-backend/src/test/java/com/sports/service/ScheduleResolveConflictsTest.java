@@ -24,6 +24,7 @@ import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.service.audit.AuditService;
 import com.sports.service.schedule.ScheduleService;
 import com.sports.service.system.SystemService;
+import com.sports.service.protection.AdminTimeProtectionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -85,6 +86,7 @@ class ScheduleResolveConflictsTest {
     @Mock private RuleBasedScheduler ruleBasedScheduler;
     @Mock private ScheduleCollaborationService collaborationService;
     @Mock private AuditService auditService;
+    @Mock private AdminTimeProtectionService protectionService;
 
     @InjectMocks private ScheduleService scheduleService;
 
