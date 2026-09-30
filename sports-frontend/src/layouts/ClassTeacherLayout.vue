@@ -37,6 +37,7 @@
         </div>
         <div class="header-right">
           <el-button :icon="isDark ? 'Sunny' : 'Moon'" circle size="small" @click="toggleDark" class="theme-toggle" />
+          <NotificationBell />
           <el-dropdown trigger="click" @command="handleCmd">
             <div class="user-trigger">
               <el-avatar :size="28" icon="UserFilled" />
@@ -77,6 +78,7 @@ import { useAuthStore } from '@/stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Expand } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const route = useRoute(); const router = useRouter(); const authStore = useAuthStore()
 const activeMenu = ref('/class-teacher/dashboard'); const title = computed(()=>route.meta?.title||'')

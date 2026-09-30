@@ -22,6 +22,7 @@
       <div class="header">
         <span class="page-title">{{ route.meta?.title || '裁判工作台' }}</span>
         <div class="header-right">
+          <NotificationBell />
           <span class="who">{{ authStore.user?.realName || authStore.user?.username || '' }}</span>
         </div>
       </div>
@@ -41,6 +42,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { HomeFilled, Medal, Reading } from '@element-plus/icons-vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const route = useRoute()
 const router = useRouter()

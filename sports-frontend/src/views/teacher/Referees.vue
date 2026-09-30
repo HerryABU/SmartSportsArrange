@@ -28,6 +28,9 @@
             <el-button size="small" type="warning" plain @click="openAllAccounts" :loading="accountWorking" style="margin-left:4px">
               <el-icon><Key /></el-icon> 批量开通账号
             </el-button>
+            <el-button size="small" type="danger" plain @click="showProtection = true" style="margin-left:4px">
+              <el-icon><Calendar /></el-icon> 规避时间
+            </el-button>
           </div>
         </div>
       </template>
@@ -86,22 +89,27 @@
         <el-button type="primary" @click="save">确定</el-button>
       </template>
     </el-dialog>
+
+    <!-- 行政时间保护（规避时间）：裁判受保护时段不参与执裁 -->
+    <ProtectionManage v-model:visible="showProtection" />
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Upload, DocumentCopy, Key } from '@element-plus/icons-vue'
+import { Plus, Upload, DocumentCopy, Key, Calendar } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { useAuthStore } from '@/stores/auth'
+import ProtectionManage from '@/components/ProtectionManage.vue'
 
 const authStore = useAuthStore()
 const loading = ref(false)
 const refereeList = ref([])
 const showDialog = ref(false)
 const editing = ref(null)
+const showProtection = ref(false)
 
 const form = reactive({ name: '', phone: '', specialties: '' })
 const specialtiesText = ref('')

@@ -120,6 +120,7 @@
             </el-tag>
           </el-tooltip>
           <el-button :icon="isDark ? 'Sunny' : 'Moon'" circle size="small" @click="toggleDark" class="theme-toggle" />
+          <NotificationBell />
           <el-dropdown trigger="click" @command="handleCmd">
             <div class="user-trigger">
               <el-avatar :size="30" icon="UserFilled" />
@@ -165,6 +166,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Expand, Guide, Location, Medal, Collection, WarningFilled } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const route = useRoute(); const router = useRouter(); const authStore = useAuthStore()
 const appStore = useAppStore()

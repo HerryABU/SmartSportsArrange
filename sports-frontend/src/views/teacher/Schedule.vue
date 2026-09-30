@@ -23,6 +23,7 @@
             </el-radio-group>
           </el-tooltip>
           <el-button :icon="Setting" @click="openMeetConfig">运动会日程配置</el-button>
+          <el-button :icon="Calendar" @click="showProtection = true">规避时间</el-button>
           <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">
             {{ arrangeMode === 'rule' ? '按规则编排' : '一键编排赛程' }}
           </el-button>
@@ -134,6 +135,36 @@
       </el-card>
     </template>
 
+    <!-- 兼项高频统计：哪些项目常被同一运动员同时报名（编排前先看，辅助设定项目顺序） -->
+    <el-card shadow="never" class="conflict-card">
+      <template #header>
+        <div class="conflict-header">
+          <span>📊 兼项高频统计</span>
+          <span class="hint">同一运动员同时报名的项目对，报名越集中越易撞车，建议据此设定「项目编排顺序」错峰</span>
+          <div class="conflict-actions">
+            <el-button size="small" type="primary" plain :icon="Search" :loading="coLoading" @click="loadCooccurrence">
+              统计
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <el-table v-if="coPairs.length" :data="coPairs" border stripe size="small" max-height="320">
+        <el-table-column label="#" width="44" align="center" type="index" />
+        <el-table-column label="项目A" min-width="130">
+          <template #default="{ row }">{{ row.eventA?.name || '' }}</template>
+        </el-table-column>
+        <el-table-column label="项目B" min-width="130">
+          <template #default="{ row }">{{ row.eventB?.name || '' }}</template>
+        </el-table-column>
+        <el-table-column label="共同报名人数" width="120" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.commonAthletes >= 5 ? 'danger' : 'warning'">{{ row.commonAthletes }} 人</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="点击「统计」查看哪些项目常被同一运动员同时报名" :image-size="64" />
+    </el-card>
+
     <!-- B06/U05：兼项冲突检测 —— 同一运动员在相近时间被排到不同项目 -->
     <el-card shadow="never" class="conflict-card">
       <template #header>
@@ -151,6 +182,10 @@
             <el-button size="small" type="success" plain :icon="Download"
               :disabled="!conflictList.length" @click="exportConflicts">
               导出清单
+            </el-button>
+            <el-button size="small" type="warning" plain :icon="Remove"
+              :disabled="!conflictList.length" @click="openCancelDialog">
+              取消冲突项目
             </el-button>
             <el-tooltip placement="top" effect="light">
               <template #content>
@@ -215,7 +250,11 @@
           <span class="hint" style="margin-left:12px">共 {{ meetForm.days }} 天，每天具体日期自动顺延</span>
         </el-form-item>
         <el-form-item label="比赛天数">
-          <el-input-number v-model="meetForm.days" :min="1" :max="10" @change="syncDays" />
+          <div style="display:flex;align-items:center;gap:12px;width:100%">
+            <el-switch v-model="meetForm.autoDays" active-text="自动推算" inactive-text="手动指定" />
+            <el-input-number v-if="!meetForm.autoDays" v-model="meetForm.days" :min="1" :max="10" @change="syncDays" />
+            <span v-else class="hint">按每天时段容量自动推算需要多少天（编排时按报名规模算出天数）</span>
+          </div>
         </el-form-item>
         <el-form-item label="年级出场顺序">
           <div style="width:100%">
@@ -471,16 +510,58 @@
         <el-button @click="resultsDialog.visible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 取消冲突项目：统计互撞项目 → 批量取消某项目（退报名+移出编排+通知班主任） -->
+    <el-dialog v-model="showCancelDialog" title="取消冲突项目（消解兼项冲突）" width="720px" top="6vh">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px">
+        取消会<b>退报名 + 移出编排</b>并通知该运动员的班主任。先看下方「互撞项目」统计，
+        选择要取消的项目（项目A 或 项目B），系统会批量取消相关运动员在该项目的报名。
+      </el-alert>
+      <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
+        <el-button size="small" type="primary" plain :icon="Search" :loading="cancelStatLoading" @click="loadCancelStats">
+          统计互撞项目
+        </el-button>
+        <el-button size="small" type="success" plain :icon="Download" :disabled="!cancelStats.length" @click="exportClassConflicts">
+          导出统计表（转班主任）
+        </el-button>
+      </div>
+      <el-table :data="cancelStats" size="small" border stripe max-height="360" v-loading="cancelStatLoading">
+        <el-table-column label="项目A" min-width="120">
+          <template #default="{ row }">{{ row.eventA?.name || '' }}</template>
+        </el-table-column>
+        <el-table-column label="项目B" min-width="120">
+          <template #default="{ row }">{{ row.eventB?.name || '' }}</template>
+        </el-table-column>
+        <el-table-column label="冲突人数" width="90" align="center">
+          <template #default="{ row }">{{ row.count }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="230" align="center">
+          <template #default="{ row }">
+            <el-button size="small" type="danger" plain :loading="cancelLoading" @click="cancelEvent(row, 'A')">
+              取消项目A
+            </el-button>
+            <el-button size="small" type="warning" plain :loading="cancelLoading" @click="cancelEvent(row, 'B')">
+              取消项目B
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!cancelStats.length && !cancelStatLoading" description="点击「统计互撞项目」查看哪些项目互撞" :image-size="60" />
+    </el-dialog>
+
+    <!-- 行政时间保护（规避时间） -->
+    <ProtectionManage v-model:visible="showProtection" />
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search } from '@element-plus/icons-vue'
+import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
+import ProtectionManage from '@/components/ProtectionManage.vue'
 
 const loading = ref(false)
 const arranging = ref(false)
@@ -531,6 +612,7 @@ const meetForm = reactive({
   meetName: '',
   startDate: '',
   days: 2,
+  autoDays: false,
   gradeOrder: [],
   dayConfigs: [
     { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
@@ -614,7 +696,8 @@ function buildMeetSchedulePayload() {
   return {
     meetName: meetForm.meetName,
     startDate: meetForm.startDate,
-    days: meetForm.dayConfigs.length,
+    days: meetForm.autoDays ? 1 : meetForm.dayConfigs.length,
+    autoDays: !!meetForm.autoDays,
     dayConfigs: meetForm.dayConfigs,
     // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
     gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
@@ -759,6 +842,7 @@ async function openMeetConfig() {
   try {
     const res = await request.get('/system/meet-schedule')
     Object.assign(meetForm, res)
+    meetForm.autoDays = !!res.autoDays
     // 规范化 dayConfigs / slots
     meetForm.dayConfigs = (res.dayConfigs || []).map((dc, i) => ({
       day: dc.day || i + 1,
@@ -830,6 +914,10 @@ function syncDays() {
   meetForm.dayConfigs = meetForm.dayConfigs.slice(0, n)
   meetForm.dayConfigs.forEach((dc, i) => { dc.day = i + 1 })
   syncDates()
+}
+
+function onAutoDaysChange() {
+  // 切换自动推算时无需额外动作：关闭天数输入，编排阶段由后端按报名规模推算
 }
 
 function addSlot(dc) {
@@ -955,6 +1043,80 @@ async function resolveConflicts() {
   }
 }
 
+// ==================== 兼项高频统计（项目共现） ====================
+const coPairs = ref([])
+const coLoading = ref(false)
+async function loadCooccurrence() {
+  coLoading.value = true
+  try {
+    const res = await request.get('/arrange/co-occurrence')
+    coPairs.value = (res && res.pairs) || []
+    if (!coPairs.value.length) ElMessage.success('暂无兼项报名重叠')
+  } catch (e) {
+    console.error(e)
+  } finally {
+    coLoading.value = false
+  }
+}
+
+// ==================== 取消冲突项目（消解兼项冲突） ====================
+const showProtection = ref(false)
+const showCancelDialog = ref(false)
+const cancelStats = ref([])
+const cancelLoading = ref(false)
+const cancelStatLoading = ref(false)
+
+function openCancelDialog() {
+  showCancelDialog.value = true
+  if (!cancelStats.value.length) loadCancelStats()
+}
+
+async function loadCancelStats() {
+  cancelStatLoading.value = true
+  try {
+    const res = await request.get('/arrange/conflicts/statistics')
+    cancelStats.value = (res && res.pairs) || []
+  } catch (e) {
+    console.error(e)
+  } finally {
+    cancelStatLoading.value = false
+  }
+}
+
+/** 取消某项目（A/B）：把该项目在此事件对中的所有冲突运动员批量退报名+移出编排+通知班主任 */
+async function cancelEvent(row, which) {
+  const event = which === 'A' ? row.eventA : row.eventB
+  const athletes = row.athletes || []
+  if (!event || !event.id || !athletes.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将取消「${event.name}」项目，共 ${athletes.length} 名冲突运动员的报名，并同步移出编排、通知班主任。继续？`,
+      '取消冲突项目', { type: 'warning', confirmButtonText: '确认取消', cancelButtonText: '再想想' })
+  } catch { return }
+  cancelLoading.value = true
+  try {
+    const items = athletes.map(a => ({ athleteId: a.athleteId, eventId: event.id }))
+    const r = await request.post('/arrange/conflicts/cancel', { items, notifyTeacher: true })
+    ElMessage.success(`已取消 ${r.cancelled} 条报名，通知 ${r.notifiedTeachers} 名班主任`)
+    await loadCancelStats()
+    await loadConflicts()
+    await fetchList()
+  } catch (e) {
+    if (e && e.message) ElMessage.error(e.message)
+  } finally {
+    cancelLoading.value = false
+  }
+}
+
+async function exportClassConflicts() {
+  try {
+    await downloadApi('/arrange/conflicts/class-export', '兼项冲突统计表.xlsx')
+    ElMessage.success('统计表已导出，可转交班主任')
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败')
+  }
+}
+
 // ==================== 一键编排（赛程 + 自动道次） ====================
 // U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize/缺省=优化模式（向后兼容）
 async function doAutoSchedule() {
@@ -985,10 +1147,11 @@ async function doAutoSchedule() {
       ruleTip = `（耗时 ${lastRuleInfo.value.elapsedMillis}ms` +
         (lastRuleInfo.value.unplaced > 0 ? `，${lastRuleInfo.value.unplaced} 个单元排不下已告警` : '') + '）'
     }
+    const dayTip = res.estimatedDays ? `（自动推算需 ${res.estimatedDays} 天）` : ''
     if (res.warnings && res.warnings.length) {
-      ElMessage.warning(modeTag + '编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip + ruleTip)
+      ElMessage.warning(modeTag + '编排完成，但有 ' + res.warnings.length + ' 条提示：' + res.warnings[0] + autoTip + ruleTip + dayTip)
     } else {
-      ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip)
+      ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip + dayTip)
     }
     if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
   } catch (e) {
