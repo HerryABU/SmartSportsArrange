@@ -5,6 +5,7 @@ import com.sports.common.web.ApiResponse;
 import com.sports.service.arrange.ArrangementService;
 import com.sports.service.audit.AuditService;
 import com.sports.service.arrange.ConflictService;
+import com.sports.service.arrange.EventCooccurrenceService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +30,7 @@ public class ArrangementController {
 
     private final ArrangementService arrangementService;
     private final ConflictService conflictService;
+    private final EventCooccurrenceService eventCooccurrenceService;
     private final AuditService auditService;
     private final com.sports.service.system.SystemService systemService;
     private final com.sports.schedule.rule.inject.RuleInjectionService ruleInjectionService;
@@ -390,5 +392,15 @@ public class ArrangementController {
     public void exportConflicts(HttpServletResponse response) throws IOException {
         log.info("导出兼项冲突清单");
         conflictService.exportConflicts(response);
+    }
+
+    /**
+     * 兼项高频统计（项目共现分析）：哪些项目常被同一运动员同时报名，
+     * 作为设定「项目出场顺序」与「兼项冲突规避」的依据（编排前先看这个）。
+     */
+    @GetMapping("/co-occurrence")
+    public ApiResponse<?> coOccurrence() {
+        log.info("兼项高频统计");
+        return ApiResponse.success("兼项高频统计完成", eventCooccurrenceService.analyze());
     }
 }
