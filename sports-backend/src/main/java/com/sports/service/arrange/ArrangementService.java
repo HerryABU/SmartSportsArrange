@@ -47,6 +47,9 @@ import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
 import com.sports.service.export.WordOrderBookService;
 import com.sports.service.system.SystemService;
+import com.sports.service.protection.AdminTimeProtectionService;
+import com.sports.entity.protection.AdminTimeProtection;
+import com.sports.schedule.support.protection.ProtectionMath;
 
 /**
  * 编排服务
@@ -80,6 +83,8 @@ public class ArrangementService {
     private final ScheduleCollaborationService collaborationService;
     /** 规则注入（形态一）：用户规则片段 → 额外硬否决/软惩罚，编排后如实上报 */
     private final RuleInjectionService ruleInjectionService;
+    /** 行政时间保护：裁判编排时跳过落在受保护时段内的裁判（裁判既是约束对象也是需求者） */
+    private final AdminTimeProtectionService protectionService;
 
     private static final ObjectMapper REF_MAPPER = new ObjectMapper();
 
@@ -2082,9 +2087,17 @@ public class ArrangementService {
         // 重排该切片前，先清除旧分配
         eventRefereeRepository.deleteByEventIdAndGradeAndGenderAndRound(event.getId(), grade, gender, round);
 
-        List<Referee> pool = refereeRepository.findByStatus("active");
+        // 行政时间保护：受保护裁判在该项目赛程时间窗内不可执裁，先排除（裁判既是约束对象也是需求者）
+        Set<Long> blockedRefereeIds = blockedReferees(event, grade, round);
+        List<Referee> pool = refereeRepository.findByStatus("active").stream()
+                .filter(r -> !blockedRefereeIds.contains(r.getId()))
+                .collect(Collectors.toList());
+        if (!blockedRefereeIds.isEmpty()) {
+            warnings.add("行政时间保护：「" + event.getName() + "」该时段有 " + blockedRefereeIds.size()
+                    + " 名裁判受保护，已跳过不分配");
+        }
         if (pool.isEmpty()) {
-            warnings.add("未配置任何裁判，无法为「" + event.getName() + "」分配裁判，请在裁判管理中录入裁判");
+            warnings.add("未配置任何可用裁判，无法为「" + event.getName() + "」分配裁判（裁判池为空或被行政时间保护全部排除）");
             return warnings;
         }
 
@@ -2151,6 +2164,35 @@ public class ArrangementService {
         log.info("裁判分配完成: eventId={}, grade={}, gender={}, round={}, 每组{}名×{}组",
                 event.getId(), grade, gender, round, k, heats);
         return warnings;
+    }
+
+    /**
+     * 行政时间保护 → 本项目 (event×grade×round) 赛程时间窗内「不可执裁」的裁判 id 集合。
+     * 取该事件对应赛程条目的 day + startTime~endTime，逐裁判比对受保护区间。
+     */
+    private Set<Long> blockedReferees(Event event, String grade, String round) {
+        Set<Long> blocked = new HashSet<>();
+        Map<Long, List<AdminTimeProtection>> refereeBlocks = protectionService.refereeBlocks();
+        if (refereeBlocks.isEmpty()) return blocked;
+        List<EventSchedule> scheds = (grade == null || grade.isBlank())
+                ? eventScheduleRepository.findByEventId(event.getId())
+                : eventScheduleRepository.findByEventIdAndGrade(event.getId(), grade);
+        for (EventSchedule s : scheds) {
+            if (round != null && !round.isBlank() && s.getRound() != null && !round.equals(s.getRound())) continue;
+            int day = s.getDay() == null ? 1 : s.getDay();
+            int start = ProtectionMath.toMin(s.getStartTime());
+            int end = ProtectionMath.toMin(s.getEndTime());
+            if (start < 0 || end < 0 || end <= start) continue;
+            for (Map.Entry<Long, List<AdminTimeProtection>> e : refereeBlocks.entrySet()) {
+                for (AdminTimeProtection p : e.getValue()) {
+                    if (ProtectionMath.overlaps(day, start, end, p)) {
+                        blocked.add(e.getKey());
+                        break;
+                    }
+                }
+            }
+        }
+        return blocked;
     }
 
     /** 把裁判 ID 列表挂载到组次视图（{id,name}） */
