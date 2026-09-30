@@ -17,6 +17,7 @@ import com.sports.repository.venue.VenueRepository;
 import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
+import com.sports.schedule.analysis.DaysEstimator;
 import com.sports.schedule.opt.ga.GeneticAlgorithm;
 import com.sports.schedule.opt.alns.AlnsImprover;
 import com.sports.schedule.opt.fixopt.FixAndOptimizer;
@@ -338,12 +339,6 @@ public class ScheduleService {
         List<Long> eventOrder = longList(cfg.get("eventOrder"));
         Map<Long, String> event2Group = parseFieldGroups(cfg.get("fieldGroups"));
 
-        // 时间窗：按 (天, 时段) 顺序铺开
-        List<Window> windows = buildComponent.buildWindows(cfg);
-        if (windows.isEmpty()) {
-            throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
-        }
-
         List<Unit> units = buildComponent.buildUnits(gradeOrder, eventOrder);
         // B05/U06 根因修复：venue.parallelMax 是「该场地同一时刻能并行几个**项目**」，
         // 与「一个项目内同时下场几个**运动员**」是两个正交的量。
@@ -354,11 +349,41 @@ public class ScheduleService {
         // 项目内并发只由项目自身配置（concurrency > groupSize > laneCount > defaultLanes）决定。
         buildComponent.estimateDurations(units, heatMinutes, fieldPerAthlete, defaultDuration);
 
+        // 项目间间隔（编排放置与可行性预检统一口径）
+        int unitInterval = Math.max(defaultInterval, minInterval);
+
+        // ===== 空时间限制（自动推算天数）=====
+        // 未显式指定 days（或开启 autoDays）时，先按「每日时段容量」反推需要排多少天，
+        // 再据此生成 dayConfigs —— 让「每天安排的时间」决定「能排多少天」，而非写死天数。
+        // 每日模板取 dayConfigs[0] 的时段（各天时段本可不同，自动模式下统一按首日时段复制）。
+        boolean autoDays = Boolean.TRUE.equals(cfg.get("autoDays"))
+                || intVal(cfg.get("days"), 0) <= 0;
+        int estimatedDays = 0;
+        if (autoDays) {
+            List<Map<String, Object>> dayConfigs = castList(cfg.get("dayConfigs"));
+            List<Map<String, Object>> template = dayConfigs.isEmpty()
+                    ? List.of(defaultAutoDayConfig()) : dayConfigs.subList(0, 1);
+            Map<String, Object> oneDay = new LinkedHashMap<>(cfg);
+            oneDay.put("dayConfigs", template);
+            int dailyMinutes = buildComponent.buildWindows(oneDay).stream()
+                    .mapToInt(w -> w.capacity).sum();
+            if (dailyMinutes <= 0) dailyMinutes = 30 * 60;   // 兜底：半小时级单日容量
+            estimatedDays = DaysEstimator.estimateDays(units, dailyMinutes, trackSlots, fieldSlots, unitInterval);
+            cfg.put("dayConfigs", buildAutoDayConfigs(cfg, estimatedDays, template));
+            cfg.put("days", estimatedDays);
+            log.info("空时间限制：按每日 {} 分钟自动推算需 {} 天", dailyMinutes, estimatedDays);
+        }
+
+        // 时间窗：按 (天, 时段) 顺序铺开
+        List<Window> windows = buildComponent.buildWindows(cfg);
+        if (windows.isEmpty()) {
+            throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
+        }
+
         // B05/U06：时间窗容量可行性预检 + 压缩亏损量化。
         // 只告警不量化，现场无法判断「到底差多少分钟、差在哪个项目」。
         // 这里在放置之前先算清楚：本项目类别真正需要多少分钟、时段总共能提供多少分钟、
         // 缺口多少，并把每一个被压缩的项目列成表（需求/实给/压缩比/缺口）。
-        int unitInterval = Math.max(defaultInterval, minInterval);
         Map<String, Object> feasibility = ScheduleAnalysisMath.assessFeasibility(units, windows, trackSlots, fieldSlots, unitInterval);
         // U24/B21：先按容量等比适配时长，再进入放置；compressionReport 放到放置之后统计，
         // 这样「就近缩短」的那部分也如实计入（报告反映的是真正落地的时长）。
@@ -698,6 +723,8 @@ public class ScheduleService {
         result.put("feasibility", feasibility);
         result.put("compressionReport", compressionReport);
         result.put("configUsed", cfg);
+        // 空时间限制：本次自动推算的比赛天数（0 = 显式指定天数，未启用自动推算）
+        result.put("estimatedDays", estimatedDays);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         // B01/U01/B17：本次自动编排补回的决赛赛程条目数（0 = 无需补，赛程表已与编排一致）
         result.put("restoredFinalScheduleRows", restoredFinals);
@@ -1112,6 +1139,49 @@ public class ScheduleService {
 
 
     // ==================== 时间窗 ====================
+
+    /**
+     * 空时间限制（自动天数）专用：把首日时段模板复制为 N 天的 dayConfigs。
+     * 日期按 startDate 顺延；各天时段统一采用模板（自动模式下不区分各天差异）。
+     */
+    private List<Map<String, Object>> buildAutoDayConfigs(Map<String, Object> cfg, int days,
+                                                          List<Map<String, Object>> template) {
+        String startDate = str(cfg.get("startDate"), null);
+        List<Map<String, Object>> slots = template.isEmpty()
+                ? List.of()
+                : castList(template.get(0).get("slots"));
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (int d = 1; d <= days; d++) {
+            Map<String, Object> dc = new LinkedHashMap<>();
+            dc.put("day", d);
+            if (startDate != null && !startDate.isBlank()) {
+                dc.put("date", shiftDate(startDate, d - 1));
+            }
+            dc.put("slots", slots);
+            out.add(dc);
+        }
+        return out;
+    }
+
+    /** 自动天数模式在「完全未配置时段」时的兜底模板：上午 + 下午两个时段 */
+    private Map<String, Object> defaultAutoDayConfig() {
+        List<Map<String, Object>> slots = new ArrayList<>();
+        slots.add(autoSlot("AM", "上午", "08:00", "11:30"));
+        slots.add(autoSlot("PM", "下午", "14:00", "17:30"));
+        Map<String, Object> dc = new LinkedHashMap<>();
+        dc.put("day", 1);
+        dc.put("slots", slots);
+        return dc;
+    }
+
+    private Map<String, Object> autoSlot(String key, String name, String start, String end) {
+        Map<String, Object> s = new LinkedHashMap<>();
+        s.put("key", key);
+        s.put("name", name);
+        s.put("start", start);
+        s.put("end", end);
+        return s;
+    }
 
     // ==================== 查询 / 手动调整 / 清空 ====================
 
