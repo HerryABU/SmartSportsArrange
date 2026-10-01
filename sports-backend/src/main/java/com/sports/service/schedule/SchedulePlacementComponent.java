@@ -59,7 +59,7 @@ public class SchedulePlacementComponent {
                                 List<EventSchedule> saved, List<String> warnings, int[] orderCounter,
                                 List<String> autoArrangeFails, double compressionWarnRatio,
                                 Map<Long, List<int[]>> busy, int[] conflictStat,
-                                Map<Long, List<int[]>> eventBlocked) {
+                                Map<Long, List<int[]>> eventBlocked, String laneStyleRule) {
         if (p.getWindowIdx() < 0 || p.getWindowIdx() >= windows.size()) return false;
         if (p.getSlotIdx() < 0 || p.getSlotIdx() >= pool.cursors.size()) return false;
         Window w = windows.get(p.getWindowIdx());
@@ -73,7 +73,7 @@ public class SchedulePlacementComponent {
         int n = SchedulePlacementMath.countConflicts(u.athleteIds, w.day, p.getStartMinute(), u.duration, busy);
         if (n == 0) conflictStat[0]++; else conflictStat[1] += n;
         saveSchedule(u, new Slot(w, p.getStartMinute()), pool.venueOf.get(p.getSlotIdx()),
-                saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy);
+                saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy, laneStyleRule);
         return true;
     }
 
@@ -81,7 +81,8 @@ public class SchedulePlacementComponent {
                           double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
                           int[] orderCounter, List<String> autoArrangeFails,
                           Map<Long, List<int[]>> busy, int[] conflictStat,
-                          Map<Unit, Placement> solved, Map<Long, List<int[]>> eventBlocked) {
+                          Map<Unit, Placement> solved, Map<Long, List<int[]>> eventBlocked,
+                          String laneStyleRule) {
         int interval = Math.max(SchedulePlacementMath.intervalOf(u, defaultInterval), minInterval);
         List<int[]> blocked = eventBlocked == null ? null : eventBlocked.get(u.event.getId());
         // U28/B25：优先采用约束求解结果（求解器已联合决定「位置 + 时长」）。
@@ -90,7 +91,8 @@ public class SchedulePlacementComponent {
         Placement fixed = solved == null ? null : solved.get(u);
         if (fixed != null && fixed.getPoolLabel().equals(pool.label)
                 && applySolved(u, pool, fixed, windows, interval, saved, warnings, orderCounter,
-                        autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked)) {
+                        autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked,
+                        laneStyleRule)) {
             return;
         }
         Cand best = SchedulePlacementMath.findBestSlot(u, pool, windows, interval, busy, blocked);
@@ -112,7 +114,7 @@ public class SchedulePlacementComponent {
         if (best.conflicts == 0) conflictStat[0]++;
         else conflictStat[1] += best.conflicts;
         saveSchedule(u, probe.slot, pool.venueOf.get(best.slotIdx), saved, orderCounter, autoArrangeFails,
-                warnings, compressionWarnRatio, busy);
+                warnings, compressionWarnRatio, busy, laneStyleRule);
     }
 
     /**
@@ -127,7 +129,7 @@ public class SchedulePlacementComponent {
                             List<EventSchedule> saved, List<String> warnings,
                             int[] orderCounter, List<String> autoArrangeFails,
                             Map<Long, List<int[]>> busy, int[] conflictStat, Map<Unit, Placement> solved,
-                            Map<Long, List<int[]>> eventBlocked) {
+                            Map<Long, List<int[]>> eventBlocked, String laneStyleRule) {
         // U28/B25：组内单元全部拿到求解结果时直接按解落库——「同组同时开赛」由求解器的硬约束
         // 保证（同 groupKey 必须落在同一天同一分钟），无需再做波次编排。个别落位失败只回退该单元，
         // 不牵连整组。
@@ -142,10 +144,11 @@ public class SchedulePlacementComponent {
                     Pool sp = unitPools.get(k);
                     int iv = Math.max(SchedulePlacementMath.intervalOf(su, defaultInterval), minInterval);
                     if (!applySolved(su, sp, solved.get(su), windows, iv, saved, warnings, orderCounter,
-                            autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked)) {
+                            autoArrangeFails, compressionWarnRatio, busy, conflictStat, eventBlocked,
+                            laneStyleRule)) {
                         placeOne(su, sp, windows, defaultInterval, minInterval, compressionWarnRatio,
                                 saved, warnings, orderCounter, autoArrangeFails, busy, conflictStat, null,
-                                eventBlocked);
+                                eventBlocked, laneStyleRule);
                     }
                 }
                 return;
@@ -207,7 +210,8 @@ public class SchedulePlacementComponent {
                     continue;
                 }
                 saveSchedule(u, probe.slot, p.venueOf.get(Math.min(k, p.venueOf.size() - 1)),
-                        saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy);
+                        saved, orderCounter, autoArrangeFails, warnings, compressionWarnRatio, busy,
+                        laneStyleRule);
             }
             if (!sameStart) {
                 warnings.add(String.format("田赛分组「%s」部分项目未能同时开始（并发位或时段容量不足），已按各自最早时段顺延", group));
@@ -269,7 +273,7 @@ public class SchedulePlacementComponent {
     public void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails,
                               List<String> warnings, double compressionWarnRatio,
-                              Map<Long, List<int[]>> busy) {
+                              Map<Long, List<int[]>> busy, String laneStyleRule) {
         boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
         EventSchedule s = EventSchedule.builder()
                 .event(u.event)
@@ -312,7 +316,7 @@ public class SchedulePlacementComponent {
         // 径赛与田赛都自动生成道次/组次编排：田赛按「项目内并发/工位数」分组成次（X 人一组），
         // 与手动道次编排的 resolveLanes 默认工位数(8) 保持一致，不再退化成每人一组。
         if (u.participants > 0) {
-            u.arranged = autoArrangeFor(u, autoArrangeFails);
+            u.arranged = autoArrangeFor(u, autoArrangeFails, laneStyleRule);
         }
     }
 
@@ -327,7 +331,7 @@ public class SchedulePlacementComponent {
      *
      * @return 成功生成的 性别组 数量（男/女各计 1）
      */
-    public int autoArrangeFor(Unit u, List<String> arrFails) {
+    public int autoArrangeFor(Unit u, List<String> arrFails, String laneStyleRule) {
         Event e = u.event;
         int lanes = ScheduleAnalysisMath.concurrencyOf(e);
         // 轮次判定与 saveSchedule 的赛程条目保持一致：仅径赛按 needHeats 走预赛，田赛恒为决赛（单轮组次）。
@@ -348,7 +352,10 @@ public class SchedulePlacementComponent {
         for (String g : genders) {
             try {
                 arrangementRepository.deleteByEventRoundGradeGender(e.getId(), round, u.grade, g);
-                arrangementService.arrange(e.getId(), u.grade, g, lanes, null, round);
+                // laneStyleRule 非空 = 调用方（AI 模式）指定了道次款型，交给 ArrangementService 解析；
+                // 传 null 保持既有口径（班级均衡款型）。AI 款型不可用时 ArrangementService 自动回退成绩种子。
+                arrangementService.arrange(e.getId(), u.grade, g, lanes,
+                        laneStyleRule == null ? null : Map.of("styleRule", laneStyleRule), round);
                 ok++;
             } catch (Exception ex) {
                 arrFails.add(String.format("%s（%s %s）：%s", e.getName(), u.grade,

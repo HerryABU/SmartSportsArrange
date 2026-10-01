@@ -8,24 +8,28 @@
           <span class="hint">先配置运动会日期/时段/年级顺序，再一键生成赛程（径赛串行、田赛并行）</span>
         </div>
         <div class="toolbar-right">
-          <!-- U39/B36：规则模式 / 优化模式 切换（三级求解梯度的最低层 vs 全链路求解） -->
+          <!-- U39/B36：规则模式 / 优化模式 / AI 模式 切换（三级求解梯度的最低层 vs 全链路求解 vs 全 AI 编排） -->
           <el-tooltip placement="top" effect="light">
             <template #content>
-              <div style="max-width: 320px; line-height: 1.7">
+              <div style="max-width: 360px; line-height: 1.7">
                 <b>规则模式</b>：确定性规则编排（蛇形分组 + 固定分道 + 时间栅格顺序放置），毫秒级出结果、完全可复现、参数透明可解释——与豪杰/索美同级<br/>
                 <b>优化模式</b>：Timefold 约束求解 + 遗传算法 + 大邻域搜索，权衡兼项冲突与场地利用率，秒级出更优方案——本项目独有<br/>
-                两种模式都经过同一套自检（场地重叠 / 赶场 / 漏排）与下界 gap 评估
+                <b>AI 模式</b>：在优化链之上再跑 <b>ONNX 全本地推理</b>——算法选择器判「硬解 / 取消」、冲突簇 GNN 给单元定着色优先级、
+                推理时自对抗（生成器 G↔判别器 D 多轮博弈择优）、道次由 AI 派遣款型排布，并回传可解性诊断与 AI 自检报告；
+                模型缺失自动降级为优化模式，不会编排失败<br/>
+                三种模式都经过同一套自检（场地重叠 / 赶场 / 漏排）与下界 gap 评估
               </div>
             </template>
             <el-radio-group v-model="arrangeMode" size="default" class="mode-switch" @change="onArrangeModeChange">
               <el-radio-button value="rule">规则模式</el-radio-button>
               <el-radio-button value="optimize">优化模式</el-radio-button>
+              <el-radio-button value="ai" :class="{ 'is-ai-mode': true }">AI 模式</el-radio-button>
             </el-radio-group>
           </el-tooltip>
           <el-button :icon="Setting" @click="openMeetConfig">运动会日程配置</el-button>
           <el-button :icon="Calendar" @click="showProtection = true">规避时间</el-button>
           <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">
-            {{ arrangeMode === 'rule' ? '按规则编排' : '一键编排赛程' }}
+            {{ arrangeMode === 'rule' ? '按规则编排' : (arrangeMode === 'ai' ? 'AI 智能编排' : '一键编排赛程') }}
           </el-button>
           <el-button type="success" :icon="Download" @click="exportSheet" :disabled="!items.length">导出赛程表</el-button>
           <el-button type="warning" :icon="RefreshLeft" @click="clearAll" :disabled="!items.length">清空</el-button>
@@ -75,15 +79,28 @@
         径赛默认串行独占跑道依次进行，田赛默认并行多场地同时开赛；时长按报名人数估算并受项目最大用时封顶，项目之间留出间隔。日期/时段全部来自日程配置，可每天不同。
       </template>
       <div v-if="lastArrangeMode" style="margin-top: 4px">
-        <el-tag size="small" :type="lastArrangeMode === 'rule' ? 'warning' : 'success'" effect="plain">
-          当前赛程由「{{ lastArrangeMode === 'rule' ? '规则模式' : '优化模式' }}」生成
+        <el-tag size="small" :type="lastArrangeMode === 'rule' ? 'warning' : (lastArrangeMode === 'ai' ? 'danger' : 'success')" effect="plain">
+          当前赛程由「{{ modeLabel(lastArrangeMode) }}」生成
           <template v-if="lastArrangeMode === 'rule' && lastRuleInfo">
             · 耗时 {{ lastRuleInfo.elapsedMillis }}ms · 残余兼项冲突 {{ lastRuleInfo.residualConflicts }} 处
           </template>
         </el-tag>
         <span v-if="lastArrangeMode === 'rule'" style="margin-left: 8px; font-size: 12px; color: #909399">
-          想要更优的兼项规避与场地利用率？切换「优化模式」重新编排
+          想要更优的兼项规避与场地利用率？切换「优化模式 / AI 模式」重新编排
         </span>
+        <!-- AI 模式专属：把「模型到底跑了没有 / 博弈了几轮 / 候选方案是否更优」如实回显，
+             避免「点了 AI 模式其实静默回退规则」却看不出来（模型缺失时后端会降级并写在 note 里）。 -->
+        <template v-if="lastMode === 'ai' && lastAiReport">
+          <el-tag size="small" :type="lastAiReport.adversarial === 'enabled' ? 'danger' : 'info'" effect="plain"
+                  style="margin-left: 8px">
+            AI 自对抗：{{ lastAiReport.adversarial === 'enabled'
+              ? `${lastAiReport.roundsUsed || 0} 轮 · D 分 ${lastAiReport.dScore} · 候选冲突 ${lastAiReport.conflict}${lastAiReport.improved ? '（优于单次生成）' : ''}`
+              : (lastAiReport.adversarial === 'error' ? '执行异常' : '不可用（已降级）') }}
+          </el-tag>
+          <span v-if="lastAiReport.note" style="margin-left: 8px; font-size: 12px; color: #909399">
+            {{ lastAiReport.note }}
+          </span>
+        </template>
       </div>
     </el-alert>
 
@@ -732,6 +749,14 @@ function onArrangeModeChange() {
 }
 // 最近一次编排的模式回显（来自后端结果，防止前后端认知漂移）
 const lastArrangeMode = ref('')
+// 最近一次 AI 模式的自对抗自检报告（来自后端 aiReport，若模型不可用则为空）
+const lastAiReport = ref(null)
+// 本次编排实际生效的模式（后端回显），用于 AI 报告的条件展示
+const lastMode = computed(() => lastArrangeMode.value || '')
+/** 模式 → 中文名（三态：rule / optimize / ai） */
+function modeLabel(m) {
+  return m === 'rule' ? '规则模式' : (m === 'ai' ? 'AI 模式' : '优化模式')
+}
 // 最近一次规则编排的观测信息（algorithmPortfolio.rule）
 const lastRuleInfo = ref(null)
 
@@ -895,7 +920,9 @@ async function commitEventOrder() {
   reordering.value = true
   try {
     await request.put('/system/meet-schedule', buildMeetSchedulePayload())
-    await request.post('/schedule/auto', { mode: 'rule' })
+    // 拖拽改序后重排：沿用当前模式（AI 模式下跑 AI 派遣款型，与用户所选一致），
+    // 不再写死 rule —— 否则「AI 模式改完顺序一点重排就退回规则模式」，模式选择形同虚设
+    await request.post('/schedule/auto', { mode: arrangeMode.value })
     await loadConflicts()
     ElMessage.success('顺序已调整，已按新顺序重新编排并检测兼项冲突')
   } catch (e) {
@@ -1155,6 +1182,7 @@ async function resolveConflicts() {
     items.value = res.items || []
     lastArrangeMode.value = res.mode || arrangeMode.value
     lastRuleInfo.value = res.algorithmPortfolio?.rule || null
+    lastAiReport.value = res.aiReport || res.algorithmPortfolio?.aiReport || null
     // 消解后自动重新检测，刷新表格与计数（权威来源为后端 detectConflicts 同口径）
     await loadConflicts()
     const auto = res.autoArrange || null
@@ -1254,7 +1282,7 @@ async function exportClassConflicts() {
 }
 
 // ==================== 一键编排（赛程 + 自动道次） ====================
-// U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize/缺省=优化模式（向后兼容）
+// U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize=优化模式；ai=AI 模式
 async function doAutoSchedule() {
   arranging.value = true
   progressAbort = false
@@ -1270,6 +1298,7 @@ async function doAutoSchedule() {
     // 模式回显（以服务端为准）
     lastArrangeMode.value = res.mode || arrangeMode.value
     lastRuleInfo.value = res.algorithmPortfolio?.rule || null
+    lastAiReport.value = res.aiReport || res.algorithmPortfolio?.aiReport || null
     // B06/U05：编排响应本身已带 conflicts，直接用，省一次往返
     applyConflicts({ summary: null, list: res.conflicts })
     if (res.conflicts) {
@@ -1407,8 +1436,9 @@ async function rearrangeRow(row) {
       '再次排道', { type: 'warning', confirmButtonText: '重排', cancelButtonText: '取消' })
   } catch { return }
   try {
+    // AI 模式下「再次排道」沿用 AI 派遣款型，避免同一份报名「一键 AI 编排」与「再次排道」排出两套道次
     const r = await request.post(`/arrange/events/${row.eventId}/rearrange`,
-      { grade: row.grade, round: row.round }) || {}
+      { grade: row.grade, round: row.round, styleRule: arrangeMode.value === 'ai' ? 'ai' : undefined }) || {}
     if (r.failed > 0) {
       ElMessage.warning(`道次已重排 ${r.arranged} 组，失败 ${r.failed} 组：${(r.fails || []).join('；')}`)
     } else {
@@ -1435,6 +1465,17 @@ onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes(); loadResultEventI
 .toolbar-right { display: flex; gap: 8px; flex-wrap: wrap; }
 .mode-switch { margin-right: 4px; }
 .mode-switch :deep(.el-radio-button__inner) { font-weight: 600; }
+/* AI 模式：紫红色，与「规则/优化」的蓝绿区分开，一眼能看出走的是 ONNX 本地推理链路 */
+.mode-switch :deep(.el-radio-button.is-ai-mode .el-radio-button__inner) {
+  background: linear-gradient(135deg, #7c3aed, #c026d3);
+  border-color: #7c3aed;
+  color: #fff;
+}
+.mode-switch :deep(.el-radio-button.is-ai-mode.is-active .el-radio-button__inner) {
+  background: #6d28d9;
+  border-color: #6d28d9;
+  box-shadow: -1px 0 0 0 #6d28d9;
+}
 .empty-card { border-radius: 12px; }
 .day-card { border-radius: 12px; }
 .day-header { display: flex; align-items: center; gap: 10px; }

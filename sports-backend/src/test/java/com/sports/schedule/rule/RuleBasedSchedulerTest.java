@@ -48,7 +48,8 @@ class RuleBasedSchedulerTest {
     }
 
     private RuleScheduleConfig cfg() {
-        return new RuleScheduleConfig("rule", true, Policy.REGISTRATION, 15, 8, true);
+        return new RuleScheduleConfig("rule", true, false, Policy.REGISTRATION, 15, 8, true,
+                RuleScheduleConfig.DEFAULT_AI_ROUNDS, RuleScheduleConfig.DEFAULT_AI_LANE_STYLE);
     }
 
     // ---------- 核心属性 ----------
