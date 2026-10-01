@@ -119,6 +119,17 @@ sports:
     # 约束求解时间预算（秒）。算法组合层会把它切成多份，让每个候选算法（模拟退火/禁忌搜索/
     # 迟接受…）各跑一遍、取评分最优者；求解失败或超时会回退到贪心编排，接口始终能出方案。
     solver-seconds: 4
+    # AI 编排核心（ONNX 推理）。训练侧代码与模型位于根目录 sports-ai/（不在 sports-backend），
+    # 运行时由 onnxruntime 从 model-dir 加载 .onnx；模型缺失/加载失败/推理异常时自动回退规则编排。
+    ai:
+      # 总开关：false 时完全禁用 AI 编排（回退纯规则）
+      enabled: true
+      # 模型目录（相对 JAR 运行目录）：指向 sports-ai/models 导出的 .onnx（可复制或软链到此）
+      model-dir: ../sports-ai/models
+      # 算法选择器：16 维实例特征 → 硬解/取消路径
+      selector-model: algorithm_selector.onnx
+      # 冲突簇 GNN：冲突图 → 节点着色优先级
+      gnn-model: conflict_gnn.onnx
     # 大邻域搜索（LNS）精修轮数：0 = 关闭。每轮「破坏一块（年级/时段窗口/最忙运动员）
     # → 只重建这一块 → 只接受更好的」，轮数越多越可能跳出现有局部最优（代价是接口更慢）。
     lns-rounds: 2
