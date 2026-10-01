@@ -32,6 +32,7 @@ import java.util.stream.Collectors;
 import static com.sports.schedule.support.ScheduleSupport.*;
 
 import com.sports.entity.event.Event;
+import com.sports.schedule.analysis.ScheduleFeasibilityService;
 import com.sports.schedule.core.math.SchedulePlacementMath;
 import com.sports.service.arrange.ArrangementService;
 
@@ -56,6 +57,15 @@ public class ScheduleSolveComponent {
     private final AlnsImprover alnsImprover;
     private final FixAndOptimizer fixAndOptimizer;
     private final ScheduleBuildComponent buildComponent;
+
+    /**
+     * 可解性诊断器（无状态纯分析，字段直持有即可，无需进 Spring 装配）。
+     *
+     * <p>刻意<b>不改构造器签名</b>：本组件是手工装配的（{@code ScheduleService} 里 new），
+     * 加构造参数会连带改 4 个 {@code @InjectMocks} 测试类；而诊断器本身无外部依赖，
+     * 直接持有最省事且不增加测试负担。</p>
+     */
+    private final ScheduleFeasibilityService feasibilityService = new ScheduleFeasibilityService();
 
     // 算法调参（与 facade 的 @Value 同源，由构造器注入；仅 fillSolvedFromSolver 使用）
     private final int lnsRounds;
@@ -255,6 +265,29 @@ public class ScheduleSolveComponent {
         //    容量紧张 → 模拟退火/迟接受（允许暂时变差才跳得出「用压缩换时间」的深坑）；
         //    容量宽裕 → 禁忌搜索（记住走过的路，避免循环）；兼项密集 → 多样化迟接受（多邻域）。
         SchedulePlan problem = new SchedulePlan(allPlacements, optUnits);
+
+        // ④-0 **可解性诊断**：把「排得下吗 / 排不下的是什么 / 怎么办」结构化输出进编排响应。
+        //     编排接口过去只回「编排完成 + 统计」，操作者看不到「哪些其实放不下、为什么」；
+        //     诊断与下游求解读**同一份** (optUnits, allPlacements)，因此结论可复现、可追溯。
+        //     三类不可解分开报告：容量缺口（加天/加场地）、超大单元（必须拆批）、
+        //     团下界（结构性不可解，加场地无效）；外加未排清单与建议动作。
+        if (portfolioInfo != null) {
+            try {
+                Map<String, Object> feasibility = feasibilityService.diagnose(optUnits, allPlacements);
+                portfolioInfo.put("feasibility", feasibility);
+                Map<?, ?> summary = (Map<?, ?>) feasibility.get("summary");
+                log.info("可解性诊断: 可排 {}/{} 组次（{}），未排 {}；可行={}；最少 {} 天",
+                        summary.get("placed"), summary.get("tasks"),
+                        ScheduleFeasibilityService.percent(
+                                ((Number) summary.get("placed")).intValue(),
+                                ((Number) summary.get("tasks")).intValue()),
+                        summary.get("unplaced"), feasibility.get("feasible"),
+                        ((Map<?, ?>) feasibility.get("bounds")).get("minDaysByCapacity"));
+            } catch (Exception ex) {
+                log.warn("可解性诊断失败（不影响编排）: {}", ex.toString());
+            }
+        }
+
         AlgorithmPortfolio.Features features = AlgorithmPortfolio.extract(optUnits, allPlacements);
         if (portfolioInfo != null) {
             portfolioInfo.put("features", features.toMap());

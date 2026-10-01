@@ -120,12 +120,15 @@ sports:
     # 迟接受…）各跑一遍、取评分最优者；求解失败或超时会回退到贪心编排，接口始终能出方案。
     solver-seconds: 4
     # AI 编排核心（ONNX 推理）。训练侧代码与模型位于根目录 sports-ai/（不在 sports-backend），
-    # 运行时由 onnxruntime 从 model-dir 加载 .onnx；模型缺失/加载失败/推理异常时自动回退规则编排。
+    # 构建时由 build.ps1 把 sports-ai/models/*.onnx 同步到 src/main/resources/models，随 jar 交付；
+    # 运行时经 ModelSource 从 classpath 直读（onnxruntime 接受 byte[]，无需解压临时文件）。
+    # 模型缺失/加载失败/推理异常时自动回退规则编排，接口始终能出方案。
     ai:
       # 总开关：false 时完全禁用 AI 编排（回退纯规则）
       enabled: true
-      # 模型目录（相对 JAR 运行目录）：指向 sports-ai/models 导出的 .onnx（可复制或软链到此）
-      model-dir: ../sports-ai/models
+      # 模型目录：默认 classpath:/models（jar 内，单包交付）；
+      # 也可指向外部目录（如 ./ai-models 或 file:/opt/ai-models）以便不重新打包即可热替换模型。
+      model-dir: classpath:/models
       # 算法选择器：16 维实例特征 → 硬解/取消路径
       selector-model: algorithm_selector.onnx
       # 冲突簇 GNN：冲突图 → 节点着色优先级

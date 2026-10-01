@@ -265,6 +265,7 @@ public class ScheduleService {
      */
     public Map<String, Object> autoSchedule(Map<String, Object> override) {
         Map<String, Object> cfg = buildComponent.mergeConfig(override);
+        ScheduleProgressTracker.mark("准备", 5, "合并编排配置与系统规则");
 
         // U33/B30 配套：把「系统设置 → 编排规则」里保存的「最大尝试次数」并入编排配置，
         // 使「设为无限次」真正生效——此前该参数只落库、从未被读取。
@@ -479,6 +480,9 @@ public class ScheduleService {
         // 在落库之前先把「谁排在哪个并发位的哪一刻、每个项目分到多少分钟」整体求出来。
         // 「求解」与「持久化」解耦的好处：求解失败或超时（solvedPlacement 为空）时零副作用回退贪心，
         // 接口在任何情况下都能给出方案。
+        // 进度打点：求解是整条链路最耗时的一段（构造启发式 + 算法组合波次），
+        // 前端据此能区分「在算」还是「卡住了」。
+        ScheduleProgressTracker.mark("求解", 35, "约束求解：构造启发式 + 算法组合波次（含 AI 建议）");
         Map<Unit, Placement> solvedPlacement = new IdentityHashMap<>();
         int[] solverStat = {0, 0};   // {采用求解结果的项目数, 求解后的残余兼项冲突数}
         Map<String, Object> portfolioInfo = new LinkedHashMap<>();   // 算法选择的可观测信息
@@ -496,6 +500,7 @@ public class ScheduleService {
             log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",
                     solverStat[0], solverStat[1]);
         }
+        ScheduleProgressTracker.mark("精修", 65, "精修链：GA / LNS / MNSA / ALNS / Fix-opt");
 
         // U22/B19：先算好「确实有已审核报名的项目」，供下面区分两种「0 参与」：
         //   ① 项目整体无报名（数据的真问题，值得告警）；
@@ -783,6 +788,7 @@ public class ScheduleService {
             verification.put("hardOk", false);
             verification.put("error", "自检执行失败：" + ex.getMessage());
         }
+        ScheduleProgressTracker.mark("自检", 88, "对抗式自检、理论下界评估与可解性诊断");
         result.put("verification", verification);
         // 算法组合调度过程（可观测）：实例特征 → 候选算法 → 胜出者
         result.put("algorithmPortfolio", portfolioInfo);
@@ -800,6 +806,7 @@ public class ScheduleService {
         // （兼项冲突、严重压缩、时间窗溢出、自检未通过等 warnings 任一非空即视为未完全成功）
         boolean businessOk = warnings.isEmpty() && autoArrangeFails.isEmpty();
         result.put("businessOk", businessOk);
+        ScheduleProgressTracker.mark("收尾", 97, "汇总统计与结果");
         result.put("success", businessOk);
         result.put("message", businessOk ? "编排完成，业务校验通过" : "编排已完成，但存在业务告警（见 warnings），请复核");
         // 实时协作：落库完成即广播版本号，让开着同一页面的他人尽早刷新、冲突提前暴露

@@ -53,7 +53,13 @@ sports-ai/
 ```
 
 产出 `models/` 下的 `.onnx`：`algorithm_selector` / `conflict_gnn` / `scheme_generator` /
-`scheme_discriminator` / `forecast_mimo` / `forecast_direct`。
+`scheme_discriminator` / `scheme_refiner` / `forecast_mimo` / `forecast_direct`。
+
+> **模型随 jar 交付（无需外部目录）**：根目录的 `build.ps1` 在打包前会把 `models/*.onnx`
+> 同步到 `sports-backend/src/main/resources/models/`，运行时由 `ModelSource` 从
+> **classpath 直读**（onnxruntime 接受 `byte[]`，不必解压到临时文件），因此部署只需一个 jar。
+> 仍保留热替换能力：把 `sports.schedule.ai.model-dir` 指向磁盘目录（如 `./ai-models` 或
+> `file:/opt/ai-models`）即可换模型而不重新打包。模型来源与逐模型加载状态见 `GET /api/ai/status`。
 
 ## 五大 AI 能力
 
