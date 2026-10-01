@@ -16,6 +16,7 @@ straight-through Gumbel-Softmax 产生（同为 one-hot 形态）——判别器
 """
 
 from __future__ import annotations
+from ..data.gnn_io import TRAIN_PAD_TO
 
 import argparse
 import os
@@ -57,7 +58,7 @@ def make_batch(n_samples: int, seed: int):
             field_lanes=rng.choice([2, 3, 4, 5]),
             day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]),
         )
-        nf, adj, mk, _ = encode_gnn_inputs(s)
+        nf, adj, mk, _ = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO)
         nfs.append(nf)
         adjs.append(adj)
         mks.append(mk)
@@ -105,7 +106,7 @@ def train(args):
 
     for it in range(args.iters):
         # ============ ① 训练判别器 D ============
-        z = torch.randn(node_feat.shape[0], MAX_NODES, args.noise)
+        z = torch.randn(node_feat.shape[0], node_feat.shape[1], args.noise)
         _, fake = G(node_feat, adj, mask, z, forbid, hard=True)
         d_real = D(node_feat, adj, mask, real)
         d_fake = D(node_feat, adj, mask, fake.detach())
@@ -116,7 +117,7 @@ def train(args):
         opt_d.step()
 
         # ============ ② 训练生成器 G ============
-        z = torch.randn(node_feat.shape[0], MAX_NODES, args.noise)
+        z = torch.randn(node_feat.shape[0], node_feat.shape[1], args.noise)
         _, fake = G(node_feat, adj, mask, z, forbid, hard=True)
         d_fake = D(node_feat, adj, mask, fake)
         loss_adv = bce(d_fake, torch.ones_like(d_fake))        # 骗过判别器

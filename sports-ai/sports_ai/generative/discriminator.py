@@ -13,11 +13,12 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS
 
 
 class SchemeDiscriminator(nn.Module):
-    def __init__(self, node_feat: int = 8, hidden: int = 64, slots: int = MAX_SLOTS,
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 64, slots: int = MAX_SLOTS,
                  dropout: float = 0.2):
         super().__init__()
         # 着色方案拼到节点特征后面

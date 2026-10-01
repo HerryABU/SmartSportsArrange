@@ -60,14 +60,31 @@ def train(args):
         return ((same * am).sum() / am.sum().clamp(min=1)).item()
 
     for it in range(args.iters):
-        z = torch.randn(node_feat.shape[0], MAX_NODES, args.noise)
+        # ⚠️ 初始解必须与**推理时一致**：推理端用 z=0（确定性），早期训练却用随机 z，
+        # 于是精修器学到的是「修正一个推理时根本不会出现的初始解」——实测把好解改坏
+        # （冲突 0.0076 → 0.0198）。这里改用确定性初始解，并加两条保底约束。
+        z = torch.zeros(node_feat.shape[0], node_feat.shape[1], args.noise)
         with torch.no_grad():
             init = G.logits_of(node_feat, adj, mask, z, forbid)      # G 的初始方案
+            base_probs = torch.softmax(init, dim=-1)
+            base_comb, _ = combination_loss(base_probs, adj, mask, forbid, cap)
+
         logits = R(node_feat, adj, mask, init, forbid)               # 精修
         probs = torch.softmax(logits, dim=-1)
         loss_comb, parts = combination_loss(probs, adj, mask, forbid, cap)
         d_score = D(node_feat, adj, mask, _onehot(logits)).mean()
-        loss = args.lambda_comb * loss_comb - args.adv_weight * d_score   # 约束↓ + 骗 D↑
+
+        # 保底（单调性）约束：精修**不应让组合约束损失变大**——只有在变差时才产生梯度。
+        # 这是「精修器不会比不精修更差」的可导代理指标。
+        loss_guard = torch.relu(loss_comb - base_comb)
+        # delta 正则：鼓励最小改动。初始方案已含大量正确信息，大改往往是破坏。
+        delta = logits - init
+        loss_reg = delta.pow(2).mean()
+
+        loss = (args.lambda_comb * loss_comb
+                - args.adv_weight * d_score
+                + args.guard_weight * loss_guard
+                + args.reg_weight * loss_reg)
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -78,7 +95,7 @@ def train(args):
                 c1 = hard_conflict(logits)
             print(f"iter {it+1:5d}  loss={loss.item():.3f}  "
                   f"conflict: 初始 {c0:.4f} → 精修 {c1:.4f}  (↓{100*(1-c1/max(1e-9,c0)):.1f}%)  "
-                  f"D={d_score.item():.3f}")
+                  f"D={d_score.item():.3f}  guard={loss_guard.item():.4f}  |Δ|={delta.abs().mean().item():.3f}")
 
     torch.save(R.state_dict(), os.path.join(MODEL_DIR, "scheme_refiner.pt"))
     print("完成：models/scheme_refiner.pt")
@@ -91,6 +108,10 @@ def main():
     p.add_argument("--noise", type=int, default=8)
     p.add_argument("--lambda-comb", type=float, default=15.0)
     p.add_argument("--adv-weight", type=float, default=0.5)
+    p.add_argument("--guard-weight", type=float, default=8.0,
+                   help="保底约束权重：惩罚「精修后比精修前更差」")
+    p.add_argument("--reg-weight", type=float, default=0.05,
+                   help="delta 正则权重：鼓励最小改动（初始方案已含大量正确信息）")
     p.add_argument("--forbid-prob", type=float, default=0.3)
     p.add_argument("--capacity-slack", type=float, default=1.5)
     p.add_argument("--log-every", type=int, default=250)

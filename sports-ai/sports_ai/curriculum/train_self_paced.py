@@ -14,6 +14,7 @@
 """
 
 from __future__ import annotations
+from ..data.gnn_io import TRAIN_PAD_TO
 
 import argparse
 import os
@@ -122,9 +123,9 @@ def _self_improve(n: int = 64, seed: int = 12345):
     residues = []
     for _, s in hard:
         total += 1
-        nf, adj, mask, _ = encode_gnn_inputs(s)
+        nf, adj, mask, _ = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO)
         with _t.no_grad():
-            z = _t.zeros(1, MAX_NODES, 8)
+            z = _t.zeros(1, nf.shape[1], 8)
             _, scheme = g(_t.from_numpy(nf), _t.from_numpy(adj), _t.from_numpy(mask), z, None)
             hard_slot = scheme.argmax(-1)                    # [1,N]
             nreal = int(mask[0].sum())
