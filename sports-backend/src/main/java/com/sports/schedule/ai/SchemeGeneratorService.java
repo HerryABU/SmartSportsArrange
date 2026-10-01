@@ -74,15 +74,16 @@ public class SchemeGeneratorService {
         try {
             ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
             int n = enc.nodeCount;
-            int max = ConflictGraphEncoder.MAX_NODES;
+            if (n <= 0) return Optional.empty();
 
-            float[] z = new float[max * 8];                       // 确定性推理：噪声取 0
-            float[] forbid = new float[max * MAX_SLOTS];          // 行政时间保护（此处留空）
-            long[] nfShape = {1, max, ConflictGraphEncoder.NODE_FEAT_DIM};
-            long[] adjShape = {1, max, max};
-            long[] maskShape = {1, max};
-            long[] zShape = {1, max, 8};
-            long[] forbShape = {1, max, MAX_SLOTS};
+            // n 为 ONNX 动态轴：按实际节点数构造，不补齐
+            float[] z = new float[n * 8];                         // 确定性推理：噪声取 0
+            float[] forbid = new float[n * MAX_SLOTS];            // 行政时间保护（此处留空）
+            long[] nfShape = {1, n, ConflictGraphEncoder.NODE_FEAT_DIM};
+            long[] adjShape = {1, n, n};
+            long[] maskShape = {1, n};
+            long[] zShape = {1, n, 8};
+            long[] forbShape = {1, n, MAX_SLOTS};
 
             try (OnnxTensor nf = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.nodeFeat), nfShape);
                  OnnxTensor at = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.adj), adjShape);

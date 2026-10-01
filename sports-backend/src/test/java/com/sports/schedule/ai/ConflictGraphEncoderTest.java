@@ -32,13 +32,16 @@ class ConflictGraphEncoderTest {
                 unit("c", 150, new long[]{1L}, placements));
 
         ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
-        int n = ConflictGraphEncoder.MAX_NODES;
 
         assertEquals(3, enc.nodeCount, "真实节点数 = 3");
-        assertEquals(n * ConflictGraphEncoder.NODE_FEAT_DIM, enc.nodeFeat.length);
-        assertEquals(n * n, enc.adj.length);
-        assertEquals(n, enc.mask.length);
+        // 动态节点数：数组按实际 n 分配，不补齐到 MAX_NODES
+        assertEquals(3, enc.totalUnits);
+        assertEquals(0, enc.dropped);
+        assertEquals(enc.nodeCount * ConflictGraphEncoder.NODE_FEAT_DIM, enc.nodeFeat.length);
+        assertEquals(enc.nodeCount * enc.nodeCount, enc.adj.length);
+        assertEquals(enc.nodeCount, enc.mask.length);
 
+        int n = enc.nodeCount;
         // 邻接对称、无自环
         for (int i = 0; i < n; i++) {
             assertEquals(0.0f, enc.adj[i * n + i], 1e-6, "无自环");
@@ -46,14 +49,14 @@ class ConflictGraphEncoderTest {
                 assertEquals(enc.adj[i * n + j], enc.adj[j * n + i], 1e-6, "邻接对称");
             }
         }
-        // 边 a-b、a-c
+        // 边 a-b、a-c（各共享 1 人 → 权重 1.0）
         assertEquals(1.0f, enc.adj[0 * n + 1], 1e-6);
         assertEquals(1.0f, enc.adj[0 * n + 2], 1e-6);
         assertEquals(0.0f, enc.adj[1 * n + 2], 1e-6, "b、c 不共享运动员");
 
-        // mask：前 3 个为 1，其余为 0
+        // mask：所有真实节点为 1
         for (int i = 0; i < n; i++) {
-            assertEquals(i < 3 ? 1.0f : 0.0f, enc.mask[i], 1e-6);
+            assertEquals(1.0f, enc.mask[i], 1e-6);
         }
 
         // 节点特征全部落在 [0,1]
@@ -77,6 +80,88 @@ class ConflictGraphEncoderTest {
         assertEquals(1.0f, enc.nodeFeat[0 * fdim + 0], 1e-6, "径赛 track=1");
         assertEquals(0.0f, enc.nodeFeat[1 * fdim + 0], 1e-6, "田赛 track=0");
         assertEquals(1.0f, enc.nodeFeat[1 * fdim + 3], 1e-6, "跳远有 group_key → has_group=1");
+    }
+
+    @Test
+    @DisplayName("带权邻接：边权 = 共享运动员数 / 全局最大共享数")
+    void weightedAdjacencyReflectsSharedAthletes() {
+        List<Placement> placements = List.of(
+                new Placement("径赛", 0, 0, 1, "2026-01-01", "上午", "田径场", 480, 480, 210));
+        // a∩b = {3,4}（2 人）；a∩c = {5}（1 人）；b∩c = ∅ → maxShared = 2
+        List<ScheduleUnit> units = List.of(
+                unit("a", 100, new long[]{1L, 3L, 4L, 5L}, placements),
+                unit("b", 100, new long[]{2L, 3L, 4L}, placements),
+                unit("c", 100, new long[]{6L, 5L}, placements));
+
+        ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
+        int n = enc.nodeCount;
+
+        assertEquals(2, enc.maxShared, "全局最大共享运动员数");
+        assertEquals(1.0f, enc.adj[0 * n + 1], 1e-6, "共享 2 人 → 权重 1.0");
+        assertEquals(0.5f, enc.adj[0 * n + 2], 1e-6, "共享 1 人 → 权重 0.5（这正是二值邻接丢掉的信息）");
+        assertEquals(0.0f, enc.adj[1 * n + 2], 1e-6, "b、c 不共享运动员");
+        assertEquals(enc.adj[0 * n + 1], enc.adj[1 * n + 0], 1e-6, "邻接对称");
+    }
+
+    @Test
+    @DisplayName("超出 MAX_NODES 的单元被截断并如实报告（不静默丢弃）")
+    void overflowTruncationIsReported() {
+        List<Placement> placements = List.of(
+                new Placement("径赛", 0, 0, 1, "2026-01-01", "上午", "田径场", 480, 480, 210));
+        int over = ConflictGraphEncoder.MAX_NODES + 37;
+        List<ScheduleUnit> many = new ArrayList<>();
+        for (int i = 0; i < over; i++) {
+            many.add(unit("u" + i, 20, new long[]{i + 1L}, placements));
+        }
+
+        ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(many);
+        assertEquals(ConflictGraphEncoder.MAX_NODES, enc.nodeCount);
+        assertEquals(over, enc.totalUnits);
+        assertEquals(37, enc.dropped, "必须如实报告被截断的单元数，避免无声降级");
+    }
+
+    @Test
+    @DisplayName("扩展特征维度：决赛标记 / 年级序号 / 时长占比 / 超大单元 / 位置")
+    void extendedFeaturesAreEncoded() {
+        List<Placement> placements = List.of(
+                new Placement("径赛", 0, 0, 1, "2026-01-01", "上午", "田径场", 480, 480, 210));
+        ScheduleUnit prelim = new ScheduleUnit("p", 1L, "100米(预赛)", "高一", true, "径赛", null, 5,
+                100, 10, new long[]{1L}, List.of(100), placements);
+        ScheduleUnit fin = new ScheduleUnit("f", 1L, "100米(决赛)", "高二", true, "径赛", null, 5,
+                20, 10, new long[]{1L}, List.of(20), placements);
+        ScheduleUnit big = new ScheduleUnit("b", 2L, "立定跳远(决赛)", "高三", false, "田赛", null, 5,
+                540, 60, new long[]{2L}, List.of(540), placements);
+
+        ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(List.of(prelim, fin, big));
+        int d = ConflictGraphEncoder.NODE_FEAT_DIM;
+
+        assertEquals(16, d, "契约：16 维节点特征");
+        assertEquals(0.0f, enc.nodeFeat[0 * d + 8], 1e-6, "预赛 is_final=0");
+        assertEquals(1.0f, enc.nodeFeat[1 * d + 8], 1e-6, "决赛 is_final=1");
+        assertEquals(0.0f, enc.nodeFeat[0 * d + 9], 1e-6, "高一 grade_idx=0");
+        assertEquals(1.0f, enc.nodeFeat[2 * d + 9], 1e-6, "高三 grade_idx 归一化到 1");
+        assertEquals(1.0f, enc.nodeFeat[2 * d + 14], 1e-6, "540 分钟 → is_large_unit=1");
+        assertEquals(0.0f, enc.nodeFeat[0 * d + 14], 1e-6, "100 分钟 → 非超大单元");
+        assertEquals(540f / 660f, enc.nodeFeat[2 * d + 10], 1e-4, "duration_share = 540/660");
+        assertEquals(0.0f, enc.nodeFeat[0 * d + 15], 1e-6, "order_norm 首个为 0");
+        assertEquals(1.0f, enc.nodeFeat[2 * d + 15], 1e-6, "order_norm 末个为 1");
+    }
+
+    @Test
+    @DisplayName("归一化度数中心度可作为 GNN 的对照基线")
+    void degreeCentralityBaseline() {
+        List<Placement> placements = List.of(
+                new Placement("径赛", 0, 0, 1, "2026-01-01", "上午", "田径场", 480, 480, 210));
+        List<ScheduleUnit> units = List.of(
+                unit("a", 100, new long[]{1L, 2L}, placements),
+                unit("b", 200, new long[]{2L}, placements),
+                unit("c", 150, new long[]{1L}, placements));
+        ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
+        float[] c = ConflictGraphEncoder.degreeCentrality(enc);
+        assertEquals(3, c.length);
+        assertEquals(1.0f, c[0], 1e-6, "a 连接 b、c → 度数 2 → 中心度 1.0");
+        assertEquals(0.5f, c[1], 1e-6);
+        assertEquals(0.5f, c[2], 1e-6);
     }
 
     private static ScheduleUnit unit(String key, int rawDuration, long[] athletes, List<Placement> cands) {

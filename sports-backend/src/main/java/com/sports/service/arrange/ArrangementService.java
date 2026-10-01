@@ -86,6 +86,12 @@ public class ArrangementService {
     /** 行政时间保护：裁判编排时跳过落在受保护时段内的裁判（裁判既是约束对象也是需求者） */
     private final AdminTimeProtectionService protectionService;
 
+    /**
+     * 道次编排 AI（派遣顺序建议）。可选依赖：模型缺失或组件未装配（单测）时为 null，
+     * 代码内一律判空后回退既有排序 —— 新增能力不得让既有路径变脆。
+     */
+    private final com.sports.schedule.ai.LaneAdvisorService laneAdvisorService;
+
     private static final ObjectMapper REF_MAPPER = new ObjectMapper();
 
     // 默认算法参数（可被 arrange_rule.algorithm_params 覆盖）
@@ -890,9 +896,16 @@ public class ArrangementService {
         // 默认 class（班级均衡）；snake（蛇形排布）；snakeSeed（种子蛇形）。取 ruleConfig.styleRule，兼容旧布尔 snakeGrouping。
         String styleRule = resolveArrangeStyle(ruleConfig);
         boolean snakeMode = isSnakeRule(styleRule);
-        // 种子蛇形：运动员 → 种子名次（1=最快；含预赛成绩/已有成绩），供 S 形分散使用
-        Map<Long, Integer> seedRank = ArrangeStyle.SNAKE_SEEDED.id.equals(styleRule)
-                ? buildSeedRank(event, qualifierRefs) : null;
+        // 种子名次（驱动蛇形分散的排序口径）：
+        //   SNAKE_SEEDED → 按成绩/预赛名次；AI → 按模型输出的派遣优先级（失败自动回退成绩种子）。
+        Map<Long, Integer> seedRank;
+        if (ArrangeStyle.AI.id.equals(styleRule)) {
+            seedRank = buildAiSeedRank(event, pool, lanes);
+        } else if (ArrangeStyle.SNAKE_SEEDED.id.equals(styleRule)) {
+            seedRank = buildSeedRank(event, qualifierRefs);
+        } else {
+            seedRank = null;
+        }
         Placement placement;
         List<String> hardViolations;
         int rearrange = 0;
@@ -1791,6 +1804,69 @@ public class ArrangementService {
     /** 是否属于「蛇形」款型（蛇形排布 / 种子蛇形）——二者共用同一套入组/分道实现，仅排序口径不同。 */
     private static boolean isSnakeRule(String styleRule) {
         return ArrangeStyle.of(styleRule).isSnake();
+    }
+
+    /**
+     * AI 派遣顺序 → 种子名次（1 = 最先派遣）。
+     *
+     * <p>把「该按什么顺序派遣」交给训练好的模型（见 {@code sports-ai/sports_ai/lane_advisor.py}），
+     * 再由既有的蛇形分散逻辑消费 —— <b>只换排序口径，分组/分道实现完全复用</b>，
+     * 因此对既有管线零阻抗、可随时开关。</p>
+     *
+     * <p>模型不可用 / 推理失败 / 依赖未装配（单测）时回退 {@link #buildSeedRank}（成绩种子），
+     * 保证道次编排在任何情况下都能出结果。</p>
+     */
+    private Map<Long, Integer> buildAiSeedRank(Event event, List<Athlete> pool, int lanes) {
+        if (laneAdvisorService == null || pool == null || pool.isEmpty()
+                || !laneAdvisorService.isAvailable()) {
+            return buildSeedRank(event, null);
+        }
+        int n = pool.size();
+        List<String> classes = new ArrayList<>(n);
+        List<Long> ids = new ArrayList<>(n);
+        boolean[] female = new boolean[n];
+        int[] eventCounts = new int[n];
+        double[] seed = new double[n];
+        for (int i = 0; i < n; i++) {
+            Athlete a = pool.get(i);
+            ids.add(a.getId());
+            classes.add(classKeyOf(a));
+            String g = a.getGender();
+            female[i] = "女".equals(g) || "f".equalsIgnoreCase(g) || "F".equals(g);
+            eventCounts[i] = 1;
+            seed[i] = 0.0;
+        }
+        // 报名项目数：批量拉一次，避免 N 次单查（模型用它衡量「兼项多者优先分散」）
+        try {
+            Map<Long, Integer> cnt = new HashMap<>();
+            for (Registration r : registrationRepository.findActiveByAthleteIdIn(ids)) {
+                if (r.getAthlete() != null && r.getAthlete().getId() != null) {
+                    cnt.merge(r.getAthlete().getId(), 1, Integer::sum);
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                eventCounts[i] = Math.max(1, cnt.getOrDefault(ids.get(i), 1));
+            }
+        } catch (Exception ex) {
+            log.warn("AI 派遣：报名项目数查询失败，按 1 处理: {}", ex.toString());
+        }
+
+        java.util.Optional<int[]> order =
+                laneAdvisorService.suggestOrder(classes, female, eventCounts, seed, lanes);
+        if (order.isEmpty()) {
+            return buildSeedRank(event, null);
+        }
+        Map<Long, Integer> rank = new LinkedHashMap<>();
+        int[] idx = order.get();
+        for (int pos = 0; pos < idx.length; pos++) {
+            int ai = idx[pos];
+            if (ai >= 0 && ai < n) {
+                rank.put(ids.get(ai), pos + 1);
+            }
+        }
+        log.info("道次 AI 派遣: event={}, {} 名运动员按 AI 优先级排序（款型 AI）",
+                event.getId(), rank.size());
+        return rank;
     }
 
     /** 运动员种子名次（1=最快）；无成绩者返回 MAX（排序时落最后）。 */
