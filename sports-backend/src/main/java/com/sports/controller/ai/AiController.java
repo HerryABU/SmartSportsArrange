@@ -1,6 +1,7 @@
 package com.sports.controller.ai;
 
 import com.sports.common.web.ApiResponse;
+import com.sports.schedule.ai.AdversarialSchemeService;
 import com.sports.schedule.ai.OnnxInferenceService;
 import com.sports.schedule.ai.SchemeGeneratorService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -22,11 +23,12 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/ai")
 @RequiredArgsConstructor
-@Tag(name = "AI 编排核心", description = "ONNX 模型状态（算法选择器 / 冲突簇 GNN / GAN 生成器）")
+@Tag(name = "AI 编排核心", description = "ONNX 模型状态（算法选择器 / 冲突簇 GNN / GAN 生成器 / 推理时自对抗）")
 public class AiController {
 
     private final OnnxInferenceService inference;
     private final SchemeGeneratorService schemeGenerator;
+    private final AdversarialSchemeService adversarial;
 
     @GetMapping("/status")
     @Operation(summary = "查询 AI 模型加载状态")
@@ -34,7 +36,9 @@ public class AiController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("advisoryAvailable", inference.isAvailable());
         out.put("schemeGeneratorAvailable", schemeGenerator.isAvailable());
+        out.put("adversarialAvailable", adversarial.isAvailable());
         out.put("mode", inference.isAvailable() ? "AI 建议优先" : "规则编排（AI 未就绪）");
+        out.put("adversarialMode", "推理时自对抗：G 生成 → 精修器精修 → D 评判 → 多轮择优");
         return ApiResponse.success(out);
     }
 }
