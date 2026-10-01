@@ -147,6 +147,18 @@
 			<artifactId>timefold-solver-core</artifactId>
 		</dependency>
 
+		<!--
+		  ONNX Runtime（MIT）：AI 编排核心的部署侧推理引擎。
+		  训练侧（sports-ai/，Python 3.12）导出 .onnx，本依赖在 JVM 内直接加载推理，
+		  生产环境不依赖 Python 解释器。含各平台 native 库（win-x64/linux-x64/mac…），
+		  模型缺失/加载失败时由 OnnxInferenceService 优雅回退到规则编排，不阻塞主流程。
+		-->
+		<dependency>
+			<groupId>com.microsoft.onnxruntime</groupId>
+			<artifactId>onnxruntime</artifactId>
+			<version>1.26.0</version>
+		</dependency>
+
 		<!-- Lombok -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>

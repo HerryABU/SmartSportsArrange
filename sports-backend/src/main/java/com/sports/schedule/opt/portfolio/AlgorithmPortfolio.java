@@ -1,6 +1,7 @@
 package com.sports.schedule.opt.portfolio;
 
 import ai.timefold.solver.core.config.localsearch.LocalSearchType;
+import com.sports.schedule.ai.AiAdvisory;
 import com.sports.schedule.opt.solver.Placement;
 import com.sports.schedule.opt.solver.ScheduleUnit;
 
@@ -104,12 +105,24 @@ public final class AlgorithmPortfolio {
     }
 
     /**
-     * 按特征选择算法组合（波次）。
+     * 按特征选择算法组合（波次）。等价于 {@link #planFor(Features, long, AiAdvisory)}
+     * 传 {@code null} 建议（纯规则决策）。
+     */
+    public static List<Plan> planFor(Features f, long totalBudgetMillis) {
+        return planFor(f, totalBudgetMillis, null);
+    }
+
+    /**
+     * 按特征 + AI 建议选择算法组合（波次）。
+     *
+     * <p><b>AI 建议优先、规则回退</b>：当 AI 选择器的建议置信度足够（取消概率偏离 0.5 足够远），
+     * 用 AI 的「硬解 / 取消」决策取代规则阈值分支；否则回退到 {@code tensionRatio >= 1.0}
+     * 的规则分支。这样模型缺失、加载失败或低置信时，行为与旧版完全一致。</p>
      *
      * <p>返回多个方案而不是一个，是因为「多起点并行探索」本身就能抵消单一起点的系统性偏差：
      * 贪心或单一邻域从一个起点出发陷进去，另一个起点可能根本不经过那个坑。</p>
      */
-    public static List<Plan> planFor(Features f, long totalBudgetMillis) {
+    public static List<Plan> planFor(Features f, long totalBudgetMillis, AiAdvisory advisory) {
         long budget = Math.max(800, totalBudgetMillis);
         long seed = 20260918L;
 
@@ -118,9 +131,17 @@ public final class AlgorithmPortfolio {
             return List.of(new Plan("默认（无项目可排）", LocalSearchType.TABU_SEARCH, seed, budget));
         }
 
+        // 紧张度判定：AI 建议高置信时以 AI 为准，否则回退规则阈值
+        boolean tight;
+        if (advisory != null && advisory.confident()) {
+            tight = advisory.strategy() == AiAdvisory.Strategy.CANCEL_PATH;
+        } else {
+            tight = f.tensionRatio() >= 1.0;
+        }
+
         // ① 先把候选方案（算法 + 种子）列出来，暂不分配预算
         List<Plan> drafted = new ArrayList<>();
-        if (f.tensionRatio() >= 1.0) {
+        if (tight) {
             // 容量客观不足：局部最优陷阱极深（很容易停在「一半项目被压缩」的解上），
             // 必须允许暂时变差才跳得出来
             drafted.add(new Plan("模拟退火 SA（容量紧张：允许暂时变差，跳出局部最优）",

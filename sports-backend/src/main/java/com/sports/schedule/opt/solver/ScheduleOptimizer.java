@@ -5,15 +5,20 @@ import ai.timefold.solver.core.api.solver.SolutionManager;
 import ai.timefold.solver.core.api.solver.Solver;
 import ai.timefold.solver.core.api.solver.SolverFactory;
 import ai.timefold.solver.core.config.localsearch.LocalSearchType;
+import com.sports.schedule.ai.AiAdvisory;
+import com.sports.schedule.ai.OnnxInferenceService;
 import com.sports.schedule.opt.config.SolverConfigFactory;
 import com.sports.schedule.opt.portfolio.AlgorithmPortfolio;
 import com.sports.schedule.opt.score.PlanMetrics;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,6 +57,20 @@ public class ScheduleOptimizer {
         log.info("赛程约束求解器就绪: Timefold Solver 2.6.0（构造启发式 + 禁忌搜索），默认时间预算 {}s",
                 defaultBudget.toSeconds());
     }
+
+    /**
+     * AI 推理服务（可选注入）。
+     *
+     * <p>用 setter + {@code required=false} 注入，保证「纯算法单测里 {@code new ScheduleOptimizer(1)}」
+     * 不依赖 Spring、也不依赖模型文件——此时 {@code aiService} 为 null，AI 自动关闭，回退规则编排。
+     * Spring 容器里正常注入后，编排优先采纳 AI 建议（见 {@link #solveWithPortfolio}）。</p>
+     */
+    @Autowired(required = false)
+    public void setAiService(OnnxInferenceService aiService) {
+        this.aiService = aiService;
+    }
+
+    private volatile OnnxInferenceService aiService;
 
     /** 按默认预算求解 */
     public Optional<SchedulePlan> solve(SchedulePlan plan) {
@@ -110,12 +129,25 @@ public class ScheduleOptimizer {
         if (features != null && features.unitCount() > 0) {
             total = Math.max(total, Math.min(features.unitCount() * 250L, 10_000L));
         }
+
+        // ① AI 编排建议（模型缺失/加载失败时返回 empty，自动回退规则编排）
+        Optional<AiAdvisory> advisory = advise(plan);
+        if (advisory.isPresent()) {
+            AiAdvisory a = advisory.get();
+            log.info("AI 编排建议: 策略={}, 取消概率={}, 置信={}",
+                    a.strategy(), String.format("%.2f", a.cancelProbability()), a.confident());
+        }
+
+        // ② 按冲突簇 GNN 的着色优先级重排单元：中心冲突簇先着色，
+        //    作为构造启发式的初始顺序（Timefold 默认按实体集合顺序构造初始解）。
+        SchedulePlan ordered = advisory.map(a -> reorderByPriority(plan, a)).orElse(plan);
+
         List<AlgorithmPortfolio.Plan> plans =
-                AlgorithmPortfolio.planFor(features, total);
+                AlgorithmPortfolio.planFor(features, total, advisory.orElse(null));
         SchedulePlan best = null;
         String winner = null;
         for (AlgorithmPortfolio.Plan p : plans) {
-            SchedulePlan r = solve(plan, Duration.ofMillis(p.budgetMillis()), p.type(), p.seed()).orElse(null);
+            SchedulePlan r = solve(ordered, Duration.ofMillis(p.budgetMillis()), p.type(), p.seed()).orElse(null);
             if (r == null || r.getScore() == null) continue;
             if (best == null || r.getScore().compareTo(best.getScore()) > 0) {
                 best = r;
@@ -128,6 +160,41 @@ public class ScheduleOptimizer {
             log.warn("算法组合调度: {} 个候选算法全部未产出结果，将回退贪心编排", plans.size());
         }
         return Optional.ofNullable(best);
+    }
+
+    /** 向 AI 推理服务请求编排建议（服务缺失时返回 empty）。 */
+    private Optional<AiAdvisory> advise(SchedulePlan plan) {
+        if (aiService == null) return Optional.empty();
+        try {
+            return aiService.advise(plan.getUnits(), plan.getPlacements());
+        } catch (Exception ex) {
+            log.warn("AI 编排建议失败，回退规则编排: {}", ex.toString());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 按 GNN 着色优先级重排单元（中心冲突簇在前），返回新方案（不动调用方原始方案）。
+     *
+     * <p>优先级按 {@code units} 原始顺序对齐，稳定排序（同优先级保持原相对顺序），
+     * 超出的单元（当单元数 &gt; {@code MAX_NODES} 时被截断）原样追加到末尾。</p>
+     */
+    private SchedulePlan reorderByPriority(SchedulePlan plan, AiAdvisory advisory) {
+        double[] priority = advisory.nodePriority();
+        List<ScheduleUnit> units = plan.getUnits();
+        if (priority == null || priority.length == 0 || units == null || units.size() < 2) {
+            return plan;
+        }
+        int m = Math.min(priority.length, units.size());
+        Integer[] idx = new Integer[m];
+        for (int i = 0; i < m; i++) idx[i] = i;
+        Arrays.sort(idx, (a, b) -> Double.compare(priority[b], priority[a]));   // 优先级降序
+        List<ScheduleUnit> ordered = new ArrayList<>(units.size());
+        for (int i = 0; i < m; i++) ordered.add(units.get(idx[i]));
+        for (int i = m; i < units.size(); i++) ordered.add(units.get(i));
+        SchedulePlan out = new SchedulePlan(plan.getPlacements(), ordered);
+        out.setScore(plan.getScore());
+        return out;
     }
 
     /**
