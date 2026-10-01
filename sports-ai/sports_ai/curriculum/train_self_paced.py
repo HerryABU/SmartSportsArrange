@@ -38,9 +38,10 @@ def build_pool(n: int, seed: int):
     rng = random.Random(seed)
     X, y, diff = [], [], []
     for _ in range(n):
-        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(80, 320),
-                              n_days=rng.randint(1, 3), multi_event_prob=rng.uniform(0.3, 0.9),
-                              grades=["高一", "高二", "高三"])
+        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(150, 800),
+                              n_days=rng.randint(2, 6), multi_event_prob=rng.uniform(0.3, 0.9),
+                              grades=["高一", "高二", "高三"],
+                              event_drop_prob=0.3)
         f = extract_features(s)
         d = measure(s)
         X.append(f)
@@ -102,7 +103,8 @@ def _self_improve(n: int = 64, seed: int = 12345):
     for _ in range(n):
         s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(180, 400),
                               n_days=1, multi_event_prob=rng.uniform(0.6, 0.9),
-                              grades=["高一", "高二", "高三"])
+                              grades=["高一", "高二", "高三"],
+                              event_drop_prob=0.3)
         cand.append((measure(s).score, s))
     cand.sort(key=lambda x: -x[0])
     hard = cand[: max(1, len(cand) // 2)]

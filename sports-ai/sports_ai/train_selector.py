@@ -34,10 +34,11 @@ def make_dataset(n: int, seed: int):
     for _ in range(n):
         s = generate_scenario(
             seed=rng.randint(0, 10 ** 9),
-            n_athletes=rng.randint(80, 320),
-            n_days=rng.randint(1, 3),
+            n_athletes=rng.randint(150, 800),
+            n_days=rng.randint(2, 6),
             multi_event_prob=rng.uniform(0.3, 0.9),
             grades=["高一", "高二", "高三"],
+            event_drop_prob=0.3,
         )
         f = extract_features(s)
         tension = f[3]
@@ -52,9 +53,12 @@ def train(args):
     random.seed(0)
 
     X, y = make_dataset(args.samples, seed=args.seed)
-    # 标准化：mean/std 存下来供导出固化
+    # 标准化：mean/std 存下来供导出固化。
+    # ⚠️ 近零方差特征（训练里近乎恒定，如 group_count）**不缩放**——否则真实数据上的一点差异
+    #    会被除以 ~0 放大成天文数字，模型在真实场景直接崩（曾出现 z=1e6 的爆点）。
     mean = X.mean(axis=0)
-    std = X.std(axis=0) + 1e-6
+    std = X.std(axis=0)
+    std = np.where(std < 1e-3, 1.0, std)
     Xn = (X - mean) / std
 
     # 划分

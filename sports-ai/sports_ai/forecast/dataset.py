@@ -64,8 +64,8 @@ def make_dataset(n_samples: int, seed: int):
     rng = random.Random(seed)
     Xs, Ys, Ls = [], [], []
     for _ in range(n_samples):
-        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(180, 400),
-                              n_days=rng.randint(1, 3), multi_event_prob=rng.uniform(0.4, 0.9),
+        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(200, 800),
+                              n_days=rng.randint(2, 6), multi_event_prob=rng.uniform(0.4, 0.9),
                               grades=["高一", "高二", "高三"])
         X, Y, ln = build_sequence(s)
         if ln < L_IN + H_OUT:
