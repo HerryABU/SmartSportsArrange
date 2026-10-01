@@ -1,5 +1,6 @@
 package com.sports.service.schedule;
 
+import com.sports.schedule.ai.AdversarialSchemeService;
 import com.sports.schedule.core.primitive.Pool;
 import com.sports.schedule.core.primitive.Unit;
 import com.sports.schedule.core.primitive.Window;
@@ -96,7 +97,8 @@ public class ScheduleSolveComponent {
                                   int mnsaIterations,
                                   int alnsRounds,
                                   int fixoptRounds,
-                                  long fixoptSliceMillis) {
+                                  long fixoptSliceMillis,
+                                  AdversarialSchemeService adversarialSchemeService) {
         this.scheduleOptimizer = scheduleOptimizer;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.geneticAlgorithm = geneticAlgorithm;
@@ -115,9 +117,74 @@ public class ScheduleSolveComponent {
         this.alnsRounds = alnsRounds;
         this.fixoptRounds = fixoptRounds;
         this.fixoptSliceMillis = fixoptSliceMillis;
+        this.adversarialSchemeService = adversarialSchemeService;
     }
 
+    /**
+     * AI 模式专属的推理时自对抗服务（G↔D 在推理时继续博弈），可为 null = 未接入，自动跳过。
+     *
+     * <p>用构造参数而非静态入口，是为了让求解链仍然可独立构造（单测）；
+     * 生产侧由 {@link com.sports.schedule.ai.AdversarialSchemeService#current()} 注入。</p>
+     */
+    private final AdversarialSchemeService adversarialSchemeService;
+    /** 自对抗择优的冲突惩罚权重：越大越偏向「真零冲突」而非「像真解」 */
+    private static final double ADVERSARIAL_LAMBDA = 0.5;
+
     // ==================== 以下方法由 scripts/refactor_extract_solve_component.py 从 ScheduleService 迁入 ====================
+
+    /**
+     * AI 模式专属：跑一遍**推理时自对抗**（G 采样 → 精修器精修 → D 评判 → 择优），
+     * 把「模型来源 / 博弈轮数 / 判别器评分 / 候选方案的残余冲突」结构化输出。
+     *
+     * <p>只做观测与上报，不覆盖主方案（主方案由求解器决定并落库）：自对抗候选的解空间
+     * 与求解器输出不同粒度（槽着色 vs 并发位时段），直接替换会破坏既有落库语义。
+     * 报告里 {@code improved=true} 表示「多轮博弈确实把候选方案的冲突压得比单次生成更低」。</p>
+     */
+    private Map<String, Object> adversarialSelfCheck(RuleScheduleConfig cfg, List<ScheduleUnit> optUnits) {
+        Map<String, Object> rep = new LinkedHashMap<>();
+        rep.put("laneStyle", cfg.aiLaneStyle());
+        rep.put("rounds", Math.max(0, cfg.aiAdversarialRounds()));
+        AdversarialSchemeService adv = this.adversarialSchemeService;
+        if (adv == null) {
+            rep.put("adversarial", "unavailable");
+            rep.put("note", "推理时自对抗服务未接入（AI 增强组件未创建），本次 AI 模式仅启用 AI 派遣款型与 AI 可解性诊断");
+            return rep;
+        }
+        if (!adv.isAvailable()) {
+            rep.put("adversarial", "unavailable");
+            rep.put("note", "ONNX 模型不可用（缺失或加载失败），AI 模式已自动降级为优化模式");
+            return rep;
+        }
+        try {
+            Optional<AdversarialSchemeService.SchemeResult> r =
+                    adv.generateAdversarially(optUnits, cfg.aiAdversarialRounds(), ADVERSARIAL_LAMBDA);
+            if (r.isEmpty()) {
+                rep.put("adversarial", "skipped");
+                rep.put("note", "无可用单元参与对抗（单元列表为空）");
+                return rep;
+            }
+            AdversarialSchemeService.SchemeResult s = r.get();
+            rep.put("adversarial", "enabled");
+            rep.put("dScore", r3(s.dScore()));
+            rep.put("conflict", r4(s.conflict()));
+            rep.put("conflictBefore", r4(s.conflictBefore()));
+            rep.put("score", r3(s.score(ADVERSARIAL_LAMBDA)));
+            rep.put("refined", s.refined());
+            rep.put("roundsUsed", s.rounds());
+            rep.put("improved", s.conflict() < s.conflictBefore() - 1e-9);
+            rep.put("note", "候选方案与求解器主方案独立评估、互不覆盖；主方案仍为落库结果");
+            log.info("AI 自对抗: 轮数 {}, D分 {}, 候选冲突 {}（单次生成基线 {}），择优改进={}",
+                    s.rounds(), r3(s.dScore()), r4(s.conflict()), r4(s.conflictBefore()), s.conflict() < s.conflictBefore() - 1e-9);
+        } catch (Exception ex) {
+            rep.put("adversarial", "error");
+            rep.put("note", "自对抗执行失败（不影响编排）：" + (ex.getMessage() == null ? ex.toString() : ex.getMessage()));
+            log.warn("推理时自对抗失败（不影响编排）: {}", ex.toString());
+        }
+        return rep;
+    }
+
+    private static double r3(double v) { return Math.round(v * 1000.0) / 1000.0; }
+    private static double r4(double v) { return Math.round(v * 10000.0) / 10000.0; }
 
     /**
      * 规则模式编排（U39/B36）：把单元适配成 {@link RuleUnit}，交给确定性规则编排器出方案。
@@ -214,6 +281,7 @@ public class ScheduleSolveComponent {
                                       Map<String, Integer> codeToParallelMax,
                                       int trackSlots, int fieldSlots, List<Window> windows,
                                       Map<Long, String> event2Group, int unitInterval,
+                                      RuleScheduleConfig ruleConfig,
                                       Map<Unit, Placement> solvedPlacement, int[] solverStat,
                                       Map<String, Object> portfolioInfo) {
         if (scheduleOptimizer == null) return;
@@ -288,6 +356,14 @@ public class ScheduleSolveComponent {
             }
         }
 
+        // ④-0b **AI 模式专属：推理时自对抗自检**（G 采样 → 精修器 → D 评判 → 择优）。
+        //     只在 AI 模式跑：把「模型从哪来、博弈了几轮、相比单次生成是否更优」结构化输出，
+        //     让「AI 模式」不只是换个按钮——它真的跑了一遍生成对抗，且把过程写进编排响应。
+        //     主方案仍以上面求解器的结果为准（自对抗不覆盖已落库的赛程），只作观测与建议。
+        if (ruleConfig != null && ruleConfig.aiMode() && portfolioInfo != null) {
+            portfolioInfo.put("aiReport", adversarialSelfCheck(ruleConfig, optUnits));
+        }
+
         AlgorithmPortfolio.Features features = AlgorithmPortfolio.extract(optUnits, allPlacements);
         if (portfolioInfo != null) {
             portfolioInfo.put("features", features.toMap());
@@ -300,7 +376,13 @@ public class ScheduleSolveComponent {
                     + "多算法并行探索后取评分最优者");
         }
         SchedulePlan solvedPlan = scheduleOptimizer.solveWithPortfolio(problem, features).orElse(null);
-        if (solvedPlan == null) return;
+        if (solvedPlan == null) {
+            // 求解失败也要给出 AI 自对抗的报告（否则 AI 模式下除错报告缺失，运维无从判断）
+            if (ruleConfig != null && ruleConfig.aiMode() && portfolioInfo != null) {
+                portfolioInfo.put("aiReport", adversarialSelfCheck(ruleConfig, optUnits));
+            }
+            return;
+        }
 
         // ④b **遗传算法（GA）**：种群 + 交叉 + 变异，全局并行探索。
         //     与多起点波次的区别：波次是「各跑各的、跑完比大小」，GA 让好解之间繁殖——

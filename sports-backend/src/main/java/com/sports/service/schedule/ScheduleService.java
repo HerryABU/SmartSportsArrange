@@ -50,6 +50,7 @@ import java.util.stream.Collectors;
 import static com.sports.schedule.support.ScheduleSupport.*;
 
 import com.sports.controller.arrange.ArrangementController;
+import com.sports.schedule.ai.AdversarialSchemeService;
 import com.sports.schedule.core.math.ScheduleAnalysisMath;
 import com.sports.schedule.core.math.SchedulePlacementMath;
 import com.sports.schedule.core.primitive.Pool;
@@ -135,10 +136,13 @@ public class ScheduleService {
         this.protectionService = protectionService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
+        // AI 自对抗是「AI 模式」的可选增强：静态入口拿不到（单测 / 未启用 AI）时传 null，
+        // SolveComponent 自动跳过自对抗，其余 AI 能力（AI 派遣款型、AI 可解性诊断）不受影响。
         this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
                 mnsaAnnealer, alnsImprover, fixAndOptimizer, buildComponent,
                 lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis,
-                mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis);
+                mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis,
+                AdversarialSchemeService.current());
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
         this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository,
                 eventRefereeRepository, arrangementReservationRepository, collaborationService, auditService);
@@ -475,6 +479,9 @@ public class ScheduleService {
         // OPTIMIZE（优化模式，缺省）：既有行为完全不变——Timefold 组合求解 + GA + LNS，
         //                   规则引擎的解作为求解器的初始解（规则是起点，优化是提升）。
         RuleScheduleConfig ruleConfig = RuleScheduleConfig.from(override);
+        // AI 模式专属：道次款型（默认「ai」由模型输出派遣优先级）自本次编排起贯穿整条放置链，
+        // 一路传到 ArrangementService.arrange → LaneAdvisorService；非 AI 模式传 null = 既有口径。
+        String laneStyleRule = ruleConfig.aiMode() ? ruleConfig.aiLaneStyle() : null;
 
         // ===== U28/B25：约束求解（Timefold）=====
         // 在落库之前先把「谁排在哪个并发位的哪一刻、每个项目分到多少分钟」整体求出来。
@@ -486,7 +493,9 @@ public class ScheduleService {
         Map<Unit, Placement> solvedPlacement = new IdentityHashMap<>();
         int[] solverStat = {0, 0};   // {采用求解结果的项目数, 求解后的残余兼项冲突数}
         Map<String, Object> portfolioInfo = new LinkedHashMap<>();   // 算法选择的可观测信息
-        portfolioInfo.put("mode", ruleConfig.ruleMode() ? "rule" : "optimize");
+        // 三态：rule=规则模式；ai=AI 模式（求解链 + AI 派遣 + 推理时自对抗）；optimize=优化模式（既有行为）
+        portfolioInfo.put("mode", ruleConfig.aiMode() ? RuleScheduleConfig.MODE_AI
+                : (ruleConfig.ruleMode() ? RuleScheduleConfig.MODE_RULE : RuleScheduleConfig.MODE_OPTIMIZE));
         if (ruleConfig.ruleMode()) {
             solveComponent.fillSolvedFromRules(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
                     fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
@@ -494,7 +503,7 @@ public class ScheduleService {
         } else {
             solveComponent.fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
                     fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
-                    windows, event2Group, unitInterval, solvedPlacement, solverStat, portfolioInfo);
+                    windows, event2Group, unitInterval, ruleConfig, solvedPlacement, solverStat, portfolioInfo);
         }
         if (solverStat[0] > 0) {
             log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",
@@ -548,7 +557,7 @@ public class ScheduleService {
             PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                    solvedPlacement, eventsWithRegs, eventBlocked);
+                    solvedPlacement, eventsWithRegs, eventBlocked, laneStyleRule);
             passesRun++;
             if (best == null || passIsBetter(r, best)) {
                 best = r;
@@ -592,7 +601,7 @@ public class ScheduleService {
                 PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                         mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                         event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                        solvedPlacement, eventsWithRegs, eventBlocked);
+                        solvedPlacement, eventsWithRegs, eventBlocked, laneStyleRule);
                 try {
                     arrangementService.restoreFinalScheduleRows();   // ★ 补回决赛条目再评估（口径=交付）
                 } catch (Exception ex) {
@@ -623,7 +632,7 @@ public class ScheduleService {
             best = runPlacementPass(units, bestOrder, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
-                    solvedPlacement, eventsWithRegs, eventBlocked);
+                    solvedPlacement, eventsWithRegs, eventBlocked, laneStyleRule);
             try {
                 arrangementService.restoreFinalScheduleRows();   // ★ 重跑最优趟后同样补回（口径=交付）
             } catch (Exception ex) {
@@ -740,8 +749,13 @@ public class ScheduleService {
 
         Map<String, Object> result = queryExportComponent.buildResult();
         result.put("warnings", warnings);
-        // U39/B36：本次编排使用的模式（rule=规则模式 / optimize=优化模式），供前端展示与核对
-        result.put("mode", ruleConfig.ruleMode() ? RuleScheduleConfig.MODE_RULE : RuleScheduleConfig.MODE_OPTIMIZE);
+        // U39/B36：本次编排使用的模式（rule=规则模式 / ai=AI 模式 / optimize=优化模式），供前端展示与核对
+        result.put("mode", ruleConfig.aiMode() ? RuleScheduleConfig.MODE_AI
+                : (ruleConfig.ruleMode() ? RuleScheduleConfig.MODE_RULE : RuleScheduleConfig.MODE_OPTIMIZE));
+        // AI 模式专属：推理时自对抗自检报告（模型来源 / 轮数 / 判别器评分 / 候选残余冲突 / 是否建议采纳）
+        if (ruleConfig.aiMode()) {
+            result.put("aiReport", aiSelfCheckReport(units, ruleConfig, conflictStat[1]));
+        }
         // B06/U05：完整兼项冲突清单（warnings 里只放汇总，避免上百条告警淹没现场）
         result.put("conflicts", conflicts);
         // B05/U06：新增「可行性预检」与「压缩亏损明细」两个结构化字段，让现场能算清缺口
@@ -849,6 +863,37 @@ public class ScheduleService {
         return out;
     }
 
+    /** AI 模式专属自检报告（整次编排的汇总口径，随编排结果一并返回给前端）。
+     *
+     * <p>回答三件事：① 本次是否真的按 AI 派遣款型生成道次（{@code laneStyle}）；
+     * ② 推理时自对抗有没有跑起来（模型缺失/加载失败会如实报 {@code unavailable} = 已降级，
+     * 绝不静默）；③ 落库后还剩多少兼项冲突。</p>
+     *
+     * <p>求解阶段的自对抗明细（D 分 / 候选冲突 / 择优前后对比）在
+     * {@code algorithmPortfolio.aiReport} 里，此处只做汇总，不做第二次模型推理。</p>
+     */
+    private Map<String, Object> aiSelfCheckReport(List<Unit> units, RuleScheduleConfig cfg, int residualConflicts) {
+        Map<String, Object> rep = new LinkedHashMap<>();
+        rep.put("laneStyle", cfg.aiLaneStyle());
+        rep.put("rounds", Math.max(0, cfg.aiAdversarialRounds()));
+        rep.put("units", units == null ? 0 : units.size());
+        rep.put("residualConflicts", residualConflicts);
+        AdversarialSchemeService adv = AdversarialSchemeService.current();
+        if (adv == null) {
+            rep.put("adversarial", "unavailable");
+            rep.put("note", "推理时自对抗服务未接入（AI 编排组件未在容器内创建），"
+                    + "本次 AI 模式仅启用 AI 派遣款型与 AI 可解性诊断");
+        } else if (!adv.isAvailable()) {
+            rep.put("adversarial", "unavailable");
+            rep.put("note", "ONNX 模型不可用（缺失或加载失败），AI 模式已自动降级为优化模式");
+        } else {
+            rep.put("adversarial", "enabled");
+            rep.put("modelInfo", adv.modelInfo());
+            rep.put("note", "推理时自对抗已在求解阶段执行（明细见 algorithmPortfolio.aiReport），本表为整次编排的汇总口径");
+        }
+        return rep;
+    }
+
     /**
      * 单趟赛程放置：独立 deleteAllSchedules + 按给定单元顺序放置，返回本趟结果。
      * 每趟都即时落库（saveSchedule 内部 save），故「保留最优一趟」只需保证最后落库的是最优即可。
@@ -861,7 +906,7 @@ public class ScheduleService {
             Map<String, String> codeToName, Map<String, Integer> codeToParallelMax,
             Map<Long, String> event2Group, int defaultInterval, int minInterval,
             double compressionWarnRatio, Map<Unit, Placement> solvedPlacement,
-            Set<Long> eventsWithRegs, Map<Long, List<int[]>> eventBlocked) {
+            Set<Long> eventsWithRegs, Map<Long, List<int[]>> eventBlocked, String laneStyleRule) {
         PlacementPassResult r = new PlacementPassResult();
         scheduleRepository.deleteAllSchedules();
         // 每趟重建池（游标状态不可复用）+ 专用池表（resolvePool 会按需新建并缓存）
@@ -894,7 +939,7 @@ public class ScheduleService {
                 // 普通单元：占用并发池中最空闲的一个槽位
                 placementComponent.placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio,
                         r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement,
-                        eventBlocked);
+                        eventBlocked, laneStyleRule);
                 r.autoArrangeOk += u.arranged;
                 done.add(i);
             } else {
@@ -928,7 +973,7 @@ public class ScheduleService {
                 }
                 placementComponent.placeBatch(batch, units, unitPools, windows, defaultInterval, minInterval, compressionWarnRatio,
                         group, r.saved, r.warnings, orderCounter, r.autoArrangeFails, busy, r.conflictStat, solvedPlacement,
-                        eventBlocked);
+                        eventBlocked, laneStyleRule);
                 for (Integer idx : batch) {
                     r.autoArrangeOk += units.get(idx).arranged;
                     done.add(idx);

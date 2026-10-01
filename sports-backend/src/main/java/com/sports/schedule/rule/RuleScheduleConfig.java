@@ -23,13 +23,18 @@ import com.sports.service.arrange.ConflictService;
 public record RuleScheduleConfig(
         String mode,
         boolean ruleMode,
+        boolean aiMode,
         FixedLaneAssignment.Policy lanePolicy,
         int conflictBufferMinutes,
         int advanceCount,
-        boolean conflictCheckEnabled) {
+        boolean conflictCheckEnabled,
+        int aiAdversarialRounds,
+        String aiLaneStyle) {
 
     /** 规则模式标识（config.mode 的合法值，大小写不敏感） */
     public static final String MODE_RULE = "rule";
+    /** AI 模式标识（ONNX 全本地推理：算法选择器 + 冲突簇 GNN + 推理时自对抗 + AI 派遣道次） */
+    public static final String MODE_AI = "ai";
     /** 优化模式标识 */
     public static final String MODE_OPTIMIZE = "optimize";
 
@@ -37,10 +42,15 @@ public record RuleScheduleConfig(
     public static final int DEFAULT_CONFLICT_BUFFER = ConflictService.CONFLICT_BUFFER_MIN;
     /** 与 Event.advanceCount 缺省一致 */
     public static final int DEFAULT_ADVANCE_COUNT = 8;
+    /** AI 模式缺省：推理时自对抗轮数（0/负数 = 关闭自对抗，只保留 AI 建议与 AI 派遣） */
+    public static final int DEFAULT_AI_ROUNDS = 3;
+    /** AI 模式缺省款型：由模型输出派遣优先级（无法命中时 ArrangementService 自动回退成绩种子） */
+    public static final String DEFAULT_AI_LANE_STYLE = "ai";
 
     public static final RuleScheduleConfig DEFAULT = new RuleScheduleConfig(
-            MODE_OPTIMIZE, false, FixedLaneAssignment.Policy.REGISTRATION,
-            DEFAULT_CONFLICT_BUFFER, DEFAULT_ADVANCE_COUNT, true);
+            MODE_OPTIMIZE, false, false, FixedLaneAssignment.Policy.REGISTRATION,
+            DEFAULT_CONFLICT_BUFFER, DEFAULT_ADVANCE_COUNT, true,
+            DEFAULT_AI_ROUNDS, DEFAULT_AI_LANE_STYLE);
 
     /**
      * 从编排请求 config 解析（不修改原 Map）。
@@ -52,21 +62,26 @@ public record RuleScheduleConfig(
         if (config == null) return DEFAULT;
         String mode = str(config.get("mode"), MODE_OPTIMIZE).trim().toLowerCase();
         boolean rule = MODE_RULE.equals(mode);
+        boolean ai = MODE_AI.equals(mode);
         return new RuleScheduleConfig(
-                rule ? MODE_RULE : MODE_OPTIMIZE,
+                rule ? MODE_RULE : (ai ? MODE_AI : MODE_OPTIMIZE),
                 rule,
+                ai,
                 "performance".equalsIgnoreCase(str(config.get("ruleLanePolicy"), ""))
                         ? FixedLaneAssignment.Policy.PERFORMANCE
                         : FixedLaneAssignment.Policy.REGISTRATION,
                 intVal(config.get("ruleConflictBufferMinutes"), DEFAULT_CONFLICT_BUFFER),
                 intVal(config.get("ruleAdvanceCount"), DEFAULT_ADVANCE_COUNT),
-                boolVal(config.get("ruleConflictCheckEnabled"), true));
+                boolVal(config.get("ruleConflictCheckEnabled"), true),
+                intVal(config.get("aiAdversarialRounds"), DEFAULT_AI_ROUNDS),
+                str(config.get("aiLaneStyle"), DEFAULT_AI_LANE_STYLE));
     }
 
     /** 规则模式专属键（供前端文档与日志观测） */
     public static final List<String> KNOWN_KEYS = List.of(
             "mode", "ruleLanePolicy", "ruleConflictBufferMinutes",
-            "ruleAdvanceCount", "ruleConflictCheckEnabled");
+            "ruleAdvanceCount", "ruleConflictCheckEnabled",
+            "aiAdversarialRounds", "aiLaneStyle");
 
     private static String str(Object v, String dflt) {
         return v == null ? dflt : String.valueOf(v);

@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.8.1
+> Sports Meet Intelligent Arrangement System v2.8.2
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -8,7 +8,7 @@
 
 - ⚙️ **零配置建站**：首次启动进入可视化安装向导（参考 WordPress / Discuz 体验），配置站点、数据库、管理员账号后即装即用
 - 🔀 **数据库热迁移**：SQLite ↔ MySQL 在线切换，**全程无需重启服务**
-- 🧮 **三级求解梯度**：规则模式（确定性规则引擎，毫秒级） ↔ 优化模式（Timefold 约束求解 + GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链），前端一键切换，**向下完全兼容竞品规则、向上独占求解能力**
+- 🧮 **三级求解梯度 + AI 档**：规则模式（确定性规则引擎，毫秒级） ↔ 优化模式（Timefold 约束求解 + GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链），前端再可选 **AI 模式**（优化链之上叠加 ONNX 全本地推理：算法选择器 + 冲突簇 GNN + 推理时自对抗 + AI 派遣道次），一键三档切换，**向下完全兼容竞品规则、向上独占求解与 AI 能力**
 - 🧠 **智能编排引擎**：贪心 + 局部优化算法自动分组分道，规则完全可配置
 - 🤖 **AI 编排核心（ONNX 全本地推理）**：Python 训练 + ONNX 交付 + Java 推理，**生产环境不依赖 Python 解释器**。含算法选择器（硬解 / 取消路径）、冲突簇 GNN（16 维节点特征 + 带权邻接 + 4 层消息传递 + 跳跃连接）、**货真价实的 GAN**（生成器 G + 神经网络判别器 D minimax 对抗）、**推理时自对抗**（G 采样 → 精修器 → D 评判 → 多轮择优）、多步预测（Direct/Recursive/MIMO）、自步学习课程、**道次编排 AI**。模型随 jar 交付，缺失/异常自动回退规则编排
 - 🏐 **球赛赛制生成**：循环赛（圆桌轮转，**连续主/客场 ≤ 2**）/ 淘汰赛（轮空 + 种子 + **同单位回避** + 真实双淘汰）/ 混合赛制（小组循环 → 交叉淘汰，同组出线队首轮必不相遇）/ **排球赛**，可适配为可排任务进时间槽编排
@@ -64,7 +64,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.8.1.jar
+java -jar sports-2.8.2.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -258,9 +258,11 @@ JAR 启动时自动检测终端编码（Windows GBK / Linux UTF-8 / Mac UTF-8）
 | L1 规则模式 | `com.sports.schedule.rule`：`SnakeGrouping`（蛇形分组）+ `FixedLaneAssignment`（固定分道）+ `RuleBasedScheduler`（确定性 first-fit 时间编排） | **毫秒级** | 完全确定（同输入必同输出）、参数透明可解释、可穷举验证——传统电子化表单工具的能力边界 |
 | L2 启发式 | 贪心 + 冲突感知放置 + 匈牙利精确分道（`HungarianAssignment`） | 秒级 | 兜底与快速通道 |
 | L3 优化模式 | Timefold 约束求解 + 遗传算法（GA）+ 大邻域搜索（LNS）+ 算法组合调度 | 秒级（可配预算） | 全局权衡兼项冲突/场地利用率/时长保真，带理论下界 gap 评估 |
+| **L4 AI 模式**（新增第三档「编排模式」） | 优化链之上叠加 **ONNX 全本地推理**：算法选择器判「硬解 / 取消」、冲突簇 GNN 定着色优先级、**推理时自对抗**（G 采样 → 精修器 → D 评判 → 多轮择优）、**AI 派遣款型**排布道次、AI 可解性诊断 | 秒级（含自对抗轮数） | 不换引擎只加 AI：跑完优化链再跑一遍生成对抗并结构化回显；模型缺失自动降级为优化模式，**绝不编排失败** |
 
-**前端切换**：教师「项目编排」页顶部提供「规则模式 / 优化模式」单选按钮（选择记忆于 `localStorage`）。
-**API 切换**：`POST /api/schedule/auto`，请求体 `mode` 字段——`"rule"` = 规则模式，缺省/`"optimize"` = 优化模式（完全向后兼容）。可选规则参数：`ruleLanePolicy`（`registration`/`performance`）、`ruleAdvanceCount`（晋级人数）、`ruleConflictBufferMinutes`（兼项缓冲）、`ruleConflictCheckEnabled`。
+**前端切换**：教师「项目编排」页顶部提供「规则模式 / 优化模式 / **AI 模式**」三档单选按钮（选择记忆于 `localStorage`，AI 档为紫红渐变以区分），主按钮随档位变文案（按规则编排 / 一键编排赛程 / **AI 智能编排**）。**所有编排入口都带 AI 档**：赛程编排页（同步 + 异步）、赛程页「再次排道」（沿用当前模式的 `styleRule`）、道次编排页工具条「AI 模式」按钮（切到 AI 派遣款型并直接打开编排弹窗）、道次页分组款型旁「AI 模式」小按钮（可单独切换，不弹窗）。
+**API 切换**：`POST /api/schedule/auto`，请求体 `mode` 字段——`"rule"` = 规则模式，`"optimize"` = 优化模式，`"ai"` = AI 模式（缺省仍是 `optimize`，完全向后兼容）。可选参数：规则参数 `ruleLanePolicy`（`registration`/`performance`）、`ruleAdvanceCount`（晋级人数）、`ruleConflictBufferMinutes`（兼项缓冲）、`ruleConflictCheckEnabled`；AI 参数 `aiAdversarialRounds`（推理时自对抗轮数，默认 `3`，`0` 关闭自对抗只保留 AI 派遣）、`aiLaneStyle`（AI 派遣款型，默认 `"ai"`）。
+**道次入口**：`POST /api/arrange/events/{eventId}/rearrange` body 增 `styleRule`（`'ai'` = 按模型派遣优先级重排，省略 = 既有口径）。
 
 **关键设计**——规则模式不是「另一套系统」，而是同一管线的最低层：
 1. **同源候选**：规则与求解使用同一「池解析 + 候选位置栅格」口径（`placementsOf`），两种模式产出可互替；
@@ -306,10 +308,12 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 将比赛项目自动调度到「天 × 时段 × 场地」时间表，**模型为「1~n 并发位」**（已废弃早期「串行/并行」开关）：
 
-**编排模式切换（规则 / 优化）** 🎚️：工具栏「规则模式 / 优化模式」单选按钮——
+**编排模式切换（规则 / 优化 / AI）** 🎚️：工具栏「规则模式 / 优化模式 / **AI 模式**」三档单选按钮（AI 档紫红渐变区分）——
 - **规则模式**：确定性 first-fit（项目顺序 → 时间栅格 → 场地槽位），毫秒级、完全可复现、结果透明；响应含 `algorithmPortfolio.rule {placed, unplaced, residualConflicts, elapsedMillis, passesRun, winningStrategy, unlimitedMode, converged, ...}` 观测信息（其中 `unlimitedMode`/`converged`/`passesRun` 对应「兼项冲突规避轮数」填 0 时的无限收敛行为，详见下方配置表该行）
 - **优化模式**（默认）：Timefold 求解 + GA 进化 + LNS 精修 + **MNSA 多邻域退火 + ALNS 自适应大邻域搜索 + Fix-and-Optimize 冲突切片精确修复**（精修链逐级接力，每层只接受更优），权衡兼项冲突 / 场地利用率 / 压缩保真，附理论下界 gap
-- 两模式共用同一套并发位模型、自检（`/api/schedule/verify`）、下界评估与冲突检测；切换零副作用，随时可换回
+- **AI 模式**（新增）：完整跑一遍优化链，**再跑一遍 ONNX 推理时自对抗**（G 采样 → 精修器精修 → D 评判 → 多轮择优，择优准则「残余冲突优先、并列看 D 分」，并把单次生成结果一并作为候选池保证不劣化），同时全链路使用 **AI 派遣款型**排道次。结果页如实回显 `aiReport` / `algorithmPortfolio.aiReport`：
+  `laneStyle` / `rounds` / `adversarial`（`enabled`｜`unavailable`｜`skipped`｜`error`） / `dScore`（判别器评分） / `conflict`（候选残余冲突） / `conflictBefore`（单次生成基线） / `improved`（是否优于单次生成） / `note`（模型缺失会写明「已降级为优化模式」，**绝不静默**）
+- 三模式共用同一套并发位模型、自检（`/api/schedule/verify`）、下界评估与冲突检测；切换零副作用，随时可换回
 
 | 概念 | 配置项 | 说明 |
 |------|--------|------|
@@ -755,7 +759,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | GET | `/api/schedule` | — | 已认证 | 查看当前赛程 |
-| POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库）；**`mode`**：`"rule"` 规则模式 / 缺省 `"optimize"` 优化模式；规则模式可选 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictBufferMinutes` / `ruleConflictCheckEnabled` | 已认证 | 按「并发位」模型自动编排赛程（双模式详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)）；响应含 `mode`（实际使用的模式）与 `algorithmPortfolio.rule`（规则模式观测信息） |
+| POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库）；**`mode`**：`"rule"` 规则模式 / `"optimize"` 优化模式 / `"ai"` AI 模式 / 缺省 `"optimize"` 优化模式；规则模式可选 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictBufferMinutes` / `ruleConflictCheckEnabled`；AI 模式可选 `aiAdversarialRounds` / `aiLaneStyle` | 已认证 | 按「并发位」模型自动编排赛程（三模式详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)）；响应含 `mode`（实际使用的模式）、`aiReport`（AI 模式自对抗汇总）与 `algorithmPortfolio.rule` / `algorithmPortfolio.aiReport`（观测信息） |
 | POST | `/api/schedule/save` | Body items[] | 已认证 | 手动保存赛程（整体替换） |
 | DELETE | `/api/schedule` | — | 已认证 | 清空赛程 |
 | GET | `/api/schedule/export` | — | 已认证 | 导出赛程（Excel，含「项目内并发」列） |
@@ -1218,24 +1222,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.8.1.jar
+java -jar sports-2.8.2.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.8.1.jar --app.port=8899 --app.host=::
+java -jar sports-2.8.2.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.8.1.jar --server.port=9090
+java -jar sports-2.8.2.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.8.1.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.8.2.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.8.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.8.2.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.2.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1458,7 +1462,7 @@ sports:
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.1.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.2.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
 ```
 
 ---
@@ -1475,7 +1479,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.8.1.jar .
+copy sports-backend\target\sports-2.8.2.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -1540,4 +1544,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.8.1 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01
+> **版本**: v2.8.2 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01

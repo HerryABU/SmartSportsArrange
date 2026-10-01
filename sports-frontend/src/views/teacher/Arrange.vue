@@ -78,6 +78,19 @@
               <el-tag v-else type="warning" size="large" effect="plain" round>未编排</el-tag>
             </div>
             <div class="toolbar-right">
+              <!-- AI 模式：与赛程编排页「规则 / 优化 / AI」三档一致；这里直接作用于道次（分组/分道）编排 -->
+              <el-tooltip placement="bottom" effect="light">
+                <template #content>
+                  <div style="max-width: 320px; line-height: 1.7">
+                    <b>AI 模式</b>：由 ONNX 模型（<code>lane_advisor.onnx</code>）输出<b>派遣优先级</b>来代替成绩种子，
+                    再走既有的蛇形/班级均衡分组——只换「谁先派」，不换「怎么分」。<br/>
+                    模型缺失或加载失败时自动回退成绩种子，编排照常出结果。
+                  </div>
+                </template>
+                <el-button type="danger" @click="useAiArrangeMode" :icon="MagicStick">
+                  AI 模式
+                </el-button>
+              </el-tooltip>
               <el-button-group>
                 <el-button type="primary" @click="showArrangeDialog" :icon="MagicStick">
                   执行编排
@@ -265,8 +278,11 @@
             <el-select v-model="arrangeConfig.ruleConfig.styleRule" style="width: 200px">
               <el-option v-for="r in styleRules" :key="r.id" :label="r.label" :value="r.id" />
             </el-select>
+            <el-button size="small" type="danger" plain @click="useAiStyle" style="margin-left: 8px">AI 模式</el-button>
             <span class="rule-desc">{{ styleRuleDesc }}</span>
           </el-form-item>
+          <el-alert v-if="aiStyleHint" type="info" show-icon :closable="false"
+                    :title="aiStyleHint" style="margin: -4px 0 12px" />
           <el-form-item label="同班尽量不同组">
             <el-switch v-model="arrangeConfig.ruleConfig.preferDiffHeat" active-color="#13ce66"
               :disabled="arrangeConfig.ruleConfig.styleRule === 'snake'" />
@@ -660,6 +676,38 @@ async function loadArrangeStyles() {
   }
 }
 
+// ---- AI 模式（道次编排）：切到「AI 派遣」款型，并如实告知模型是否就绪 ----
+// 只换「谁先派」（模型给出的派遣优先级），分组/分道的既有规则不变，因此不会破坏硬约束校验。
+const aiStyleReady = ref(false)
+const aiStyleHint = computed(() => {
+  if (arrangeConfig.ruleConfig.styleRule !== 'ai') return ''
+  return aiStyleReady.value
+    ? 'AI 派遣款型已生效：按模型输出的派遣优先级依次落位（模型不可用时自动回退成绩种子）'
+    : 'AI 派遣款型已生效，但模型当前未就绪，本次编排将自动回退成绩种子'
+})
+
+async function refreshAiAvailability() {
+  try {
+    const st = (await request.get('/api/ai/status')) || {}
+    const d = st?.data ?? st
+    aiStyleReady.value = !!(d?.laneAdvisorAvailable || d?.models?.laneAdvisorAvailable || d?.models?.laneAdvisor?.loaded)
+  } catch {
+    aiStyleReady.value = false
+  }
+}
+
+function useAiStyle() {
+  arrangeConfig.ruleConfig.styleRule = 'ai'
+  refreshAiAvailability()
+  ElMessage.success('已切换为「AI 派遣」款型：点「开始编排」即按模型输出的派遣优先级排道')
+}
+
+/** 工具条「AI 模式」：切款型 + 打开既有编排弹窗（复用同一条编排链路，不另造流程） */
+function useAiArrangeMode() {
+  useAiStyle()
+  showArrangeDialog()
+}
+
 // ----  款型持久化：记住上次选的款型 ----
 // 已保存的编排规则快照（写回时合并，避免覆盖其它规则项——后端 saveArrangeRule 是整份替换）
 let savedArrangeRule = null
@@ -687,6 +735,8 @@ watch(searchKeyword, (val) => {
 onMounted(async () => {
   // 「自定义规则」款型目录
   loadArrangeStyles()
+  // AI 派遣款型的就绪状态（进入页就探一次，用户在「AI 模式」按钮上点下去之前就知道模型在不在）
+  refreshAiAvailability()
   // 年级列表：来自系统设置·年级管理（不硬编码），默认选第一个
   await loadAutoOrderBook()
   try {

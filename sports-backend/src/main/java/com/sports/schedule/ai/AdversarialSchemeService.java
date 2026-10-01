@@ -61,6 +61,19 @@ public class AdversarialSchemeService {
         this.genName = genName;
         this.disName = disName;
         this.refName = refName;
+        // 静态入口：本项目里 ScheduleService / ScheduleSolveComponent 都是**手工 new** 装配的
+        // （加构造参数会连带改动多个 @InjectMocks 测试类）。自对抗只是 AI 模式的可选增强，
+        // 用静态持有才能让「非 Spring 管理」的编排组件拿到它；拿不到（null）时 AI 模式自动降级，
+        // 不影响任何既有行为。Spring 默认单例 ⇒ current 指向的就是容器里那一个实例。
+        CURRENT = this;
+    }
+
+    /** 最近一个被 Spring 创建的实例（见构造器注释）；编排侧通过 {@link #current()} 取用。 */
+    private static volatile AdversarialSchemeService CURRENT;
+
+    /** 静态入口：取容器中的自对抗服务；未创建（如单测 / 未启用 AI）返回 null，调用方须判空。 */
+    public static AdversarialSchemeService current() {
+        return CURRENT;
     }
 
     public boolean isAvailable() {

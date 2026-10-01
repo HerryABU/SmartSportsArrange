@@ -151,6 +151,17 @@ public class ArrangementService {
      *         全部失败时抛异常（部分失败视为成功并带明细返回，与批量编排语义一致）
      */
     public Map<String, Object> rearrangeByGrade(Long eventId, String grade, String round) {
+        return rearrangeByGrade(eventId, grade, round, null);
+    }
+
+    /**
+     * 同上，但显式指定分组款型。
+     *
+     * <p>{@code styleRule} 传 "ai" = 用模型输出的派遣优先级排道（AI 模式下一致，避免
+     * 「一键 AI 编排」与「再次排道」两处口径不同：同一份报名重排两次，道次却不一样）。
+     * 传 null/空/非法值 → 走既有口径（班级均衡）。</p>
+     */
+    public Map<String, Object> rearrangeByGrade(Long eventId, String grade, String round, String styleRule) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
         String g = (grade == null || grade.isBlank()) ? null : grade.trim();
@@ -166,7 +177,10 @@ public class ArrangementService {
         List<String> fails = new ArrayList<>();
         for (String gender : genders) {
             try {
-                arrange(eventId, g, gender, Math.max(1, resolveLanes(event)), null, targetRound);
+                // AI 模式要的是「AI 派遣」款型；非法/空值由 resolveArrangeStyle 兜底为班级均衡
+                Map<String, Object> rc = (styleRule == null || styleRule.isBlank())
+                        ? null : Map.of("styleRule", styleRule.trim());
+                arrange(eventId, g, gender, Math.max(1, resolveLanes(event)), rc, targetRound);
                 ok++;
             } catch (Exception ex) {
                 fails.add(gender + "：" + (ex.getMessage() == null ? ex.toString() : ex.getMessage()));

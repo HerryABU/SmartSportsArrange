@@ -65,6 +65,52 @@ class RuleScheduleConfigTest {
     }
 
     @Test
+    @DisplayName("mode=ai → AI 模式：既不是规则模式，也不退化成优化模式（三态可区分）")
+    void aiModeDetection() {
+        RuleScheduleConfig ai = RuleScheduleConfig.from(Map.of("mode", "ai"));
+        assertTrue(ai.aiMode());
+        assertFalse(ai.ruleMode(), "AI 模式必须走求解链，不能被当成规则模式跳过求解器");
+        assertEquals(RuleScheduleConfig.MODE_AI, ai.mode());
+        assertEquals(RuleScheduleConfig.DEFAULT_AI_LANE_STYLE, ai.aiLaneStyle());
+        assertEquals(RuleScheduleConfig.DEFAULT_AI_ROUNDS, ai.aiAdversarialRounds());
+
+        assertTrue(RuleScheduleConfig.from(Map.of("mode", "AI")).aiMode(), "大小写不敏感");
+        assertTrue(RuleScheduleConfig.from(Map.of("mode", "Ai")).aiMode());
+        assertFalse(RuleScheduleConfig.from(Map.of("mode", "rule")).aiMode());
+        assertFalse(RuleScheduleConfig.from(Map.of("mode", "optimize")).aiMode());
+        assertFalse(RuleScheduleConfig.DEFAULT.aiMode());
+        assertFalse(RuleScheduleConfig.from(null).aiMode());
+    }
+
+    @Test
+    @DisplayName("AI 模式专属参数：自对抗轮数 / 道次款型可显式指定，垃圾值回落默认")
+    void aiParameters() {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("mode", "ai");
+        cfg.put("aiAdversarialRounds", 6);
+        cfg.put("aiLaneStyle", "ai");
+        RuleScheduleConfig rc = RuleScheduleConfig.from(cfg);
+        assertTrue(rc.aiMode());
+        assertEquals(6, rc.aiAdversarialRounds());
+        assertEquals("ai", rc.aiLaneStyle());
+
+        Map<String, Object> bad = new HashMap<>();
+        bad.put("mode", "ai");
+        bad.put("aiAdversarialRounds", "abc");
+        RuleScheduleConfig r2 = RuleScheduleConfig.from(bad);
+        assertEquals(RuleScheduleConfig.DEFAULT_AI_ROUNDS, r2.aiAdversarialRounds());
+        // AI 模式必须保留规则模式那套参数（规则模式是 AI 模式排除法之外的另一分支，互不干扰）
+        Map<String, Object> mixed = new HashMap<>();
+        mixed.put("mode", "ai");
+        mixed.put("ruleConflictBufferMinutes", 18);
+        mixed.put("ruleAdvanceCount", 5);
+        RuleScheduleConfig r3 = RuleScheduleConfig.from(mixed);
+        assertEquals(18, r3.conflictBufferMinutes());
+        assertEquals(5, r3.advanceCount());
+        assertTrue(r3.aiMode());
+    }
+
+    @Test
     @DisplayName("兼项缓冲缺省值与 ConflictService 单一真相源对齐（防编排/检测口径漂移）")
     void conflictBufferSingleSource() {
         assertEquals(ConflictService.CONFLICT_BUFFER_MIN, RuleScheduleConfig.DEFAULT_CONFLICT_BUFFER,
