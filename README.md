@@ -25,7 +25,7 @@
 - [默认账号](#-默认账号)
 - [功能总览（按角色）](#-功能总览按角色)
 - [功能详解](#-功能详解)（§1–§15：建站向导 → 报名进度 / 满额率口径）
-- [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§20**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会）
+- [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§22**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会 / 行政时间保护 / 通知）
 - [数据库设计](#-数据库设计)
 - [部署指南](#-部署指南)
 - [技术架构](#-技术架构)
@@ -53,6 +53,16 @@
 > 校验号规则：系统自动拼接 `第X届Y季节运动会-年份码-年级[-学号]`，便于跨届核对与归档。
 
 > 日志分析整改：P0 `NoClassDefFoundError: ErrorResponse$Builder` 经核验**不成立**（spring-web 内含该类，部署 jar 字节一致）；其余 P1 / P3 项均已修复并补单测。
+
+**编排增强（2026-09-27 ~ 09-30）**
+
+- ⏱ **空时间限制（自动推算天数）**：运动会日程可不再写死天数——开启「自动推算」（`autoDays`）或 `days≤0` 时，系统按「每天时段总容量 × 并发位」反推需要排多少天（首日时段为模板复制），结果返回 `estimatedDays`，赛程自动铺开对应天数（`DaysEstimator` 纯函数，不触碰求解器）。
+- 📊 **兼项高频统计**：新增 `GET /api/arrange/co-occurrence`，从已审核报名构建「项目×项目共现矩阵」，输出高频共现排行与每项目兼项热度，作为设定 `eventOrder`、预判兼项冲突的依据。
+- 🚧 **行政时间保护（规避时间）**：新增「规避时间」机制——全校统一避让时段（闭幕式 / 大会等）、班主任个人时段、裁判个人时段三类，按 `targetType` 区分（`entity/protection/AdminTimeProtection` + `GET/POST/PUT/DELETE /api/protections`）。编排时**率先影响**：全校时段切分时间窗（硬约束不可排）、班主任时段其班级项目自动避让；裁判编排时受保护裁判自动跳过执裁。
+- 🔔 **通知双通道**：内通知 = 站内信（`Notification` 实体 + `/api/notifications`，铃铛角标 + 已读），外通知 = 按班级汇总的冲突统计表 Excel 导出转交班主任。
+- ✂️ **兼项冲突·取消某人某项目**：`ConflictResolutionService` 先统计「哪些项目互撞」（事件对汇总），再支持单条 / 批量取消（退报名 + 同步移出编排 + 重算冲突），批量取消可统一通知班主任（内 / 外通知）。
+
+> 入口收敛：行政时间保护为「教师 / 体育老师」端专属配置（全校 / 班主任 / 裁判三类），班主任端赛程查看与裁判工作台均会按保护时段自动避让；站内信通知中心接入教师 / 班主任 / 裁判三端布局，未读角标实时提示。
 
 ---
 
@@ -141,6 +151,7 @@ java -jar sports-2.7.5.jar
 | 跨届进步榜 | 对比最近两届同名次进步，支持「指定项目」/「全部项目汇总」两种口径 |
 | 届 / 运动会 | 创建多届「第X届Y季节运动会」、一键切换当前届、编辑/删除；成绩/报名/入场式均绑定届次 |
 | 系统设置 | 基本设置、积分规则、年级设置等 |
+| 行政时间保护 | 「规避时间」配置（全校统一避让 / 班主任个人时段 / 裁判个人时段），编排与裁判编排自动避让；站内信通知中心（未读角标 + 已读） |
 
 ### 班主任（CLASS_TEACHER）
 
@@ -151,6 +162,7 @@ java -jar sports-2.7.5.jar
 | 运动会报名 | 学号定位 → 项目卡片报名、统计仪表、未报名名单、报名表导出 |
 | 赛程查看 | 本班运动员的组次、道次、时间 |
 | 成绩查看 | 本班成绩 + 总分/金银铜汇总 |
+| 通知中心 | 站内信（取消项目 / 冲突消解等通知），未读角标提示 |
 
 ### 裁判（REFEREE · 可登录）
 
@@ -161,6 +173,7 @@ java -jar sports-2.7.5.jar
 | 裁判管理（`/teacher/referees`，**仅 SA 可见**，入口在教师端菜单） | 花名册增删改查、Excel 批量导入（专长 `[a,b，c]`）、模板下载、**单个/批量开通登录账号**（账号列显示「已开通/未开通」） |
 | 裁判工作安排（`/teacher/referee-board`，T/SA） | 按裁判聚合「项目/年级/性别/赛次/组次」分配，含未分配裁判 |
 | **裁判工作台（`/referee/dashboard`，独立布局）** | 裁判登录后进入（琥珀色系）；**裁判本人看到「我的执裁安排」**（`GET /api/referee/me`），管理员/体育老师则看到全体裁判安排（可投屏） |
+| **通知中心** | 站内信铃铛（受保护时段跳过执裁等通知），未读角标实时提示 |
 
 > **开通账号**：裁判管理页「开通账号」/「批量开通账号」→ `POST /api/system/referees/{id}/account`、`POST /api/system/referees/accounts/open-all`。用户名默认取手机号（无手机号则 `ref{id}`，冲突自动加后缀），初始密码默认 `123456`；也可在「用户管理」Excel 导入中直接把角色填 `REFEREE` 建账号。
 
@@ -330,6 +343,7 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 | 田赛分组 | `fieldGroups` | `[{name, eventIds[]}]`：**同一组的田赛项目安排在同一时段并行进行**（组内项目数受 `fieldSlots` 约束，超出自动分波并提示） |
 | 并行捆绑组 | `event.bundleGroup` | 项目级字母分组（如 `A` / `B` / `C`）：**填相同字母的田赛自动安排在同一时段并行**，优先级高于「田赛分组」配置；留空则由算法自动安排。**支持 Excel 导入**（「并行捆绑组」列） |
 | 兼项冲突规避轮数 | `conflictAvoidancePasses` | 自动编排时为压低运动员「兼项赶场」冲突而进行的多策略重试轮数。**填 `0` = 无限轮**：逐趟换排序策略（原始序 → 按报名人数降序 → 按兼项度降序 → 确定性洗牌）重试，直到连续 **16 趟无改进**（判定已收敛到兼项最低）或触达 **150 趟硬上限**；非零值夹在 **1–64** 之间。返回 `algorithmPortfolio` 会带上实际 `passesRun` / `winningStrategy` / `unlimitedMode` / `converged`，前端可直观看到跑的是哪套策略、是否收敛 |
+| 自动推算天数 | `autoDays` | 运动会日程可不写死天数：开启后（或 `days≤0`），系统按「每天时段总容量 × 并发位」反推需要排多少天（首日时段作模板复制），结果返回 `estimatedDays`。前端「运动会日程配置」提供「自动推算」开关 |
 
 - 并发位与场地对应：径赛用第 1 个场地；田赛的 n 个并发位依次占用其余场地，场地不足时复用同一场地并给出 warning
 - 场地录入：每个场地含**名称 + 编码**（如「田赛A区 / `FIELD_A`」），编码用于标识与展示；第 1 个场地为径赛主场地，其余供田赛并行，**并数上限取决于场地数量**，请先录全场地
@@ -338,6 +352,49 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 - **分批间隙大间隔 🛌**：按「项目内并发」正常分批后，若两批之间当天仍有空闲时段，算法在「冲突数、时段都相同」的前提下**优先拉开间隔**（让运动员休息更足）；仅当同天确有空档时才后移安排，**绝不凭空膨胀赛程**（无空档回退最早可行点）。间隔取舍严格排在「冲突数 > 时段」之后——绝不为拉开间隔而引入兼项冲突
 
 > 💡 若编排结果出现「未能在同一时段并行」告警，通常是该时段容量或并发位数不足——提高「田赛并发位数」或增加场地即可。
+
+#### 9.1 空时间限制（自动推算天数）⏱
+
+「运动会日程配置」中比赛天数可开启「自动推算」（`autoDays`）。开启后系统不再按固定天数铺排，而是：
+
+1. 先按报名+项目参数算出每个单元的「原始时长 + 间隔」；
+2. 除以「**每天时段总容量（各时段分钟数之和）× 并发位**」，向上取整得出需要排多少天；
+3. 以**首日时段为模板**复制出对应天数（每天时段结构一致），结果随编排响应返回 `estimatedDays`。
+
+> 该逻辑为纯函数 `DaysEstimator`，不触碰求解器；显式指定 `days` 仍优先，二者互斥时 `autoDays=true` 或 `days≤0` 触发自动推算。
+
+#### 9.2 兼项高频统计（设定项目顺序的依据）📊
+
+编排前先看「哪些项目常被同一运动员同时报名」，能提前预判兼项冲突、辅助设定 `eventOrder`。`GET /api/arrange/co-occurrence` 从**已审核报名**构建「项目×项目共现矩阵」，返回：
+
+- `pairs`：高频共现项目排行（共现人次降序），如「100米 × 200米」被同一批人反复同时报；
+- `eventHeat`：每项目的兼项热度（被多少不同运动员兼报了其它项目）。
+
+#### 9.3 行政时间保护（规避时间）🚧
+
+部分时段因行政原因（闭幕式、全校大会、某老师/裁判临时 unavailable）需要主动避让。新增「行政时间保护」实体（`entity/protection/AdminTimeProtection`），按 `targetType` 分三类：
+
+| `targetType` | 含义 | 编排接入方式 |
+|------|------|------|
+| `GLOBAL` | 全校统一避让时段 | **切分时间窗**（硬约束）：该段整段时间不可排任何项目，solver 与贪心都用切分后的窗口，零侵入放置逻辑 |
+| `TEACHER` | 某班主任个人不可用时段 | **按项目黑名单**：其班级参与的项目在受保护时段被阻挡（穿透 `placeOne/placeBatch/applySolved/findBestSlot` 的 `blockedIntervals` 参数，`day=-1` 表示全天） |
+| `REFEREE` | 某裁判个人不可用时段 | **执裁过滤**：`assignReferees` 前 `blockedReferees()` 排除落在赛程时间窗内受保护的裁判 |
+
+配置入口 `GET/POST/PUT/DELETE /api/protections`，教师端「行政时间保护」管理页可用。裁判既是约束对象，也是保护需求者。
+
+#### 9.4 兼项冲突·取消某人某项目 ✂️
+
+当兼项冲突无法硬解时，提供「取消」路径（区别于 §9 的「继续硬解 / 无限轮消解」）：
+
+1. **统计**：`GET /api/arrange/conflicts/statistics` 汇总「哪些项目互相撞车」（事件对列表 + 涉及运动员数），先看清冲突结构；
+2. **取消**：`POST /api/arrange/conflicts/cancel`（Body `items[]` + `notifyTeacher` 开关）——对选定「运动员×项目」退报名（`registration` 置 withdrawn）+ **同步移出编排/道次**（杜绝残留）+ 重算冲突；
+3. **分流班主任**：`notifyTeacher=true` 时生成**内通知**（站内信定向到对应班主任）；`GET /api/arrange/conflicts/class-export` 生成**外通知**——按班级汇总的冲突/取消统计表 Excel，转交班主任。
+
+#### 9.5 通知中心（站内信）🔔
+
+「内通知」通道：`entity/notification/Notification`（定向用户 / 角色广播 + 已读标记），接口 `GET /api/notifications`（`unread-count` / `{id}/read` / `read-all`）。教师 / 班主任 / 裁判三端布局顶部均挂载 `NotificationBell` 铃铛组件，未读角标实时提示，点击展开可逐条查看或一键全部已读。取消项目、冲突消解、裁判被避让等事件均可触发站内信。
+
+> 外通知（Excel 统计表）见 §9.4 的 `class-export`，与内通知互补，满足「通知班主任」的两种落地形态。
 
 ### 10. 成绩 & 排名
 
@@ -451,7 +508,7 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 ## 📡 API 接口完整参考
 
-后端共 **20 个 Controller、200+ 个路由端点**（下表为主要业务端点，含本届新增「届 / 运动会」控制器），统一前缀 `/api`。反向代理子路径部署时（如 `/sportmg/`），前端请求 `/sportmg/api/...` 由后端智能剥离前缀后路由到下列端点。
+后端共 **22 个 Controller、210+ 个路由端点**（下表为主要业务端点，含本届新增「届 / 运动会」「行政时间保护」「通知」控制器），统一前缀 `/api`。反向代理子路径部署时（如 `/sportmg/`），前端请求 `/sportmg/api/...` 由后端智能剥离前缀后路由到下列端点。
 
 ### 通用约定
 
@@ -645,6 +702,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | POST | `/api/arrange/events/{eventId}/prelim-results` | Body `{grade, gender, items[]}` | T/SA | 录入预赛成绩 |
 | POST | `/api/arrange/events/{eventId}/qualify` | Body `{grade, gender, advanceCount}` | T/SA | 预赛淘汰「立即计算」并生成决赛 |
 | GET | `/api/arrange/events/{eventId}/qualifiers` | Path eventId, Query grade/gender | S/CT/T/SA | 查看晋级名单 |
+| **POST** | **`/api/arrange/events/{eventId}/rearrange`** | Body `{grade, gender, round}`（auto→null） | T/SA | **再次排道**：按报名实际性别逐组调 arrange 重新编排（成绩录入后调整道次/分组） |
 | **GET** | **`/api/arrange/events/{eventId}/verify`** | Path eventId | S/CT/T/SA | **编排自检（对抗式校验）：`{valid, violations[], violationCount, checkedHeats}`** |
 | **GET** | **`/api/arrange/events/{eventId}/reservations`** | Path eventId | S/CT/T/SA | **查看预留模拟空位** |
 | **POST** | **`/api/arrange/events/{eventId}/reservations`** | Body `{grade, gender, round, heat, lane, scheduledTime, note}` | T/SA | **新增单个预留空位** |
@@ -659,6 +717,10 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | GET | `/api/arrange/export-all` | — | T/SA | 全量编排导出（JSON，含决赛，供 `arrange_result.json`） |
 | GET | `/api/arrange/conflicts` | — | T/SA | 兼项冲突检测（清单 + 建议） |
 | GET | `/api/arrange/conflicts/export` | — | T/SA | 兼项冲突清单导出（Excel） |
+| **GET** | **`/api/arrange/co-occurrence`** | — | T/SA | **兼项高频统计**：项目×项目共现矩阵，返回 `pairs`（高频共现排行）+ `eventHeat`（每项目兼项热度） |
+| **GET** | **`/api/arrange/conflicts/statistics`** | — | T/SA | **冲突统计**：汇总「哪些项目互相撞车」（事件对 + 涉及运动员数），供取消决策 |
+| **POST** | **`/api/arrange/conflicts/cancel`** | Body `{items:[{athleteId,eventId}], notifyTeacher:bool}` | T/SA | **取消某人某项目**：退报名 + 同步移出编排 + 重算冲突；`notifyTeacher=true` 触发站内信通知班主任 |
+| **GET** | **`/api/arrange/conflicts/class-export`** | — | T/SA | **外通知**：按班级汇总的冲突/取消统计表 Excel，转交班主任 |
 
 #### 7.1 裁判自动分配（smart referee assignment）
 
@@ -1009,6 +1071,38 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ---
 
+### 21. 行政时间保护 Protections
+
+前缀 `/api/protections`，4 个端点，要求 **T/SA**（体育老师 / 超级管理员）。「规避时间」三类：`GLOBAL`（全校统一避让时段，硬约束切分时间窗）、`TEACHER`（班主任个人不可用时段，其班级项目避让）、`REFEREE`（裁判个人不可用时段，执裁时跳过）。
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/protections` | — | T/SA | 列出全部规避时间 |
+| POST | `/api/protections` | Body `{targetType, targetId?, day, startTime, endTime, reason, enabled?}` | T/SA | 新增规避时间 |
+| PUT | `/api/protections/{id}` | Path id, Body 同上（部分更新） | T/SA | 更新规避时间 |
+| DELETE | `/api/protections/{id}` | Path id | T/SA | 删除规避时间 |
+
+**字段**：`targetType`∈{GLOBAL,TEACHER,REFEREE}；`targetId`：TEACHER/REFEREE 时填对应用户/裁判 id，GLOBAL 留空；`day`：受保护日序（1=第 1 天，GLOBAL 切分所有天可填 -1 或逐天建多条）；`startTime`/`endTime`：当日 `HH:mm`（如 `09:00`/`10:30`）；`reason`：备注（闭幕式/大会/临时 unavailable 等）。
+
+> 编排接入：GLOBAL→切分时间窗（整段不可排）；TEACHER→按项目黑名单（其班级项目避让）；REFEREE→`assignReferees` 前排除受保护裁判。详见 [9.3 行政时间保护](#93-行政时间保护规避时间)。
+
+---
+
+### 22. 通知 Notifications
+
+前缀 `/api/notifications`，4 个端点，要求 **已认证**（站内信，按当前登录用户隔离）。班主任 / 教师 / 裁判三端布局顶部铃铛实时拉取未读角标。
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/notifications` | — | 已认证 | 当前用户站内信列表（含已读/未读标记、类型、标题、内容） |
+| GET | `/api/notifications/unread-count` | — | 已认证 | 未读数量 `{count}`（铃铛角标用） |
+| PUT | `/api/notifications/{id}/read` | Path id | 已认证 | 标记单条已读 |
+| PUT | `/api/notifications/read-all` | — | 已认证 | 全部标记已读 |
+
+**触发场景**：取消某人某项目（`notifyTeacher=true` 时定向班主任）、冲突消解、裁判因保护时段被跳出执裁等事件由后端 `NotificationService.notifyUser/notifyRole` 写入，前端 `NotificationBell` 轮询 `/unread-count` 显示角标。
+
+---
+
 ## 🗄 数据库设计
 
 ```
@@ -1040,6 +1134,8 @@ sys_user ──┐
 | `sports_meet` | **届 / 运动会**（数据库一等公民）：`edition`/`season`/`year`/`name`/`location`/`active`/`startDate`/`endDate`/`remark`；成绩 / 报名 / 入场式评分均经 `meet_id` 关联 |
 | `parade_score` | 入场式评分，独立计分；含 `meet_id`（绑定届次） |
 | `system_config` | 系统配置，JSON 存储 |
+| `admin_time_protection` | 行政时间保护（规避时间）：`targetType`(GLOBAL/TEACHER/REFEREE) / `targetId` / `day` / `startTime` / `endTime` / `reason` / `enabled` |
+| `notification` | 站内信通知：`recipientUserId` / `role` / `title` / `content` / `type` / `read`（已读标记），按接收人隔离 |
 
 支持的数据库：**SQLite（默认，零配置）**、MySQL 8.0（生产）、H2（开发）。运行时可通过「数据库迁移」在线切换。
 
@@ -1260,4 +1356,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.7.5 | **API 端点**: 20 Controller / 200+ 个 | **构建日期**: 2026-09-26
+> **版本**: v2.7.5 | **API 端点**: 22 Controller / 210+ 个 | **构建日期**: 2026-09-30
