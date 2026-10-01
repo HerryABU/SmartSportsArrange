@@ -69,6 +69,8 @@ ehthumbs.db
 # backend runtime logs from tests/boot
 sports-backend/data/
 smoke_e2e/
+# build.ps1 把被替换的前端产物 / 残留 static_old_* 先挪到这里（重命名不被安全删除守卫拦）
+_trash/
 
 # ---------- sports-ai 训练侧源码 ----------
 # 上面的 data/ 规则会误伤 sports-ai/sports_ai/data 包（特征契约源码），显式放回；

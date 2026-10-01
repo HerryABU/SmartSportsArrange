@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.7.5
+> Sports Meet Intelligent Arrangement System v2.8.1
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -8,8 +8,12 @@
 
 - ⚙️ **零配置建站**：首次启动进入可视化安装向导（参考 WordPress / Discuz 体验），配置站点、数据库、管理员账号后即装即用
 - 🔀 **数据库热迁移**：SQLite ↔ MySQL 在线切换，**全程无需重启服务**
-- 🧮 **三级求解梯度**：规则模式（确定性规则引擎，毫秒级） ↔ 优化模式（Timefold 约束求解 + GA + LNS），前端一键切换，**向下完全兼容竞品规则、向上独占求解能力**
+- 🧮 **三级求解梯度**：规则模式（确定性规则引擎，毫秒级） ↔ 优化模式（Timefold 约束求解 + GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链），前端一键切换，**向下完全兼容竞品规则、向上独占求解能力**
 - 🧠 **智能编排引擎**：贪心 + 局部优化算法自动分组分道，规则完全可配置
+- 🤖 **AI 编排核心（ONNX 全本地推理）**：Python 训练 + ONNX 交付 + Java 推理，**生产环境不依赖 Python 解释器**。含算法选择器（硬解 / 取消路径）、冲突簇 GNN（16 维节点特征 + 带权邻接 + 4 层消息传递 + 跳跃连接）、**货真价实的 GAN**（生成器 G + 神经网络判别器 D minimax 对抗）、**推理时自对抗**（G 采样 → 精修器 → D 评判 → 多轮择优）、多步预测（Direct/Recursive/MIMO）、自步学习课程、**道次编排 AI**。模型随 jar 交付，缺失/异常自动回退规则编排
+- 🏐 **球赛赛制生成**：循环赛（圆桌轮转，**连续主/客场 ≤ 2**）/ 淘汰赛（轮空 + 种子 + **同单位回避** + 真实双淘汰）/ 混合赛制（小组循环 → 交叉淘汰，同组出线队首轮必不相遇）/ **排球赛**，可适配为可排任务进时间槽编排
+- 🔍 **可解性诊断（不可解冲突输出给程序）**：拆批 + 下界分析（容量缺口 / 最少天数 / 冲突图团 / 超大单元）+ 结构化 JSON 冲突报告与可执行建议（延长天数 / 加并发位 / 取消报名），**「排不下」不再是终点**
+- 📊 **编排进度可见**：长链路编排走「异步提交 + 进度轮询」，前端展示阶段文案与百分比进度条，不再干等转圈
 - 🌐 **反向代理 / 内网穿透友好**：前端采用 hash 路由（`/#/...`），服务器永远只收到 `/` 或 `/sportmg/`，**cpolar / ngrok 子域隧道、nginx 子路径帽子均开箱即用**，无需任何重写规则，彻底规避深链刷新白屏
 - 📊 **全流程 Excel 化**：名单 / 项目 / 报名 / 成绩 全部支持模板导入导出，秩序册 / 成绩册 / 报表一键生成
 - 📄 **真实 Word 秩序册**：原生 OOXML（手写 ZIP 包组装，**零 Apache POI 依赖、离线可构建**）生成含封面 / 目录 / 多章表格的 `.docx`，支持一键下载与按开关自动落盘
@@ -27,6 +31,7 @@
 - [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§26**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会 / 行政时间保护 / 通知 / 审计日志 / 场地管理 / 自定义项目 / 实时协作）
 - [数据库设计](#-数据库设计)
 - [部署指南](#-部署指南)
+- [AI 编排核心](#-ai-编排核心)（训练侧 `sports-ai/` / ONNX 模型契约 / GAN 自对抗 / 可解性诊断 / 球赛赛制 / 道次 AI）
 - [技术架构](#-技术架构)
 - [项目脚本](#-项目脚本)
 - [开发指南](#-开发指南)
@@ -59,7 +64,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.7.5.jar
+java -jar sports-2.8.1.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -182,7 +187,6 @@ java -jar sports-2.7.5.jar
 ### 2. 登录页 & 入场动画
 
 - **Loading 入场页**（`/loading`）：仿 FIFA 风格的 SPORTS 字母弹跳动画 + ⚽ 旋转，点击进入登录
-- **登录页动画小人**：纯原生 CSS / Web Animations API 实现（已按 AGPL-3.0 合规移除 GSAP），跟随鼠标、眨眼、错误摇动
 - **密码切换**：眼睛图标切换明文/圆点
 
 ### 3. 终端编码自动适配
@@ -1214,24 +1218,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.7.5.jar
+java -jar sports-2.8.1.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.7.5.jar --app.port=8899 --app.host=::
+java -jar sports-2.8.1.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.7.5.jar --server.port=9090
+java -jar sports-2.8.1.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.7.5.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.8.1.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.7.5.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.7.5.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.8.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1293,6 +1297,106 @@ location /sportmg/ {
 
 ---
 
+## 🧠 AI 编排核心
+
+**训练侧与部署侧彻底解耦**：训练用 Python（根目录独立目录 `sports-ai/`，**不在 `sports-backend` 内**，不参与任何后端构建），交付用 ONNX，推理在 JVM 内由 onnxruntime 完成——**生产环境不依赖 Python 解释器**。
+
+```
+sports-ai/（Python 3.12 + venv）            sports-backend/（Java 21 + Spring Boot）
+  data/  合成数据与特征契约                    com.sports.schedule.ai
+  models/ 选择器 + 冲突簇 GNN                    ├─ ModelSource         模型加载（classpath / file）
+  generative/ GAN + 精修器                       ├─ OnnxInferenceService   选择器 + GNN
+  forecast/ 多步预测                             ├─ SchemeGeneratorService GAN 生成器
+  curriculum/ 自步学习                           ├─ AdversarialSchemeService 推理时自对抗
+  solve/ 拆批 + 分批装箱 + 可解性                 ├─ LaneAdvisorService     道次 AI
+  tournament/ 球赛赛制 + 适配层                   └─ AiController  /api/ai/status
+  models/*.onnx ──导出──► src/main/resources/models/ ──打包──► jar（单包交付）
+```
+
+### 一、模型清单（随 jar 交付，共 8 个 / ≈1.3 MB）
+
+| 模型 | 文件 | 类型 | 作用 |
+|:--|:--|:--|:--|
+| 算法选择器 | `algorithm_selector.onnx` | 残差 MLP | 16 维实例特征 → **硬解** vs **取消报名**路径（标签 = 真实可解性，含团下界）|
+| 冲突簇 GNN | `conflict_gnn.onnx` | 4 层 GNN | 冲突图 → 各单元**着色优先级**，中心冲突簇先着色（构造启发式初始顺序）|
+| GAN 生成器 | `scheme_generator.onnx` | GNN + Gumbel-Softmax | 冲突图 + 噪声 → 时间槽着色方案（**直接学习着色**）|
+| GAN 判别器 | `scheme_discriminator.onnx` | 神经网络 | 方案 → 真/假（**推理时自对抗**用它给候选打分）|
+| 对抗精修器 | `scheme_refiner.onnx` | 残差 GNN | 初始方案 → 精修方案（把推理时迭代自对抗**蒸馏成一次前向**）|
+| 多步预测 | `forecast_mimo.onnx` / `forecast_direct.onnx` | 序列模型 | 预测未来 H 步时间槽，让**回溯提前发生**（Direct / Recursive / MIMO 三策略）|
+| 道次 AI | `lane_advisor.onnx` | Learning-to-Rank | 运动员特征 → **派遣优先级**（输出排序而非分组，与现有管线零阻抗）|
+
+### 二、关键设计
+
+- **动态节点数**：GNN 是归纳式的，权重与节点数无关，因此 ONNX 用 `dynamic_axes` —— 推理时 shape 随实例变化，**不补齐、无规模硬上限**（GNN 支持任何单元数，实测 n=7 与 n=133 均正常）。训练时补齐到 256 只为 batch 拼接。
+- **16 维节点特征 + 带权邻接**：节点特征含 决赛轮次 / 年级 / 时长占比 / 冲突暴露量 / 超大单元标记 等；邻接权重 = **共享运动员数归一化**，表达冲突强度（二值邻接丢掉了这个信息）。
+- **货真价实的 GAN**：生成器 G 与**可学习的神经网络判别器 D**（不是规则校验器）做 minimax 对抗，真样本由贪心图着色 oracle 提供；G 侧 loss = 骗过 D + **GenCO 式组合约束**（兼项冲突期望 + 行政时间保护禁止列表 + 槽容量）；用 straight-through Gumbel-Softmax 保证真假样本同为 one-hot 形态，D 只能靠「约束是否真满足」区分。
+- **推理时自对抗（不只训练时）**：Java 端 `AdversarialSchemeService` 每轮「G 采样 → 精修器精修 → **D 评判** → 计算真实残余冲突 → 择优」，并把单次生成基线纳入候选，保证 **自对抗绝不劣于单次生成**。
+- **失败即降级**：模型缺失 / 加载失败 / 推理异常一律返回空、回退既有规则编排，**接口始终能出方案**；`GET /api/ai/status` 可观测当前跑在 AI 路径还是规则路径、每个模型来自 jar 还是外部目录。
+
+### 三、可解性诊断（不可解冲突输出给程序）
+
+经典求解层 `sports_ai/solve/`（与神经生成互补）：
+
+- `heats.py` **拆批**：单元 `rawDuration = 组数 × 每批时长` 可达数百分钟，远超单时段容量——不拆批在数据结构上就放不进任何位置（这才是「大规模不可解」的真根因）；拆批后同单元不同批次之间**无兼项冲突**，摊开反而降冲突。
+- `feasibility.py` **下界分析**：按池容量缺口 / 最少天数 / 冲突图最大团 / 超大单元。
+- `scheduler.py` **分批装箱 + 局部搜索**：四约束（容量 / 池匹配 / 兼项 / 预赛→决赛偏序），正排 + 倒排双起点取优，代价为**字典序元组**（未排组次 → 未排人次 → 兼项重叠）。
+- `report.py` **结构化报告**（schema `sports-ai/infeasibility-report@1`）：
+
+```json
+{"schema":"sports-ai/infeasibility-report@1","feasible":false,
+ "summary":{"placed":137,"unplaced":5,"unplacedUnits":["100m@高2@预赛"]},
+ "conflicts":[{"type":"capacity_shortfall","pool":"径赛","shortfallMinutes":55,"minDaysRequired":3},
+              {"type":"clique_exceeds_periods","cliqueSize":5,"availablePeriods":4},
+              {"type":"oversized_unit","minSplits":9},
+              {"type":"athlete_clash","athlete":510,"units":["100m@高3@预赛","PU@高3@决赛"]}],
+ "actions":[{"action":"extend_days","needDays":3},{"action":"add_lanes","scope":"径赛"},
+            {"action":"cancel_entry","athlete":510}]}
+```
+
+Java 侧 `com.sports.schedule.analysis.ScheduleFeasibilityService` 产出**同构**报告，随编排响应（`portfolioInfo.feasibility`）返回；前端在不可解时展示「可排 X/Y 组次」+ 冲突类型 + 建议动作。**「排不下」不再是终点，而是给班主任/教务处的可处理数据。**
+
+### 四、球赛赛制生成
+
+`POST /api/tournament/generate`（`round_robin` / `elimination` / `hybrid` / `volleyball`）：
+
+| 赛制 | 关键约束 |
+|:--|:--|
+| 循环赛 | 圆桌轮转法；**连续主/客场 ≤ 2**（逐场贪心主客分配，旧实现用 `(轮次+序号)%2` 保证不了连续性）；支持单/双/分组循环 |
+| 淘汰赛 | 轮空 + 种子半区（1/2 号种子决赛才相遇）+ **同单位回避**（局部交换爬山，只换种子位不改轮空结构）；**真实双淘汰**（败者组 2k−2 轮，每场标 `feedsFrom`）|
+| 混合赛制 | 蛇形分组 → 组内循环 → **交叉淘汰**（名次反向配对，同组出线队首轮必不相遇）|
+| 排球 | 分组循环 + 交叉赛（`volleyball`）|
+
+`tournament/adapt.py` 把赛制结构适配为**可排任务**（偏序 + **队员名单**）——队员名单让球赛与田径**共用同一张冲突图**，跨大类兼项冲突自动成立。
+
+### 五、道次编排 AI
+
+款型 `ai`（`ArrangeStyle.AI`，"AI 派遣"）：AI 模型给出**派遣优先级**，后端 `argsort` 后走既有蛇形分组/分道实现——**只换「谁先派」，不换「怎么分」**，对现有管线零阻抗；模型不可用自动回退成绩种子。实测前半段排序重合度 **0.786**（随机基线 0.5）。`GET /api/arrange/styles` 自动列出该款型。
+
+### 六、编排进度可见
+
+大规模编排要走「求解 → GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链 → 对抗自检」，秒级到十秒级。`POST /api/schedule/auto/async` 返回 `taskId`，前端轮询 `GET /api/schedule/progress/{taskId}` 展示**阶段文案 + 百分比进度条**（准备 5% → 求解 35% → 精修 65% → 自检 88% → 收尾 97%），同步接口 `POST /api/schedule/auto` 行为完全不变。
+
+### 七、训练与配置
+
+```powershell
+# 训练侧（独立 venv，见 sports-ai/README.md）
+cd sports-ai
+.\scripts\setup_venv.ps1     # 创建 Python 3.12 venv 并装依赖
+.\scripts\train.ps1          # 合成数据 → 训练全部模型 → 导出 ONNX → onnxruntime 自检
+```
+
+```yaml
+sports:
+  schedule:
+    ai:
+      enabled: true                 # false = 完全禁用 AI（回退纯规则）
+      model-dir: classpath:/models  # jar 内（单包交付）；也可指向 file:/opt/ai-models 热替换
+```
+
+> 改外部模型目录即可**不重新打包**热替换模型；模型缺失时编排静默回退规则路径——因此 `GET /api/ai/status` 会逐个模型报告「来自 jar 还是外部、是否加载」，避免「AI 其实没跑」被误认为正常。
+
+---
+
 ## 🛠 技术架构
 
 | 层次 | 组件 | 版本 |
@@ -1301,6 +1405,9 @@ location /sportmg/ {
 | 框架 | Spring Boot | 3.4.5 |
 | 安全 | Spring Security + JWT (jjwt) | 6.x / 0.12.6 |
 | ORM | Spring Data JPA + Hibernate | 6.6 |
+| 约束求解 | Timefold Solver（构造启发式 + 禁忌/迟接受/模拟退火） | 2.6.0 |
+| AI 推理 | ONNX Runtime（JVM 内推理，`com.microsoft.onnxruntime`） | 1.26.0 |
+| AI 训练（独立） | Python + PyTorch → ONNX（`sports-ai/`，不参与后端构建） | 3.12 / 2.14 |
 | API 文档 | springdoc-openapi | 2.8.5 |
 | Excel | EasyExcel | 4.0.3 |
 | 前端 | Vue 3 + Vite | 3.5 / 6.2 |
@@ -1314,14 +1421,21 @@ location /sportmg/ {
 │                       前端层                              │
 │   管理员/教师端    │    班主任端    │     学生端          │
 │        Vue 3 + Pinia + Vue Router + Axios + Element Plus │
+│   编排进度条（异步任务轮询） │ 可解性诊断告警             │
 └──────────────────────────┬───────────────────────────────┘
                            │ HTTP / JWT（相对路径 + 智能前缀推断）
 ┌──────────────────────────▼───────────────────────────────┐
 │                     后端服务层                            │
 │              Spring Boot 3.4 / Java 21                   │
 │   Spring MVC │ Spring Security │ Spring Data JPA │ AOP   │
-│   编排算法（规则模式 + Timefold/GA/LNS 优化） │ 赛程调度 │
+│   编排算法（规则模式 + Timefold/GA/LNS/MNSA/ALNS/FixOpt）  │
+│   AI 编排核心（ONNX Runtime：选择器/GNN/GAN/道次 AI）      │
+│   球赛赛制生成 │ 可解性诊断 │ 赛程调度                     │
 │   排名积分 │ EasyExcel │ 热迁移                          │
+└──────────────────────────┬───────────────────────────────┘
+                           │ 仅离线训练时（生产不依赖）
+┌──────────────────────────▼───────────────────────────────┐
+│   sports-ai/（Python 3.12 + PyTorch）──导出 .onnx──► jar  │
 └──────────────────────────┬───────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────┐
@@ -1338,10 +1452,13 @@ location /sportmg/ {
 | `start.bat` | CMD | 自动 `chcp 65001` + 启动 `java -jar` |
 
 ```powershell
-.\build.ps1                 # 全量编译
-.\build.ps1 -SkipFrontend   # 仅后端
-.\build.ps1 -SkipBackend    # 仅前端
+.\build.ps1                 # 全量编译：前端 vite build → 后端 clean package → jar 输出到项目根目录
+.\build.ps1 -SkipFrontend   # 仅后端（复用现有前端产物）
+.\build.ps1 -SkipBackend    # 仅前端（不重新打包）
 .\start.ps1                 # 启动（-Port 9090 自定义）
+```
+
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.1.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
 ```
 
 ---
@@ -1358,7 +1475,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.7.5.jar .
+copy sports-backend\target\sports-2.8.1.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -1423,4 +1540,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.7.5 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-09-30
+> **版本**: v2.8.1 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01
