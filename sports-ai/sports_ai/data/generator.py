@@ -64,35 +64,35 @@ class Scenario:
 
 
 # ---------------------------------------------------------------------------
-# 项目模板：name, track, pool, raw_duration(分钟), specialty_cluster
+# 项目模板：name, track, pool, 每批时长(分钟), 每批容量(道数/分组), specialty_cluster
 # ---------------------------------------------------------------------------
 _EVENT_TEMPLATES = [
-    ("100m",      True,  "径赛", 20,  "sprint"),
-    ("200m",      True,  "径赛", 25,  "sprint"),
-    ("400m",      True,  "径赛", 30,  "sprint"),
-    ("800m",      True,  "径赛", 40,  "middle"),
-    ("1500m",     True,  "径赛", 45,  "middle"),
-    ("4x100m接力", True,  "径赛", 30,  "sprint"),
-    ("跳远",      False, "田赛", 90,  "jump"),
-    ("三级跳",    False, "田赛", 100, "jump"),
-    ("跳高",      False, "田赛", 120, "jump"),
-    ("铅球",      False, "田赛", 60,  "throw"),
-    ("铁饼",      False, "田赛", 70,  "throw"),
-    ("标枪",      False, "田赛", 80,  "throw"),
+    ("50m",       True,  "径赛", 15, 8, "sprint"),
+    ("100m",      True,  "径赛", 20, 8, "sprint"),
+    ("200m",      True,  "径赛", 25, 8, "sprint"),
+    ("400m",      True,  "径赛", 30, 8, "sprint"),
+    ("800m",      True,  "径赛", 45, 8, "middle"),
+    ("1500m",     True,  "径赛", 50, 8, "middle"),
+    ("4x100m接力", True,  "径赛", 30, 8, "sprint"),
+    ("跳远",      False, "田赛", 60, 6, "jump"),
+    ("三级跳",    False, "田赛", 70, 6, "jump"),
+    ("跳高",      False, "田赛", 90, 6, "jump"),
+    ("铅球",      False, "田赛", 50, 6, "throw"),
+    ("铁饼",      False, "田赛", 60, 6, "throw"),
 ]
 
-# 田赛「同组同时开赛」的分组（组名 → 组内项目索引）
+# 田赛「同组同时开赛」的分组（组名 → 组内项目）
 _FIELD_GROUPS = {
     "田赛跳跃组": ["跳远", "三级跳", "跳高"],
-    "田赛投掷组": ["铅球", "铁饼", "标枪"],
+    "田赛投掷组": ["铅球", "铁饼"],
 }
 
 # 每个 specialty 可报项目的偏好权重（未列出的项目权重为 0）
 _SPECIALTY_PREFS = {
-    "sprint": {"100m": 8, "200m": 8, "400m": 5, "4x100m接力": 4, "跳远": 1},
+    "sprint": {"50m": 8, "100m": 8, "200m": 8, "400m": 5, "4x100m接力": 4, "跳远": 1},
     "middle": {"400m": 4, "800m": 8, "1500m": 8},
     "jump":   {"跳远": 8, "三级跳": 8, "跳高": 5, "100m": 2},
-    "throw":  {"铅球": 8, "铁饼": 8, "标枪": 6},
+    "throw":  {"铅球": 8, "铁饼": 8},
     "general": {"100m": 3, "800m": 3, "跳远": 3, "铅球": 3, "1500m": 2},
 }
 
@@ -116,6 +116,7 @@ def generate_scenario(
     n_days: int = 2,
     multi_event_prob: float = 0.6,
     grades: Optional[List[str]] = None,
+    event_drop_prob: float = 0.0,
 ) -> Scenario:
     """生成一个编排实例。
 
@@ -125,11 +126,18 @@ def generate_scenario(
         n_days: 比赛天数（越少容量越紧张，tension 越高）
         multi_event_prob: 运动员报第二个项目的概率（控制兼项占比）
         grades: 年级列表（None = 不分年级）
+        event_drop_prob: 每个项目被随机裁掉的概率——让「项目数 / group_count / duration_cv」
+            等特征具有分布多样性（否则这些特征在训练里近乎恒定，归一化会在真实数据上爆掉）
     """
     rng = random.Random(seed)
     grades = grades or [None]
     grade_pool = [g for g in grades if g is not None]
     all_grade_names = grade_pool or [None]
+
+    # 随机保留项目子集（模拟不同运动会设置的项目数量与组合）
+    active_events = [i for i in range(len(_EVENT_TEMPLATES)) if rng.random() >= event_drop_prob]
+    if not active_events:
+        active_events = [0]
 
     # 运动员 → 报名项目（映射到事件 id）
     name_by_idx = [t[0] for t in _EVENT_TEMPLATES]
@@ -164,7 +172,8 @@ def generate_scenario(
             group_of_event[m] = gname
 
     uid = 0
-    for eid, (name, track, pool, dur, _) in enumerate(_EVENT_TEMPLATES):
+    for eid in active_events:
+        name, track, pool, batch_min, cap, _ = _EVENT_TEMPLATES[eid]
         for grade in all_grade_names:
             members = sorted(
                 aid
@@ -173,9 +182,11 @@ def generate_scenario(
             )
             if not members:
                 continue
-            # 单元时长取真实量级（20~120 分钟），**不做赛次放大**——与 Java 端
-            # ScheduleUnit.rawDuration（每批所需时间 20~300 分钟）保持同一量级，
-            # 避免模型在真实时长上分布外。容量紧张度靠「单元数（多年级）」与「天数」调节。
+            # 真实时长模型（与 Java 端一致）：单元的「全部时长」= 组数 × 每批时长，
+            # 组数 = ceil(人数 / 每批容量)。注意区分两个时长概念——「每批时长」是单组用时，
+            # 「全部时长」是该单元所有组次之和（人数多时可达数百分钟），编排取后者。
+            heats = max(1, -(-len(members) // cap))
+            total_duration = heats * batch_min
             units.append(
                 Unit(
                     key=f"{name}@{grade or '不分年级'}",
@@ -185,7 +196,7 @@ def generate_scenario(
                     track=track,
                     pool_label=pool,
                     group_key=group_of_event.get(name),
-                    raw_duration=dur,
+                    raw_duration=total_duration,
                     athletes=members,
                 )
             )
