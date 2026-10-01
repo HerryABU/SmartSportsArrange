@@ -130,6 +130,8 @@ sports:
       selector-model: algorithm_selector.onnx
       # 冲突簇 GNN：冲突图 → 节点着色优先级
       gnn-model: conflict_gnn.onnx
+      # GAN 生成器：冲突图 + 噪声 → 时间槽着色方案（直接学习着色）
+      scheme-generator-model: scheme_generator.onnx
     # 大邻域搜索（LNS）精修轮数：0 = 关闭。每轮「破坏一块（年级/时段窗口/最忙运动员）
     # → 只重建这一块 → 只接受更好的」，轮数越多越可能跳出现有局部最优（代价是接口更慢）。
     lns-rounds: 2
