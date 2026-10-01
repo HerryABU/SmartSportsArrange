@@ -10,9 +10,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.FloatBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +22,9 @@ import java.util.Optional;
  * 输出每个单元的**时间槽分配**（16 个抽象槽）。这是「GNN 直接学习着色」这条路径的落地
  * （对应架构文档 5.1 第一条 / 5.3 对抗式网络）。</p>
  *
- * <p>失败即降级：模型缺失 / 加载失败 / 推理异常返回 {@link Optional#empty()}，不阻塞主流程。</p>
+ * <p>模型默认随 jar 交付（经 {@link ModelSource} 从 classpath 直读），
+ * 也可用 {@code sports.schedule.ai.model-dir} 指向外部目录热替换。
+ * 失败即降级：模型缺失 / 加载失败 / 推理异常返回 {@link Optional#empty()}，不阻塞主流程。</p>
  */
 @Slf4j
 @Component
@@ -35,7 +34,7 @@ public class SchemeGeneratorService {
     public static final int MAX_SLOTS = 16;
 
     private final boolean enabled;
-    private final Path modelDir;
+    private final String modelDir;
     private final String generatorModel;
 
     private volatile OrtEnvironment env;
@@ -44,15 +43,25 @@ public class SchemeGeneratorService {
 
     public SchemeGeneratorService(
             @Value("${sports.schedule.ai.enabled:true}") boolean enabled,
-            @Value("${sports.schedule.ai.model-dir:./ai-models}") String modelDir,
+            @Value("${sports.schedule.ai.model-dir:classpath:/models}") String modelDir,
             @Value("${sports.schedule.ai.scheme-generator-model:scheme_generator.onnx}") String generatorModel) {
         this.enabled = enabled;
-        this.modelDir = Paths.get(modelDir);
+        this.modelDir = modelDir;
         this.generatorModel = generatorModel;
     }
 
     public boolean isAvailable() {
         return enabled && ensureLoaded();
+    }
+
+    /** 模型加载状态（供 {@code /api/ai/status} 观测）。 */
+    public Map<String, Object> modelInfo() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled", enabled);
+        m.put("modelDir", modelDir);
+        m.put("generator", ModelSource.describe(modelDir, generatorModel));
+        m.put("loaded", enabled && ensureLoaded());
+        return m;
     }
 
     /**
@@ -112,14 +121,14 @@ public class SchemeGeneratorService {
         if (triedLoad) return session != null;
         triedLoad = true;
         try {
-            Path p = modelDir.resolve(generatorModel);
-            if (!Files.exists(p)) {
-                log.info("GAN 生成器模型缺失（{}），跳过", modelDir.toAbsolutePath());
+            byte[] bytes = ModelSource.read(modelDir, generatorModel).orElse(null);
+            if (bytes == null) {
+                log.info("GAN 生成器模型缺失（{}），跳过", modelDir);
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            session = env.createSession(p.toString());
-            log.info("GAN 生成器模型就绪: {}", p.toAbsolutePath());
+            session = env.createSession(bytes, new OrtSession.SessionOptions());
+            log.info("GAN 生成器模型就绪: {}", ModelSource.describe(modelDir, generatorModel));
             return true;
         } catch (Exception ex) {
             log.warn("GAN 生成器模型加载失败: {}", ex.toString());

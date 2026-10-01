@@ -588,7 +588,7 @@ public class ScheduleFeasibilityService {
         return 0;
     }
 
-    static String percent(int part, int total) {
+    public static String percent(int part, int total) {
         return total == 0 ? "100.0%" : String.format("%.1f%%", 100.0 * part / total);
     }
 

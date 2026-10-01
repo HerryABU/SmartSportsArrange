@@ -9,9 +9,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.FloatBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +39,7 @@ public class AdversarialSchemeService {
     private static final int NOISE_DIM = 8;
 
     private final boolean enabled;
-    private final Path modelDir;
+    private final String modelDir;
     private final String genName;
     private final String disName;
     private final String refName;
@@ -55,12 +52,12 @@ public class AdversarialSchemeService {
 
     public AdversarialSchemeService(
             @Value("${sports.schedule.ai.enabled:true}") boolean enabled,
-            @Value("${sports.schedule.ai.model-dir:./ai-models}") String modelDir,
+            @Value("${sports.schedule.ai.model-dir:classpath:/models}") String modelDir,
             @Value("${sports.schedule.ai.scheme-generator-model:scheme_generator.onnx}") String genName,
             @Value("${sports.schedule.ai.scheme-discriminator-model:scheme_discriminator.onnx}") String disName,
             @Value("${sports.schedule.ai.scheme-refiner-model:scheme_refiner.onnx}") String refName) {
         this.enabled = enabled;
-        this.modelDir = Paths.get(modelDir);
+        this.modelDir = modelDir;
         this.genName = genName;
         this.disName = disName;
         this.refName = refName;
@@ -68,6 +65,19 @@ public class AdversarialSchemeService {
 
     public boolean isAvailable() {
         return enabled && ensureLoaded();
+    }
+
+    /** 模型加载状态（供 {@code /api/ai/status} 观测）。 */
+    public Map<String, Object> modelInfo() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled", enabled);
+        m.put("modelDir", modelDir);
+        m.put("generator", ModelSource.describe(modelDir, genName));
+        m.put("discriminator", ModelSource.describe(modelDir, disName));
+        m.put("refiner", ModelSource.describe(modelDir, refName));
+        m.put("refinerPresent", ModelSource.exists(modelDir, refName));
+        m.put("loaded", enabled && ensureLoaded());
+        return m;
     }
 
     /** 一次推理时自对抗的结果。 */
@@ -262,21 +272,22 @@ public class AdversarialSchemeService {
         if (triedLoad) return gen != null && dis != null;
         triedLoad = true;
         try {
-            Path gp = modelDir.resolve(genName);
-            Path dp = modelDir.resolve(disName);
-            if (!Files.exists(gp) || !Files.exists(dp)) {
-                log.info("推理时自对抗模型缺失（{}），跳过", modelDir.toAbsolutePath());
+            byte[] genBytes = ModelSource.read(modelDir, genName).orElse(null);
+            byte[] disBytes = ModelSource.read(modelDir, disName).orElse(null);
+            if (genBytes == null || disBytes == null) {
+                log.info("推理时自对抗模型缺失（{}），跳过", modelDir);
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            gen = env.createSession(gp.toString());
-            dis = env.createSession(dp.toString());
-            Path rp = modelDir.resolve(refName);
-            if (Files.exists(rp)) {
-                ref = env.createSession(rp.toString());
-                log.info("推理时自对抗就绪（含精修器）: {}", modelDir.toAbsolutePath());
+            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+            gen = env.createSession(genBytes, options);
+            dis = env.createSession(disBytes, options);
+            byte[] refBytes = ModelSource.read(modelDir, refName).orElse(null);
+            if (refBytes != null) {
+                ref = env.createSession(refBytes, options);
+                log.info("推理时自对抗就绪（含精修器）: {}", ModelSource.describe(modelDir, genName));
             } else {
-                log.info("推理时自对抗就绪（无精修器，仅多轮择优）: {}", modelDir.toAbsolutePath());
+                log.info("推理时自对抗就绪（无精修器，仅多轮择优）: {}", ModelSource.describe(modelDir, genName));
             }
             return true;
         } catch (Exception ex) {

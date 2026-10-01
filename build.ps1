@@ -46,6 +46,23 @@ if (-not $SkipBackend) {
     foreach ($d in $strays) { Move-Item -Force $d.FullName $trashDir -ErrorAction SilentlyContinue }
     Write-Host "[2/2] 已移出 $($strays.Count) 个残留 static_old_*（否则会被打进 jar）" -ForegroundColor Yellow
   }
+  # AI 模型同步：把训练侧 sports-ai/models/*.onnx 复制进 src/main/resources/models，
+  # 随 jar 一起交付——部署只需一个 jar，不再需要外部的 ../sports-ai/models 目录。
+  # 运行时由 ModelSource 从 classpath 直读（onnxruntime 接受 byte[]，无需解压临时文件）。
+  $aiModels = Join-Path $root "sports-ai\models"
+  $resModels = Join-Path $resDir "models"
+  if (Test-Path $aiModels) {
+    if (-not (Test-Path $resModels)) { New-Item -ItemType Directory -Force -Path $resModels | Out-Null }
+    $onnx = @(Get-ChildItem -Path $aiModels -Filter "*.onnx" -File -ErrorAction SilentlyContinue)
+    if ($onnx.Count -gt 0) {
+      Copy-Item $onnx.FullName $resModels -Force
+      Write-Host "[2/2] 已同步 $($onnx.Count) 个 ONNX 模型 -> resources/models（随 jar 交付）" -ForegroundColor Yellow
+    } else {
+      Write-Host "[2/2] sports-ai/models 下无 .onnx —— 运行时会回退规则编排" -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "[2/2] 训练侧目录 sports-ai/models 不存在，跳过模型同步" -ForegroundColor Yellow
+  }
   Set-Location "$root\sports-backend"
   .\mvnw.cmd clean package -DskipTests
   if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Backend failed" -ForegroundColor Red; exit 1 }

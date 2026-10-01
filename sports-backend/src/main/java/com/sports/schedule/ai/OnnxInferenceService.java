@@ -11,9 +11,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.FloatBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,13 +19,18 @@ import java.util.Optional;
 /**
  * ONNX 推理服务——AI 编排核心的<b>部署侧</b>入口。
  *
- * <p>加载训练侧导出的两个 ONNX 模型（见 {@code sports-ai/} 目录），在 JVM 内直接推理，
+ * <p>加载训练侧导出的两个 ONNX 模型（见 {@code sports-ai/} 目录）并在 JVM 内直接推理，
  * 生产环境<b>不依赖 Python 解释器</b>（对应架构文档第九节「Java + ONNX 解耦」）。</p>
  *
  * <ul>
  *   <li>{@code algorithm_selector.onnx}：16 维实例特征 → 硬解 / 取消路径概率；</li>
  *   <li>{@code conflict_gnn.onnx}：冲突图 → 各单元着色优先级。</li>
  * </ul>
+ *
+ * <p><b>模型默认随 jar 交付</b>：构建时由 {@code build.ps1} 把 {@code sports-ai/models/*.onnx}
+ * 同步到 {@code src/main/resources/models}，运行时经 {@link ModelSource} 从 classpath 直读
+ * （ONNX Runtime 接受 {@code byte[]}，无需解压到临时文件）。也可把
+ * {@code sports.schedule.ai.model-dir} 指向磁盘目录以热替换模型。</p>
  *
  * <p><b>失败即回退</b>：模型文件缺失、加载异常、推理异常时返回 {@link Optional#empty()}，
  * 调用方回退到既有规则编排，接口在任何情况下都能出方案（与求解器「失败即降级」同一原则）。</p>
@@ -38,7 +40,7 @@ import java.util.Optional;
 public class OnnxInferenceService {
 
     private final boolean enabled;
-    private final Path modelDir;
+    private final String modelDir;
     private final String selectorModel;
     private final String gnnModel;
 
@@ -49,11 +51,11 @@ public class OnnxInferenceService {
 
     public OnnxInferenceService(
             @Value("${sports.schedule.ai.enabled:true}") boolean enabled,
-            @Value("${sports.schedule.ai.model-dir:./ai-models}") String modelDir,
+            @Value("${sports.schedule.ai.model-dir:classpath:/models}") String modelDir,
             @Value("${sports.schedule.ai.selector-model:algorithm_selector.onnx}") String selectorModel,
             @Value("${sports.schedule.ai.gnn-model:conflict_gnn.onnx}") String gnnModel) {
         this.enabled = enabled;
-        this.modelDir = Paths.get(modelDir);
+        this.modelDir = modelDir;
         this.selectorModel = selectorModel;
         this.gnnModel = gnnModel;
     }
@@ -61,6 +63,17 @@ public class OnnxInferenceService {
     /** 模型是否已就绪（可安全推理）。 */
     public boolean isAvailable() {
         return enabled && ensureLoaded();
+    }
+
+    /** 模型加载状态（供 {@code /api/ai/status} 观测「跑的是 AI 还是规则」）。 */
+    public Map<String, Object> modelInfo() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled", enabled);
+        m.put("modelDir", modelDir);
+        m.put("selector", ModelSource.describe(modelDir, selectorModel));
+        m.put("gnn", ModelSource.describe(modelDir, gnnModel));
+        m.put("loaded", enabled && ensureLoaded());
+        return m;
     }
 
     /**
@@ -105,16 +118,18 @@ public class OnnxInferenceService {
         }
         triedLoad = true;
         try {
-            Path sel = modelDir.resolve(selectorModel);
-            Path gnn = modelDir.resolve(gnnModel);
-            if (!Files.exists(sel) || !Files.exists(gnn)) {
-                log.info("AI 编排模型缺失（{}），回退规则编排", modelDir.toAbsolutePath());
+            byte[] selBytes = ModelSource.read(modelDir, selectorModel).orElse(null);
+            byte[] gnnBytes = ModelSource.read(modelDir, gnnModel).orElse(null);
+            if (selBytes == null || gnnBytes == null) {
+                log.info("AI 编排模型缺失（{}），回退规则编排", modelDir);
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            selectorSession = env.createSession(sel.toString());
-            gnnSession = env.createSession(gnn.toString());
-            log.info("AI 编排模型就绪: {}", modelDir.toAbsolutePath());
+            // ⚠️ 传入 byte[] 而非路径：jar 内资源无需落临时文件，避免权限/清理/并发覆盖问题
+            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+            selectorSession = env.createSession(selBytes, options);
+            gnnSession = env.createSession(gnnBytes, options);
+            log.info("AI 编排模型就绪: {}（{}）", modelDir, ModelSource.describe(modelDir, selectorModel));
             return true;
         } catch (Exception ex) {
             log.warn("AI 编排模型加载失败，回退规则编排: {}", ex.toString());

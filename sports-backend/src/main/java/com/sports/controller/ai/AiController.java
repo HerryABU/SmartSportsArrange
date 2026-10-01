@@ -15,10 +15,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * AI 编排核心状态接口：可观测 ONNX 模型的加载状态。
+ * AI 编排核心状态接口：可观测 ONNX 模型的加载状态与**模型来源**。
  *
  * <p>AI 是「建议优先、规则回退」：模型缺失或加载失败时编排自动回退规则，接口仍可用；
- * 本接口用于运维侧确认当前到底跑在 AI 路径还是规则路径上。</p>
+ * 本接口用于运维侧确认当前到底跑在 AI 路径还是规则路径上，以及模型来自 jar 内
+ * （{@code classpath:/models}）还是外部目录（热替换）。</p>
  */
 @RestController
 @RequestMapping("/api/ai")
@@ -39,6 +40,15 @@ public class AiController {
         out.put("adversarialAvailable", adversarial.isAvailable());
         out.put("mode", inference.isAvailable() ? "AI 建议优先" : "规则编排（AI 未就绪）");
         out.put("adversarialMode", "推理时自对抗：G 生成 → 精修器精修 → D 评判 → 多轮择优");
+
+        // 模型来源与逐模型明细——运维最常问的两个问题：
+        // 「模型到底打进去了吗」「我替换外部模型生效了吗」，这里直接给出答案。
+        Map<String, Object> models = new LinkedHashMap<>();
+        models.put("advisory", inference.modelInfo());
+        models.put("schemeGenerator", schemeGenerator.modelInfo());
+        models.put("adversarial", adversarial.modelInfo());
+        out.put("models", models);
+        out.put("modelSource", String.valueOf(inference.modelInfo().get("modelDir")));
         return ApiResponse.success(out);
     }
 }
