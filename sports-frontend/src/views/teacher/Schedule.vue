@@ -188,34 +188,119 @@
       </el-card>
     </template>
 
-    <!-- 兼项高频统计：哪些项目常被同一运动员同时报名（编排前先看，辅助设定项目顺序） -->
+    <!-- 兼项自动统计：哪些运动员兼了项、兼了几项（编排前自动汇总，不需要点按钮） -->
     <el-card shadow="never" class="conflict-card">
       <template #header>
         <div class="conflict-header">
-          <span>📊 兼项高频统计</span>
-          <span class="hint">同一运动员同时报名的项目对，报名越集中越易撞车，建议据此设定「项目编排顺序」错峰</span>
+          <span>📊 兼项自动统计</span>
+          <span class="hint">进入本页即自动汇总已审核报名里的兼项运动员；兼项越多越易撞车，据此设定「项目编排顺序」错峰</span>
           <div class="conflict-actions">
-            <el-button size="small" type="primary" plain :icon="Search" :loading="coLoading" @click="loadCooccurrence">
-              统计
+            <el-tag v-if="coSummary" size="small" effect="plain">
+              兼项 {{ coSummary.multiEventAthletes }} 人（{{ coRatioText }}）· 最高兼 {{ coSummary.maxEvents }} 项
+            </el-tag>
+            <el-button size="small" type="primary" plain :icon="Refresh" :loading="coLoading" @click="loadCooccurrence(false)">
+              刷新
             </el-button>
+            <el-tooltip placement="top" effect="light">
+              <template #content>导出「兼项运动员统计.xlsx」：姓名 / 号码布 / 班级 / 兼项数 / 涉及项目，方便现场排表与临时改项</template>
+              <el-button size="small" type="success" plain :icon="Download"
+                :disabled="!coAthletes.length" @click="exportMultiEvent">
+                导出名单
+              </el-button>
+            </el-tooltip>
           </div>
         </div>
       </template>
-      <el-table v-if="coPairs.length" :data="coPairs" border stripe size="small" max-height="320">
-        <el-table-column label="#" width="44" align="center" type="index" />
-        <el-table-column label="项目A" min-width="130">
-          <template #default="{ row }">{{ row.eventA?.name || '' }}</template>
-        </el-table-column>
-        <el-table-column label="项目B" min-width="130">
-          <template #default="{ row }">{{ row.eventB?.name || '' }}</template>
-        </el-table-column>
-        <el-table-column label="共同报名人数" width="120" align="center">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.commonAthletes >= 5 ? 'danger' : 'warning'">{{ row.commonAthletes }} 人</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-else description="点击「统计」查看哪些项目常被同一运动员同时报名" :image-size="64" />
+
+      <!-- 概览：4 个关键数字 + 兼项项数分布 -->
+      <div v-if="coSummary" class="co-overview">
+        <div class="co-metric">
+          <div class="co-metric-num">{{ coSummary.totalApproved }}</div>
+          <div class="co-metric-label">已审核报名</div>
+        </div>
+        <div class="co-metric">
+          <div class="co-metric-num">{{ coSummary.athleteCount }}</div>
+          <div class="co-metric-label">参赛运动员</div>
+        </div>
+        <div class="co-metric is-hot">
+          <div class="co-metric-num">{{ coSummary.multiEventAthletes }}</div>
+          <div class="co-metric-label">兼项运动员</div>
+        </div>
+        <div class="co-metric is-hot">
+          <div class="co-metric-num">{{ coSummary.maxEvents }}</div>
+          <div class="co-metric-label">最高兼项数</div>
+        </div>
+        <div class="co-dist">
+          <div class="co-dist-title">兼项项数分布</div>
+          <div v-for="d in coSummary.distribution" :key="d.label" class="co-dist-row">
+            <span class="co-dist-label">{{ d.label }}</span>
+            <el-progress :percentage="distPercent(d)" :stroke-width="9" :show-text="false" color="#7c3aed" />
+            <span class="co-dist-num">{{ d.count }} 人</span>
+          </div>
+        </div>
+      </div>
+
+      <el-empty
+        v-if="!coSummary && !coLoading"
+        description="暂无已审核报名 —— 报名审核通过后，兼项统计会自动出现在这里"
+        :image-size="64" />
+
+      <el-skeleton v-if="coLoading && !coSummary" animated :rows="3" />
+
+      <el-tabs v-if="coSummary" v-model="coTab" class="co-tabs">
+        <!-- 兼项运动员名单（自动统计的主角） -->
+        <el-tab-pane name="athletes">
+          <template #label>兼项运动员（{{ coAthletes.length }}）</template>
+          <div class="co-toolbar">
+            <el-input v-model="coKeyword" size="small" clearable style="width:240px"
+              placeholder="搜索姓名 / 号码 / 班级 / 项目" :prefix-icon="Search" />
+            <el-tag size="small" type="info">点击行可展开该运动员报名的全部项目</el-tag>
+          </div>
+          <el-table :data="coPaged" border stripe size="small" max-height="360" row-key="athleteId"
+            @row-click="(r) => (r._open = !r._open)">
+            <el-table-column label="#" width="46" align="center" type="index" />
+            <el-table-column prop="name" label="运动员" width="96" />
+            <el-table-column prop="number" label="号码布" width="92" />
+            <el-table-column prop="className" label="班级" min-width="110" show-overflow-tooltip />
+            <el-table-column prop="grade" label="年级" width="88" />
+            <el-table-column label="兼项数" width="92" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.eventCount >= 5 ? 'danger' : (row.eventCount >= 3 ? 'warning' : 'primary')">
+                  {{ row.eventCount }} 项
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="eventNamesText" label="报名项目" min-width="260" show-overflow-tooltip />
+          </el-table>
+          <el-pagination
+            v-if="coFiltered.length > coPageSize"
+            v-model:current-page="coPage"
+            :page-size="coPageSize"
+            :total="coFiltered.length"
+            layout="total, prev, pager, next"
+            style="margin-top:10px;justify-content:flex-end" />
+        </el-tab-pane>
+
+        <!-- 高频共现项目对：哪些项目常被同一批人同时报 -->
+        <el-tab-pane name="pairs">
+          <template #label>高频共现项目对（{{ coPairs.length }}）</template>
+          <el-table v-if="coPairs.length" :data="coPairs" border stripe size="small" max-height="360">
+            <el-table-column label="#" width="44" align="center" type="index" />
+            <el-table-column label="项目A" min-width="130">
+              <template #default="{ row }">{{ row.eventA?.name || '' }}</template>
+            </el-table-column>
+            <el-table-column label="项目B" min-width="130">
+              <template #default="{ row }">{{ row.eventB?.name || '' }}</template>
+            </el-table-column>
+            <el-table-column label="共同报名人数" width="120" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.commonAthletes >= 5 ? 'danger' : 'warning'">{{ row.commonAthletes }} 人</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-else description="暂无共现项目对" :image-size="60" />
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
 
     <!-- B06/U05：兼项冲突检测 —— 同一运动员在相近时间被排到不同项目 -->
@@ -608,9 +693,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar } from '@element-plus/icons-vue'
+import { MagicStick, Download, Refresh, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar } from '@element-plus/icons-vue'
 import axios from 'axios'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
@@ -1207,20 +1292,71 @@ async function resolveConflicts() {
   }
 }
 
-// ==================== 兼项高频统计（项目共现） ====================
+// ==================== 兼项自动统计（兼项运动员名单 + 高频共现项目对） ====================
+// 为什么是「自动」：兼项运动员是编排里的高风险人群，进编排页就该看见，
+// 而不是等使用者点一次按钮；编排/审核变化后由各入口显式调用刷新。
 const coPairs = ref([])
+const coSummary = ref(null)
+const coAthletes = ref([])
+const coTab = ref('athletes')
+const coKeyword = ref('')
+const coPage = ref(1)
+const coPageSize = ref(10)
 const coLoading = ref(false)
-async function loadCooccurrence() {
+let coReqSeq = 0
+
+const coRatioText = computed(() => {
+  const s = coSummary.value
+  if (!s) return '0%'
+  const pct = (s.multiRatio || 0) * 100
+  return (pct >= 10 ? pct.toFixed(0) : pct.toFixed(1)) + '%'
+})
+
+const coFiltered = computed(() => {
+  const kw = (coKeyword.value || '').trim().toLowerCase()
+  if (!kw) return coAthletes.value
+  return coAthletes.value.filter((a) =>
+    [a.name, a.number, a.className, a.grade, a.eventNamesText]
+      .some((v) => String(v || '').toLowerCase().includes(kw)))
+})
+
+const coPaged = computed(() => {
+  const start = (coPage.value - 1) * coPageSize.value
+  return coFiltered.value.slice(start, start + coPageSize.value)
+})
+
+/** 分布条百分比相对「全部参赛运动员」，最多兼项的一档总是接近 100% 之外的视觉比例 */
+function distPercent (d) {
+  const base = (coSummary.value && coSummary.value.athleteCount) || 0
+  if (!base) return 0
+  return Math.round((((d && d.count) || 0) * 1000) / base) / 10
+}
+
+/** auto=true 为自动加载（静默）；auto=false 为用户点「刷新」（可提示） */
+async function loadCooccurrence (auto = true) {
+  if (coLoading.value) return
+  const seq = ++coReqSeq
   coLoading.value = true
   try {
-    const res = await request.get('/arrange/co-occurrence')
+    const res = await request.get('/arrange/multi-event', { params: { limit: 500 } })
+    if (seq !== coReqSeq) return           // 并发请求只认最后一次结果
+    coSummary.value = res || null
     coPairs.value = (res && res.pairs) || []
-    if (!coPairs.value.length) ElMessage.success('暂无兼项报名重叠')
+    coAthletes.value = (res && res.athletes) || []
+    coPage.value = 1
+    if (!auto && !coAthletes.value.length) ElMessage.info('当前没有兼项运动员（暂无兼项报名）')
   } catch (e) {
     console.error(e)
+    if (seq === coReqSeq) coSummary.value = null
   } finally {
-    coLoading.value = false
+    if (seq === coReqSeq) coLoading.value = false
   }
+}
+
+function exportMultiEvent () {
+  downloadApi('/arrange/multi-event/export', '兼项运动员统计.xlsx')
+    .then(() => ElMessage.success('兼项运动员名单已导出'))
+    .catch((e) => { if (e && e.message) ElMessage.error(e.message) })
 }
 
 // ==================== 取消冲突项目（消解兼项冲突） ====================
@@ -1265,6 +1401,7 @@ async function cancelEvent(row, which) {
     await loadCancelStats()
     await loadConflicts()
     await fetchList()
+    loadCooccurrence(true)          // 报名被取消，兼项统计要跟着变
   } catch (e) {
     if (e && e.message) ElMessage.error(e.message)
   } finally {
@@ -1326,6 +1463,9 @@ async function doAutoSchedule() {
       ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip + dayTip)
     }
     if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
+
+    // 编排/道次落库后，兼项运动员名单可能随之变化（自动排道会补齐此前未编排的项目），刷新一次
+    loadCooccurrence(true)
 
     // 可解性诊断：编排完成 ≠ 排得下。响应里带 feasibility 时把结论落在页面上，
     // 让操作者当场看到「哪些排不下、为什么、怎么办」，而不是只看到一句「编排完成」。
@@ -1454,7 +1594,17 @@ function isNonFinish(t) {
   return typeof t === 'string' && /^(DNF|DNS|DSQ|DQ)$/i.test(t.trim())
 }
 
-onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes(); loadResultEventIds() })
+onMounted(() => {
+  fetchList()
+  fetchEvents()
+  loadVenueCodes()
+  loadResultEventIds()
+  // 兼项统计自动跑一次：进入编排页就能看到「有多少人兼项、兼了几项」
+  loadCooccurrence(true)
+})
+
+// 搜索关键词变化回到第一页，否则会停在一个越界页码上（翻页后筛掉，表格直接空白）
+watch(coKeyword, () => { coPage.value = 1 })
 </script>
 
 <style scoped>
@@ -1535,10 +1685,33 @@ onMounted(() => { fetchList(); fetchEvents(); loadVenueCodes(); loadResultEventI
 .conflict-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .conflict-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ===== 兼项自动统计：概览指标 + 项数分布 ===== */
+.co-overview {
+  display: flex; align-items: stretch; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; margin-bottom: 12px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, .06), rgba(192, 38, 211, .04));
+  border: 1px solid rgba(124, 58, 237, .16); border-radius: 10px;
+}
+.co-metric { min-width: 96px; text-align: center; }
+.co-metric-num { font-size: 24px; font-weight: 700; line-height: 1.15; color: #303133; }
+.co-metric.is-hot .co-metric-num { color: #7c3aed; }
+.co-metric-label { font-size: 12px; color: #909399; margin-top: 2px; }
+html.dark .co-metric-num { color: #e5e7eb; }
+html.dark .co-metric-label { color: #9ca3af; }
+.co-dist { margin-left: auto; min-width: 260px; flex: 1 1 260px; }
+.co-dist-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
+.co-dist-row { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.co-dist-label { font-size: 12px; color: #606266; width: 74px; flex-shrink: 0; }
+.co-dist-row :deep(.el-progress) { flex: 1; margin: 0; }
+.co-dist-num { font-size: 12px; color: #606266; width: 46px; text-align: right; }
+.co-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.co-tabs { margin-top: 2px; }
+
 @media (max-width: 768px) {
   .toolbar { flex-direction: column; align-items: flex-start; }
   .toolbar-right { width: 100%; }
   .conflict-header { flex-direction: column; align-items: flex-start; }
   .conflict-actions { margin-left: 0; }
+  .co-dist { margin-left: 0; }
 }
 </style>

@@ -10,6 +10,7 @@
       </div>
       <div class="pg-actions">
         <el-button :icon="Guide" @click="guideVisible = true">重新查看新手引导</el-button>
+        <el-button :icon="Printer" @click="printDoc">打印 / 存为 PDF</el-button>
         <el-button type="primary" :icon="Top" @click="scrollTop">回到顶部</el-button>
       </div>
     </div>
@@ -19,20 +20,40 @@
       <el-col :xs="24" :sm="8" :md="6">
         <div class="help-nav">
           <div class="nav-title">目录</div>
+          <el-input
+            v-model="kw"
+            size="small"
+            clearable
+            placeholder="搜索小节关键词"
+            :prefix-icon="Search"
+            class="nav-search"
+          />
+          <el-button v-if="kw" size="small" text class="nav-clear" @click="kw = ''">清空搜索</el-button>
           <a
-            v-for="s in sections"
+            v-for="s in filteredSections"
             :key="s.id"
             class="nav-item"
             :class="{ on: activeId === s.id }"
             @click="scrollTo(s.id)"
-          >{{ s.title }}</a>
+          >{{ s.no ? s.no + '. ' : '' }}{{ s.title }}</a>
+          <div v-if="kw && !filteredSections.length" class="nav-empty">
+            没有匹配「{{ kw }}」的小节，试试「编排」「兼项」「导出」「AI」
+          </div>
         </div>
       </el-col>
 
       <!-- 右侧内容 -->
       <el-col :xs="24" :sm="16" :md="18">
         <div class="help-content">
-          <section v-for="s in sections" :key="s.id" :id="s.id" class="help-sec">
+          <el-alert
+            v-if="kw"
+            type="info"
+            :closable="false"
+            show-icon
+            class="search-tip"
+            :title="`已按「${kw}」筛出 ${filteredSections.length} 个小节`"
+          />
+          <section v-for="s in filteredSections" :key="s.id" :id="s.id" class="help-sec">
             <h3 class="sec-h">
               <span class="sec-no">{{ s.no }}</span>{{ s.title }}
             </h3>
@@ -63,8 +84,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { Reading, Top, Guide } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { Reading, Top, Guide, Search, Printer } from '@element-plus/icons-vue'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 import pkg from '../../../package.json'
 
@@ -73,6 +94,20 @@ const appVersion = pkg.version
 
 const guideVisible = ref(false)
 const activeId = ref('start')
+/** 目录搜索：只按「标题 + 正文」过滤小节，命中数实时提示在上方 alert */
+const kw = ref('')
+
+const filteredSections = computed(() => {
+  const q = (kw.value || '').trim().toLowerCase()
+  if (!q) return sections
+  return sections.filter((s) =>
+    (s.title + ' ' + s.html + ' ' + (s.keywords || '')).toLowerCase().includes(q))
+})
+
+/** 打印 / 另存 PDF：浏览器直接出带标题的清单，无需再导出一份 Word */
+function printDoc () {
+  window.print()
+}
 
 const sections = [
   {
@@ -181,13 +216,65 @@ const sections = [
         ④ <b>正式赛二次编排</b>：点击「③ 立即计算晋级并排决赛」——按预赛成绩取前 N 名晋级、自动生成决赛道次，并把<b>决赛作为独立赛程条目排入赛程表</b>（预赛结束后同场地顺延），秩序册时间表同步体现决赛场次。</p>`
   },
   {
-    id: 'score', no: '9', title: '成绩录入与排名',
+    id: 'aimode', no: '9', title: '编排三档：规则 / 优化 / AI',
+    keywords: 'ai 模式 规则 优化 推理 onnx 自对抗 派遣',
+    html: `
+      <p>「赛程编排」页顶部是<b>三档求解梯度</b>，同一个按钮换着跑、结果可随时回退：</p>
+      <table class="doc-table">
+        <thead><tr><th>档位</th><th>做什么</th><th>何时用</th></tr></thead>
+        <tbody>
+          <tr><td><b>规则模式</b></td><td>确定性 first-fit：按项目顺序 → 时间栅格 → 场地槽位落位</td><td>毫秒级、可复现、要拿来讲给学生和同事看时</td></tr>
+          <tr><td><b>优化模式</b>（默认）</td><td>Timefold 约束求解 + GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链</td><td>要权衡兼项冲突与场地利用率时</td></tr>
+          <tr><td><b>AI 模式</b>（紫红按钮）</td><td>优化链 + ONNX 本地推理：算法选择器挑模型、冲突图 GNN 排序、<b>推理时自对抗</b>多轮择优、AI 派遣道次</td><td>报名多、兼项复杂、想要更好排布时</td></tr>
+        </tbody>
+      </table>
+      <p><b>AI 模式不是换个皮肤</b>：模型文件随程序一起发布（<code>classpath:/models</code>），<b>不依赖任何外部服务与联网</b>；
+      模型缺失或推理异常时<b>自动降级</b>回优化模式并在结果标签上如实标注「不可用（已降级）」，不会让编排失败。</p>
+      <p class="tip">💡 AI 模式结果条会回显自检信息：自对抗轮数、判别器评分、候选方案残余兼项冲突、是否优于单次生成——<b>择优口径是「残余冲突优先、并列看评分」</b>，且单次生成基线始终同池竞争，所以 AI 模式<b>不会比单跑一次更差</b>。</p>
+      <p>「再次排道」与「拖拽改序重排」都会沿用当前档位；<b>AI 模式下一次编排出的道次，再次排道也必须走 AI 派遣款型</b>，否则同一份报名会排出两套道次。道次可选「AI 派遣」（模型排序）或「成绩种子 / 蛇形」等传统款型。</p>`
+  },
+  {
+    id: 'multi', no: '10', title: '兼项运动员自动统计',
+    keywords: '兼项 统计 运动员 名单 共现 分布 导出',
+    html: `
+      <p>「赛程编排」页的 <b>📊 兼项自动统计</b> 卡片<b>进入页面即自动汇总</b>，不用点任何按钮；编排完成、报名被取消后也会自动刷新。</p>
+      <table class="doc-table">
+        <thead><tr><th>看到的内容</th><th>含义</th><th>怎么用</th></tr></thead>
+        <tbody>
+          <tr><td>已审核报名 / 参赛运动员 / 兼项运动员 / 最高兼项数</td><td>四个概览数字</td><td>先判断这一场「兼项压力大不大」</td></tr>
+          <tr><td>兼项项数分布（2 项 / 3 项 / 4 项 / 5 项及以上）</td><td>各档各多少人</td><td>分布集中在 2~3 项属正常；≥4 项的人多就要提前排表</td></tr>
+          <tr><td>兼项运动员名单</td><td>按兼项数降序的姓名 / 号码布 / 班级 / 兼项数 / 报名项目</td><td>打开页面即自动统计（编排后自动刷新），可搜索姓名号码班级项目，可导出 Excel</td></tr>
+          <tr><td>高频共现项目对</td><td>哪些项目常被同一批人同时报、共多少人</td><td>据此调整「项目出场顺序」让高共现项目错峰</td></tr>
+        </tbody>
+      </table>
+      <p>口径：只统计<b>已审核（approved）</b>的报名；同一运动员报了 A、B 两项则 (A,B) 共现 +1，无向去重。</p>
+      <p class="tip">💡 兼项是「高风险人群」：编排里的兼项冲突规避会自动错开他们的项目时间，但<b>兼项数很多的人仍可能排不下</b>——冲突清单与「一键消解」就是为这批人准备的。</p>`
+  },
+  {
+    id: 'checklist', no: '11', title: '编排前自检清单',
+    keywords: '检查 清单 自检 编排 前 流程 顺序',
+    html: `
+      <p>按这个顺序走一遍，能避开 90% 的现场翻车：</p>
+      <ol>
+        <li><b>基础数据</b>：班级/年级顺序、运动员花名册（含号码与性别）、项目表（道次 / 项目内并发 / 顺序号 / 并行捆绑组）、场地与编码齐全。</li>
+        <li><b>报名审核</b>：全部审核通过后再编排，未审核的报名不会计入兼项统计。</li>
+        <li><b>先看兼项统计</b>：兼项运动员多少、分布在哪一档、哪些项目高频共现——据此调整<b>项目出场顺序</b>。</li>
+        <li><b>再设日程</b>：天数 × 时段 × 起止时间，径赛/田赛并数（并数上限 = 场地数量）。</li>
+        <li><b>跑编排</b>：规则模式先跑一遍看基线（毫秒级），再切优化/AI 模式拿更好方案。</li>
+        <li><b>看可解性诊断</b>：结果条若给出「排不下 / 最少需要 N 天」等结论，按提示加场地、加天数或取消部分报名。</li>
+        <li><b>检测兼项冲突</b>：有则按「调整建议」处理，或一键消解；仍解不开说明结构性冲突，走「取消冲突项目」。</li>
+        <li><b>导出与秩序册</b>：赛程总表、道次表、秩序册（Word/Excel）一键下载。</li>
+      </ol>
+      <p class="tip">💡 编排可以随时重跑覆盖，<b>没有「不可逆」操作</b>；但手工调整过的位置会被覆盖，重要微调建议先导出一份再改。</p>`
+  },
+  {
+    id: 'score', no: '12', title: '成绩录入与排名',
     html: `
       <p><b>成绩管理</b>：录入/修改/删除，支持 Excel 导入，自动排名计算。成绩格式：<code>12.34</code>(秒)、<code>2:35.67</code>(分:秒)、<code>6.78</code>(米)；状态 valid / dq / dns / dnf。</p>
       <p><b>合分排行</b>：单项目排名、个人积分、团体总分、破纪录榜；默认积分表 9-7-6-5-4-3-2-1（可自定义），支持并列、破纪录加分、接力加倍、团体总分。</p>`
   },
   {
-    id: 'report', no: '10', title: '报表与秩序册',
+    id: 'report', no: '13', title: '报表与秩序册',
     html: `
       <p><b>报表中心</b> 提供：</p>
       <ul>
@@ -196,11 +283,11 @@ const sections = [
       </ul>`
   },
   {
-    id: 'screen', no: '11', title: '数据大屏',
+    id: 'screen', no: '14', title: '数据大屏',
     html: `<p>左侧菜单「数据大屏」「排行榜大屏」进入全屏投屏视图，适合现场实时展示赛况与排名。教师端编排或成绩更新后，大屏可刷新查看。</p>`
   },
   {
-    id: 'system', no: '12', title: '系统设置（管理员）',
+    id: 'system', no: '15', title: '系统设置（管理员）',
     html: `
       <ul>
         <li><b>数据库热迁移</b>：SQLite ↔ MySQL 在线切换，连接测试 → 异步迁移 → 进度查询，<b>全程无需重启</b>。</li>
@@ -211,12 +298,16 @@ const sections = [
       </ul>`
   },
   {
-    id: 'faq', no: '13', title: '常见问题 FAQ',
+    id: 'faq', no: '16', title: '常见问题 FAQ',
     html: `
       <p><b>Q：并数怎么设？与田赛分组什么关系？</b><br>并数＝同一时刻能同时进行几个项目：径赛设 1（串行），田赛按可用场地设 2~3（并行）。「田赛分组」指定哪些田赛必须同一时段并行；「并行捆绑组」用相同字母更精细地控制同批并行（优先级更高）。</p>
       <p><b>Q：编排后同组项目没在同一时间？</b><br>时段容量或并数不足导致自动分波。提高田赛并数或增加场地即可。</p>
       <p><b>Q：Excel 导入列名不匹配？</b><br>先下载对应模板（表格2 含 顺序号 / 项目内并发 / 并行捆绑组 等列），按表头填写。</p>
-      <p><b>Q：满额率/报名进度显示异常？</b><br>确保班级名单与报名均已正确导入并审核；进度按真实花名册人数计算。</p>`
+      <p><b>Q：满额率/报名进度显示异常？</b><br>确保班级名单与报名均已正确导入并审核；进度按真实花名册人数计算。</p>
+      <p><b>Q：AI 模式跑了但结果标签写「不可用（已降级）」？</b><br>说明 ONNX 模型没能加载（程序分发时模型文件缺失或被安全策略拦下），系统<b>已自动降级回优化模式</b>，编排照常可用，只是少了 AI 增强。用「刷新」重跑一次；仍如此请检查启动日志里的模型加载记录。</p>
+      <p><b>Q：AI 模式会不会比规则模式更差？</b><br>不会。择优时<b>单次生成基线始终与多轮自对抗结果同池竞争</b>，判据是「残余兼项冲突优先、并列比判别器评分」，所以最差也只是持平。</p>
+      <p><b>Q：兼项统计人数和我看到的报名数对不上？</b><br>兼项统计只算<b>已审核（approved）</b>的报名，且以「运动员 × 项目」去重计；pending / rejected 的报名不计入。审核通过后点「刷新」即可。</p>
+      <p><b>Q：编排后仍有部分运动员撞车？</b><br>先看兼项统计里这个人兼了几项——兼项过多时物理上排不开。用「一键消解」再试；仍不行通常是<b>时段容量/场地数不足</b>，提高并数或增加天数，或走「取消冲突项目」调整报名。</p>`
   }
 ]
 
@@ -236,7 +327,7 @@ onMounted(() => {
   observer = new IntersectionObserver((entries) => {
     entries.forEach((e) => { if (e.isIntersecting) activeId.value = e.target.id })
   }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 })
-  sections.forEach((s) => {
+  filteredSections.value.forEach((s) => {
     const el = document.getElementById(s.id)
     if (el) observer.observe(el)
   })
@@ -252,6 +343,10 @@ onBeforeUnmount(() => { if (observer) observer.disconnect() })
   border-radius: var(--radius-lg); padding: 12px 10px; max-height: calc(100vh - 100px); overflow-y: auto;
 }
 .nav-title { font-size: 12px; color: var(--text-muted); padding: 4px 10px 8px; letter-spacing: .5px; }
+.nav-search { margin: 0 8px 6px; }
+.nav-clear { padding: 0 8px 6px; }
+.nav-empty { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
+.search-tip { margin-bottom: 14px; }
 .nav-item {
   display: block; padding: 8px 12px; border-radius: 8px; font-size: 13px;
   color: var(--text-secondary); cursor: pointer; transition: all .15s; text-decoration: none;
@@ -279,4 +374,12 @@ onBeforeUnmount(() => { if (observer) observer.disconnect() })
 .doc-table th { background: #f8fafc; color: var(--text-primary); font-weight: 600; }
 .doc-table td code { background: rgba(59,130,246,.1); color: var(--color-primary-dark); padding: 1px 5px; border-radius: 4px; }
 html.dark .doc-table th { background: #1e293b; }
+
+/* 打印 / 存 PDF：只留正文，导航与按钮全部隐藏 */
+@media print {
+  .help-nav, .pg-actions, .search-tip, .nav-search, .nav-clear { display: none !important; }
+  .help-sec { break-inside: avoid; page-break-inside: avoid; box-shadow: none; }
+  .sec-body { font-size: 12pt; line-height: 1.7; }
+  .doc-table { font-size: 10.5pt; }
+}
 </style>
