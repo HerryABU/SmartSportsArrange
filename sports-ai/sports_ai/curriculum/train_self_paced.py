@@ -27,6 +27,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from sports_ai.data.features import N_FEATURES, extract_features
 from sports_ai.data.generator import generate_scenario
 from sports_ai.models.selector import AlgorithmSelector
+from sports_ai.train_selector import solvable
 from .difficulty import measure
 
 MODEL_DIR = os.path.join(
@@ -41,11 +42,15 @@ def build_pool(n: int, seed: int):
         s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(150, 800),
                               n_days=rng.randint(2, 6), multi_event_prob=rng.uniform(0.3, 0.9),
                               grades=["高一", "高二", "高三"],
-                              event_drop_prob=0.3)
+                              event_drop_prob=0.3,
+                              track_lanes=rng.choice([1, 2, 3]),
+                              field_lanes=rng.choice([2, 3, 4, 5]),
+                              day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]))
         f = extract_features(s)
         d = measure(s)
         X.append(f)
-        y.append(1 if f[3] >= 1.0 else 0)
+        # 标签与 train_selector 同口径：真实可解性（容量够 且 团不超过可用时段数）
+        y.append(0 if solvable(s) else 1)
         diff.append(d.score)
     return np.asarray(X, np.float32), np.asarray(y, np.int64), np.asarray(diff, np.float32)
 
@@ -104,7 +109,10 @@ def _self_improve(n: int = 64, seed: int = 12345):
         s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(180, 400),
                               n_days=1, multi_event_prob=rng.uniform(0.6, 0.9),
                               grades=["高一", "高二", "高三"],
-                              event_drop_prob=0.3)
+                              event_drop_prob=0.3,
+                              track_lanes=rng.choice([1, 2, 3]),
+                              field_lanes=rng.choice([2, 3, 4, 5]),
+                              day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]))
         cand.append((measure(s).score, s))
     cand.sort(key=lambda x: -x[0])
     hard = cand[: max(1, len(cand) // 2)]

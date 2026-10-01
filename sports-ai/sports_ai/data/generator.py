@@ -26,7 +26,13 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 @dataclass
 class Unit:
-    """待排赛程单元 = 项目 × 年级。"""
+    """待排赛程单元 = 项目 × 年级。
+
+    ``raw_duration`` 是**全部时长**（= 组数 × 每批时长），可能远超单个时段容量，
+    因此编排时必须**拆批**（把组次分散到多个时段）。拆批所需的两个元信息：
+    ``batch_minutes``（每组次用时）与 ``heat_capacity``（每组次容纳人数）；
+    二者为 None 时该单元视为不可拆（整体占一个时段）。
+    """
 
     key: str
     event_id: int
@@ -37,6 +43,8 @@ class Unit:
     group_key: Optional[str]
     raw_duration: int
     athletes: List[int]  # 升序（兼项冲突判定用）
+    batch_minutes: Optional[int] = None    # 每批（一个组次）时长
+    heat_capacity: Optional[int] = None    # 每批容纳人数（道数 / 分组容量）
 
 
 @dataclass
@@ -117,6 +125,9 @@ def generate_scenario(
     multi_event_prob: float = 0.6,
     grades: Optional[List[str]] = None,
     event_drop_prob: float = 0.0,
+    track_lanes: int = 1,
+    field_lanes: int = 3,
+    day_windows: tuple = (180, 150),
 ) -> Scenario:
     """生成一个编排实例。
 
@@ -128,6 +139,14 @@ def generate_scenario(
         grades: 年级列表（None = 不分年级）
         event_drop_prob: 每个项目被随机裁掉的概率——让「项目数 / group_count / duration_cv」
             等特征具有分布多样性（否则这些特征在训练里近乎恒定，归一化会在真实数据上爆掉）
+        track_lanes: 径赛并发位（同时可进行的径赛项目数）
+        field_lanes: 田赛并发位（同时可进行的田赛项目数）
+        day_windows: 每天各时段的分钟容量（如 (240, 240) = 上午/下午各 4 小时）
+
+    .. note::
+       时间资源（``track_lanes`` / ``field_lanes`` / ``day_windows``）在训练时**随机采样**，
+       让 ``supply`` / ``tension`` / ``day_count`` 具备分布多样性——真实学校配置各不相同，
+       模型必须见过各种并发度，才不会在部署时 OOD。
     """
     rng = random.Random(seed)
     grades = grades or [None]
@@ -198,18 +217,20 @@ def generate_scenario(
                     group_key=group_of_event.get(name),
                     raw_duration=total_duration,
                     athletes=members,
+                    batch_minutes=batch_min,
+                    heat_capacity=cap,
                 )
             )
             uid += 1
 
-    # 位置：径赛 1 槽、田赛 3 槽；每天 2 时段（上午 180 / 下午 150 分钟）。
+    # 位置网格：池 × 每天时段 × 并发位。
     # window_idx 取「全局窗口序号」（跨天唯一），保证不同比赛日是不同的并发位（bin）。
     placements: List[Placement] = []
-    slot_counts = {"径赛": 1, "田赛": 3}
+    slot_counts = {"径赛": max(1, track_lanes), "田赛": max(1, field_lanes)}
     for pool in ("径赛", "田赛"):
         for day in range(1, n_days + 1):
-            for win, cap in ((1, 180), (2, 150)):
-                window_idx = (day - 1) * 2 + win
+            for wi, cap in enumerate(day_windows, start=1):
+                window_idx = (day - 1) * len(day_windows) + wi
                 for slot in range(slot_counts[pool]):
                     placements.append(
                         Placement(pool_label=pool, slot_idx=slot,

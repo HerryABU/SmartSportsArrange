@@ -66,7 +66,10 @@ def make_dataset(n_samples: int, seed: int):
     for _ in range(n_samples):
         s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(200, 800),
                               n_days=rng.randint(2, 6), multi_event_prob=rng.uniform(0.4, 0.9),
-                              grades=["高一", "高二", "高三"])
+                              grades=["高一", "高二", "高三"],
+                              track_lanes=rng.choice([1, 2, 3]),
+                              field_lanes=rng.choice([2, 3, 4, 5]),
+                              day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]))
         X, Y, ln = build_sequence(s)
         if ln < L_IN + H_OUT:
             continue

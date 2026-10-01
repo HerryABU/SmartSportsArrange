@@ -23,12 +23,24 @@ from sklearn.metrics import accuracy_score, f1_score
 from sports_ai.data.features import N_FEATURES, extract_features
 from sports_ai.data.generator import generate_scenario
 from sports_ai.models.selector import AlgorithmSelector
+from sports_ai.solve.feasibility import analyze_bounds
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
 
+def solvable(scenario) -> bool:
+    """真实可解性判据（与 :mod:`sports_ai.solve` 同口径）。
+
+    ⚠️ 不能用「tension ≥ 1」当标签：容量够也可能排不下——**团下界**（两两互相冲突、
+    必须错开时段的单元数 > 可用时段数）是独立的不可解成因。只用 tension 阈值会让选择器
+    在「容量够但团超时段」的实例上误判为「硬解」（曾在地狱场景 2 天情形上踩到）。
+    """
+    b = analyze_bounds(scenario.units, scenario.placements)
+    return bool(b["capacityFeasible"]) and bool(b["cliqueFeasible"])
+
+
 def make_dataset(n: int, seed: int):
-    """合成训练集：标签 = 容量客观不足（tension≥1）→ 取消路径，否则硬解。"""
+    """合成训练集：标签 = 该实例**是否可解**（容量够 且 团不超过可用时段数）。"""
     X, y = [], []
     rng = random.Random(seed)
     for _ in range(n):
@@ -39,11 +51,12 @@ def make_dataset(n: int, seed: int):
             multi_event_prob=rng.uniform(0.3, 0.9),
             grades=["高一", "高二", "高三"],
             event_drop_prob=0.3,
+            track_lanes=rng.choice([1, 2, 3]),
+            field_lanes=rng.choice([2, 3, 4, 5]),
+            day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]),
         )
-        f = extract_features(s)
-        tension = f[3]
-        X.append(f)
-        y.append(1 if tension >= 1.0 else 0)
+        X.append(extract_features(s))
+        y.append(0 if solvable(s) else 1)      # 0 = 硬解，1 = 取消路径
     return np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.int64)
 
 
