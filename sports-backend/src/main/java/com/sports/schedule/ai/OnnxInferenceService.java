@@ -147,9 +147,14 @@ public class OnnxInferenceService {
     }
 
     private float[] runGnn(ConflictGraphEncoder.Encoded enc) throws OrtException {
-        long[] nodeShape = {1, ConflictGraphEncoder.MAX_NODES, ConflictGraphEncoder.NODE_FEAT_DIM};
-        long[] adjShape = {1, ConflictGraphEncoder.MAX_NODES, ConflictGraphEncoder.MAX_NODES};
-        long[] maskShape = {1, ConflictGraphEncoder.MAX_NODES};
+        // 节点数 n 是 ONNX 的动态轴：按实际节点数构造 shape（不补齐到 MAX_NODES）。
+        long n = enc.nodeCount;
+        if (n <= 0) {
+            return new float[0];
+        }
+        long[] nodeShape = {1, n, ConflictGraphEncoder.NODE_FEAT_DIM};
+        long[] adjShape = {1, n, n};
+        long[] maskShape = {1, n};
         try (OnnxTensor nt = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.nodeFeat), nodeShape);
              OnnxTensor at = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.adj), adjShape);
              OnnxTensor mt = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.mask), maskShape)) {

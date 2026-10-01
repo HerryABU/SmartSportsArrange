@@ -101,22 +101,22 @@ public class AdversarialSchemeService {
         try {
             ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
             int n = enc.nodeCount;
-            int max = ConflictGraphEncoder.MAX_NODES;
             if (n == 0) return Optional.empty();
 
-            float[] forbid = new float[max * MAX_SLOTS];
+            // n = 实际节点数（ONNX 动态轴）；不再按 MAX_NODES 补齐
+            float[] forbid = new float[n * MAX_SLOTS];
             Random rng = new Random(20260918L);
 
             // 基线：G 一次前向（z=0）的残余冲突。它**作为初始候选**参与择优，
             // 保证「推理时自对抗」的结果在冲突上绝不劣于单次生成。
-            float[] baseLogits = runGenerator(enc, new float[max * NOISE_DIM], forbid);
+            float[] baseLogits = runGenerator(enc, new float[n * NOISE_DIM], forbid);
             int[] baseSlots = argmaxSlots(baseLogits, n);
             double baselineConflict = hardConflict(baseSlots, enc.adj, n);
             SchemeResult best = new SchemeResult(baseSlots, runDiscriminator(enc, oneHot(baseLogits, n)),
                     baselineConflict, baselineConflict, false, 0);
 
             for (int r = 0; r < Math.max(1, rounds); r++) {
-                float[] z = gaussian(max * NOISE_DIM, rng);
+                float[] z = gaussian(n * NOISE_DIM, rng);
                 float[] logits = runGenerator(enc, z, forbid);           // [max*K]
                 float[] usedLogits = logits;
                 boolean refined = false;
@@ -150,12 +150,12 @@ public class AdversarialSchemeService {
     // ==================== 单步推理 ====================
 
     private float[] runGenerator(ConflictGraphEncoder.Encoded enc, float[] z, float[] forbid) throws Exception {
-        int max = ConflictGraphEncoder.MAX_NODES;
-        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, max, ConflictGraphEncoder.NODE_FEAT_DIM);
-             OnnxTensor at = tensor(enc.adj, 1, max, max);
-             OnnxTensor mt = tensor(enc.mask, 1, max);
-             OnnxTensor zt = tensor(z, 1, max, NOISE_DIM);
-             OnnxTensor ft = tensor(forbid, 1, max, MAX_SLOTS)) {
+        long n = enc.nodeCount;
+        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, n, ConflictGraphEncoder.NODE_FEAT_DIM);
+             OnnxTensor at = tensor(enc.adj, 1, n, n);
+             OnnxTensor mt = tensor(enc.mask, 1, n);
+             OnnxTensor zt = tensor(z, 1, n, NOISE_DIM);
+             OnnxTensor ft = tensor(forbid, 1, n, MAX_SLOTS)) {
             Map<String, OnnxTensor> in = new LinkedHashMap<>();
             in.put("node_feat", nf);
             in.put("adj", at);
@@ -169,12 +169,12 @@ public class AdversarialSchemeService {
     }
 
     private float[] runRefiner(ConflictGraphEncoder.Encoded enc, float[] initLogits, float[] forbid) throws Exception {
-        int max = ConflictGraphEncoder.MAX_NODES;
-        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, max, ConflictGraphEncoder.NODE_FEAT_DIM);
-             OnnxTensor at = tensor(enc.adj, 1, max, max);
-             OnnxTensor mt = tensor(enc.mask, 1, max);
-             OnnxTensor it = tensor(initLogits, 1, max, MAX_SLOTS);
-             OnnxTensor ft = tensor(forbid, 1, max, MAX_SLOTS)) {
+        long n = enc.nodeCount;
+        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, n, ConflictGraphEncoder.NODE_FEAT_DIM);
+             OnnxTensor at = tensor(enc.adj, 1, n, n);
+             OnnxTensor mt = tensor(enc.mask, 1, n);
+             OnnxTensor it = tensor(initLogits, 1, n, MAX_SLOTS);
+             OnnxTensor ft = tensor(forbid, 1, n, MAX_SLOTS)) {
             Map<String, OnnxTensor> in = new LinkedHashMap<>();
             in.put("node_feat", nf);
             in.put("adj", at);
@@ -188,11 +188,11 @@ public class AdversarialSchemeService {
     }
 
     private double runDiscriminator(ConflictGraphEncoder.Encoded enc, float[] scheme) throws Exception {
-        int max = ConflictGraphEncoder.MAX_NODES;
-        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, max, ConflictGraphEncoder.NODE_FEAT_DIM);
-             OnnxTensor at = tensor(enc.adj, 1, max, max);
-             OnnxTensor mt = tensor(enc.mask, 1, max);
-             OnnxTensor st = tensor(scheme, 1, max, MAX_SLOTS)) {
+        long n = enc.nodeCount;
+        try (OnnxTensor nf = tensor(enc.nodeFeat, 1, n, ConflictGraphEncoder.NODE_FEAT_DIM);
+             OnnxTensor at = tensor(enc.adj, 1, n, n);
+             OnnxTensor mt = tensor(enc.mask, 1, n);
+             OnnxTensor st = tensor(scheme, 1, n, MAX_SLOTS)) {
             Map<String, OnnxTensor> in = new LinkedHashMap<>();
             in.put("node_feat", nf);
             in.put("adj", at);
@@ -210,10 +210,10 @@ public class AdversarialSchemeService {
     /** 残余冲突 = 同槽且相邻的边数 ÷ 总边数。 */
     static double hardConflict(int[] slots, float[] adj, int n) {
         int bad = 0, edges = 0;
-        int max = ConflictGraphEncoder.MAX_NODES;
+        // 邻接按 [n, n] 展平（动态节点数），步长即 n
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                if (adj[i * max + j] > 0) {
+                if (adj[i * n + j] > 0) {
                     edges++;
                     if (slots[i] == slots[j]) bad++;
                 }
@@ -223,8 +223,7 @@ public class AdversarialSchemeService {
     }
 
     private static float[] oneHot(float[] logits, int n) {
-        int max = ConflictGraphEncoder.MAX_NODES;
-        float[] out = new float[max * MAX_SLOTS];
+        float[] out = new float[n * MAX_SLOTS];
         for (int i = 0; i < n; i++) {
             int best = 0;
             float bv = -Float.MAX_VALUE;

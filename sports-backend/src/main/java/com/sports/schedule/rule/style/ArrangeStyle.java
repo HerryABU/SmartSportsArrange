@@ -28,7 +28,19 @@ public enum ArrangeStyle {
     SNAKE("snake", "蛇形排布", "按年级→班级排序后 S 形分散到各组，组内道次蛇形落位（确定性）"),
 
     /** 种子蛇形：按成绩/种子（预赛名次·成绩）排序后 S 形分散到各组，使各组种子强度均衡 */
-    SNAKE_SEEDED("snakeSeed", "种子蛇形", "按成绩/种子（预赛名次·成绩）排序后 S 形分散，各组强度均衡；无成绩时退回报名序");
+    SNAKE_SEEDED("snakeSeed", "种子蛇形", "按成绩/种子（预赛名次·成绩）排序后 S 形分散，各组强度均衡；无成绩时退回报名序"),
+
+    /**
+     * AI 派遣：派遣顺序由 AI 模型给出（班级/性别/报名项目数/种子特征 → 优先级），
+     * 再走与蛇形相同的入组/分道实现。
+     *
+     * <p>与「种子蛇形」的区别在**排序依据**：种子蛇形只看成绩（无成绩就退回报名序，
+     * 等于没优化）；AI 派遣同时考虑班级分布、兼项数量与性别，目标是「同班在时间上分散、
+     * 各组实力均衡」这两个互相拉扯的目标同时尽量满足。</p>
+     *
+     * <p>模型缺失或推理失败时**自动回退**为种子蛇形顺序，接口行为不变。</p>
+     */
+    AI("ai", "AI 派遣", "由 AI 模型给出派遣顺序再做蛇形分散（兼顾同班分散与实力均衡）；模型不可用时回退");
 
     public final String id;
     public final String label;
@@ -42,7 +54,12 @@ public enum ArrangeStyle {
 
     /** 是否属于「蛇形」家族（同一套入组/分道实现，仅排序口径不同）。 */
     public boolean isSnake() {
-        return this == SNAKE || this == SNAKE_SEEDED;
+        return this == SNAKE || this == SNAKE_SEEDED || this == AI;
+    }
+
+    /** 是否需要「种子名次」表（种子蛇形与 AI 派遣都靠它驱动排序）。 */
+    public boolean needsSeedRank() {
+        return this == SNAKE_SEEDED || this == AI;
     }
 
     /** 按款型 id 解析（大小写不敏感）；未知/为空一律回退默认 {@link #CLASS}。 */

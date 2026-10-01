@@ -30,6 +30,7 @@ public class AiController {
     private final OnnxInferenceService inference;
     private final SchemeGeneratorService schemeGenerator;
     private final AdversarialSchemeService adversarial;
+    private final com.sports.schedule.ai.LaneAdvisorService laneAdvisor;
 
     @GetMapping("/status")
     @Operation(summary = "查询 AI 模型加载状态")
@@ -38,8 +39,11 @@ public class AiController {
         out.put("advisoryAvailable", inference.isAvailable());
         out.put("schemeGeneratorAvailable", schemeGenerator.isAvailable());
         out.put("adversarialAvailable", adversarial.isAvailable());
+        out.put("laneAdvisorAvailable", laneAdvisor.isAvailable());
         out.put("mode", inference.isAvailable() ? "AI 建议优先" : "规则编排（AI 未就绪）");
         out.put("adversarialMode", "推理时自对抗：G 生成 → 精修器精修 → D 评判 → 多轮择优");
+        out.put("laneMode", laneAdvisor.isAvailable()
+                ? "道次 AI 派遣（款型 ai）可用" : "道次编排使用既有排序（AI 未就绪）");
 
         // 模型来源与逐模型明细——运维最常问的两个问题：
         // 「模型到底打进去了吗」「我替换外部模型生效了吗」，这里直接给出答案。
@@ -47,6 +51,7 @@ public class AiController {
         models.put("advisory", inference.modelInfo());
         models.put("schemeGenerator", schemeGenerator.modelInfo());
         models.put("adversarial", adversarial.modelInfo());
+        models.put("laneAdvisor", laneAdvisor.modelInfo());
         out.put("models", models);
         out.put("modelSource", String.valueOf(inference.modelInfo().get("modelDir")));
         return ApiResponse.success(out);
