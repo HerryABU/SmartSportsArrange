@@ -38,8 +38,9 @@ def build_pool(n: int, seed: int):
     rng = random.Random(seed)
     X, y, diff = [], [], []
     for _ in range(n):
-        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(60, 320),
-                              n_days=rng.randint(1, 4), multi_event_prob=rng.uniform(0.3, 0.9))
+        s = generate_scenario(seed=rng.randint(0, 10 ** 9), n_athletes=rng.randint(80, 320),
+                              n_days=rng.randint(1, 3), multi_event_prob=rng.uniform(0.3, 0.9),
+                              grades=["高一", "高二", "高三"])
         f = extract_features(s)
         d = measure(s)
         X.append(f)

@@ -83,6 +83,26 @@ def export_discriminator(path: str) -> None:
     print(f"[ok] 导出 {os.path.basename(path)}")
 
 
+def export_refiner(path: str) -> None:
+    from sports_ai.generative.refiner import SchemeRefiner
+    r = SchemeRefiner()
+    r.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_refiner.pt"), map_location="cpu"))
+    r.eval()
+    args = (
+        torch.zeros((1, MAX_NODES, NODE_FEAT_DIM), dtype=torch.float32),
+        torch.zeros((1, MAX_NODES, MAX_NODES), dtype=torch.float32),
+        torch.zeros((1, MAX_NODES), dtype=torch.float32),
+        torch.zeros((1, MAX_NODES, MAX_SLOTS), dtype=torch.float32),
+        torch.zeros((1, MAX_NODES, MAX_SLOTS), dtype=torch.float32),
+    )
+    torch.onnx.export(
+        r, args, path,
+        input_names=["node_feat", "adj", "mask", "init_logits", "forbid"],
+        output_names=["logits"], opset_version=17,
+    )
+    print(f"[ok] 导出 {os.path.basename(path)}")
+
+
 def verify(path: str, feeds: dict) -> None:
     import onnxruntime as ort
     sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
@@ -99,10 +119,16 @@ def main():
 
     gen_path = os.path.join(MODEL_DIR, "scheme_generator.onnx")
     dis_path = os.path.join(MODEL_DIR, "scheme_discriminator.onnx")
+    ref_path = os.path.join(MODEL_DIR, "scheme_refiner.onnx")
     export_generator(gen_path)
     export_discriminator(dis_path)
+    has_refiner = os.path.exists(os.path.join(MODEL_DIR, "scheme_refiner.pt"))
+    if has_refiner:
+        export_refiner(ref_path)
     inline_weights(gen_path)
     inline_weights(dis_path)
+    if has_refiner:
+        inline_weights(ref_path)
 
     if args.verify:
         verify(gen_path, {
@@ -118,6 +144,14 @@ def main():
             "mask": np.zeros((1, MAX_NODES), dtype=np.float32),
             "scheme": np.zeros((1, MAX_NODES, MAX_SLOTS), dtype=np.float32),
         })
+        if has_refiner:
+            verify(ref_path, {
+                "node_feat": np.zeros((1, MAX_NODES, NODE_FEAT_DIM), dtype=np.float32),
+                "adj": np.zeros((1, MAX_NODES, MAX_NODES), dtype=np.float32),
+                "mask": np.zeros((1, MAX_NODES), dtype=np.float32),
+                "init_logits": np.zeros((1, MAX_NODES, MAX_SLOTS), dtype=np.float32),
+                "forbid": np.zeros((1, MAX_NODES, MAX_SLOTS), dtype=np.float32),
+            })
     print("完成：models/ 下已生成 GAN 的 .onnx。")
 
 

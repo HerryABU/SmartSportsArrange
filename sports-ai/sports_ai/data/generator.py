@@ -173,10 +173,9 @@ def generate_scenario(
             )
             if not members:
                 continue
-            # 赛次模型：一个项目按「组次」拆分多轮（径赛 8 道、田赛每批 4 人），
-            # 报名人数越多、用时越长——这样 demand 随人数增长，紧张度可跨过 1.0（容量客观不足）。
-            heat_capacity = 8 if track else 4
-            heat_count = max(1, -(-len(members) // heat_capacity))  # ceil
+            # 单元时长取真实量级（20~120 分钟），**不做赛次放大**——与 Java 端
+            # ScheduleUnit.rawDuration（每批所需时间 20~300 分钟）保持同一量级，
+            # 避免模型在真实时长上分布外。容量紧张度靠「单元数（多年级）」与「天数」调节。
             units.append(
                 Unit(
                     key=f"{name}@{grade or '不分年级'}",
@@ -186,7 +185,7 @@ def generate_scenario(
                     track=track,
                     pool_label=pool,
                     group_key=group_of_event.get(name),
-                    raw_duration=dur * heat_count,
+                    raw_duration=dur,
                     athletes=members,
                 )
             )

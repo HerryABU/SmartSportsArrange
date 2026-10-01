@@ -13,6 +13,8 @@ from .encoder import GnnEncoder
 from .scheme import scheme_conflicts, gumbel_scheme, build_forbid_mask
 from .generator import SchemeGenerator
 from .discriminator import SchemeDiscriminator
+from .refiner import SchemeRefiner
+from .refine import AdversarialRefiner
 
 __all__ = [
     "GnnEncoder",
@@ -21,4 +23,6 @@ __all__ = [
     "build_forbid_mask",
     "SchemeGenerator",
     "SchemeDiscriminator",
+    "SchemeRefiner",
+    "AdversarialRefiner",
 ]
