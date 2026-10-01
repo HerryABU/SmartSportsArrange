@@ -28,12 +28,16 @@ try {
     Write-Host "==> ⑤ 自步学习（课程训练 + 自改进）..."
     & $Py -m sports_ai.curriculum.train_self_paced --pool 2000 --epochs 20
 
-    Write-Host "==> ⑥ 导出全部 ONNX 并自检..."
+    Write-Host "==> ⑥ 道次编排 AI（运动员派遣顺序，Learning-to-Rank）..."
+    & $Py -m sports_ai.lane_advisor --iters 1500 --batch 32
+
+    Write-Host "==> ⑦ 导出全部 ONNX 并自检..."
     & $Py -m sports_ai.export_onnx --verify
     & $Py -m sports_ai.generative.export_gan --verify
     & $Py -m sports_ai.forecast.export_forecast --verify
+    & $Py -m sports_ai.lane_advisor --export-only --verify
 
-    Write-Host "==> ⑦ 验证推理时自对抗精修（单次生成 vs 对抗精修）..."
+    Write-Host "==> ⑧ 验证推理时自对抗精修（单次生成 vs 对抗精修）..."
     & $Py -m sports_ai.generative.validate_refine
 }
 finally {

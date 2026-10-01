@@ -12,11 +12,12 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS, gumbel_scheme
 
 
 class SchemeGenerator(nn.Module):
-    def __init__(self, node_feat: int = 8, hidden: int = 64, noise: int = 8,
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 64, noise: int = 8,
                  slots: int = MAX_SLOTS):
         super().__init__()
         self.slots = slots

@@ -20,6 +20,7 @@
 """
 
 from __future__ import annotations
+from sports_ai.data.gnn_io import TRAIN_PAD_TO
 
 import json
 import os
@@ -94,7 +95,7 @@ def run_case(title: str, days):
     D = SchemeDiscriminator(); D.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu")); D.eval()
     R = SchemeRefiner(); R.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_refiner.pt"), map_location="cpu")); R.eval()
 
-    z = torch.zeros(1, MAX_NODES, 8)
+    z = torch.zeros(1, nf_t.shape[1], 8)
     with torch.no_grad():
         init = G.logits_of(nf_t, adj_t, mask_t, z, None)
         refined = R(nf_t, adj_t, mask_t, init, None)

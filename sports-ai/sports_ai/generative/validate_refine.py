@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+from ..data.gnn_io import TRAIN_PAD_TO
 
 import os
 import random
@@ -43,7 +44,7 @@ def main(samples: int = 24, steps: int = 80, restarts: int = 3):
                               track_lanes=rng.choice([1, 2, 3]),
                               field_lanes=rng.choice([2, 3, 4, 5]),
                               day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]))
-        nf, adj, mk, _ = encode_gnn_inputs(s)
+        nf, adj, mk, _ = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO)
         nfs.append(nf); adjs.append(adj); mks.append(mk)
     nf = torch.from_numpy(np.concatenate(nfs, 0))
     adj = torch.from_numpy(np.concatenate(adjs, 0))

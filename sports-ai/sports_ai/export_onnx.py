@@ -1,4 +1,4 @@
-"""统一导出 ONNX（固定输入输出契约），并用 onnxruntime 自检推理。
+"""统一导出 ONNX（输入输出契约，并用 onnxruntime 自检推理）。
 
 用法：
     python -m sports_ai.export_onnx
@@ -14,10 +14,14 @@
         output "strategy"  float32 [1, 2]      ← logits（softmax 后 index1=取消概率）
 
     conflict_gnn.onnx
-        input  "node_feat"  float32 [1, 256, 8]
-        input  "adj"        float32 [1, 256, 256]
-        input  "mask"       float32 [1, 256]
-        output "priority"   float32 [1, 256]   ← 每节点着色优先级（填充节点为 0）
+        input  "node_feat"  float32 [1, n, 16]    ← n = 单元数（**动态轴**）
+        input  "adj"        float32 [1, n, n]     ← 带权邻接（共享运动员数归一化）
+        input  "mask"       float32 [1, n]
+        output "priority"   float32 [1, n]        ← 每节点着色优先级（填充节点为 0）
+
+⚠️ **n 是动态轴**：GNN 是归纳式的，参数与节点数无关，因此同一个模型既能处理 5 个单元、
+也能处理 2000 个单元。固定成 1024 会让训练把 99% 算力花在 padding 上，且仍留下硬上限。
+导出后用「非 2 的幂」的节点数自检，确保动态轴真的生效（而不是只在导出时长得像）。
 """
 
 from __future__ import annotations
@@ -29,7 +33,8 @@ import os
 import numpy as np
 import torch
 
-from sports_ai.data.features import MAX_NODES, N_FEATURES, NODE_FEAT_DIM
+from sports_ai.data.features import N_FEATURES, NODE_FEAT_DIM
+from sports_ai.data.gnn_io import TRAIN_PAD_TO
 from sports_ai.models.gnn import ConflictGnn
 from sports_ai.models.selector import AlgorithmSelector, Normalize
 
@@ -63,15 +68,19 @@ def export_gnn(path: str) -> None:
     model.load_state_dict(torch.load(os.path.join(MODEL_DIR, "gnn.pt"), map_location="cpu"))
     model.eval()
 
-    node_feat = torch.zeros((1, MAX_NODES, NODE_FEAT_DIM), dtype=torch.float32)
-    adj = torch.zeros((1, MAX_NODES, MAX_NODES), dtype=torch.float32)
-    mask = torch.zeros((1, MAX_NODES), dtype=torch.float32)
+    # 用训练时的补齐长度做导出 dummy，但把 n 声明为**动态轴**——模型因此接受任意节点数。
+    n = TRAIN_PAD_TO
+    node_feat = torch.zeros((1, n, NODE_FEAT_DIM), dtype=torch.float32)
+    adj = torch.zeros((1, n, n), dtype=torch.float32)
+    mask = torch.zeros((1, n), dtype=torch.float32)
     torch.onnx.export(
         model, (node_feat, adj, mask), path,
         input_names=["node_feat", "adj", "mask"], output_names=["priority"],
+        dynamic_axes={"node_feat": {1: "n"}, "adj": {1: "n", 2: "n"},
+                      "mask": {1: "n"}, "priority": {1: "n"}},
         opset_version=17,
     )
-    print(f"[ok] 导出 {os.path.basename(path)}")
+    print(f"[ok] 导出 {os.path.basename(path)}（节点数 n 为动态轴）")
 
 
 def verify(path: str, feeds: dict) -> None:
@@ -115,11 +124,14 @@ def main():
 
     if args.verify:
         verify(sel_path, {"features": np.zeros((1, N_FEATURES), dtype=np.float32)})
-        verify(gnn_path, {
-            "node_feat": np.zeros((1, MAX_NODES, NODE_FEAT_DIM), dtype=np.float32),
-            "adj": np.zeros((1, MAX_NODES, MAX_NODES), dtype=np.float32),
-            "mask": np.zeros((1, MAX_NODES), dtype=np.float32),
-        })
+        # 用「非 2 的幂、且与导出 dummy 长度不同」的节点数自检——证明动态轴真的生效，
+        # 而不是只在导出那一刻碰巧长得像。
+        for n in (7, 133):
+            verify(gnn_path, {
+                "node_feat": np.zeros((1, n, NODE_FEAT_DIM), dtype=np.float32),
+                "adj": np.zeros((1, n, n), dtype=np.float32),
+                "mask": np.zeros((1, n), dtype=np.float32),
+            })
     print("完成：models/ 下已生成 .onnx，供 Java 端 onnxruntime 加载。")
 
 

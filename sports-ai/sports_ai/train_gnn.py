@@ -8,6 +8,7 @@
 """
 
 from __future__ import annotations
+from sports_ai.data.gnn_io import TRAIN_PAD_TO
 
 import argparse
 import os
@@ -40,7 +41,7 @@ def make_batch(samples: int, seed: int):
             field_lanes=rng.choice([2, 3, 4, 5]),
             day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]),
         )
-        nf, adj, mk, lb = encode_gnn_inputs(s)
+        nf, adj, mk, lb = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO)
         nfs.append(nf)
         adjs.append(adj)
         mks.append(mk)

@@ -46,8 +46,13 @@ FEATURE_NAMES: List[str] = [
 N_FEATURES = len(FEATURE_NAMES)
 
 # GNN 契约（固定 shape，便于 ONNX 导出与 Java 端对齐）
-MAX_NODES = 256       # 最大单元数（不足补齐、超出截断）
-NODE_FEAT_DIM = 8     # 每个节点的输入特征维数
+#
+# ⚠️ MAX_NODES 是**双端硬契约**：Python（本文件）与 Java（ConflictGraphEncoder）必须同值，
+# 否则 ONNX 输入 shape 对不上，Java 端会直接抛 shape 不匹配。
+# 1024 覆盖真实大型赛会：约 100 个项目 × 6 年级 × 2 轮次 = 1200 单元的规模；
+# 单元数超过上限时按输入顺序截断，并在 Encoded.dropped 中如实报告（不再静默丢弃）。
+MAX_NODES = 1024      # 最大单元数（不足补齐；超出按序截断并告警）
+NODE_FEAT_DIM = 16    # 每个节点的输入特征维数（8 → 16：加入轮次/年级/时长占比/冲突暴露量等）
 
 
 def _build_conflict_graph(units: List[Unit]) -> Tuple[int, int, int, int, int]:
