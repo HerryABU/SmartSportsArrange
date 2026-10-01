@@ -1,0 +1,142 @@
+{
+  "schema": "sports-ai/infeasibility-report@1",
+  "title": "情形 B：限定运动会时间 = 3 天（真实上限）",
+  "feasible": true,
+  "scene": {
+    "athletes": 720,
+    "classes": 24,
+    "events": 9,
+    "units": 36,
+    "heatTasks": 142,
+    "days": 3,
+    "periodsPerDay": 2,
+    "poolLanes": {
+      "径赛": 2,
+      "田赛": 4
+    },
+    "dayMinutes": [
+      240,
+      240
+    ],
+    "trackLanes": 2,
+    "fieldLanes": 4
+  },
+  "summary": {
+    "tasks": 142,
+    "placed": 142,
+    "unplaced": 0,
+    "placedRatio": 1.0,
+    "athleteSlotsTotal": 988,
+    "athleteSlotsPlaced": 988,
+    "athleteSlotsUnplaced": 0,
+    "conflictMultiplicity": 0,
+    "conflictAthletes": 0,
+    "unplacedUnits": []
+  },
+  "bounds": {
+    "days": 3,
+    "periodsPerDay": 2,
+    "availablePeriods": 6,
+    "pools": {
+      "径赛": {
+        "demand": 1975,
+        "supply": 2880,
+        "shortfall": 0,
+        "lanes": 2,
+        "periodsPerDay": 2,
+        "minDays": 3,
+        "feasibleByCapacity": true
+      },
+      "田赛": {
+        "demand": 3170,
+        "supply": 5760,
+        "shortfall": 0,
+        "lanes": 4,
+        "periodsPerDay": 2,
+        "minDays": 2,
+        "feasibleByCapacity": true
+      }
+    },
+    "minDaysByCapacity": 3,
+    "oversizedUnits": [
+      {
+        "unit": "SLJ@高1@决赛",
+        "duration": 540,
+        "maxWindowCapacity": 240,
+        "minSplits": 3
+      },
+      {
+        "unit": "SLJ@高2@决赛",
+        "duration": 420,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "SLJ@高3@决赛",
+        "duration": 420,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "PU@高2@决赛",
+        "duration": 280,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "PU@高3@决赛",
+        "duration": 280,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      }
+    ],
+    "oversizedCount": 5,
+    "cliqueLowerBound": 5,
+    "cliqueFeasible": true,
+    "capacityFeasible": true
+  },
+  "unplacedTasks": [],
+  "conflicts": [
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高1@决赛",
+      "durationMinutes": 540,
+      "maxWindowCapacity": 240,
+      "minSplits": 3,
+      "message": "单元「SLJ@高1@决赛」全部时长 540 分钟超过单时段容量240 分钟，必须拆成至少 3 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高2@决赛",
+      "durationMinutes": 420,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「SLJ@高2@决赛」全部时长 420 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高3@决赛",
+      "durationMinutes": 420,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「SLJ@高3@决赛」全部时长 420 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "PU@高2@决赛",
+      "durationMinutes": 280,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「PU@高2@决赛」全部时长 280 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "PU@高3@决赛",
+      "durationMinutes": 280,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「PU@高3@决赛」全部时长 280 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    }
+  ],
+  "actions": []
+}

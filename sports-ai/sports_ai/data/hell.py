@@ -159,7 +159,8 @@ def _build_units(athletes: List[Athlete], grades: List[str]) -> Tuple[List[Unit]
             units.append(Unit(
                 key=f"{ev.code}@{grade}@{rnd}", event_id=eid, event_name=f"{ev.name}({rnd})",
                 grade=grade, track=ev.track, pool_label=ev.pool, group_key=gkey,
-                raw_duration=prelim_dur, athletes=sorted(a.id for a in parts)))
+                raw_duration=prelim_dur, athletes=sorted(a.id for a in parts),
+                batch_minutes=ev.batch_minutes, heat_capacity=ev.heat_capacity))
             if not ev.has_final:
                 round_counts["final"] += 1
             else:
@@ -171,7 +172,8 @@ def _build_units(athletes: List[Athlete], grades: List[str]) -> Tuple[List[Unit]
                     key=f"{ev.code}@{grade}@决赛", event_id=eid,
                     event_name=f"{ev.name}(决赛)", grade=grade, track=ev.track,
                     pool_label=ev.pool, group_key=gkey, raw_duration=ev.batch_minutes,
-                    athletes=sorted(a.id for a in seeded)))
+                    athletes=sorted(a.id for a in seeded),
+                    batch_minutes=ev.batch_minutes, heat_capacity=ev.heat_capacity))
                 round_counts["final"] += 1
     stats = {"unitCount": len(units), "prelimUnits": round_counts["prelim"],
              "finalUnits": round_counts["final"], "heatTotal": heat_total,
@@ -179,23 +181,38 @@ def _build_units(athletes: List[Athlete], grades: List[str]) -> Tuple[List[Unit]
     return units, stats
 
 
-def _placements(days: int, track_slots: int = 1, field_slots: int = 3) -> List[Placement]:
-    """位置网格：径赛 track_slots 并发、田赛 field_slots 并发；每天 2 时段（上午 180 / 下午 150）。"""
+# 真实田径运动会的默认时间资源（可在 generate_hell 覆盖）
+DEFAULT_DAY_MINUTES = (240, 240)   # 每天 2 时段：上午 4h + 下午 4h = 480 分钟
+DEFAULT_TRACK_LANES = 2            # 径赛 2 条并行流（短跑直道 + 中长跑环道）
+DEFAULT_FIELD_LANES = 4            # 田赛 4 块场地（立定跳远 / 跳高 / 引体向上 / 铅球）
+
+
+def _placements(days: int, track_lanes: int = DEFAULT_TRACK_LANES,
+                field_lanes: int = DEFAULT_FIELD_LANES,
+                day_minutes: Tuple[int, ...] = DEFAULT_DAY_MINUTES) -> List[Placement]:
+    """位置网格：径赛 ``track_lanes`` 并发、田赛 ``field_lanes`` 并发；每天按时段窗口切分。
+
+    ``window_idx`` 取全局窗口序号（跨天唯一），同一 ``(day, window)`` 即同一**时段**
+    ——兼项冲突的判定单位（一个运动员同一时段只能出现在一个并发位上）。
+    """
     out: List[Placement] = []
-    for pool, slots in (("径赛", track_slots), ("田赛", field_slots)):
+    for pool, lanes in (("径赛", max(1, track_lanes)), ("田赛", max(1, field_lanes))):
         for day in range(1, days + 1):
-            for win, cap in ((1, 180), (2, 150)):
-                widx = (day - 1) * 2 + win
-                for s in range(slots):
+            for wi, cap in enumerate(day_minutes, start=1):
+                widx = (day - 1) * len(day_minutes) + wi
+                for s in range(lanes):
                     out.append(Placement(pool_label=pool, slot_idx=s, window_idx=widx,
                                          day=day, window_capacity=cap))
     return out
 
 
-def estimate_days(units: List[Unit], track_slots: int = 1, field_slots: int = 3) -> int:
+def estimate_days(units: List[Unit], track_lanes: int = DEFAULT_TRACK_LANES,
+                  field_lanes: int = DEFAULT_FIELD_LANES,
+                  day_minutes: Tuple[int, ...] = DEFAULT_DAY_MINUTES) -> int:
     """不限时间时反推需要几天：径赛/田赛分别算（池独立），取较大者，向上取整。"""
-    per_day_track = track_slots * (180 + 150)
-    per_day_field = field_slots * (180 + 150)
+    per_day = sum(day_minutes)
+    per_day_track = max(1, track_lanes) * per_day
+    per_day_field = max(1, field_lanes) * per_day
     d_track = sum(u.raw_duration for u in units if u.pool_label == "径赛")
     d_field = sum(u.raw_duration for u in units if u.pool_label == "田赛")
     need_track = math.ceil(d_track / per_day_track) if per_day_track else 0
@@ -205,32 +222,49 @@ def estimate_days(units: List[Unit], track_slots: int = 1, field_slots: int = 3)
 
 def generate_hell(seed: int = 20260918, days: Optional[int] = None,
                   n_grades: int = 3, classes_per_grade: int = 8, per_class: int = 30,
-                  track_slots: int = 1, field_slots: int = 3) -> HellMeet:
+                  track_lanes: int = DEFAULT_TRACK_LANES,
+                  field_lanes: int = DEFAULT_FIELD_LANES,
+                  day_minutes: Tuple[int, ...] = DEFAULT_DAY_MINUTES) -> HellMeet:
     """生成地狱级场景。
 
-    ``days=None`` → 不限运动会时间，按需求反推天数；
-    ``days=2``    → 限定 2 天（容量紧张）。
+    ``days=None`` → 不限运动会时间，按需求反推天数（约 3 天）；
+    ``days=2``    → 限定 2 天（容量紧张，但通过拆批 + 智能错峰仍尽量可解）。
     """
     athletes = generate_athletes(seed, n_grades, classes_per_grade, per_class)
     grades = [f"高{i + 1}" for i in range(n_grades)]
     units, ustat = _build_units(athletes, grades)
-    estimated = estimate_days(units, track_slots, field_slots)
+    estimated = estimate_days(units, track_lanes, field_lanes, day_minutes)
     use_days = estimated if days is None else days
-    placements = _placements(use_days, track_slots, field_slots)
+    placements = _placements(use_days, track_lanes, field_lanes, day_minutes)
+
+    def pool_supply(pool: str) -> int:
+        lanes = track_lanes if pool == "径赛" else field_lanes
+        return max(1, lanes) * sum(day_minutes) * use_days
+
+    def pool_demand(pool: str) -> int:
+        return sum(u.raw_duration for u in units if u.pool_label == pool)
 
     demand = sum(u.raw_duration for u in units)
-    daily = (track_slots + field_slots) * (180 + 150)
+    supply = pool_supply("径赛") + pool_supply("田赛")
     stats = dict(ustat)
     stats.update({
         "athleteCount": len(athletes),
         "classCount": n_grades * classes_per_grade,
         "eventCount": len(EVENTS),
         "demandMinutes": demand,
-        "dailyCapacity": daily,
+        "trackDemand": pool_demand("径赛"),
+        "fieldDemand": pool_demand("田赛"),
+        "trackSupply": pool_supply("径赛"),
+        "fieldSupply": pool_supply("田赛"),
+        "dailyCapacity": supply // max(1, use_days),
+        "trackLanes": track_lanes,
+        "fieldLanes": field_lanes,
+        "dayMinutes": list(day_minutes),
         "estimatedDays": estimated,
         "usedDays": use_days,
-        "tension": round(demand / (daily * use_days), 3) if use_days else 0.0,
+        "tension": round(demand / supply, 3) if supply else 0.0,
     })
     scenario = Scenario(units=units, placements=placements)
     return HellMeet(athletes=athletes, scenario=scenario, days=days,
-                    estimated_days=estimated, daily_capacity=daily, stats=stats)
+                    estimated_days=estimated, daily_capacity=supply // max(1, use_days),
+                    stats=stats)

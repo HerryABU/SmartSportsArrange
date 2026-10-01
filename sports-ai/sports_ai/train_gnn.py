@@ -36,6 +36,9 @@ def make_batch(samples: int, seed: int):
             multi_event_prob=rng.uniform(0.4, 0.85),
             grades=["高一", "高二", "高三"],
             event_drop_prob=0.3,
+            track_lanes=rng.choice([1, 2, 3]),
+            field_lanes=rng.choice([2, 3, 4, 5]),
+            day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]),
         )
         nf, adj, mk, lb = encode_gnn_inputs(s)
         nfs.append(nf)

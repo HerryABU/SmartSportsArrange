@@ -1,0 +1,583 @@
+{
+  "schema": "sports-ai/infeasibility-report@1",
+  "title": "情形 C：限定运动会时间 = 2 天（容量紧张）",
+  "feasible": false,
+  "scene": {
+    "athletes": 720,
+    "classes": 24,
+    "events": 9,
+    "units": 36,
+    "heatTasks": 142,
+    "days": 2,
+    "periodsPerDay": 2,
+    "poolLanes": {
+      "径赛": 2,
+      "田赛": 4
+    },
+    "dayMinutes": [
+      240,
+      240
+    ],
+    "trackLanes": 2,
+    "fieldLanes": 4
+  },
+  "summary": {
+    "tasks": 142,
+    "placed": 137,
+    "unplaced": 5,
+    "placedRatio": 0.9648,
+    "athleteSlotsTotal": 988,
+    "athleteSlotsPlaced": 948,
+    "athleteSlotsUnplaced": 40,
+    "conflictMultiplicity": 39,
+    "conflictAthletes": 38,
+    "unplacedUnits": [
+      "100m@高2@预赛"
+    ]
+  },
+  "bounds": {
+    "days": 2,
+    "periodsPerDay": 2,
+    "availablePeriods": 4,
+    "pools": {
+      "径赛": {
+        "demand": 1975,
+        "supply": 1920,
+        "shortfall": 55,
+        "lanes": 2,
+        "periodsPerDay": 2,
+        "minDays": 3,
+        "feasibleByCapacity": false
+      },
+      "田赛": {
+        "demand": 3170,
+        "supply": 3840,
+        "shortfall": 0,
+        "lanes": 4,
+        "periodsPerDay": 2,
+        "minDays": 2,
+        "feasibleByCapacity": true
+      }
+    },
+    "minDaysByCapacity": 3,
+    "oversizedUnits": [
+      {
+        "unit": "SLJ@高1@决赛",
+        "duration": 540,
+        "maxWindowCapacity": 240,
+        "minSplits": 3
+      },
+      {
+        "unit": "SLJ@高2@决赛",
+        "duration": 420,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "SLJ@高3@决赛",
+        "duration": 420,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "PU@高2@决赛",
+        "duration": 280,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      },
+      {
+        "unit": "PU@高3@决赛",
+        "duration": 280,
+        "maxWindowCapacity": 240,
+        "minSplits": 2
+      }
+    ],
+    "oversizedCount": 5,
+    "cliqueLowerBound": 5,
+    "cliqueFeasible": false,
+    "capacityFeasible": false
+  },
+  "unplacedTasks": [
+    {
+      "unit": "100m@高2@预赛",
+      "batch": 0,
+      "ofBatches": 5,
+      "pool": "径赛",
+      "grade": "高2",
+      "duration": 20,
+      "athleteCount": 8,
+      "round": "prelim",
+      "reason": "pool_capacity_shortfall"
+    },
+    {
+      "unit": "100m@高2@预赛",
+      "batch": 1,
+      "ofBatches": 5,
+      "pool": "径赛",
+      "grade": "高2",
+      "duration": 20,
+      "athleteCount": 8,
+      "round": "prelim",
+      "reason": "pool_capacity_shortfall"
+    },
+    {
+      "unit": "100m@高2@预赛",
+      "batch": 2,
+      "ofBatches": 5,
+      "pool": "径赛",
+      "grade": "高2",
+      "duration": 20,
+      "athleteCount": 8,
+      "round": "prelim",
+      "reason": "pool_capacity_shortfall"
+    },
+    {
+      "unit": "100m@高2@预赛",
+      "batch": 3,
+      "ofBatches": 5,
+      "pool": "径赛",
+      "grade": "高2",
+      "duration": 20,
+      "athleteCount": 8,
+      "round": "prelim",
+      "reason": "pool_capacity_shortfall"
+    },
+    {
+      "unit": "100m@高2@预赛",
+      "batch": 4,
+      "ofBatches": 5,
+      "pool": "径赛",
+      "grade": "高2",
+      "duration": 20,
+      "athleteCount": 8,
+      "round": "prelim",
+      "reason": "pool_capacity_shortfall"
+    }
+  ],
+  "conflicts": [
+    {
+      "type": "capacity_shortfall",
+      "pool": "径赛",
+      "demandMinutes": 1975,
+      "supplyMinutes": 1920,
+      "shortfallMinutes": 55,
+      "minDaysRequired": 3,
+      "message": "径赛容量不足，缺 55 分钟"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高1@决赛",
+      "durationMinutes": 540,
+      "maxWindowCapacity": 240,
+      "minSplits": 3,
+      "message": "单元「SLJ@高1@决赛」全部时长 540 分钟超过单时段容量240 分钟，必须拆成至少 3 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高2@决赛",
+      "durationMinutes": 420,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「SLJ@高2@决赛」全部时长 420 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "SLJ@高3@决赛",
+      "durationMinutes": 420,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「SLJ@高3@决赛」全部时长 420 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "PU@高2@决赛",
+      "durationMinutes": 280,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「PU@高2@决赛」全部时长 280 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "oversized_unit",
+      "unit": "PU@高3@决赛",
+      "durationMinutes": 280,
+      "maxWindowCapacity": 240,
+      "minSplits": 2,
+      "message": "单元「PU@高3@决赛」全部时长 280 分钟超过单时段容量240 分钟，必须拆成至少 2 个组次"
+    },
+    {
+      "type": "clique_exceeds_periods",
+      "cliqueSize": 5,
+      "availablePeriods": 4,
+      "message": "冲突图最大团 5 > 可用时段数4，结构性不可解（加场地无效，需拆组次或取消报名）"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 510,
+      "clashCount": 2,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "100m@高3@预赛",
+            "PU@高3@决赛"
+          ]
+        },
+        {
+          "period": 1,
+          "day": 1,
+          "units": [
+            "100m@高3@决赛",
+            "SP@高3@决赛"
+          ]
+        }
+      ],
+      "message": "运动员 510 在 2 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 486,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 486 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 511,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 511 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 540,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 540 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 545,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 545 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 547,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 547 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 572,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 572 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 574,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 574 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 601,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 601 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 602,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 602 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 603,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 603 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 604,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 604 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 632,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 632 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 633,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 633 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash",
+      "athlete": 637,
+      "clashCount": 1,
+      "detail": [
+        {
+          "period": 0,
+          "day": 1,
+          "units": [
+            "50m@高3@预赛",
+            "100m@高3@预赛"
+          ]
+        }
+      ],
+      "message": "运动员 637 在 1 个时段同时段出现于多个项目"
+    },
+    {
+      "type": "athlete_clash_summary",
+      "totalAthletes": 38,
+      "totalClashMultiplicity": 39,
+      "message": "另有 23 名运动员存在兼项重叠（详见完整明细接口）"
+    }
+  ],
+  "actions": [
+    {
+      "action": "extend_days",
+      "scope": "径赛",
+      "needDays": 3,
+      "gain": "径赛容量补齐"
+    },
+    {
+      "action": "add_lanes",
+      "scope": "径赛",
+      "currentLanes": 2,
+      "reason": "或为径赛增加并发位/场地，可等价于延长天数"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 510,
+      "clashCount": 2,
+      "candidateUnits": [
+        "100m@高3@预赛",
+        "PU@高3@决赛",
+        "100m@高3@决赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 486,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 511,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 540,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 545,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 547,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 572,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 574,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 601,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    },
+    {
+      "action": "cancel_entry",
+      "athlete": 602,
+      "clashCount": 1,
+      "candidateUnits": [
+        "50m@高3@预赛",
+        "100m@高3@预赛"
+      ],
+      "reason": "该运动员兼项在其可用时段内无法错开，建议取消其中一项报名（交由班主任确认）"
+    }
+  ]
+}
