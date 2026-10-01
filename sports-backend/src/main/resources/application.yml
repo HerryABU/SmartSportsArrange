@@ -132,6 +132,10 @@ sports:
       gnn-model: conflict_gnn.onnx
       # GAN 生成器：冲突图 + 噪声 → 时间槽着色方案（直接学习着色）
       scheme-generator-model: scheme_generator.onnx
+      # GAN 判别器：方案 → 真/假（推理时自对抗用它给候选「批评」打分）
+      scheme-discriminator-model: scheme_discriminator.onnx
+      # 对抗精修器：初始方案 → 精修方案（把推理时迭代自对抗蒸馏成一次前向）
+      scheme-refiner-model: scheme_refiner.onnx
     # 大邻域搜索（LNS）精修轮数：0 = 关闭。每轮「破坏一块（年级/时段窗口/最忙运动员）
     # → 只重建这一块 → 只接受更好的」，轮数越多越可能跳出现有局部最优（代价是接口更慢）。
     lns-rounds: 2
