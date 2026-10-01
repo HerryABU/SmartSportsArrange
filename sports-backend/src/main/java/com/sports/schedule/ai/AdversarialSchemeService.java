@@ -97,11 +97,14 @@ public class AdversarialSchemeService {
             float[] forbid = new float[max * MAX_SLOTS];
             Random rng = new Random(20260918L);
 
-            // 基线：G 一次前向（z=0）的残余冲突，用于对比「自对抗是否真的更好」
+            // 基线：G 一次前向（z=0）的残余冲突。它**作为初始候选**参与择优，
+            // 保证「推理时自对抗」的结果在冲突上绝不劣于单次生成。
             float[] baseLogits = runGenerator(enc, new float[max * NOISE_DIM], forbid);
-            double baselineConflict = hardConflict(argmaxSlots(baseLogits, n), enc.adj, n);
+            int[] baseSlots = argmaxSlots(baseLogits, n);
+            double baselineConflict = hardConflict(baseSlots, enc.adj, n);
+            SchemeResult best = new SchemeResult(baseSlots, runDiscriminator(enc, oneHot(baseLogits, n)),
+                    baselineConflict, baselineConflict, false, 0);
 
-            SchemeResult best = null;
             for (int r = 0; r < Math.max(1, rounds); r++) {
                 float[] z = gaussian(max * NOISE_DIM, rng);
                 float[] logits = runGenerator(enc, z, forbid);           // [max*K]
@@ -116,7 +119,10 @@ public class AdversarialSchemeService {
                 double conflict = hardConflict(slots, enc.adj, n);
                 double dScore = runDiscriminator(enc, scheme);
                 SchemeResult cand = new SchemeResult(slots, dScore, conflict, baselineConflict, refined, r + 1);
-                if (best == null || cand.score(lambda) > best.score(lambda)) {
+                // 择优准则：**残余冲突优先**（编排的核心目标），冲突相同再看判别器评分。
+                if (cand.conflict() < best.conflict() - 1e-9
+                        || (Math.abs(cand.conflict() - best.conflict()) <= 1e-9
+                            && cand.dScore() > best.dScore())) {
                     best = cand;
                 }
             }
