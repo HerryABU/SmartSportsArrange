@@ -19,6 +19,9 @@ try {
     Write-Host "==> ③ GAN 对抗训练（生成器 + 判别器，minimax）..."
     & $Py -m sports_ai.generative.train_gan --iters 1500 --batch 16
 
+    Write-Host "==> ③b 对抗精修器（把推理时自对抗精修蒸馏成一次前向）..."
+    & $Py -m sports_ai.generative.train_refiner --iters 2500
+
     Write-Host "==> ④ 多步预测（Direct / Recursive / MIMO）..."
     & $Py -m sports_ai.forecast.train_forecast --samples 2000 --epochs 20
 
@@ -29,6 +32,9 @@ try {
     & $Py -m sports_ai.export_onnx --verify
     & $Py -m sports_ai.generative.export_gan --verify
     & $Py -m sports_ai.forecast.export_forecast --verify
+
+    Write-Host "==> ⑦ 验证推理时自对抗精修（单次生成 vs 对抗精修）..."
+    & $Py -m sports_ai.generative.validate_refine
 }
 finally {
     Pop-Location

@@ -1,11 +1,11 @@
 {
   "direct": {
-    "acc": 0.9675,
-    "f1": 0.9752
+    "acc": 0.9975,
+    "f1": 0.9966
   },
   "self_paced": {
-    "acc": 0.9725,
-    "f1": 0.979
+    "acc": 0.9975,
+    "f1": 0.9966
   },
-  "self_improve_solve_rate": 0.0
+  "self_improve_solve_rate": 0.25
 }

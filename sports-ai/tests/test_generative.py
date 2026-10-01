@@ -74,3 +74,33 @@ def test_conflicts_zero_when_all_distinct():
     mask[0, :n] = 1.0
     c = scheme_conflicts(P, adj, mask)
     assert abs(c.item()) < 1e-5, "全不同槽不应有同色冲突"
+
+
+def test_refiner_shapes():
+    from sports_ai.generative.refiner import SchemeRefiner
+
+    nf, adj, mask = _batch()
+    r = SchemeRefiner()
+    init = torch.zeros(1, MAX_NODES, MAX_SLOTS)
+    out = r(nf, adj, mask, init, None)
+    assert out.shape == (1, MAX_NODES, MAX_SLOTS)
+
+
+def test_hard_conflict_helper():
+    from sports_ai.generative.refine import hard_conflict
+
+    n = 3
+    adj = torch.zeros(1, MAX_NODES, MAX_NODES)
+    mask = torch.zeros(1, MAX_NODES)
+    mask[0, :n] = 1.0
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                adj[0, i, j] = 1.0
+    logits_all_same = torch.zeros(1, MAX_NODES, MAX_SLOTS)
+    logits_all_same[0, :, 0] = 10.0            # 全部倾向槽 0
+    assert abs(hard_conflict(logits_all_same, adj, mask).item() - 1.0) < 1e-6
+    logits_distinct = torch.zeros(1, MAX_NODES, MAX_SLOTS)
+    for i in range(n):
+        logits_distinct[0, i, i] = 10.0
+    assert abs(hard_conflict(logits_distinct, adj, mask).item()) < 1e-6

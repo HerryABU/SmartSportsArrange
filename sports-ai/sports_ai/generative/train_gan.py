@@ -48,9 +48,10 @@ def make_batch(n_samples: int, seed: int):
     for _ in range(n_samples):
         s = generate_scenario(
             seed=rng.randint(0, 10 ** 9),
-            n_athletes=rng.randint(120, 400),
+            n_athletes=rng.randint(120, 320),
             n_days=rng.choice([1, 1, 2]),
             multi_event_prob=rng.uniform(0.5, 0.95),
+            grades=["高一", "高二", "高三"],
         )
         nf, adj, mk, _ = encode_gnn_inputs(s)
         nfs.append(nf)

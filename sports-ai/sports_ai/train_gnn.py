@@ -34,6 +34,7 @@ def make_batch(samples: int, seed: int):
             n_athletes=rng.randint(80, 260),
             n_days=rng.randint(2, 3),
             multi_event_prob=rng.uniform(0.4, 0.85),
+            grades=["高一", "高二", "高三"],
         )
         nf, adj, mk, lb = encode_gnn_inputs(s)
         nfs.append(nf)
