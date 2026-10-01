@@ -408,6 +408,22 @@ public class ArrangementController {
         return ApiResponse.success("兼项高频统计完成", eventCooccurrenceService.analyze());
     }
 
+    /**
+     * 兼项运动员自动统计：哪些运动员兼了项、兼了几项，兼项项数分布与占比，
+     * 以及高频共现项目对。纯只读统计，前端进入编排页即自动加载。
+     */
+    @GetMapping("/multi-event")
+    public ApiResponse<?> multiEvent(@RequestParam(defaultValue = "200") int limit) {
+        return ApiResponse.success("兼项运动员统计完成", eventCooccurrenceService.analyze(limit));
+    }
+
+    /** 兼项运动员名单导出（Excel） */
+    @GetMapping("/multi-event/export")
+    public void exportMultiEvent(HttpServletResponse response) throws IOException {
+        log.info("导出兼项运动员名单");
+        eventCooccurrenceService.exportMultiEventAthletes(response);
+    }
+
     // ==================== 兼项冲突消解（取消某人某项目 + 通知班主任） ====================
 
     /** 统计「哪些项目与哪些项目冲突」（事件对汇总，供统一取消前决策） */

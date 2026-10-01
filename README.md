@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.8.2
+> Sports Meet Intelligent Arrangement System v2.8.1
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -64,7 +64,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.8.2.jar
+java -jar sports-2.8.1.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -258,7 +258,7 @@ JAR 启动时自动检测终端编码（Windows GBK / Linux UTF-8 / Mac UTF-8）
 | L1 规则模式 | `com.sports.schedule.rule`：`SnakeGrouping`（蛇形分组）+ `FixedLaneAssignment`（固定分道）+ `RuleBasedScheduler`（确定性 first-fit 时间编排） | **毫秒级** | 完全确定（同输入必同输出）、参数透明可解释、可穷举验证——传统电子化表单工具的能力边界 |
 | L2 启发式 | 贪心 + 冲突感知放置 + 匈牙利精确分道（`HungarianAssignment`） | 秒级 | 兜底与快速通道 |
 | L3 优化模式 | Timefold 约束求解 + 遗传算法（GA）+ 大邻域搜索（LNS）+ 算法组合调度 | 秒级（可配预算） | 全局权衡兼项冲突/场地利用率/时长保真，带理论下界 gap 评估 |
-| **L4 AI 模式**（新增第三档「编排模式」） | 优化链之上叠加 **ONNX 全本地推理**：算法选择器判「硬解 / 取消」、冲突簇 GNN 定着色优先级、**推理时自对抗**（G 采样 → 精修器 → D 评判 → 多轮择优）、**AI 派遣款型**排布道次、AI 可解性诊断 | 秒级（含自对抗轮数） | 不换引擎只加 AI：跑完优化链再跑一遍生成对抗并结构化回显；模型缺失自动降级为优化模式，**绝不编排失败** |
+| **L4 AI 模式**（新增第三档「编排模式」） | 优化链之上叠加 **ONNX 全本地推理**：算法选择器判「硬解 / 取消」、冲突簇 GNN 定着色优先级、**推理时自对抗**（G 采样 → 精修器 → D 评判 → 多轮择优）、**AI 派遣款型**排布道次、AI 可解性诊断 | **分钟级**（默认 `aiAdversarialRounds=3` 自对抗轮数，叠加优化链与多轮前向推理；**普通办公机 / 默认配置按分钟计**，仅在高性能服务器 + 调低自对抗轮数或小规模场景下才回落为秒级） | 不换引擎只加 AI：跑完优化链再跑一遍生成对抗并结构化回显；模型缺失自动降级为优化模式，**绝不编排失败** |
 
 **前端切换**：教师「项目编排」页顶部提供「规则模式 / 优化模式 / **AI 模式**」三档单选按钮（选择记忆于 `localStorage`，AI 档为紫红渐变以区分），主按钮随档位变文案（按规则编排 / 一键编排赛程 / **AI 智能编排**）。**所有编排入口都带 AI 档**：赛程编排页（同步 + 异步）、赛程页「再次排道」（沿用当前模式的 `styleRule`）、道次编排页工具条「AI 模式」按钮（切到 AI 派遣款型并直接打开编排弹窗）、道次页分组款型旁「AI 模式」小按钮（可单独切换，不弹窗）。
 **API 切换**：`POST /api/schedule/auto`，请求体 `mode` 字段——`"rule"` = 规则模式，`"optimize"` = 优化模式，`"ai"` = AI 模式（缺省仍是 `optimize`，完全向后兼容）。可选参数：规则参数 `ruleLanePolicy`（`registration`/`performance`）、`ruleAdvanceCount`（晋级人数）、`ruleConflictBufferMinutes`（兼项缓冲）、`ruleConflictCheckEnabled`；AI 参数 `aiAdversarialRounds`（推理时自对抗轮数，默认 `3`，`0` 关闭自对抗只保留 AI 派遣）、`aiLaneStyle`（AI 派遣款型，默认 `"ai"`）。
@@ -393,6 +393,30 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 | 道次表 | 项目 × 组别 × 跑道矩阵 |
 | 成绩汇总表 | 成绩、排名、积分 |
 | 团体总分榜 | 班级总分 + 金银铜 |
+| **兼项运动员统计** ⭐ | **兼项人数分布（1项/N项）+ 项目对共现排行 + 兼项运动员明细 + Excel 导出**（口径见 [11.1](#111-兼项运动员自动统计)） |
+
+#### 11.1 兼项运动员自动统计 ⭐
+
+同一名运动员报名多个项目即「兼项」，它是编排冲突的总源头。系统在**教师端「项目编排」页兼项卡片**中**自动统计**（页面挂载即加载，编排成功后自动刷新，无需点击按钮）：
+
+- **兼项人数分布**：`[1项, 2项, 3项, 4项, …]` 直方图（前端为彩色分布条，一眼看出「几项兼项的人最多」）；
+- **项目对共现排行**：哪两个项目同时报的人最多（兼项冲突最密集的组合，是优先处理对象）；
+- **兼项运动员明细表**：姓名、号码布、性别、班级、年级、**兼项数量**、**兼项项目对**、**全部报名项目**，按兼项数量降序；
+- **一键导出**：导出为 Excel（EasyExcel），可直接发班主任或裁判组。
+
+口径说明（重要）：
+
+1. 统计对象为**已审核（`approved`）的报名记录**，未审核报名不参与统计，但会写入 `warnings[]` 提示「N 条未审核报名未计入」；
+2. 「兼项数量」= 该运动员已审核报名项目数，`distribution[i]` 表示**报了 i+1 个项目**的人数，所有档位合计 = 全部参与统计的运动员数（不是兼项人数）；
+3. `pairs` 按「项目对」去重计数（A×B 与 B×A 同一对），所以一个报了 4 项的人最多贡献 C(4,2)=6 对；
+4. 与「兼项冲突检测（`/conflicts`）」是**两个维度**：冲突检测看**已落库编排**里的真实撞车，兼项统计看**报名层**的高频兼项组合——前者用于编排，后者用于排兵布阵与决策谁该退项。
+
+接口：
+
+| 方法 | 端点 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/api/arrange/co-occurrence` | T/SA | 兼项统计（含明细表，见上表） |
+| GET | `/api/arrange/co-occurrence/export` | T/SA | 兼项运动员明细导出（Excel） |
 
 ### 12. 数据库热迁移 & 备份
 
@@ -518,6 +542,18 @@ GET /api/audit/logs?action=SCHEDULE_AUTO&limit=100
 ### 19. 自定义项目区（Custom Project）
 
 入场式 / 队列等「非竞赛类」展示项目可走自定义项目区维护（独立于常规 `event` 竞赛项目，不进入成绩排名）：`GET /api/custom-project` 列表、`POST /api/custom-project` 保存（含 `code / name / type / sortOrder / countInTotal`）、`DELETE /api/custom-project/{id}` 删除。详见 [§25 自定义项目](#25-自定义项目custom-project)。
+
+### 20. 在线说明书（Help）📖
+
+系统内置的**网页版说明书**（顶栏「📖 说明书」入口），无需另外打开文档站点，随时可查：
+
+- **16 章完整手册**：建站向导 → 班级名单 → 项目报名 → 智能编排（规则/优化/AI 三档）→ 赛程编排 → 兼项统计 → 成绩排名 → 统计报表 → 数据库迁移 → 秩序册 → 号码簿 → 报名进度 → 场地管理 → 审计日志 → 实时协作 → 自定义项目，逐章标注「谁需要用」「在哪点按钮」；
+- **搜索直达**：说明书顶部搜索框，输入关键词（如「兼项」「AI 模式」「导出」）即时过滤章节， Enter 跳到第一节命中；
+- **打印/存 PDF**：一键调用浏览器打印（右侧「🖨 打印」按钮），可另存为 PDF 发给同事；
+- **目录自动高亮**：左侧目录随滚动自动定位当前章节，点击可跳转；
+- **FAQ 速查**：按「编排失败怎么办 / 数据存哪 / 换电脑 / 多角色权限 / 打印」等高频问题分组，直给操作步骤。
+
+> 💡 说明书与本项目 README 同口径同步更新——每次功能变更（如本次兼项自动统计、AI 编排模式）都会同步补写对应章节。
 
 ---
 
@@ -732,7 +768,8 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | GET | `/api/arrange/export-all` | — | T/SA | 全量编排导出（JSON，含决赛，供 `arrange_result.json`） |
 | GET | `/api/arrange/conflicts` | — | T/SA | 兼项冲突检测（清单 + 建议） |
 | GET | `/api/arrange/conflicts/export` | — | T/SA | 兼项冲突清单导出（Excel） |
-| **GET** | **`/api/arrange/co-occurrence`** | — | T/SA | **兼项高频统计**：项目×项目共现矩阵，返回 `pairs`（高频共现排行）+ `eventHeat`（每项目兼项热度） |
+| **GET** | **`/api/arrange/co-occurrence`** | — | T/SA | **兼项统计（自动）**：`total` 运动员数 / `multiEventCount` 兼项人数 / `distribution`（1项…N项分布）/ `pairs`（项目对共现排行）/ `athletes[]`（**兼项运动员明细**：姓名、号码布、性别、班级、年级、兼项数量、项目对、报名项目）/ 可解性相关信息。教师端页面**打开即自动加载**，无按钮点击 |
+| **GET** | **`/api/arrange/co-occurrence/export`** | — | T/SA | **兼项运动员明细导出**（EasyExcel：序号/姓名/号码布/性别/班级/年级/兼项数量/兼项项目对/全部报名项目） |
 | **GET** | **`/api/arrange/conflicts/statistics`** | — | T/SA | **冲突统计**：汇总「哪些项目互相撞车」（事件对 + 涉及运动员数），供取消决策 |
 | **POST** | **`/api/arrange/conflicts/cancel`** | Body `{items:[{athleteId,eventId}], notifyTeacher:bool}` | T/SA | **取消某人某项目**：退报名 + 同步移出编排 + 重算冲突；`notifyTeacher=true` 触发站内信通知班主任 |
 | **GET** | **`/api/arrange/conflicts/class-export`** | — | T/SA | **外通知**：按班级汇总的冲突/取消统计表 Excel，转交班主任 |
@@ -1222,24 +1259,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.8.2.jar
+java -jar sports-2.8.1.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.8.2.jar --app.port=8899 --app.host=::
+java -jar sports-2.8.1.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.8.2.jar --server.port=9090
+java -jar sports-2.8.1.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.8.2.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.8.1.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.8.2.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.2.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.8.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1378,7 +1415,7 @@ Java 侧 `com.sports.schedule.analysis.ScheduleFeasibilityService` 产出**同�
 
 ### 六、编排进度可见
 
-大规模编排要走「求解 → GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链 → 对抗自检」，秒级到十秒级。`POST /api/schedule/auto/async` 返回 `taskId`，前端轮询 `GET /api/schedule/progress/{taskId}` 展示**阶段文案 + 百分比进度条**（准备 5% → 求解 35% → 精修 65% → 自检 88% → 收尾 97%），同步接口 `POST /api/schedule/auto` 行为完全不变。
+编排耗时分档：规则模式毫秒级、大规模优化模式（求解 → GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链 → 对抗自检）秒级到十秒级、**AI 模式分钟级**（多轮自对抗 + 逐轮 ONNX 前向推理）。因此 AI 模式推荐走异步入口：`POST /api/schedule/auto/async` 返回 `taskId`，前端轮询 `GET /api/schedule/progress/{taskId}` 展示**阶段文案 + 百分比进度条**（准备 5% → 求解 35% → 精修 65% → 自检 88% → 收尾 97%），同步接口 `POST /api/schedule/auto` 行为完全不变（会阻塞至完成，仅适合小规模或高性能服务器）。
 
 ### 七、训练与配置
 
@@ -1462,7 +1499,7 @@ sports:
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.2.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.1.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
 ```
 
 ---
@@ -1479,7 +1516,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.8.2.jar .
+copy sports-backend\target\sports-2.8.1.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -1544,4 +1581,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.8.2 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01
+> **版本**: v2.8.1 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01

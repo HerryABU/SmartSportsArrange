@@ -16,7 +16,7 @@
 
     <!-- 统计 -->
     <div class="role-stats">
-      <div v-for="s in stats" :key="s.label" class="role-stat">
+      <div v-for="s in stats" :key="s.label" class="role-stat" :title="s.tip || ''">
         <div class="role-stat-num">{{ s.value }}</div>
         <div class="role-stat-label">{{ s.label }}</div>
       </div>
@@ -163,7 +163,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Trophy, School, UserFilled, EditPen, Grid,
-  Document, WarningFilled, SuccessFilled
+  Document, WarningFilled, SuccessFilled, MagicStick
 } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { useAuthStore } from '@/stores/auth'
@@ -201,8 +201,19 @@ const stats = ref([
   { label: '班级总数', value: 0, icon: School },
   { label: '运动员总数', value: 0, icon: UserFilled },
   { label: '比赛项目', value: 0, icon: Trophy },
-  { label: '报名总数', value: 0, icon: Document }
+  { label: '报名总数', value: 0, icon: Document },
+  { label: '兼项运动员', value: 0, icon: MagicStick, tip: '同时报名 2 项及以上的人数，编排前先看这个' }
 ])
+
+/** 兼项运动员自动统计：工作台就能看到「这一场兼项压力多大」，点击直达编排页 */
+async function fetchMultiEvent () {
+  try {
+    const res = await request.get('/arrange/multi-event', { params: { limit: 1 } })
+    stats.value[4].value = (res && res.multiEventAthletes) || 0
+  } catch (e) {
+    console.error('兼项统计加载失败', e)
+  }
+}
 
 // ============ 分步工作流（顺序 + 录入） ============
 // kind: entry=录入 / config=配置 / arrange=编排 / report=统计
@@ -409,6 +420,7 @@ onMounted(() => {
   fetchTodos()
   fetchRegistrationProgress()
   fetchTodaySchedule()
+  fetchMultiEvent()
 })
 onBeforeUnmount(() => {
   if (timeTimer) clearInterval(timeTimer)
