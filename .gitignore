@@ -69,3 +69,10 @@ ehthumbs.db
 # backend runtime logs from tests/boot
 sports-backend/data/
 smoke_e2e/
+
+# ---------- sports-ai 训练侧源码 ----------
+# 上面的 data/ 规则会误伤 sports-ai/sports_ai/data 包（特征契约源码），显式放回；
+# 训练权重 *.pt 由 sports-ai/.gitignore 忽略，部署模型 *.onnx 纳入版本控制。
+!sports-ai/
+!sports-ai/sports_ai/data/
+!sports-ai/sports_ai/data/**

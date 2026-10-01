@@ -1,0 +1,20 @@
+# 虚拟环境（不提交）
+venv/
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 训练产物（模型权重；导出的 .onnx 提交到 models/ 供部署，若不想提交可放开下一行）
+# models/*.onnx
+
+# 训练中间权重（可由 scripts/train.ps1 重新生成，不入库；部署用 .onnx）
+*.pt
+
+# 训练日志与中间数据
+runs/
+*.log
+data_cache/

@@ -1,0 +1,16 @@
+# ============================================================================
+# sports-ai 训练侧依赖（Python 3.12）
+# ============================================================================
+# 生产部署**不依赖**本环境：训练完成后由 export_onnx.py 导出 .onnx，
+# 运行时由 Java 端 onnxruntime 加载推理（见 sports-backend/com/sports/schedule/ai）。
+# 本 requirements 仅用于「训练 + 导出」阶段。
+# ============================================================================
+torch>=2.2
+onnx>=1.15
+onnxruntime>=1.17
+# torch 2.x 的 ONNX 导出器默认走 dynamo，需要 onnxscript
+onnxscript>=0.1.16
+numpy>=1.26
+networkx>=3.2
+scikit-learn>=1.4
+pyyaml>=6.0
