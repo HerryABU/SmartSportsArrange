@@ -33,6 +33,42 @@
       </div>
     </el-card>
 
+    <!-- 编排进度：编排要跑「求解 → GA/LNS/MNSA/ALNS/Fix-opt 精修链 → 对抗自检」，秒级到十秒级。
+         进度条把「看不见的等待」变成「看得见的阶段」，也是长链路卡死时唯一的现场信号。 -->
+    <el-card v-if="arrangeProgress.active" shadow="never" style="border-radius: 10px; margin-bottom: 12px">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+        <span style="font-weight: 600">
+          <el-icon class="is-loading" style="vertical-align: -2px; margin-right: 6px"><MagicStick /></el-icon>
+          {{ arrangeProgress.stage || '编排中' }}
+        </span>
+        <span style="color: #909399; font-size: 13px">{{ arrangeProgress.message }}</span>
+        <span style="font-weight: 600; color: #409eff">{{ arrangeProgress.percent }}%</span>
+      </div>
+      <el-progress :percentage="arrangeProgress.percent" :stroke-width="14" striped striped-flow
+                   :status="arrangeProgress.percent >= 100 ? 'success' : ''" />
+    </el-card>
+
+    <!-- 可解性诊断：编排完成不等于「排得下」。这里如实回显「哪些排不下、为什么、怎么办」——
+         容量缺口/超大单元/团下界三类原因分开呈现，并给出加天/加场地/取消报名的建议。 -->
+    <el-alert v-if="lastFeasibility && !lastFeasibility.feasible" type="warning" show-icon
+              :closable="false" style="border-radius: 10px; margin-bottom: 12px">
+      <template #title>
+        可解性诊断：{{ lastFeasibility.summary?.placed }}/{{ lastFeasibility.summary?.tasks }} 个组次可排
+        （{{ Math.round((lastFeasibility.summary?.placedRatio || 0) * 100) }}%），
+        {{ lastFeasibility.summary?.unplaced }} 个组次排不下
+      </template>
+      <template #default>
+        <div style="line-height: 1.9; font-size: 13px">
+          <div v-for="(c, i) in (lastFeasibility.conflicts || []).slice(0, 3)" :key="i">
+            · <b>{{ conflictKindLabel(c.type) }}</b>：{{ c.message }}
+          </div>
+          <div v-if="(lastFeasibility.actions || []).length" style="margin-top: 4px; color: #b88230">
+            建议：{{ actionSummary(lastFeasibility.actions) }}
+          </div>
+        </div>
+      </template>
+    </el-alert>
+
     <el-alert type="info" show-icon :closable="false" style="border-radius: 10px">
       <template #title>
         编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；
@@ -558,6 +594,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Download, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar } from '@element-plus/icons-vue'
+import axios from 'axios'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
 import { downloadApi } from '@/utils/download'
@@ -567,6 +604,105 @@ const loading = ref(false)
 const arranging = ref(false)
 const savingConfig = ref(false)
 const items = ref([])
+
+// ==================== 编排进度（异步提交 + 轮询） ====================
+// 为什么需要：编排要走「构造启发式 → 算法组合波次 → GA/LNS/MNSA/ALNS/Fix-opt 精修链 →
+// 对抗式自检」，真实学校规模下是秒级到十秒级的阻塞操作。同步等待既会撞 axios 的 30s 超时，
+// 也让操作者只能盯着一个转圈图标、无从判断「在算」还是「卡死」。
+const arrangeProgress = ref({ active: false, percent: 0, stage: '', message: '' })
+const lastFeasibility = ref(null)     // 可解性诊断（编排响应里的 algorithmPortfolio.feasibility）
+let progressTimer = null
+let progressAbort = false
+
+function stopProgressPolling () {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+}
+
+/**
+ * 进度查询刻意走原生 axios：绕开全局请求拦截器的 ElMessage 弹窗。
+ * 轮询是高频后台请求，偶发失败（网络抖动/后端重启）不该连弹多条错误提示打扰操作者。
+ */
+async function fetchArrangeProgress (taskId) {
+  const token = localStorage.getItem('token')
+  const { data } = await axios.get(apiBase() + '/schedule/progress/' + taskId, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  })
+  return data && data.data !== undefined ? data.data : data
+}
+
+function pollArrangeProgress (taskId) {
+  return new Promise((resolve, reject) => {
+    let misses = 0
+    progressTimer = setInterval(async () => {
+      if (progressAbort) {
+        stopProgressPolling()
+        reject(new Error('已取消编排'))
+        return
+      }
+      try {
+        const p = await fetchArrangeProgress(taskId)
+        misses = 0
+        arrangeProgress.value = {
+          active: !p.done && !p.failed,
+          percent: p.percent || 0,
+          stage: p.stage || '',
+          message: p.message || ''
+        }
+        if (p.done) {
+          stopProgressPolling()
+          resolve(p.result || {})
+        } else if (p.failed) {
+          stopProgressPolling()
+          reject(new Error(p.error || '编排失败'))
+        }
+      } catch (e) {
+        // 单次轮询失败不致命；连续多次才判定任务失联（避免网络抖动误报）
+        if (++misses >= 5) {
+          stopProgressPolling()
+          reject(e)
+        }
+      }
+    }, 500)
+  })
+}
+
+/** 可解性冲突类型 → 中文标签（与后端 report.py / ScheduleFeasibilityService 的 type 对齐）。 */
+function conflictKindLabel (type) {
+  return ({
+    capacity_shortfall: '容量缺口',
+    oversized_unit: '超大单元',
+    clique_exceeds_periods: '结构性不可解（团超时段）',
+    athlete_clash: '兼项无法错开',
+    athlete_clash_summary: '兼项无法错开（汇总）'
+  })[type] || type
+}
+
+/** 把建议动作汇总成一句话（同类合并、去重）。 */
+function actionSummary (actions) {
+  const kinds = new Set()
+  let needDays = null
+  let lanes = new Set()
+  let cancels = 0
+  ;(actions || []).forEach(a => {
+    if (a.action === 'extend_days') {
+      kinds.add('延长天数')
+      if (a.needDays && (!needDays || a.needDays > needDays)) needDays = a.needDays
+    } else if (a.action === 'add_lanes') {
+      kinds.add('增加场地/并发位')
+      if (a.scope) lanes.add(a.scope)
+    } else if (a.action === 'cancel_entry') {
+      cancels++
+    }
+  })
+  const parts = []
+  if (kinds.has('延长天数')) parts.push(`延长至 ${needDays || '?'} 天`)
+  if (kinds.has('增加场地/并发位')) parts.push(`为${[...lanes].join('/') || '紧张池'}增加场地或并发位`)
+  if (cancels) parts.push(`取消 ${cancels} 名运动员的最优冲突项报名（交班主任确认）`)
+  return parts.join('；') || '人工调整'
+}
 
 // 场地名称 -> 编码 映射：赛程结果表同时展示「场地名称(编码)」
 const venueCodeMap = ref({})
@@ -1121,8 +1257,15 @@ async function exportClassConflicts() {
 // U39/B36：带上编排模式——rule=规则模式（确定性、毫秒级、可复现）；optimize/缺省=优化模式（向后兼容）
 async function doAutoSchedule() {
   arranging.value = true
+  progressAbort = false
+  lastFeasibility.value = null
+  arrangeProgress.value = { active: true, percent: 0, stage: '提交', message: '正在提交编排任务…' }
   try {
-    const res = await request.post('/schedule/auto', { mode: arrangeMode.value })
+    // 异步提交 + 轮询进度：编排链路长（求解 → 精修 → 自检），同步等待会撞前端 30s 超时
+    const submitted = await request.post('/schedule/auto/async', { mode: arrangeMode.value })
+    const taskId = submitted && submitted.taskId
+    if (!taskId) throw new Error('未能获取编排任务号')
+    const res = await pollArrangeProgress(taskId)
     items.value = res.items || []
     // 模式回显（以服务端为准）
     lastArrangeMode.value = res.mode || arrangeMode.value
@@ -1154,10 +1297,23 @@ async function doAutoSchedule() {
       ElMessage.success(modeTag + '赛程编排完成！共 ' + (res.total || 0) + ' 个单元' + autoTip + ruleTip + dayTip)
     }
     if (auto && auto.fails && auto.fails.length) console.warn('自动道次失败明细', auto.fails)
+
+    // 可解性诊断：编排完成 ≠ 排得下。响应里带 feasibility 时把结论落在页面上，
+    // 让操作者当场看到「哪些排不下、为什么、怎么办」，而不是只看到一句「编排完成」。
+    const feas = res.algorithmPortfolio?.feasibility || null
+    lastFeasibility.value = feas
+    if (feas && !feas.feasible) {
+      const s = feas.summary || {}
+      const first = (feas.conflicts || [])[0]
+      ElMessage.warning('可解性诊断：' + (s.placed || 0) + '/' + (s.tasks || 0) + ' 个组次可排，'
+        + (s.unplaced || 0) + ' 个排不下' + (first ? '（' + conflictKindLabel(first.type) + '）' : ''))
+    }
   } catch (e) {
     if (e && e.message) ElMessage.error(e.message)
   } finally {
+    stopProgressPolling()
     arranging.value = false
+    arrangeProgress.value = { active: false, percent: 0, stage: '', message: '' }
   }
 }
 
