@@ -1467,6 +1467,29 @@ location / {
 > 点击进入系统 → 登录页 → 接口调用全链路均正常。
 > 自检：`curl -k -H "Origin: https://域名" https://代理入口/assets/xxx.js` 应返回 `200`
 > 并带 `Access-Control-Allow-Origin`（修复前是 `403`）。
+
+**隧道/反向代理排障速查（先按症状对号入座，再动手）**
+
+| 症状 | 根因 | 处置 |
+|------|------|------|
+| 入口 `502` / 隧道打不开 | **隧道指向的端口上没有服务在监听**。cpolar 日志里会出现 `Failed to open private leg http://localhost:XXXX: connectex: ... actively refused` | 确认服务已启动，且 `netstat -ano \| findstr :XXXX` 能看到 LISTENING；端口以 `data/app-config.json` 的 `port` 为准（`start.ps1 -Port` 可临时改） |
+| 首屏能开、页面一片白，接口正常 | `assets/*.js` / `*.css` 被 CORS 拦成 403 | 本项目已内置修复；确认升级到含 `forward-headers-strategy` 的版本 |
+| 接口 401 / 登录后反复掉线 | 代理吞了 `Authorization` 头 | nginx 加 `proxy_set_header Authorization $http_authorization;` |
+| 局域网内其它机器访问不了本机端口 | Windows 防火墙未放行 JVM 入站（默认拦） | 管理员 PowerShell：`New-NetFirewallRule -DisplayName "sports-8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow` |
+| 隧道地址变了打不开 | cpolar 免费/基础套餐每次重启会换域名 | 从 cpolar 面板或日志 `NewTunnel ... "Url":"https://xxx"` 取当前域名 |
+
+三条自检命令（把 `<入口>` 换成隧道/代理地址）：
+
+```bash
+curl -k -o /dev/null -w "%{http_code}\n" https://<入口>/                                  # 应 200（502=服务没起）
+curl -k -o /dev/null -w "%{http_code}\n" -H "Origin: https://<入口>" https://<入口>/assets/index-xxx.js   # 应 200（403=CORS 没生效）
+netstat -ano | findstr :8080                                                              # 应有 LISTENING
+```
+
+> 💡 cpolar 用户注意：隧道配置的 `addr` 端口必须与实际监听端口一致。本项目 jar 默认 **8080**，
+> 若你把服务跑在别的端口（例如 `start.ps1 -Port 8899`），就要同步改 cpolar 隧道配置里的
+> `addr`，否则隧道会一直 502。
+
 **缓存策略**（防"升级后浏览器仍用旧壳"）：`index.html` 与 SPA 回退路径强制 `no-store`，`/assets/**` 带内容哈希的资源长缓存 1 年（升级后文件名自动变化）。
 
 ### 🔄 数据库迁移（SQLite ↔ MySQL）
