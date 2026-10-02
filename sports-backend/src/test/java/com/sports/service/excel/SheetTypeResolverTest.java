@@ -28,6 +28,18 @@ class SheetTypeResolverTest {
             "代码", "项目", "是否田径", "道次", "顺序号", "每组次几人", "捆绑字母", "并行数", "场地编码",
             "性别", "年级组", "是否团体", "团体人数", "场地", "最大用时(分)", "间隔(分)", "组次裁判数量", "抽签(是/否)", "最大报名人数");
 
+    /**
+     * 表格2 模板的<b>另一份常见变体</b>：第 9 列写「场地号」而不是「场地编码」。
+     *
+     * <p>「场地号」与「场地」相邻，正是「未识别列：场地」的现场条件 ——
+     * 少了「场地号」别名时，包含匹配的反向包含（别名含列名也算命中）会把「场地号」判成
+     * {@code defaultVenue}，自动映射再按「同一字段只留最左」挤掉真正的「场地」列。
+     * 复用 {@link #TABLE2_HEADERS} 覆盖不到这条（它写的是「场地编码」），故单列一份。</p>
+     */
+    private static final List<String> TABLE2_HEADERS_VENUE_NO = List.of(
+            "代码", "项目", "是否田径", "道次", "顺序号", "每组次几人", "捆绑字母", "并行数", "场地号", "场地",
+            "性别", "年级组", "是否团体", "团体人数", "最大用时(分)", "间隔(分)", "组次裁判数量", "抽签(是/否)", "最大报名人数");
+
     /** 运动项目表（精简版）模板 9 列。 */
     private static final List<String> EVENT_SIMPLE_HEADERS = List.of(
             "项目代码", "项目名称", "每组人数", "每批组数", "项目类型", "场地号", "每批所需时间(分)", "性别", "最大报名人数");
@@ -93,6 +105,19 @@ class SheetTypeResolverTest {
         assertEquals("maxParticipants", map.get("18"));
         assertTrue(SheetPreviewBuilder.unmappedHeaders(TABLE2_HEADERS, map).isEmpty(),
                 "表格2 不该有任何「未识别列」");
+    }
+
+    @Test
+    @DisplayName("表格2「场地号 / 场地」相邻两列：各归各的字段，谁也不把谁顶成未识别列")
+    void table2VenueNoAndVenueCoexist() {
+        Map<String, String> map = SheetTypeResolver.autoColumnMap("event", TABLE2_HEADERS_VENUE_NO);
+
+        assertEquals(TABLE2_HEADERS_VENUE_NO.size(), map.size(), "两列都必须有落点");
+        // 「场地号」= 场地主数据编码；「场地」= 场地显示名。串了就等于把编码写进名称列
+        assertEquals("defaultVenueCode", map.get("8"));
+        assertEquals("defaultVenue", map.get("9"));
+        assertTrue(SheetPreviewBuilder.unmappedHeaders(TABLE2_HEADERS_VENUE_NO, map).isEmpty(),
+                "不该因为「同一字段被多列命中」就把「场地」报成未识别列");
     }
 
     @Test

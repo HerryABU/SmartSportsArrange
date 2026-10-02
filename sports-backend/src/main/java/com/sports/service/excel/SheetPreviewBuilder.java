@@ -48,7 +48,7 @@ public final class SheetPreviewBuilder {
         s.put("resolvedBy", resolvedBy(job));
         s.put("columnMap", columnMap);
         s.put("mappedFields", describeMapped(type, job.headers(), columnMap));
-        s.put("unmappedHeaders", unmappedHeaders(job.headers(), columnMap));
+        s.put("unmappedHeaders", unmappedHeaders(job.headers(), columnMap, type));
         s.put("totalRows", Math.max(0, job.rows().size() - (hasHeader ? 1 : 0)));
         s.put("sampleRows", sampleRows(job, columnMap, hasHeader, n));
         s.put("importable", type != null && !columnMap.isEmpty() && !SheetTypeResolver.isNotice(type));
@@ -122,6 +122,20 @@ public final class SheetPreviewBuilder {
 
     /** 没有被任何映射覆盖的表头（前端标灰）。 */
     public static List<String> unmappedHeaders(List<String> headers, Map<String, String> columnMap) {
+        return unmappedHeaders(headers, columnMap, null);
+    }
+
+    /**
+     * 没有被任何映射覆盖的表头（前端标灰）。
+     *
+     * <p>带上 {@code type} 是为了把「这一列其实认得，只是它的字段被更靠前的列占走了」和
+     * 「这一列压根认不出」区分开：自动映射遇到「同一字段被多列命中」只保留最靠左的一列
+     * （后者覆盖前者会导致串列），被挤掉的那列若笼统报「未识别」，管理员会白找一遍别名表 ——
+     * 实际它是被占用，改成不导入即可。</p>
+     *
+     * @param type 已判定的导入类型（可为 null，此时一律按「认不出」处理）
+     */
+    public static List<String> unmappedHeaders(List<String> headers, Map<String, String> columnMap, String type) {
         List<String> unmapped = new ArrayList<>();
         if (headers == null) {
             return unmapped;
@@ -132,7 +146,14 @@ public final class SheetPreviewBuilder {
             if (h == null || h.isBlank()) {
                 continue;
             }
-            if (!mappedCols.contains(String.valueOf(c))) {
+            if (mappedCols.contains(String.valueOf(c))) {
+                continue;
+            }
+            String field = type == null ? null : ExcelColumnMapping.matchHeaderForType(type, h);
+            if (field != null) {
+                unmapped.add(h + "（字段「" + ExcelColumnMapping.getFieldLabel(type, field)
+                        + "」已被更靠前的列占用，该列不导入）");
+            } else {
                 unmapped.add(h);
             }
         }

@@ -54,7 +54,11 @@ public class MultiTableImportService {
      * 改完点「重新解析」把计划打回后端（{@code plan}），后端按用户指定重新判定并再出一遍预览。</p>
      */
     public Map<String, Object> preview(List<MultipartFile> files, Map<String, Object> plan) {
-        return preview(files, plan, SheetPreviewBuilder.DEFAULT_SAMPLE_SIZE, false);
+        // ⚠️ withAdvice 必须是 true：前端「逐列编辑映射」直接开这一行的按钮，而它的数据源就是
+        // 预览里的 advice。曾经这里传 false（理由是「首屏别算太重」），结果管理员点开逐列映射
+        // 只能弹一句「先点重新解析」——多一步无用操作，功能上等于不可用。候选清单的规模是
+        // 「列数 × 该类型字段数」（典型 20×23），成本可忽略，换来的是「一解析完就能改列映射」。
+        return preview(files, plan, SheetPreviewBuilder.DEFAULT_SAMPLE_SIZE, true);
     }
 
     /**

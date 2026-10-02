@@ -96,4 +96,39 @@ class SheetPreviewBuilderTest {
         assertTrue(String.valueOf(s.get("reason")).contains("无法识别该表类型"),
                 "认不出的表要如实说明，而不是把它当成可导入表");
     }
+
+    @Test
+    @DisplayName("两列落同一个字段：被挤掉的那列要说清「字段已被更靠前的列占用」")
+    void occupiedColumnExplainsItself() {
+        // 「年级(副)」归一化后仍包含「年级」→ 自动映射会认出它，但字段 grade 已被第 0 列占用
+        List<String> headers = List.of("年级", "年级(副)");
+        Map<String, String> columnMap = new LinkedHashMap<>();
+        columnMap.put("0", "grade");
+
+        List<String> unmapped = SheetPreviewBuilder.unmappedHeaders(headers, columnMap, "roster");
+
+        assertEquals(1, unmapped.size(), "只有第二列落空");
+        assertTrue(unmapped.get(0).contains("已被更靠前的列占用"),
+                "被同字段挤掉的列要说清原因，否则管理员会以为别名表里漏了这一列：" + unmapped.get(0));
+    }
+
+    @Test
+    @DisplayName("逐列编辑映射：首屏预览就带逐列候选字段（不必先点「重新解析」）")
+    void previewCarriesAdvice() {
+        List<String> headers = List.of("代码", "项目");
+        Map<String, Object> s = SheetPreviewBuilder.build(
+                job("项目表（表格2）", headers, Map.of(0, "100M", 1, "100米")), true, 5, true);
+
+        @SuppressWarnings("unchecked")
+        List<ImportColumnAdvisor.ColumnAdvice> advice =
+                (List<ImportColumnAdvisor.ColumnAdvice>) s.get("advice");
+        assertTrue(advice != null && !advice.isEmpty(),
+                "预览必须带 advice，否则「逐列编辑映射」按钮点了没内容");
+        assertEquals(2, advice.size(), "每一列都要给出可选字段清单");
+        // 至少第一列能拿到「代码 → code」这条建议
+        ImportColumnAdvisor.ColumnAdvice first = advice.get(0);
+        assertEquals(headers.get(0), first.header());
+        assertTrue(first.options().stream().anyMatch(o -> "code".equals(o.field())),
+                "候选清单里要有 code 字段，前端下拉才选得到");
+    }
 }

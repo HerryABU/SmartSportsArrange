@@ -197,7 +197,14 @@ public final class ExcelColumnMapping {
         ev.put("每组次几人", "groupSize");
         ev.put("捆绑字母", "bundleGroup");
         ev.put("并行数", "concurrency");
+        // 「场地号 / 场地编码」= 场地主数据编码（对应场地表的 code）；「场地 / 场地名称」= 场地显示名。
+        // ⚠️ 少了「场地号」这条精确别名会出事：包含匹配允许反向包含（别名含列名也算命中），
+        // 「场地号」会被「场地」反向命中→defaultVenue，接着自动映射「同一字段只留最左」把
+        // 紧接着的「场地」列挤掉，预览里就多出一行「未识别列：场地」。
+        ev.put("场地号", "defaultVenueCode");
         ev.put("场地编码", "defaultVenueCode");
+        ev.put("场地名称", "defaultVenue");
+        ev.put("场地", "defaultVenue");
         ev.put("性别", "genderLimit");
         ev.put("性别限制", "genderLimit");
         ev.put("年级组", "gradeGroup");
