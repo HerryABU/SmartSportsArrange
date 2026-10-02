@@ -63,6 +63,11 @@ spring:
 # ======================== 服务器 =========================================
 server:
   port: 8080
+  # 识别反向代理（cpolar / Nginx / Caddy）带来的 X-Forwarded-* 头：
+  # 否则 Spring 眼里的 scheme 永远是 http、端口永远是 8080，而代理入口是 https:443，
+  # 同一页面内「Origin(https) vs 请求(http)」被判成跨域，CorsFilter 直接 403
+  # → index.html 能回来但 assets/*.js 全 403，页面白屏。开启后 scheme/端口以代理头为准。
+  forward-headers-strategy: FRAMEWORK
   servlet:
     context-path: /
     encoding:

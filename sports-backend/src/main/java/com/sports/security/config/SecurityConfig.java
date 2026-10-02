@@ -2,6 +2,8 @@ package com.sports.security.config;
 
 import com.sports.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
+
+import java.util.List;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -16,6 +18,9 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
  * Spring Security 配置
@@ -32,7 +37,7 @@ public class SecurityConfig {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
-                .cors(cors -> {})
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         // ===== 公开访问（无需认证）=====
@@ -135,6 +140,35 @@ public class SecurityConfig {
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * 显式声明 CORS 策略 —— 反向代理下必须配，否则「 CorsFilter 拿不到任何允许的源 → 带 Origin
+     * 的请求一律 403 」。
+     *
+     * 触发点很隐蔽：构建产物里 <script type="module" crossorigin> / <link rel="stylesheet"
+     * crossorigin> 会让浏览器给同源的 JS/CSS 也带上 Origin 头（普通 XHR 同源请求不带）。
+     * 本机直连时 Origin(scheme/host/port) 与 Spring 眼里的请求地址天然一致，DefaultCorsProcessor
+     * 走 isSameOriginRequest 直接放行；一挂到 cpolar 这类 https 代理后面，Spring 眼里的地址还是
+     * http://x:8080（除非开了 forward-headers-strategy），两者不再同源 → 被判跨域 → 403，
+     * 结果就是「首页能开、但 JS/CSS 全 403、整页白屏」。
+     *
+     * 允许的源用 pattern 而不是写死域名：部署域名（cpolar 随机子域 / 自有域名 / 本地）不定，
+     * 写死任何一家都会把其他入口挡在门外。同源请求本来就走 isSameOriginRequest 放行，
+     * 这里放通配只影响跨源场景（如另一域名里嵌 iframe 调本系统接口）。
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration cfg = new CorsConfiguration();
+        cfg.addAllowedOriginPattern("*");
+        cfg.setAllowCredentials(true);
+        cfg.addAllowedHeader("*");
+        cfg.addAllowedMethod("*");
+        // 登录/刷新接口把 JWT 放在响应头里返回（Authorization），必须暴露给前端读取
+        cfg.setExposedHeaders(List.of("Authorization", "Set-Cookie"));
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", cfg);
+        return source;
     }
 
     @Bean
