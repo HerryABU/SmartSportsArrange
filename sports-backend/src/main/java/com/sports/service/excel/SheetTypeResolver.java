@@ -46,6 +46,8 @@ public final class SheetTypeResolver {
         // 合一表：既建运动员又写报名，报名依赖「项目」，故必须排在 event/eventsimple 之后、score 之前
         PRIORITY.put("athlete_signup", 10);
         PRIORITY.put("score", 11);
+        // 填写说明页：无业务数据、整表跳过；排在最后，不参与任何表头指纹竞争
+        PRIORITY.put("notice", 99);
     }
 
     /** 参与表头指纹判定的候选类型（顺序即平局时的优先级）。 */
@@ -90,6 +92,68 @@ public final class SheetTypeResolver {
         LABELS.put("signup", "报名表（7列：含组号）");
         LABELS.put("athlete_signup", "名单+报名合并表（合一）");
         LABELS.put("score", "成绩表");
+        LABELS.put("notice", "填写说明页（自动跳过）");
+    }
+
+    /**
+     * 说明页识别：Sheet 名叫「填写说明 / 使用说明 / 填写指南…」，或表头就是「字段 + 填写说明」。
+     *
+     * <p><b>为什么单独一类而不是判成「认不出」</b>：多表模板下载下来就带一张「填写说明」页，
+     * 表头是「字段 / 填写说明」。旧逻辑两张列都不属于任何导入类型 → 整表判成「未识别」，
+     * 用户看到的提示是「可在列表里手动指定类型」，可这张表<b>本来就没有要导的数据</b>，
+     * 让人去指定类型是误导。判成 notice 后能直接给出「说明页，不参与导入」的准确结论。</p>
+     *
+     * <p>判定条件刻意收窄：Sheet 名必须含明确的说明页关键词，或表头「只有」两列且列名是
+     * 字段/说明这类注释性列名 —— 不能因为一张表头里有「备注」就当成说明页。</p>
+     */
+    private static final List<String> NOTICE_SHEET_KEYWORDS = List.of(
+            "填写说明", "使用说明", "说明页", "填写指南", "填写要求", "备注说明", "操作说明",
+            "instruction", "guide", "notesheet");
+
+    /** 说明页表头允许的列名（归一化后比较），且表头总列数不得超过 4 列。 */
+    private static final List<String> NOTICE_HEADERS = List.of("字段", "说明内容", "填写说明", "说明", "备注", "提示", "用法");
+
+    public static final String NOTICE_TYPE = "notice";
+
+    public static boolean isNotice(String type) {
+        return NOTICE_TYPE.equals(type);
+    }
+
+    /**
+     * 这张表是不是「填写说明」页。
+     *
+     * @return 是说明页返回 {@link #NOTICE_TYPE}，否则 null
+     */
+    public static String inferNoticeOrNull(String sheetName, List<String> headers) {
+        if (sheetName != null) {
+            String l = sheetName.toLowerCase();
+            for (String k : NOTICE_SHEET_KEYWORDS) {
+                if (l.contains(k)) return NOTICE_TYPE;
+            }
+        }
+        if (headers != null && headers.size() <= 4 && !headers.isEmpty()) {
+            boolean allNoticey = true;
+            for (String h : headers) {
+                if (h == null || h.isBlank()) {
+                    continue;
+                }
+                boolean hit = false;
+                for (String n : NOTICE_HEADERS) {
+                    if (n.equals(ExcelColumnMapping.normalize(h))) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) {
+                    allNoticey = false;
+                    break;
+                }
+            }
+            if (allNoticey) {
+                return NOTICE_TYPE;
+            }
+        }
+        return null;
     }
 
     /**
@@ -104,9 +168,16 @@ public final class SheetTypeResolver {
         if (override != null && !override.isBlank()) {
             return override.trim();
         }
+        // 顺序：表头指纹 → 说明页 → Sheet 名关键词。
+        // 说明页不能抢在表头指纹前面：若 Sheet 名叫「填写说明」但里面装的是真的项目表（有人就这样拿它当项目表用），
+        // 只看 Sheet 名就会把整张表当说明页丢掉。表头比名字可靠，这条与类注释的口径一致。
         String byHeader = inferByHeader(headers);
         if (byHeader != null) {
             return byHeader;
+        }
+        String notice = inferNoticeOrNull(sheetName, headers);
+        if (notice != null) {
+            return notice;
         }
         return ExcelService.detectTypeOrNull(sheetName);
     }
