@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.8.1
+> Sports Meet Intelligent Arrangement System v2.8.5
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -15,8 +15,10 @@
 - 🔍 **可解性诊断（不可解冲突输出给程序）**：拆批 + 下界分析（容量缺口 / 最少天数 / 冲突图团 / 超大单元）+ 结构化 JSON 冲突报告与可执行建议（延长天数 / 加并发位 / 取消报名），**「排不下」不再是终点**
 - 📊 **编排进度可见**：长链路编排走「异步提交 + 进度轮询」，前端展示阶段文案与百分比进度条，不再干等转圈
 - 🌐 **反向代理 / 内网穿透友好**：前端采用 hash 路由（`/#/...`），服务器永远只收到 `/` 或 `/sportmg/`，**cpolar / ngrok 子域隧道、nginx 子路径帽子均开箱即用**，无需任何重写规则，彻底规避深链刷新白屏
+- 📥 **多表导入可视化重解析**：一次选中多张表（一个工作簿多 Sheet，或一次多个 .xlsx）后，**逐表指定类型、逐列把 Excel 表头点选到目标字段、逐表勾选是否导入**，改完即按这份指定**重新解析**（不再沿用首次的自动猜测结果），并可展开**原始网格数据**逐格核对（列名 / 样例值 / 类型判定一目了然），确认无误再落库
 - 📊 **全流程 Excel 化**：名单 / 项目 / 报名 / 成绩 全部支持模板导入导出，秩序册 / 成绩册 / 报表一键生成
 - 📄 **真实 Word 秩序册**：原生 OOXML（手写 ZIP 包组装，**零 Apache POI 依赖、离线可构建**）生成含封面 / 目录 / 多章表格的 `.docx`，支持一键下载与按开关自动落盘
+- 📑 **秩序册设计器**：自定义目录（多级章节、启停、上下移、加二级、软删可恢复）+ 章节细则（自由文字，或挂载 SCHEDULE / EVENTS / CLASSES / ARRANGE / NUMBERS 系统板块），**右侧即时 Word 在线预览**与一键 `.docx` 下载，**预览与导出同一份渲染**——改什么立刻看见什么
 - 🔢 **号码簿双模式**：模板 / 正则自定义之外，支持**按名单顺序**「补全生成（不覆盖）/ 覆盖重排」两种操作，撞号自动顺延不中断
 - ⏱ **1~n 并发位编排**：径赛 / 田赛各自可设「并数」（**1 = 串行，n = 并行，并数上限取决于场地数量**），项目内可设并发人数（田赛 X 人同时试跳/试掷）；支持**自定义项目顺序**（Excel 导入带「顺序号」列）、**田赛分组同期**，以及**项目级并行捆绑组**（填相同字母 A/B/C 的田赛自动同批并行，优先于配置分组）
 
@@ -27,8 +29,8 @@
 - [快速开始](#-快速开始)
 - [默认账号](#-默认账号)
 - [功能总览（按角色）](#-功能总览按角色)
-- [功能详解](#-功能详解)（§1–§19：建站向导 → 场地管理 / 审计日志 / 实时协作 / 自定义项目区）
-- [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§26**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会 / 行政时间保护 / 通知 / 审计日志 / 场地管理 / 自定义项目 / 实时协作）
+- [功能详解](#-功能详解)（§1–§22：建站向导 → 多表导入重解析 / 秩序册设计器 / 场地管理 / 审计日志 / 实时协作 / 自定义项目区）
+- [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§26**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会 / 行政时间保护 / 通知 / 审计日志 / 场地管理 / 自定义项目 / 实时协作 / 秩序册 / 多表重解析）
 - [数据库设计](#-数据库设计)
 - [部署指南](#-部署指南)
 - [AI 编排核心](#-ai-编排核心)（训练侧 `sports-ai/` / ONNX 模型契约 / GAN 自对抗 / 可解性诊断 / 球赛赛制 / 道次 AI）
@@ -64,7 +66,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.8.1.jar
+java -jar sports-2.8.5.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -129,6 +131,7 @@ java -jar sports-2.8.1.jar
 | 届 / 运动会 | 创建多届「第X届Y季节运动会」、一键切换当前届、编辑/删除；成绩/报名/入场式均绑定届次 |
 | 系统设置 | 基本设置、积分规则、年级设置等 |
 | 行政时间保护 | 「规避时间」配置（全校统一避让 / 班主任个人时段 / 裁判个人时段），编排与裁判编排自动避让；站内信通知中心（未读角标 + 已读） |
+| 秩序册设计 | 侧栏「⑥ 秩序册」：目录树（新增 / 重命名 / 启停 / 上下移 / 加二级 / 软删后可恢复）、章节细则（自由文字或系统板块）、Word 在线预览 + `.docx` 下载 |
 
 ### 班主任（CLASS_TEACHER）
 
@@ -555,9 +558,64 @@ GET /api/audit/logs?action=SCHEDULE_AUTO&limit=100
 
 > 💡 说明书与本项目 README 同口径同步更新——每次功能变更（如本次兼项自动统计、AI 编排模式）都会同步补写对应章节。
 
+### 21. 多表导入：按表指定后重新解析（可视化列映射 + 网格预览）
+
+教师端「① 导入报名 → 多表导入」（`/teacher/bulk-import`）在完成首轮「选择文件 → 解析表结构」之后，
+**不是直接开导，而是把解析结果摊开给你审**，审完还能改：
+
+1. **逐表指定类型**：每张探测出来的表一个卡片，下拉选它到底是哪一类（`grade / class / roster / eventsimple / signup / event / score …`）。
+   表头认错了就在这里改，改完这一张立即重解析。
+2. **逐列映射字段**：卡片内是「Excel 表头 → 目标字段」的逐列下拉（如「姓名」→ `name`、「学号」→ `studentId`）。
+   列建议按「**该类型处理器真正读取的字段的别名**」排序，而不是把整张表的别名摊平后瞎猜——
+   所以运动项目表的「项目名称」稳定落在 `name`、「项目类型」落在 `category`，不会被 `eventCode` 的短别名「项目」抢走。
+3. **逐表导入开关**：不想导的那张表直接取消勾选（例如模板里留了示例「成绩表」，此时还没成绩，勾了必然整行失败）。
+4. **按指定重新解析**：`POST /api/excel/multi/reparse` 只带你这版指定（哪几张表、什么类型、什么列映射、导不导），
+   **按这份口径重跑解析并刷新预览**，不再沿用系统首次的猜测结果。
+5. **可视化网格核对**：`POST /api/excel/multi/sheet-data` 按「文件序号 + Sheet 序号」分页取回**原始单元格**，
+   前端以网格形式逐格展示（含表头与样例值），导入前肉眼最后过一遍。
+
+> 设计取舍：**「重新解析」与「最终导入」是两步**。自动识别给的是**候选**，你改完指定后以你的为准；
+> 网格预览读的是**原始单元格**，和真正入库走的是同一份数据源，所以「预览里看到的」就是「导入进去的」。
+
+---
+
+### 22. 秩序册设计器（自定义目录 + 细则 + Word 在线预览）
+
+侧栏「⑥ 秩序册」（`/teacher/order-book`）把秩序册从「一键生成、改不了」变成**可编排的文档**：
+
+**① 目录树**（`OrderBookSection`）
+
+| 能力 | 说明 |
+|------|------|
+| 多级目录 | 一级目录下可继续「加二级」，缩进式展示，排序即生成顺序 |
+| 启停 | 每个目录一个开关，关掉不进文档也不进预览 |
+| 上下移 | 同父内上移 / 下移（顶部 / 底部两个方向），跨级拖动不改归属 |
+| 软删可恢复 | 删除是软删（`deleted_at`），删完可在下拉里「恢复」回来，**误点一下不会丢整章** |
+| 默认章节 | 首次打开自动铺「竞赛日程 / 竞赛项目 / 班级名单 / 编排对阵 / 号码簿」五个系统级目录（`kind=SYSTEM`），可改标题、可停用 |
+
+**② 章节细则**（`OrderBookEntry`）
+
+- **自由文字**（`contentType=TEXT`）：正文写在 textarea，空行分段成段落，直接进文档；适合「比赛须知」「注意事项」「领导讲话」。
+- **系统板块**（`contentType=TABLE`，`sourceKey`）：挂载现成数据表格，下拉选项与后端白名单严格同集
+  （`SCHEDULE` 赛程 / `EVENTS` 项目 / `CLASSES` 班级名单 / `ARRANGE` 编排对阵 / `NUMBERS` 号码簿）。
+  选一个非法值会被后端归一化成 `NULL` 并输出「数据源尚未实现」占位，**不会静默丢章**。
+
+**③ Word 在线预览 + 导出**
+
+预览走 `GET /api/order-book/preview`（`text/html`），前端把 HTML 塞进 iframe `srcdoc` 渲染（iframe 子请求带不上 token，不能用 `src` 直连）。
+导出走 `GET /api/order-book/preview/docx`。**两者同源**：文档模型 `OrderBookDoc`（`DocBlock` 块序列）
+由 `OrderBookDocumentBuilder` 一次构建，HTML 渲染器与 OOXML 渲染器各自消费同一份模型，
+所以「预览里长什么样，导出就是什么样」，不会出现两边数据打架。
+
+**④ 权限**
+
+`/api/order-book/**` 的写操作（目录增删、细则编排、Word 导出）限 **体育老师 / 超级管理员**；
+只读预览（学生 / 班主任 / 老师 / 超管）放开——此前只落到 `anyRequest()`，**任何登录账号都能改秩序册**，已一并收紧。
+
 ---
 
 ## 📡 API 接口完整参考
+
 
 后端共 **26 个 Controller、220+ 个路由端点**（下表为主要业务端点，含「届 / 运动会」「行政时间保护」「通知」「审计日志」「场地管理」「自定义项目」「实时协作」控制器），统一前缀 `/api`。反向代理子路径部署时（如 `/sportmg/`），前端请求 `/sportmg/api/...` 由后端智能剥离前缀后路由到下列端点。
 
@@ -965,6 +1023,8 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | POST | `/api/excel/import-with-mapping` | multipart `file`, Query mapping | T/SA | 带列映射导入（单表） |
 | POST | `/api/excel/multi/preview` | multipart `files`(多选), `hasHeader` | T/SA | **多表探测**：逐文件逐 Sheet 报表名/表头/判定类型/列映射/可否导入 |
 | POST | `/api/excel/import-multi` | multipart `files`(多选), `hasHeader`, `sheets`(JSON 覆盖) | T/SA | **多表导入**：一个工作簿多 Sheet 或一次多个文件 |
+| POST | `/api/excel/multi/reparse` | Body `sheets`(JSON 指定) | T/SA | **按指定重新解析**：按前端给定的表类型 / 列映射 / 导入开关重跑解析与预览 |
+| POST | `/api/excel/multi/sheet-data` | Query `fileIndex`,`sheetIndex`,`page`,`pageSize` | T/SA | **可视化网格数据**：取某文件某 Sheet 的原始单元格（分页），供前端逐格核对 |
 | POST | `/api/excel/import/athletes` | multipart `file` | T/SA | 导入运动员（兼容旧接口） |
 | POST | `/api/excel/import/scores` | multipart `file` | T/SA | 导入成绩 |
 | POST | `/api/excel/import/registrations` | multipart `file` | T/SA | 导入报名 |
@@ -1039,6 +1099,8 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 **列映射口径**：自动映射为「**精确 → 最长别名**」，并按类型优先落在该类型处理器真正读取的字段上
 （例如表格2 的「项目名称」落 `name`、运动项目表的「项目类型」落 `category`，不会被 `eventCode` 的短别名「项目」抢走）。
+
+手写 `sheets` 覆盖项虽然快，但「哪一列进哪个字段」要靠脑记。**多表导入设计器**把这件事摊到界面上：逐表选类型、逐列下拉点选字段、逐表勾选是否导入，改完即按这份指定重新解析，还能展开原始网格逐格核对。
 
 #### 15.4 导出物中的裁判列
 
@@ -1208,9 +1270,51 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 > 设计：打开编排页记录当前版本号，每隔几秒 `events?since=版本号`，一旦拿到他人改动即提示「赛程已被 XXX 更新」并刷新视图，**冲突在保存前暴露**。详见 [18. 实时协作](#18-实时协作collaboration)。
 
+### 27. 秩序册 OrderBook
+
+前缀 `/api/order-book`，17 个端点。写操作（目录 / 细则 / 导出）限 **T/SA**，
+只读预览（`/layout`、`/preview`）已认证即可。
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/order-book/sections` | Query `meetId` | T/SA | 目录树（含未启用的，供设计器编辑） |
+| POST | `/api/order-book/sections/ensure-default` | — | T/SA | 铺默认五个系统级目录（幂等） |
+| POST | `/api/order-book/sections` | Body `meetId`,`parentId`,`title`,`level` | T/SA | 新增目录 |
+| PUT | `/api/order-book/sections/{id}` | Body `title`,`enabled`,`sortOrder` | T/SA | 改标题 / 启停 |
+| PUT | `/api/order-book/sections/{id}/move` | Query `dir`(up/down/top/bottom) | T/SA | 同父内排序调整 |
+| DELETE | `/api/order-book/sections/{id}` | — | T/SA | 软删目录（连带收口其下细则，可恢复） |
+| POST | `/api/order-book/sections/{id}/restore` | — | T/SA | 恢复被软删的目录 |
+| GET | `/api/order-book/entries` | Query `sectionId` | T/SA | 某目录的细则列表 |
+| POST | `/api/order-book/entries` | Body `sectionId`,`title`,`kind`,`sourceKey`,`contentType`,`content` | T/SA | 新增细则 |
+| PUT | `/api/order-book/entries/{id}` | Body 同上 | T/SA | 修改细则 |
+| PUT | `/api/order-book/entries/{id}/move` | Query `dir` | T/SA | 同目录内排序调整 |
+| DELETE | `/api/order-book/entries/{id}` | — | T/SA | 软删细则（可恢复） |
+| POST | `/api/order-book/entries/{id}/restore` | — | T/SA | 恢复被软删的细则 |
+| GET | `/api/order-book/layout` | Query `meetId` | 已认证 | 整本秩序册的结构树（含未启用） |
+| GET | `/api/order-book/layout/enabled` | Query `meetId` | 已认证 | 只含启用节点的树 |
+| GET | `/api/order-book/preview` | Query `grade`（可选） | 已认证 | **Word 在线预览**（`text/html`，iframe `srcdoc` 渲染） |
+| GET | `/api/order-book/preview/docx` | Query `grade`（可选） | T/SA | 下载 `.docx`（与预览同源渲染） |
+
+> 预览接口返回的是**渲染后的完整 HTML 文档**（A4 版式 + 打印样式），不是 JSON；
+> 前端用 `srcdoc` 内联，因为 iframe 的子请求不会带上登录态。详见 [22. 秩序册设计器](#22-秩序册设计器自定义目录--细则--word-在线预览)。
+
+---
+
+### 28. 多表导入重新解析（Excel multi reparse）
+
+| 方法 | 端点 | 参数 | 权限 | 说明 |
+|------|------|------|------|------|
+| POST | `/api/excel/multi/reparse` | Body `sheets[]` = `{fileIndex,sheetIndex,type,columnMap,include}` | T/SA | 按前端指定重新解析（不落库，只出预览） |
+| POST | `/api/excel/multi/sheet-data` | Query `fileIndex`,`sheetIndex`,`page`,`pageSize` | T/SA | 取某文件某 Sheet 的原始网格（分页） |
+
+> 与 [15. 15. Excel 导入导出](#15-excel-导入导出-excel) 的 `import-multi` 关系：
+> **`multi/reparse` 只解析不落库**，`import-multi` 才真正写入；两者的「表 → 类型 → 列映射」使用完全同一套口径，
+> 所以「预览怎么显示，导入就怎么写」。详见 [21. 多表导入](#21-多表导入按表指定后重新解析可视化列映射--网格预览)。
+
 ---
 
 ## 🗄 数据库设计
+
 
 ```
 sys_user ──┐
@@ -1259,24 +1363,24 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.8.1.jar
+java -jar sports-2.8.5.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.8.1.jar --app.port=8899 --app.host=::
+java -jar sports-2.8.5.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.8.1.jar --server.port=9090
+java -jar sports-2.8.5.jar --server.port=9090
 
 # 后台运行
-nohup java -jar sports-2.8.1.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.8.5.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.8.1.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.1.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.8.5.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.5.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1499,7 +1603,7 @@ sports:
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.1.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.5.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
 ```
 
 ---
@@ -1516,7 +1620,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.8.1.jar .
+copy sports-backend\target\sports-2.8.5.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -1581,4 +1685,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.8.1 | **API 端点**: 26 Controller / 220+ 个 | **构建日期**: 2026-10-01
+> **版本**: v2.8.5 | **API 端点**: 33 Controller / 276 个 | **构建日期**: 2026-10-02
