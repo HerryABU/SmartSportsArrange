@@ -1432,6 +1432,41 @@ location /sportmg/ {
 
 两种形态下浏览器地址均保持 `http://host/sportmg/#/login` 形态（hash 模式），路由、资源、API 全部自适应；无反向代理时直接访问 `http://localhost:8080` 行为完全一致（地址为 `http://localhost:8080/#/login`）。访问 `http://host/sportmg/` 或 `http://localhost:8080/` 会自动进入登录/安装向导页。
 
+
+**形态 C：HTTPS 反向代理（cpolar / nginx SSL）** —— 注意这一档和上面两档不是互斥关系，
+它管的是「加密入口 + 转发头」，子路径帽子可以照常叠加使用。
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;   # 关键：把 https 告诉后端
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port $server_port;
+}
+```
+
+后端已内置两处配套配置（`application.yml` + `SecurityConfig`），**升级后无需手动加**：
+
+1. `server.forward-headers-strategy: FRAMEWORK` —— 识别 `X-Forwarded-*`，
+   让 Spring 眼里的 scheme/端口跟着代理走（否则后端永远自认 `http://x:8080`）。
+2. 显式 `CorsConfigurationSource`（允许源用 pattern `*`、暴露 `Authorization` 头）——
+   原先是 `.cors(cors -> {})`（空配置）。
+
+> ⚠️ **踩过的坑：挂到 https 代理后面白屏，直连 `http://localhost:8080` 却完全正常。**
+> 根因很隐蔽：构建产物里 `<script type="module" crossorigin>` / `<link rel="stylesheet"
+> crossorigin>` 会让浏览器**连同源的 JS/CSS 请求也带上 `Origin` 头**（普通 XHR 同源请求不带）。
+> 本机直连时，Spring 眼里的请求地址与 `Origin` 天然同源，`DefaultCorsProcessor` 走
+> `isSameOriginRequest` 直接放行；一挂到 `https://xxx.cpolar.cn` 后面，Origin 是 `https://...`、
+> 而 Spring 眼里的还是 `http://...:8080`（第 1 条没开时），两者被判为跨源 → `CorsFilter`
+> 直接 403 → **index.html 能回来、但 `assets/*.js` 与 `assets/*.css` 全 403 → 整页白屏**。
+> 所以表现是"接口没问题、页面一片白"，且只在代理场景复现，直连测不出来。
+> 两条配置一起上（forward-headers + 显式 CORS）后，`https` 入口首屏、`#/loading`、
+> 点击进入系统 → 登录页 → 接口调用全链路均正常。
+> 自检：`curl -k -H "Origin: https://域名" https://代理入口/assets/xxx.js` 应返回 `200`
+> 并带 `Access-Control-Allow-Origin`（修复前是 `403`）。
 **缓存策略**（防"升级后浏览器仍用旧壳"）：`index.html` 与 SPA 回退路径强制 `no-store`，`/assets/**` 带内容哈希的资源长缓存 1 年（升级后文件名自动变化）。
 
 ### 🔄 数据库迁移（SQLite ↔ MySQL）
