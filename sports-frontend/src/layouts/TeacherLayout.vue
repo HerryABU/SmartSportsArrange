@@ -34,8 +34,11 @@
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
           <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="⑤ 自定义项目区">
+          <el-menu-item-group title="⑤ 自定义项目区">
           <el-menu-item index="/teacher/custom-projects"><el-icon><Star /></el-icon><span>自定义项目区</span></el-menu-item>
+        </el-menu-item-group>
+        <el-menu-item-group title="⑥ 秩序册">
+          <el-menu-item index="/teacher/order-book"><el-icon><Document /></el-icon><span>秩序册设计</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
@@ -85,8 +88,11 @@
           <el-menu-item index="/screen?mode=ranking"><el-icon><DataLine /></el-icon><span>排行榜大屏</span></el-menu-item>
           <el-menu-item index="/teacher/progress"><el-icon><Histogram /></el-icon><span>跨届进步榜</span></el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group title="⑤ 自定义项目区">
+          <el-menu-item-group title="⑤ 自定义项目区">
           <el-menu-item index="/teacher/custom-projects"><el-icon><Star /></el-icon><span>自定义项目区</span></el-menu-item>
+        </el-menu-item-group>
+        <el-menu-item-group title="⑥ 秩序册">
+          <el-menu-item index="/teacher/order-book"><el-icon><Document /></el-icon><span>秩序册设计</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
@@ -163,7 +169,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Guide, Location, Medal, Collection, WarningFilled } from '@element-plus/icons-vue'
+import { Expand, Guide, Location, Medal, Collection, WarningFilled, Document } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 import NotificationBell from '@/components/NotificationBell.vue'

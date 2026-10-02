@@ -87,6 +87,12 @@ const routes = [
         meta: { title: '多表导入' }
       },
       {
+        path: 'order-book',
+        name: 'TeacherOrderBook',
+        component: () => import('@/views/teacher/OrderBookDesigner.vue'),
+        meta: { title: '秩序册设计' }
+      },
+      {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),
