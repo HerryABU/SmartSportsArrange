@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -107,22 +108,44 @@ public class OrderBookEntryService {
         entryRepository.saveAll(List.of(siblings.get(idx), other));
     }
 
-    /** 删除（软删，可恢复）。 */
+    /**
+     * 删除（软删，可恢复）。
+     *
+     * <p><b>为什么不用 {@code @Modifying} 的批量 UPDATE 打软删标记</b>：实体上的
+     * {@code @SQLRestriction("deleted_at IS NULL")} 会被 Hibernate 拼进 UPDATE 的 where，
+     * 在 SQLite 上直接炸 {@code no such column: obe1_0.deleted_at}（类级限制对 DML 也生效）。
+     * 改成「查出来改字段再 save」，走按主键的 UPDATE，跨库行为一致。</p>
+     */
     @Transactional
     public void delete(Long id) {
         OrderBookEntry e = entryRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("细则不存在或已删除"));
-        entryRepository.softDelete(id);
+        e.setDeletedAt(LocalDateTime.now());
+        entryRepository.save(e);
         log.info("秩序册细则已软删：id={} section={}", e.getId(), e.getSectionId());
     }
 
-    /** 恢复。 */
+    /** 目录被删时把这个目录下的细则一并收口。 */
+    @Transactional
+    public int softDeleteBySection(Long sectionId) {
+        List<OrderBookEntry> hits = new ArrayList<>(entryRepository.findBySectionId(sectionId));
+        for (OrderBookEntry e : hits) {
+            e.setDeletedAt(LocalDateTime.now());
+        }
+        entryRepository.saveAll(hits);
+        return hits.size();
+    }
+
+    /**
+     * 恢复。走 repository 的原生 UPDATE：已软删的细则 {@code findById} 被
+     * {@code @SQLRestriction} 挡住，先查再写会永远落到「细则不存在」。
+     */
     @Transactional
     public void restore(Long id) {
-        OrderBookEntry e = entryRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("细则不存在"));
-        e.setDeletedAt(null);
-        entryRepository.save(e);
+        if (entryRepository.restore(id) == 0) {
+            throw new RuntimeException("细则不存在");
+        }
+        log.info("秩序册细则已恢复：id={}", id);
     }
 
     // ==================== 内部 ====================

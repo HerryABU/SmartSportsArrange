@@ -96,6 +96,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/custom-project/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/custom-project/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
+                        // 秩序册：预览（GET）全校可读，目录/细则的编排与其导出仅体育老师与超管
+                        .requestMatchers(HttpMethod.GET, "/api/order-book/**").hasAnyAuthority("ROLE_STUDENT", "ROLE_CLASS_TEACHER", "ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/order-book/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+
                         // ===== 体育老师端 - 管理 =====
                         .requestMatchers("/api/classes/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/athletes/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")

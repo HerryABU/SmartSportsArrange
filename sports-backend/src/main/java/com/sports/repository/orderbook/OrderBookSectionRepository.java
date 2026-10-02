@@ -39,8 +39,13 @@ public interface OrderBookSectionRepository extends JpaRepository<OrderBookSecti
             + "WHERE s.meet.id = :meetId AND (s.parentId = :parentId OR (:parentId IS NULL AND s.parentId IS NULL))")
     int maxSortOrder(@Param("meetId") Long meetId, @Param("parentId") String parentId);
 
-    /** 软删除（避免顺序调整时把别人的引用删断）。 */
+    /**
+     * 恢复（原生 SQL）。
+     *
+     * <p>同 {@link OrderBookEntryRepository#restore}：类级 {@code @SQLRestriction} 会连
+     * {@code findById} 一起过滤，已软删的目录 {@code findById} 取不到，恢复逻辑必须绕过它。</p>
+     */
     @Modifying
-    @Query("UPDATE OrderBookSection s SET s.deletedAt = CURRENT_TIMESTAMP WHERE s.id = :id")
-    void softDelete(@Param("id") Long id);
+    @Query(value = "UPDATE order_book_section SET deleted_at = NULL WHERE id = :id", nativeQuery = true)
+    int restore(@Param("id") Long id);
 }

@@ -16,8 +16,10 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -167,10 +169,36 @@ class OrderBookEntryServiceTest {
         OrderBookEntry e = entry(5L, 9L, 0, true);
         when(entryRepository.findById(5L)).thenReturn(Optional.of(e));
         entryService.delete(5L);
-        verify(entryRepository).softDelete(5L);
+        // 软删不是 @Modifying 批量 UPDATE（类级 @SQLRestriction 会污染 DML），而是改字段后按主键 save
+        verify(entryRepository).save(e);
+        assertNotNull(e.getDeletedAt(), "删除时间要打上，否则 @SQLRestriction 过滤不掉这一行");
 
         e.setDeletedAt(null);
+        when(entryRepository.restore(5L)).thenReturn(1);
         entryService.restore(5L);
-        verify(entryRepository).save(e);
+        // 恢复是原生 UPDATE（@SQLRestriction 会挡住 findById），不再走 save
+        verify(entryRepository).restore(5L);
+    }
+
+    @Test
+    @DisplayName("恢复时找不到那一行就报不存在，不静默吞掉")
+    void restoreMissing() {
+        when(entryRepository.restore(404L)).thenReturn(0);
+        assertThrows(RuntimeException.class, () -> entryService.restore(404L));
+    }
+
+    @Test
+    @DisplayName("删目录时整目录细则被收口（软删），不带回别的目录")
+    void softDeleteBySection() {
+        OrderBookEntry a = entry(1L, 7L, 0, true);
+        OrderBookEntry b = entry(2L, 7L, 1, true);
+        OrderBookEntry c = entry(3L, 8L, 0, true);
+        when(entryRepository.findBySectionId(7L)).thenReturn(List.of(a, b));
+
+        int n = entryService.softDeleteBySection(7L);
+        assertEquals(2, n, "返回被收口的条数");
+        verify(entryRepository).saveAll(List.of(a, b));
+        assertNotNull(a.getDeletedAt());
+        assertNotNull(b.getDeletedAt());
     }
 }

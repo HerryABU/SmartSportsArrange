@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -33,6 +34,7 @@ public class OrderBookSectionService {
 
     private final OrderBookSectionRepository sectionRepository;
     private final OrderBookEntryRepository entryRepository;
+    private final OrderBookEntryService entryService;
     private final MeetService meetService;
 
     // ==================== 默认章节 ====================
@@ -187,22 +189,35 @@ public class OrderBookSectionService {
      * 删除目录：软删自己，并把它名下的细则一并软删（规则是「目录没了，细则也没了」，
      * 不做提升——把细则提到上级目录会破坏管理员对结构的预期）。
      */
+    /**
+     * 删除目录：软删自己，并把它名下的细则一并软删。
+     *
+     * <p>规则是「目录没了，细则也没了」，不做提升到上级 —— 把细则提到上级会破坏管理员对结构的预期。
+     * 软删同样走「查出来改字段再 save」而不是 {@code @Modifying} 批量 UPDATE：
+     * 类级 {@code @SQLRestriction} 会拼进 DML，SQLite 上直接报 {@code no such column}。</p>
+     */
     @Transactional
     public void delete(Long id) {
         OrderBookSection s = sectionRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("目录不存在或已删除"));
-        entryRepository.softDeleteBySection(id);
-        sectionRepository.softDelete(id);
-        log.info("秩序册目录已软删：id={} title={}", s.getId(), s.getTitle());
+        int entries = entryService.softDeleteBySection(id);
+        s.setDeletedAt(LocalDateTime.now());
+        sectionRepository.save(s);
+        log.info("秩序册目录已软删：id={} title={} 连带细则={} 条", s.getId(), s.getTitle(), entries);
     }
 
-    /** 恢复（软删误操作时救命）。 */
+    /**
+     * 恢复（软删误操作时救命）。
+     *
+     * <p>同 {@code OrderBookEntryService#restore}：走原生 UPDATE 绕开 {@code @SQLRestriction}
+     * 对 {@code findById} 的过滤，否则已软删的目录永远查不到、恢复无从谈起。</p>
+     */
     @Transactional
     public void restore(Long id) {
-        OrderBookSection s = sectionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("目录不存在"));
-        s.setDeletedAt(null);
-        sectionRepository.save(s);
+        if (sectionRepository.restore(id) == 0) {
+            throw new RuntimeException("目录不存在");
+        }
+        log.info("秩序册目录已恢复：id={}", id);
     }
 
     // ==================== 内部 ====================

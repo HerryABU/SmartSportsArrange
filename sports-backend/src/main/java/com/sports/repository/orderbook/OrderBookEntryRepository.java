@@ -32,13 +32,18 @@ public interface OrderBookEntryRepository extends JpaRepository<OrderBookEntry, 
     @Query("SELECT COALESCE(MAX(e.sortOrder), 0) FROM OrderBookEntry e WHERE e.section.id = :sectionId")
     int maxSortOrder(@Param("sectionId") Long sectionId);
 
-    /** 把某个目录下的细则全部软删（目录被删时收口）。 */
-    @Modifying
-    @Query("UPDATE OrderBookEntry e SET e.deletedAt = CURRENT_TIMESTAMP WHERE e.section.id = :sectionId")
-    void softDeleteBySection(@Param("sectionId") Long sectionId);
+    /** 某个目录下的全部细则（未软删的），供目录删除时整目录收口。 */
+    @Query("SELECT e FROM OrderBookEntry e WHERE e.section.id = :sectionId")
+    List<OrderBookEntry> findBySectionId(@Param("sectionId") Long sectionId);
 
-    /** 软删除。 */
+    /**
+     * 恢复（原生 SQL）。
+     *
+     * <p>类级 {@code @SQLRestriction} 不只过滤 JPQL，Hibernate 6 的 {@code EntityManager.find}
+     * 同样受它约束——于是已软删的行 {@code findById} 直接查不到，{@code restore} 必然抛
+     * 「细则不存在」。原生 SQL 不经过 restriction 求值，是这里唯一能落地恢复的写法。
+     */
     @Modifying
-    @Query("UPDATE OrderBookEntry e SET e.deletedAt = CURRENT_TIMESTAMP WHERE e.id = :id")
-    void softDelete(@Param("id") Long id);
+    @Query(value = "UPDATE order_book_entry SET deleted_at = NULL WHERE id = :id", nativeQuery = true)
+    int restore(@Param("id") Long id);
 }
