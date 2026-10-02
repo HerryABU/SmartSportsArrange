@@ -268,7 +268,7 @@ public final class ExcelColumnMapping {
     }
 
     /** 归一化：去空白/常见分隔符与大小写差异，便于「表头 ↔ 别名」比较。 */
-    private static String normalize(String s) {
+    public static String normalize(String s) {
         return s == null ? null : s.trim().toLowerCase().replaceAll("[\\s\\-_/（）():：、]", "");
     }
 
@@ -352,5 +352,18 @@ public final class ExcelColumnMapping {
     /** 该类型全部候选字段（供前端「手动指定列映射」下拉）。 */
     public static Map<String, String> fieldsOf(String type) {
         return TYPE_FIELDS.getOrDefault(type, TYPE_FIELDS.get("athlete"));
+    }
+
+    /**
+     * 该类型的<b>专属</b>别名表（表头 → handler 真正读取的字段），没有则返回空表。
+     *
+     * <p>对外开放的理由：{@link ImportColumnAdvisor} 要给前端出「这一列可以选哪些字段」的候选清单并排序，
+     * 排序必须知道「这个字段是本类型专属别名命中的，还是拿全局别名撞上的」——
+     * 后者要排在后面（{@code user} 表的「姓名」该落到 {@code realName}，而不是全局表里刚好也含「姓名」的 {@code name}）。
+     * 与其让调用方自己再抄一份别名表，不如把这张表按访问层级开出去，保证口径唯一。</p>
+     */
+    public static Map<String, String> typeAliases(String type) {
+        Map<String, String> m = TYPE_COLUMN_ALIASES.get(type);
+        return m == null ? Map.of() : m;
     }
 }

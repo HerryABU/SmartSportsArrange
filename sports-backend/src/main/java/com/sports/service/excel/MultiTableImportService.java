@@ -1,7 +1,5 @@
 package com.sports.service.excel;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.service.excel.ExcelColumnMapping;
 import com.sports.service.excel.ExcelService;
 import lombok.RequiredArgsConstructor;
@@ -31,13 +29,19 @@ import java.util.Map;
  *   <li><b>逐表、逐行如实计数</b>（成功 / 跳过(已存在) / 失败 + 行号原因）。
  *       多表导入常被反复重跑，把「已存在」单独归类，才看得出这次到底改动了什么。</li>
  * </ol>
+ *
+ * <h3>本类只管编排，不管细节</h3>
+ * <ul>
+ *   <li>{@link ImportPlanParser}：前端那份「导入计划」（sheets JSON）的解析与匹配。</li>
+ *   <li>{@link SheetPreviewBuilder}：单张表的预览报告（类型判定 / 列映射 / 样例行 / 可否导入）。</li>
+ *   <li>{@link ExcelSheetReader}：EasyExcel 读目录与原始行。</li>
+ *   <li>{@link ImportBatchGuard}：批次内去重 / 冲突 / 名单一致性。</li>
+ * </ul>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class MultiTableImportService {
-
-    private static final ObjectMapper PLAN_MAPPER = new ObjectMapper();
 
     private final ExcelService excelService;
 
@@ -46,10 +50,20 @@ public class MultiTableImportService {
     /**
      * 解析文件清单：每个文件有哪些 Sheet、表头是什么、被判定成什么类型、自动列映射结果、样例行。
      *
-     * <p>供前端「先看清再导」：管理员可在导入前逐表确认/改写类型。</p>
+     * <p>供前端「先看清再导」：管理员可在导入前逐表确认/改写类型、逐列改写映射，
+     * 改完点「重新解析」把计划打回后端（{@code plan}），后端按用户指定重新判定并再出一遍预览。</p>
      */
     public Map<String, Object> preview(List<MultipartFile> files, Map<String, Object> plan) {
-        boolean hasHeader = hasHeader(plan);
+        return preview(files, plan, SheetPreviewBuilder.DEFAULT_SAMPLE_SIZE, false);
+    }
+
+    /**
+     * @param sampleSize 每表样例行数
+     * @param withAdvice 是否附带逐列「可选字段」下拉数据（可视化预览面板用）
+     */
+    public Map<String, Object> preview(List<MultipartFile> files, Map<String, Object> plan,
+                                       int sampleSize, boolean withAdvice) {
+        boolean hasHeader = ImportPlanParser.hasHeader(plan);
         List<SheetJob> jobs = buildJobs(files, plan, hasHeader);
 
         List<Map<String, Object>> fileReports = new ArrayList<>();
@@ -64,22 +78,8 @@ public class MultiTableImportService {
                 current.put("sheets", new ArrayList<Map<String, Object>>());
                 fileReports.add(current);
             }
-            String type = SheetTypeResolver.resolve(job.sheetName(), job.headers(), job.overrideType());
-            Map<String, String> columnMap = effectiveColumnMap(job, type);
-
-            Map<String, Object> s = new LinkedHashMap<>();
-            s.put("sheetIndex", job.sheetIndex());
-            s.put("sheetName", job.sheetName());
-            s.put("headers", job.headers());
-            s.put("type", type);
-            s.put("resolvedBy", resolvedBy(job));
-            s.put("columnMap", columnMap);
-            s.put("mappedFields", describeMapped(type, job.headers(), columnMap));
-            s.put("unmappedHeaders", unmappedHeaders(job.headers(), columnMap));
-            s.put("totalRows", Math.max(0, job.rows().size() - (hasHeader ? 1 : 0)));
-            s.put("sampleRows", sampleRows(job, columnMap, hasHeader));
-            s.put("importable", type != null && !columnMap.isEmpty());
-            s.put("reason", skipReason(type, columnMap));
+            Map<String, Object> s = SheetPreviewBuilder.build(job, hasHeader, sampleSize, withAdvice);
+            s.put("include", job.include());
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> list = (List<Map<String, Object>>) current.get("sheets");
             list.add(s);
@@ -99,18 +99,19 @@ public class MultiTableImportService {
     /**
      * 执行多表导入。
      *
-     * @param plan 可选的按表覆盖：{@code {hasHeader:true, sheets:[{file|fileIndex, sheet|sheetIndex, type, columnMap}]}}
+     * @param plan 可选的按表覆盖：{@code {hasHeader:true, sheets:[{file|fileIndex, sheet|sheetIndex,
+     *             type, columnMap, include}]}}；{@code include=false} 的表整表跳过。
      */
     @Transactional
     public Map<String, Object> importAll(List<MultipartFile> files, Map<String, Object> plan) {
-        boolean hasHeader = hasHeader(plan);
+        boolean hasHeader = ImportPlanParser.hasHeader(plan);
         List<SheetJob> jobs = buildJobs(files, plan, hasHeader);
 
         // 按依赖顺序执行，但报告按「文件 × Sheet 原始顺序」呈现（管理员对照的是自己那份表）
         List<SheetJob> ordered = new ArrayList<>(jobs);
         ordered.sort(Comparator
                 .comparingInt((SheetJob j) -> SheetTypeResolver.priority(
-                        SheetTypeResolver.resolve(j.sheetName(), j.headers(), j.overrideType())))
+                        SheetTypeResolver.resolve(j.sheetName(), j.headers(), j.effectiveType())))
                 .thenComparingInt(SheetJob::fileIndex)
                 .thenComparingInt(SheetJob::sheetIndex));
 
@@ -128,9 +129,12 @@ public class MultiTableImportService {
         ImportBatchGuard guard = new ImportBatchGuard();
         for (SheetJob job : ordered) {
             String key = job.fileIndex() + "::" + job.sheetIndex();
-            String type = SheetTypeResolver.resolve(job.sheetName(), job.headers(), job.overrideType());
-            Map<String, String> columnMap = effectiveColumnMap(job, type);
-            String reason = skipReason(type, columnMap);
+            String type = SheetTypeResolver.resolve(job.sheetName(), job.headers(), job.effectiveType());
+            Map<String, String> columnMap = SheetPreviewBuilder.effectiveColumnMap(job, type);
+            String reason = SheetPreviewBuilder.skipReason(type, columnMap);
+            if (!job.include()) {
+                reason = null;
+            }
             List<Map<String, String>> values = new ArrayList<>();
             List<Integer> rowNos = new ArrayList<>();
             int blank = 0;
@@ -162,14 +166,15 @@ public class MultiTableImportService {
             s.put("sheetIndex", job.sheetIndex());
             s.put("sheetName", job.sheetName());
             s.put("type", type);
-            s.put("resolvedBy", resolvedBy(job));
+            s.put("resolvedBy", SheetPreviewBuilder.resolvedBy(job));
             s.put("headers", job.headers());
             s.put("columnMap", p.columnMap());
-            s.put("mappedFields", describeMapped(type, job.headers(), p.columnMap()));
+            s.put("mappedFields", SheetPreviewBuilder.describeMapped(type, job.headers(), p.columnMap()));
 
             if (p.reason() != null) {
                 s.put("skipped", true);
-                s.put("reason", p.reason());
+                s.put("include", job.include());
+                s.put("reason", job.include() ? p.reason() : "用户指定不导入该表");
                 s.put("totalRows", Math.max(0, job.rows().size() - (hasHeader ? 1 : 0)));
                 s.put("success", 0);
                 s.put("failed", 0);
@@ -178,7 +183,7 @@ public class MultiTableImportService {
                 s.put("skipNotes", List.of());
                 s.put("inconsistencies", List.of());
                 skippedSheets++;
-                notes.add("Sheet「" + job.sheetName() + "」已跳过：" + p.reason());
+                notes.add("Sheet「" + job.sheetName() + "」" + (job.include() ? "已跳过：" + p.reason() : "按设置跳过"));
                 resultByKey.put(p.key(), s);
                 continue;
             }
@@ -219,6 +224,7 @@ public class MultiTableImportService {
                 // 防御：单表意外异常不应把整批导入拖垮（也避免外层事务被标记回滚）
                 log.warn("多表导入：Sheet「{}」导入异常: {}", job.sheetName(), e.toString());
                 s.put("skipped", false);
+                s.put("include", job.include());
                 s.put("totalRows", p.values().size() + p.blank());
                 s.put("success", 0);
                 s.put("rowSkipped", dup + conflict);
@@ -242,6 +248,7 @@ public class MultiTableImportService {
             int failed = ((Number) rowResult.getOrDefault("failed", 0)).intValue();
 
             s.put("skipped", false);
+            s.put("include", job.include());
             s.put("reason", null);
             s.put("totalRows", p.values().size() + p.blank());
             s.put("success", success);
@@ -313,14 +320,14 @@ public class MultiTableImportService {
 
     // ==================== 内部 ====================
 
-    /** 一个待处理的 Sheet（含已读出的行，避免反复读文件）。 */
-    private record SheetJob(int fileIndex, String fileName, int sheetIndex, String sheetName,
-                            List<String> headers, List<Map<Integer, String>> rows,
-                            String overrideType, Map<String, String> overrideColumnMap) {
-    }
-
-    private List<SheetJob> buildJobs(List<MultipartFile> files, Map<String, Object> plan, boolean hasHeader) {
-        List<Map<String, Object>> planSheets = planSheets(plan);
+    /**
+     * 按文件展开成「一张表一条 SheetJob」。
+     *
+     * <p>每个 Sheet 的原始行只读一次并在整条导入链路里复用 ——
+     * {@link MultipartFile} 的输入流读完就没了，重复读要么报流已关闭，要么把整本工作簿反复解析一遍。</p>
+     */
+    public List<SheetJob> buildJobs(List<MultipartFile> files, Map<String, Object> plan, boolean hasHeader) {
+        ImportPlanParser.PlanInfo info = ImportPlanParser.parse(plan);
         List<SheetJob> jobs = new ArrayList<>();
         if (files == null || files.isEmpty()) {
             throw new RuntimeException("未选择任何文件");
@@ -331,7 +338,13 @@ public class MultiTableImportService {
                 continue;
             }
             String fileName = file.getOriginalFilename() == null ? ("文件" + (fi + 1)) : file.getOriginalFilename();
-            List<ExcelSheetRef> refs = ExcelSheetReader.listSheets(file);
+            List<ExcelSheetRef> refs;
+            try {
+                refs = ExcelSheetReader.listSheets(file);
+            } catch (Exception e) {
+                log.warn("多表导入：文件「{}」目录读取失败: {}", fileName, e.toString());
+                refs = List.of();
+            }
             if (refs.isEmpty()) {
                 // 目录读不出来（例如纯 CSV）：退化成「第 0 个表」，仍如实走后续判定
                 refs = List.of(new ExcelSheetRef(0, fileName));
@@ -345,102 +358,14 @@ public class MultiTableImportService {
                     rows = List.of();
                 }
                 List<String> headers = hasHeader ? ExcelSheetReader.headersOf(rows) : List.of();
-                PlanEntry pe = findPlanEntry(planSheets, fi, fileName, ref);
+                ImportPlanParser.PlanEntry pe = ImportPlanParser.match(info.entries(), fi, fileName, ref);
                 jobs.add(new SheetJob(fi, fileName, ref.index(), ref.name(), headers, rows,
-                        pe == null ? null : pe.type(), pe == null ? Map.of() : pe.columnMap()));
+                        pe == null ? null : pe.type(),
+                        pe == null ? Map.of() : pe.columnMap(),
+                        pe == null || pe.isIncluded()));
             }
         }
         return jobs;
-    }
-
-    private Map<String, String> effectiveColumnMap(SheetJob job, String type) {
-        if (job.overrideColumnMap() != null && !job.overrideColumnMap().isEmpty()) {
-            return job.overrideColumnMap();
-        }
-        return SheetTypeResolver.autoColumnMap(type, job.headers());
-    }
-
-    /** 该表由什么判定出来：人工指定 / 表头指纹 / 表名关键词（认不出则 null）。 */
-    private String resolvedBy(SheetJob job) {
-        if (job.overrideType() != null && !job.overrideType().isBlank()) {
-            return "override";
-        }
-        if (SheetTypeResolver.inferByHeader(job.headers()) != null) {
-            return "header";
-        }
-        return ExcelService.detectTypeOrNull(job.sheetName()) != null ? "name" : null;
-    }
-
-    private String skipReason(String type, Map<String, String> columnMap) {
-        if (type == null) {
-            return "无法识别该表类型（Sheet 名与表头都不足以判定），可在列表里手动指定类型";
-        }
-        if (columnMap.isEmpty()) {
-            return "表头没有可识别的列（与「" + type + "」的字段不匹配），可在列表里手动指定列映射";
-        }
-        return null;
-    }
-
-    private List<Map<String, String>> describeMapped(String type, List<String> headers, Map<String, String> columnMap) {
-        List<Map<String, String>> list = new ArrayList<>();
-        if (columnMap == null) {
-            return list;
-        }
-        for (Map.Entry<String, String> e : columnMap.entrySet()) {
-            int col;
-            try {
-                col = Integer.parseInt(e.getKey());
-            } catch (NumberFormatException ignore) {
-                continue;
-            }
-            Map<String, String> m = new LinkedHashMap<>();
-            m.put("column", String.valueOf(col));
-            m.put("header", col < headers.size() ? headers.get(col) : "");
-            m.put("field", e.getValue());
-            m.put("label", ExcelColumnMapping.getFieldLabel(type, e.getValue()));
-            list.add(m);
-        }
-        return list;
-    }
-
-    private List<String> unmappedHeaders(List<String> headers, Map<String, String> columnMap) {
-        List<String> unmapped = new ArrayList<>();
-        if (headers == null) {
-            return unmapped;
-        }
-        java.util.Set<String> mappedCols = columnMap == null ? java.util.Set.of() : columnMap.keySet();
-        for (int c = 0; c < headers.size(); c++) {
-            String h = headers.get(c);
-            if (h == null || h.isBlank()) {
-                continue;
-            }
-            if (!mappedCols.contains(String.valueOf(c))) {
-                unmapped.add(h);
-            }
-        }
-        return unmapped;
-    }
-
-    private List<List<String>> sampleRows(SheetJob job, Map<String, String> columnMap, boolean hasHeader) {
-        List<List<String>> samples = new ArrayList<>();
-        int from = hasHeader ? 1 : 0;
-        for (int r = from; r < job.rows().size() && samples.size() < 3; r++) {
-            Map<Integer, String> row = job.rows().get(r);
-            if (ExcelSheetReader.isBlankRow(row)) {
-                continue;
-            }
-            List<String> line = new ArrayList<>();
-            for (String col : columnMap.keySet()) {
-                try {
-                    String v = row.get(Integer.parseInt(col));
-                    line.add(v == null ? "" : v);
-                } catch (NumberFormatException ignore) {
-                    line.add("");
-                }
-            }
-            samples.add(line);
-        }
-        return samples;
     }
 
     private Map<String, Map<String, String>> fieldLabels() {
@@ -449,114 +374,5 @@ public class MultiTableImportService {
             labels.put(type, ExcelColumnMapping.fieldsOf(type));
         }
         return labels;
-    }
-
-    private boolean hasHeader(Map<String, Object> plan) {
-        if (plan == null) {
-            return true;
-        }
-        Object v = plan.get("hasHeader");
-        if (v == null) {
-            return true;
-        }
-        if (v instanceof Boolean b) {
-            return b;
-        }
-        return !"false".equalsIgnoreCase(String.valueOf(v).trim());
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> planSheets(Map<String, Object> plan) {
-        if (plan == null) {
-            return List.of();
-        }
-        Object raw = plan.get("sheets");
-        if (raw instanceof String s) {
-            try {
-                return PLAN_MAPPER.readValue(s, new TypeReference<List<Map<String, Object>>>() {
-                });
-            } catch (Exception e) {
-                return List.of();
-            }
-        }
-        if (raw instanceof List<?> list) {
-            List<Map<String, Object>> out = new ArrayList<>();
-            for (Object o : list) {
-                if (o instanceof Map<?, ?> m) {
-                    out.add((Map<String, Object>) m);
-                }
-            }
-            return out;
-        }
-        return List.of();
-    }
-
-    /** 在计划里按「文件名 + Sheet 名」优先、其次「文件序号 + Sheet 序号」匹配一条覆盖项。 */
-    private PlanEntry findPlanEntry(List<Map<String, Object>> planSheets, int fileIndex, String fileName, ExcelSheetRef ref) {
-        for (Map<String, Object> entry : planSheets) {
-            String entryFile = str(entry.get("file"));
-            Integer entryFileIdx = intOf(entry.get("fileIndex"));
-            boolean fileMatch = (entryFile != null && entryFile.equals(fileName))
-                    || (entryFileIdx != null && entryFileIdx == fileIndex);
-            if (!fileMatch) {
-                continue;
-            }
-            String entrySheet = str(entry.get("sheet"));
-            Integer entrySheetIdx = intOf(entry.get("sheetIndex"));
-            boolean sheetMatch = (entrySheet != null && entrySheet.equals(ref.name()))
-                    || (entrySheetIdx != null && entrySheetIdx == ref.index());
-            if (!sheetMatch) {
-                continue;
-            }
-            return new PlanEntry(str(entry.get("type")), columnMapOf(entry.get("columnMap")));
-        }
-        return null;
-    }
-
-    private record PlanEntry(String type, Map<String, String> columnMap) {
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, String> columnMapOf(Object raw) {
-        if (raw == null) {
-            return Map.of();
-        }
-        if (raw instanceof Map<?, ?> m) {
-            Map<String, String> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : m.entrySet()) {
-                if (e.getKey() != null && e.getValue() != null) {
-                    out.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
-                }
-            }
-            return out;
-        }
-        if (raw instanceof String s) {
-            try {
-                return PLAN_MAPPER.readValue(s, new TypeReference<Map<String, String>>() {
-                });
-            } catch (Exception e) {
-                return Map.of();
-            }
-        }
-        return Map.of();
-    }
-
-    private static String str(Object o) {
-        if (o == null) {
-            return null;
-        }
-        String s = String.valueOf(o).trim();
-        return s.isEmpty() ? null : s;
-    }
-
-    private static Integer intOf(Object o) {
-        if (o == null) {
-            return null;
-        }
-        try {
-            return Integer.valueOf(String.valueOf(o).trim());
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 }

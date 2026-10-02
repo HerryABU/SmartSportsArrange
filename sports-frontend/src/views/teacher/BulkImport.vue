@@ -46,6 +46,9 @@
         <el-button type="primary" :loading="parsing" :disabled="!files.length" @click="doPreview">
           ② 解析表结构
         </el-button>
+        <el-button :loading="reparsing" :disabled="!files.length || !hasPreview" @click="doReparse">
+          按当前指定重新解析
+        </el-button>
         <el-button type="success" :loading="importing" :disabled="!canImport" @click="doImport">
           ③ 开始导入
         </el-button>
@@ -85,10 +88,18 @@
               <div v-if="row.unmappedHeaders && row.unmappedHeaders.length" class="muted">
                 未识别列：{{ row.unmappedHeaders.join('、') }}
               </div>
+              <el-button v-if="row.advice" link type="primary" size="small" @click="openMapping(row)">
+                逐列编辑映射
+              </el-button>
             </template>
           </el-table-column>
           <el-table-column label="数据行" width="80">
             <template #default="{ row }">{{ row.totalRows }}</template>
+          </el-table-column>
+          <el-table-column label="导入该表" width="92">
+            <template #default="{ row }">
+              <el-switch v-model="row.include" size="small" />
+            </template>
           </el-table-column>
           <el-table-column label="可导入" width="80">
             <template #default="{ row }">
@@ -106,6 +117,18 @@
         </el-table>
       </div>
     </el-card>
+
+    <!-- 逐列映射编辑 -->
+    <el-dialog v-model="mappingVisible" :title="mappingTitle" width="880px" append-to-body>
+      <SheetMappingEditor
+        v-if="mappingRow && mappingRow.advice"
+        :columns="mappingRow.advice"
+        @apply="onMappingApplied"
+      />
+      <template #footer>
+        <el-button @click="mappingVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 导入报告 -->
     <el-card v-if="report" shadow="never">
@@ -186,9 +209,10 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Files, Upload, Download, Document } from '@element-plus/icons-vue'
+import { Files, Upload, Download, Document, Setting, Refresh } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { downloadApi } from '@/utils/download'
+import SheetMappingEditor from '@/components/excel/SheetMappingEditor.vue'
 
 const fileInput = ref(null)
 const files = ref([])
@@ -197,15 +221,19 @@ const preview = ref(null)
 const report = ref(null)
 const parsing = ref(false)
 const importing = ref(false)
+const reparsing = ref(false)
 
 // 去重 / 一致性问题的中文标签
 const KIND_LABELS = { DUPLICATE: '重复', CONFLICT: '冲突', ROSTER_MISMATCH: '名单不一致' }
 function kindLabel (k) { return KIND_LABELS[k] || k }
 
+const hasPreview = computed(() => !!(preview.value && preview.value.files && preview.value.files.length))
+
 const canImport = computed(() => {
   if (!files.value.length) return false
   if (!preview.value) return true // 未解析也允许直接导入（走后端自动识别）
-  return preview.value.files.some(f => (f.sheets || []).some(s => s.type))
+  // 至少有一张表被勾上「导入该表」，且它认得出类型
+  return preview.value.files.some(f => (f.sheets || []).some(s => s.include !== false && s.type))
 })
 
 const parseSummary = computed(() => {
@@ -243,7 +271,13 @@ function humanSize (n) {
   return (n / 1024 / 1024).toFixed(2) + ' MB'
 }
 
-/** 组装表单：多文件 + 是否含表头 + 逐表类型覆盖（可选） */
+/**
+ * 组装表单：多文件 + 是否含表头 + 逐表「导入计划」。
+ *
+ * 计划里现在带三样东西：类型 {@code type}、列映射 {@code columnMap}、是否参与 {@code include}。
+ * 这正是「按用户指定重新解析」的载体 —— 浏览器里仍持有同一个 File 对象，
+ * 所以改完映射不用重新选文件，把计划打回后端即可重来一遍。
+ */
 function buildFormData (withPlan) {
   const fd = new FormData()
   files.value.forEach(f => fd.append('files', f))
@@ -252,14 +286,76 @@ function buildFormData (withPlan) {
     const plan = []
     preview.value.files.forEach(f => {
       (f.sheets || []).forEach(s => {
-        if (s.type) {
-          plan.push({ file: f.fileName, sheet: s.sheetName, type: s.type })
+        const entry = {
+          file: f.fileName,
+          sheet: s.sheetName,
+          type: s.type || null,
+          include: s.include !== false
         }
+        // 传生效后的列映射（后端 s.columnMap 已是「人工优先、否则自动」）
+        const cm = s.columnMap
+        if (cm && Object.keys(cm).length) entry.columnMap = cm
+        plan.push(entry)
       })
     })
     if (plan.length) fd.append('sheets', JSON.stringify(plan))
   }
   return fd
+}
+
+/**
+ * 按用户指定重新解析：把当前预览状态（类型 / 列映射 / 是否导入）回传，
+ * 后端据此重新判定并再出一遍预览，同时带上逐列候选字段供继续改。
+ */
+async function doReparse () {
+  if (!files.value.length) { ElMessage.warning('请先选择文件'); return }
+  reparsing.value = true
+  try {
+    const res = await request.post('/excel/multi/reparse', buildFormData(true),
+      { headers: { 'Content-Type': 'multipart/form-data' } })
+    preview.value = res || null
+    report.value = null
+    ElMessage.success('已按你的指定重新解析，可继续逐列调整映射')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '重新解析失败')
+  } finally {
+    reparsing.value = false
+  }
+}
+
+const mappingVisible = ref(false)
+const mappingRow = ref(null)
+const mappingTitle = computed(() => {
+  const s = mappingRow.value
+  return s ? `列映射 · ${s.sheetName}（${preview.typeLabels[s.type] || s.type || '未识别'}）` : '列映射'
+})
+
+function openMapping (row) {
+  if (!row.advice || !row.advice.length) {
+    ElMessage.info('这张表没有可识别的表头，先点「按当前指定重新解析」拿到字段清单')
+    return
+  }
+  // 后端建议是「这一列最可能是什么」，先把用户当前（可能是自动）的落点回填成选中项
+  const advice = row.advice.map(a => ({ ...a, field: a.field || '' }))
+  ;(row.columnMap || {}) && Object.keys(row.columnMap).forEach(k => {
+    const c = advice.find(a => String(a.column) === String(k))
+    if (c) c.field = row.columnMap[k]
+  })
+  mappingRow.value = { ...row, advice, columnMap: row.columnMap || {} }
+  mappingVisible.value = true
+}
+
+/** 映射编辑器点「应用映射」：写回本地计划，并立刻按指定重新解析一次（所见即所得）。 */
+function onMappingApplied (columnMap) {
+  if (mappingRow.value) {
+    mappingRow.value.columnMap = columnMap
+    // 把改动同步回列表里的那一行（dialog 里是副本）
+    const all = (preview.value?.files || []).flatMap(f => f.sheets || [])
+    const target = all.find(s => s.sheetIndex === mappingRow.value.sheetIndex && s.sheetName === mappingRow.value.sheetName)
+    if (target) target.columnMap = columnMap
+  }
+  mappingVisible.value = false
+  doReparse()
 }
 
 async function doPreview () {

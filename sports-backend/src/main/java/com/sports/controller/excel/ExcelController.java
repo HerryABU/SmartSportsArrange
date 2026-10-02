@@ -6,6 +6,7 @@ import com.sports.service.excel.ExcelService;
 import com.sports.service.system.SystemService;
 import com.sports.service.export.WordOrderBookService;
 import com.sports.service.excel.MultiTableImportService;
+import com.sports.service.excel.SheetPreviewBuilder;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,6 +15,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -66,6 +68,24 @@ public class ExcelController {
         log.info("多表导入探测: 文件数={}", files == null ? 0 : files.length);
         return ApiResponse.success(multiTableImportService.preview(files == null ? java.util.List.of() : java.util.List.of(files),
                 plan == null ? Map.of() : plan));
+    }
+
+    /**
+     * 按用户指定<b>重新解析</b>：前端把改过的「导入计划」打回来（逐表类型、逐列映射、是否参与），
+     * 后端据此重新判定并出一份<b>带列候选建议、样例行数更多</b>的预览。
+     *
+     * <p>和 {@code /multi/preview} 的区别不是两套逻辑，而是两种意图：这是「我已经看过第一版结果、
+     * 现在按我的指定重来一遍」，所以默认带上 {@code advice}（每列可以选哪些字段）方便当场改。
+     * 文件与 {@code plan} 都还要求重新传 —— MultipartFile 的流读完即失效，服务端不缓存上传件。</p>
+     */
+    @PostMapping("/multi/reparse")
+    public ApiResponse<?> reparseMulti(@RequestParam("files") MultipartFile[] files,
+                                       @RequestParam(required = false) Map<String, Object> plan) {
+        log.info("多表导入重新解析: 文件数={}", files == null ? 0 : files.length);
+        return ApiResponse.success("已按指定重新解析",
+                multiTableImportService.preview(files == null ? List.of() : List.of(files),
+                        plan == null ? Map.of() : plan,
+                        SheetPreviewBuilder.LARGE_SAMPLE_SIZE, true));
     }
 
     /** 多表导入：files 可多选；plan 可选，用于逐表指定 type / columnMap。 */
