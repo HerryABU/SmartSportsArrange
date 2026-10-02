@@ -133,7 +133,11 @@ public class MultiTableImportService {
             Map<String, String> columnMap = SheetPreviewBuilder.effectiveColumnMap(job, type);
             String reason = SheetPreviewBuilder.skipReason(type, columnMap);
             if (!job.include()) {
-                reason = null;
+                // 未勾选的表同样按「整表跳过」报告：不置 null 是因为置 null 会让它再走一遍空行处理，
+                // 报告上显示成「成功 0 行」，管理员看不出这张表到底是被跳过了还是压根没读到。
+                if (reason == null) {
+                    reason = "用户指定不导入该表";
+                }
             }
             List<Map<String, String>> values = new ArrayList<>();
             List<Integer> rowNos = new ArrayList<>();
@@ -183,7 +187,8 @@ public class MultiTableImportService {
                 s.put("skipNotes", List.of());
                 s.put("inconsistencies", List.of());
                 skippedSheets++;
-                notes.add("Sheet「" + job.sheetName() + "」" + (job.include() ? "已跳过：" + p.reason() : "按设置跳过"));
+                notes.add("Sheet「" + job.sheetName() + "」"
+                        + (job.include() ? "已跳过：" + p.reason() : "按设置跳过（未勾选）"));
                 resultByKey.put(p.key(), s);
                 continue;
             }
@@ -359,10 +364,17 @@ public class MultiTableImportService {
                 }
                 List<String> headers = hasHeader ? ExcelSheetReader.headersOf(rows) : List.of();
                 ImportPlanParser.PlanEntry pe = ImportPlanParser.match(info.entries(), fi, fileName, ref);
+                String detectedType = SheetTypeResolver.resolve(ref.name(), headers, pe == null ? null : pe.type());
+                // 说明页（模板自带的「填写说明」）默认不勾：让管理员不必为每份模板挨个取消勾选，
+                // 想导别的表照样能导 —— 这里只影响默认勾选状态，不改判定结果。
+                boolean included = pe == null || pe.isIncluded();
+                if (SheetTypeResolver.isNotice(detectedType)) {
+                    included = false;
+                }
                 jobs.add(new SheetJob(fi, fileName, ref.index(), ref.name(), headers, rows,
                         pe == null ? null : pe.type(),
                         pe == null ? Map.of() : pe.columnMap(),
-                        pe == null || pe.isIncluded()));
+                        included));
             }
         }
         return jobs;

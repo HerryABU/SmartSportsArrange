@@ -51,7 +51,7 @@ public final class SheetPreviewBuilder {
         s.put("unmappedHeaders", unmappedHeaders(job.headers(), columnMap));
         s.put("totalRows", Math.max(0, job.rows().size() - (hasHeader ? 1 : 0)));
         s.put("sampleRows", sampleRows(job, columnMap, hasHeader, n));
-        s.put("importable", type != null && !columnMap.isEmpty());
+        s.put("importable", type != null && !columnMap.isEmpty() && !SheetTypeResolver.isNotice(type));
         s.put("reason", skipReason(type, columnMap));
         if (withAdvice) {
             s.put("advice", ImportColumnAdvisor.advise(type, job.headers()));
@@ -83,6 +83,10 @@ public final class SheetPreviewBuilder {
     public static String skipReason(String type, Map<String, String> columnMap) {
         if (type == null) {
             return "无法识别该表类型（Sheet 名与表头都不足以判定），可在列表里手动指定类型";
+        }
+        if (SheetTypeResolver.isNotice(type)) {
+            // 说明页不是「识别失败」：它本来就没有要导的数据，如实说明比让用户手动指定类型更准确
+            return "填写说明 / 注释页，不参与导入（无业务数据，已自动跳过）";
         }
         if (columnMap == null || columnMap.isEmpty()) {
             return "表头没有可识别的列（与「" + type + "」的字段不匹配），可在列表里手动指定列映射";

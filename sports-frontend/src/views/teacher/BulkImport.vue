@@ -256,7 +256,8 @@ const parseSummary = computed(() => {
   if (!preview.value) return ''
   let sheets = 0
   let importable = 0
-  preview.value.files.forEach(f => (f.sheets || []).forEach(s => { sheets++; if (s.type) importable++ }))
+  // 说明页（填写说明）不算「已识别的可导入表」：它本来就没有业务数据，计入会让顶部统计虚高
+  preview.value.files.forEach(f => (f.sheets || []).forEach(s => { sheets++; if (s.type && s.type !== 'notice') importable++ }))
   return `共 ${preview.value.files.length} 个文件 / ${sheets} 张表，其中 ${importable} 张已识别类型`
 })
 
