@@ -254,8 +254,39 @@ class MultiTableImportServiceTest {
         assertEquals(1, summaryOf(result).get("rowSkipped"));
     }
 
-    // ==================== 探测（不落库） ====================
+    @Test
+    @DisplayName("汇总口径：summary.rowSkipped 必须含批内重复，且「已存在 = 跳过 - 重复 - 冲突」恒非负")
+    void summarySkippedIncludesInBatchDuplicates() {
+        // 真实日志踩到的坑：逐表展示用 rowSkipped + dup + conflict，汇总却只加 rowSkipped，
+        // 于是完成日志里「已存在 = totalSkipped - totalDup - totalConflict」算成负数（实测 3-9=-6），
+        // 前端「跳过(已存在/重复) N 行」也跟着少报。这里把两条口径钉死。
+        when(classInfoRepository.existsByName("高一1班")).thenReturn(true);
 
+        byte[] book = ExcelTestDataFactory.xlsxMulti(List.of(
+                classSheet("班级表", new String[][]{
+                        {"高一1班", "高一年级", "王老师"},   // 已存在 → 跳过
+                        {"高一2班", "高一年级", "李老师"},   // 正常导入
+                        {"高一2班", "高一年级", "李老师"}}))); // 批内重复 → 跳过
+
+        Map<String, Object> result = service.importAll(List.of(file(book, "混合.xlsx")), Map.of());
+
+        Map<String, Object> summary = summaryOf(result);
+        int sheetSkipped = (int) sheetByName(result, "班级表").get("rowSkipped");
+        int dup = (int) summary.get("duplicateRows");
+        int conflict = (int) summary.get("conflictRows");
+        int totalSkipped = (int) summary.get("rowSkipped");
+
+        assertEquals(1, summary.get("imported"), "只有 高一2班 一行真正落库");
+        assertEquals(1, dup, "批内重复 1 行");
+        assertEquals(sheetSkipped, totalSkipped,
+                "汇总与逐表口径必须一致（含重复），否则前端展示与完成日志都会偏小");
+        assertTrue(totalSkipped - dup - conflict >= 0,
+                "「已存在」不能是负数：totalSkipped=" + totalSkipped
+                        + " dup=" + dup + " conflict=" + conflict);
+        assertEquals(1, totalSkipped - dup - conflict, "已存在 1 行（高一1班）");
+    }
+
+    // ==================== 探测（不落库） ====================
     @Test
     @DisplayName("探测：返回真实 Sheet 名、判定类型、自动列映射与可否导入")
     void previewReportsSheetInventory() {

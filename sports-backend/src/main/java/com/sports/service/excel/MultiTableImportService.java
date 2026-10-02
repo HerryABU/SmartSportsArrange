@@ -122,6 +122,9 @@ public class MultiTableImportService {
         Map<String, Map<String, Object>> resultByKey = new LinkedHashMap<>();
         int totalSuccess = 0, totalSkipped = 0, totalFailed = 0, skippedSheets = 0;
         int totalDup = 0, totalConflict = 0, totalRosterMismatch = 0;
+        // 被整表跳过的 Sheet 名字：只报个数（「跳过表 1」）看不出是哪张、为什么，
+        // 排查时得反查 notes；这里随完成日志一起打出来。
+        List<String> skippedSheetNames = new ArrayList<>();
         List<String> notes = new ArrayList<>();
         List<String> inconsistencies = new ArrayList<>();
 
@@ -191,6 +194,8 @@ public class MultiTableImportService {
                 s.put("skipNotes", List.of());
                 s.put("inconsistencies", List.of());
                 skippedSheets++;
+                skippedSheetNames.add(job.sheetName() + "("
+                        + (job.include() ? p.reason() : "未勾选") + ")");
                 notes.add("Sheet「" + job.sheetName() + "」"
                         + (job.include() ? "已跳过：" + p.reason() : "按设置跳过（未勾选）"));
                 resultByKey.put(p.key(), s);
@@ -275,7 +280,11 @@ public class MultiTableImportService {
                 notes.add("Sheet「" + job.sheetName() + "」行数达到上限 " + ExcelSheetReader.MAX_ROWS_PER_SHEET + "，超出部分未导入");
             }
             totalSuccess += success;
-            totalSkipped += rowSkipped;
+            // 汇总口径必须与逐表展示一致（上面 s.put("rowSkipped", rowSkipped + dup + conflict)）：
+            // 去重行与冲突行同样属于「没导入的行」，要一并计入。旧实现只累加 rowSkipped，
+            // 导致 summary.rowSkipped 偏小、日志里「已存在 = totalSkipped - totalDup - totalConflict」
+            // 直接算成负数（实测 3 - 9 = -6），前端「跳过(已存在/重复) N 行」也跟着少报。
+            totalSkipped += rowSkipped + dup + conflict;
             totalFailed += failed;
             totalDup += dup;
             totalConflict += conflict;
@@ -321,9 +330,11 @@ public class MultiTableImportService {
         out.put("summary", summary);
         out.put("notes", notes);
         out.put("inconsistencies", inconsistencies.size() > 200 ? inconsistencies.subList(0, 200) : inconsistencies);
-        log.info("多表导入完成: 文件 {}，Sheet {}，成功 {} 行，跳过(已存在 {}/重复 {} ) {} 行，失败 {} 行，跳过表 {}，冲突 {}，名单不一致 {}",
-                fileReports.size(), jobs.size(), totalSuccess, totalSkipped - totalDup - totalConflict, totalDup,
-                totalSkipped, totalFailed, skippedSheets, totalConflict, totalRosterMismatch);
+        log.info("多表导入完成: 文件 {}，Sheet {}，成功 {} 行，跳过(已存在 {}/重复 {} ) {} 行，失败 {} 行，跳过表 {}[{}]，冲突 {}，名单不一致 {}",
+                fileReports.size(), jobs.size(), totalSuccess,
+                // 「已存在」= 跳过总数 - 去重 - 冲突；Math.max 兜底防整表异常分支下的负数误读
+                Math.max(0, totalSkipped - totalDup - totalConflict), totalDup,
+                totalSkipped, totalFailed, skippedSheets, skippedSheetNames, totalConflict, totalRosterMismatch);
         return out;
     }
 
