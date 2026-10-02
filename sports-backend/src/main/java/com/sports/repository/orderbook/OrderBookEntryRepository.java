@@ -24,6 +24,8 @@ public interface OrderBookEntryRepository extends JpaRepository<OrderBookEntry, 
             + "WHERE s.meet.id = :meetId AND e.sourceKey = :sourceKey")
     List<OrderBookEntry> findBySource(@Param("meetId") Long meetId, @Param("sourceKey") String sourceKey);
 
+    /** 同 {@link OrderBookSectionRepository#countByMeet}：走显式 {@code e.section.id} 避免实体/Long 比较。 */
+    @Query("SELECT COUNT(e) FROM OrderBookEntry e WHERE e.section.id = :sectionId")
     long countBySection(@Param("sectionId") Long sectionId);
 
     /** 同目录最大排序值 +1。 */

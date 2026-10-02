@@ -24,6 +24,14 @@ public interface OrderBookSectionRepository extends JpaRepository<OrderBookSecti
     @Query("SELECT s FROM OrderBookSection s WHERE s.meet.id = :meetId AND s.parentId = :parentId ORDER BY s.sortOrder, s.id")
     List<OrderBookSection> findChildren(@Param("meetId") Long meetId, @Param("parentId") String parentId);
 
+    /**
+     * 某届目录条数（默认章节是否已铺过）。
+     *
+     * <p>必须写成显式 {@code s.meet.id}：<code>meet</code> 是 {@link com.sports.entity.meet.SportsMeet}
+     * 实体引用，派生查询直接拿 {@code Long} 比较会被 Hibernate 6 判为
+     * “Cannot compare SportsMeet with Long” 而启动失败。</p>
+     */
+    @Query("SELECT COUNT(s) FROM OrderBookSection s WHERE s.meet.id = :meetId")
     long countByMeet(@Param("meetId") Long meetId);
 
     /** 同层最大排序值 +1，供新增目录时落位到末尾。 */
