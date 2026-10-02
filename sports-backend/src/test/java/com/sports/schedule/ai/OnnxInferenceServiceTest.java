@@ -14,6 +14,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -116,5 +117,73 @@ class OnnxInferenceServiceTest {
     private static ScheduleUnit unit(String key, int rawDuration, long[] athletes, List<Placement> cands) {
         return new ScheduleUnit(key, 1L, "项目" + key, "高一", true, "径赛", null, 5,
                 rawDuration, 10, athletes, List.of(rawDuration), cands);
+    }
+
+    /**
+     * 核心问题：<b>模型到底有没有在「根据这些点位与输入」推理？</b>
+     *
+     * <p>能返回建议 ≠ 在推理。若实现里存在「无论输入什么都返回同一份常量」的情况，
+     * 上面的「模型可加载」用例照样会绿。所以这里用三组对照把「输入 → 输出」的因果钉死：
+     * ① 只有需求时长不同（→ 张量 tension 不同）→ 取消概率必须不同；
+     * ② 只有兼项关系不同（→ 冲突边/度数不同）→ 节点优先级必须不同；
+     * ③ 特征向量本身逐维随输入变化。</p>
+     */
+    @Test
+    @DisplayName("推理结果随编排输入变化：同一模型吃不同点位/兼项必须给出不同建议（非常量返回）")
+    void adviceActuallyDependsOnInput() {
+        assumeTrue(new OnnxInferenceService(true, MODEL_DIR.toString(),
+                "algorithm_selector.onnx", "conflict_gnn.onnx").isAvailable(),
+                "模型未就绪，跳过");
+
+        OnnxInferenceService svc = new OnnxInferenceService(true, MODEL_DIR.toString(),
+                "algorithm_selector.onnx", "conflict_gnn.onnx");
+        List<Placement> places = placements();
+
+        // ① 同一批运动员、同一批点位，只把单元时长从 10 分钟拉到 300 分钟
+        //    → InstanceFeatures 的 demand/tension_ratio 变化 → 选择器输出应随之变化
+        List<ScheduleUnit> light = List.of(
+                unit("a", 10, new long[]{1L, 2L, 3L}, places),
+                unit("b", 10, new long[]{2L, 3L}, places),
+                unit("c", 10, new long[]{3L}, places));
+        List<ScheduleUnit> heavy = List.of(
+                unit("a", 300, new long[]{1L, 2L, 3L}, places),
+                unit("b", 300, new long[]{2L, 3L}, places),
+                unit("c", 300, new long[]{3L}, places));
+
+        Optional<AiAdvisory> lightAdvice = svc.advise(light, places);
+        Optional<AiAdvisory> heavyAdvice = svc.advise(heavy, places);
+        assertTrue(lightAdvice.isPresent() && heavyAdvice.isPresent(), "两组都应给出建议");
+
+        assertNotEquals(lightAdvice.get().cancelProbability(), heavyAdvice.get().cancelProbability(),
+                1e-9, "需求时长翻了 30 倍，选择器的取消概率必须跟着变；"
+                        + "若相等说明模型输出与输入无关（常量返回或特征没喂进去）");
+
+        // ② 只改「谁和谁同场」→ 冲突图不同 → GNN 优先级必须不同。
+        //    注意：兼项关系**本来就会**体现在特征里（multi_ratio / edges / density），
+        //    所以不能断言两组特征全等，那只会证明特征是常量。这里钉的是「边从无到有」这条因果链。
+        List<ScheduleUnit> noOverlap = List.of(
+                unit("a", 60, new long[]{1L, 2L}, places),
+                unit("b", 60, new long[]{3L, 4L}, places));
+        List<ScheduleUnit> chained = List.of(
+                unit("a", 60, new long[]{1L, 2L}, places),
+                unit("b", 60, new long[]{2L, 3L}, places));
+        double[] fNoOverlap = InstanceFeatures.extract(noOverlap, places);
+        double[] fChained = InstanceFeatures.extract(chained, places);
+        assertEquals(0.0, fNoOverlap[4], 1e-9, "两组互不重叠时无人兼项");
+        assertEquals(0.0, fNoOverlap[6], 1e-9, "两组互不重叠时冲突边为 0");
+        // InstanceFeatures 里 multiRatio / tension 等都过了 round4 量化，这里按同精度断言
+        assertEquals(0.3333, fChained[4], 1e-4, "3 人中 1 人（2 号）兼项 → 占比 1/3");
+        assertEquals(1.0, fChained[6], 1e-9, "a-b 共享 2 号运动员 → 冲突边 1 条");
+
+        double[] pNoOverlap = svc.advise(noOverlap, places).orElseThrow().nodePriority();
+        double[] pChained = svc.advise(chained, places).orElseThrow().nodePriority();
+        assertFalse(java.util.Arrays.equals(pNoOverlap, pChained),
+                "兼项关系不同（无边 vs a-b 相连）时 GNN 优先级不应完全相同");
+
+        // ③ 特征向量随输入变化：需求时长翻了 30 倍，tension 必须跟着动
+        double[] fLight = InstanceFeatures.extract(light, places);
+        double[] fHeavy = InstanceFeatures.extract(heavy, places);
+        assertNotEquals(fLight[1], fHeavy[1], 1e-9, "需求总时长应随单元时长变化");
+        assertNotEquals(fLight[3], fHeavy[3], 1e-9, "tension_ratio 应随需求变化");
     }
 }
