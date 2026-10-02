@@ -100,13 +100,37 @@ public final class ExcelColumnMapping {
             "name","班级名称","code","班级编码","grade","年级","teacherName","班主任")));
         TYPE_FIELDS.put("user", new LinkedHashMap<>(Map.of(
             "username","用户名","password","密码","realName","姓名","role","角色","phone","电话")));
-        TYPE_FIELDS.put("event", new LinkedHashMap<>(Map.of(
-            "name","项目名称","code","项目编码","category","类别","genderLimit","性别限制",
-            "defaultLanes","跑道数","scoringType","计分规则","record","校纪录","refereesPerGroup","组次裁判数量")));
-        // 运动项目表（7列精简模板）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间
-        TYPE_FIELDS.put("eventsimple", new LinkedHashMap<>(Map.of(
-            "eventCode","项目代码","eventName","项目名称","teamMembers","每组人数","concurrency","每批组数",
-            "category","项目类型","defaultVenueCode","场地号","perBatchMinutes","每批所需时间(分)")));
+        // 项目表（表格2 完整版）：字段与「项目表导入模板_表格2」的 19 列一一对应，
+        // 顺序也按模板列序（代码/项目/是否田径/道次/顺序号/…）——前端「逐列编辑映射」的下拉顺序即此顺序。
+        Map<String, String> eventFields = new LinkedHashMap<>();
+        eventFields.put("code","代码"); eventFields.put("name","项目");
+        eventFields.put("category","类别"); eventFields.put("track","是否田径");
+        eventFields.put("laneCount","道次"); eventFields.put("sortOrder","顺序号");
+        eventFields.put("groupSize","每组次几人"); eventFields.put("bundleGroup","捆绑字母");
+        eventFields.put("concurrency","并行数"); eventFields.put("defaultVenueCode","场地编码");
+        eventFields.put("genderLimit","性别"); eventFields.put("gradeGroup","年级组");
+        eventFields.put("team","是否团体"); eventFields.put("teamMembers","团体人数");
+        eventFields.put("defaultVenue","场地");
+        eventFields.put("maxDurationMinutes","最大用时(分)"); eventFields.put("intervalMinutes","间隔(分)");
+        eventFields.put("refereesPerGroup","组次裁判数量"); eventFields.put("drawLots","抽签(是/否)");
+        eventFields.put("maxParticipants","最大报名人数");
+        eventFields.put("defaultLanes","跑道数"); eventFields.put("scoringType","计分规则");
+        eventFields.put("record","校纪录");
+        TYPE_FIELDS.put("event", eventFields);
+        // 运动项目表（精简版）：项目代码/名称/每组人数/每批组数/项目类型/场地号/每批所需时间/性别/最大报名人数
+        // 「性别」必须落到 gender（不是 genderLimit）：eventsimple 处理器读的是 gender，
+        // 落到 genderLimit 会导致「识别成功但性别列被当成未识别列、性别丢失」。
+        Map<String, String> eventSimpleFields = new LinkedHashMap<>();
+        eventSimpleFields.put("eventCode","项目代码"); eventSimpleFields.put("eventName","项目名称");
+        eventSimpleFields.put("teamMembers","每组人数"); eventSimpleFields.put("concurrency","每批组数");
+        eventSimpleFields.put("category","项目类型"); eventSimpleFields.put("defaultVenueCode","场地号");
+        eventSimpleFields.put("perBatchMinutes","每批所需时间(分)");
+        eventSimpleFields.put("gender","性别"); eventSimpleFields.put("maxParticipants","最大报名人数");
+        TYPE_FIELDS.put("eventsimple", eventSimpleFields);
+        // 填写说明页：只有「字段 / 填写说明」两列说明文字，不落任何业务数据，整表跳过
+        Map<String, String> noticeFields = new LinkedHashMap<>();
+        noticeFields.put("field","字段"); noticeFields.put("note","填写说明");
+        TYPE_FIELDS.put("notice", noticeFields);
         // 全名单表（5列）：年级/班级/姓名/学号/性别 —— 运动员主数据，按学号 upsert，班级缺失自动创建
         TYPE_FIELDS.put("roster", new LinkedHashMap<>(Map.of(
             "grade","年级","className","班级","name","姓名","studentId","学号","gender","性别")));
@@ -155,23 +179,50 @@ public final class ExcelColumnMapping {
         TYPE_COLUMN_ALIASES.put("class", cls);
 
         // 表格2 项目表：处理器读 name/code（不是 eventName/eventCode）
+        //
+        // <p><b>这张表必须与「项目表导入模板_表格2」的 19 列逐列对齐</b>：模板上有、这里没有的列，
+        // 会在预览里被标成「未识别列」，导入时又被处理器丢弃——用户看到「识别成功但数据没进去」。
+        // 每加一列模板列，这里就要补一条精确别名（精确匹配先于包含匹配，避免被更长/更短的别名抢走）。</p>
         Map<String, String> ev = new LinkedHashMap<>();
-        ev.put("项目名称", "name");
+        ev.put("代码", "code");
         ev.put("项目", "name");
+        ev.put("项目名称", "name");
+        // 「项目编码 / 项目代码」必须精确落 code：走包含匹配会被别名「项目」(2字)抢成 name
         ev.put("项目编码", "code");
         ev.put("项目代码", "code");
+        ev.put("是否田径", "track");
+        ev.put("道次", "laneCount");
+        ev.put("顺序号", "sortOrder");
+        ev.put("排序", "sortOrder");
+        ev.put("每组次几人", "groupSize");
+        ev.put("捆绑字母", "bundleGroup");
+        ev.put("并行数", "concurrency");
+        ev.put("场地编码", "defaultVenueCode");
+        ev.put("性别", "genderLimit");
+        ev.put("性别限制", "genderLimit");
+        ev.put("年级组", "gradeGroup");
+        ev.put("是否团体", "team");
+        ev.put("团体人数", "teamMembers");
+        // 「场地」是场地名称（如「田径场」），必须精确命中：否则包含匹配会被「场地编码」(4字)抢走
+        ev.put("场地", "defaultVenue");
+        ev.put("最大用时(分)", "maxDurationMinutes");
+        ev.put("最大用时", "maxDurationMinutes");
+        ev.put("间隔(分)", "intervalMinutes");
+        ev.put("间隔", "intervalMinutes");
+        ev.put("组次裁判数量", "refereesPerGroup");
+        ev.put("裁判人数", "refereesPerGroup");
+        ev.put("抽签(是/否)", "drawLots");
+        ev.put("抽签", "drawLots");
+        ev.put("最大报名人数", "maxParticipants");
         ev.put("类别", "category");
         ev.put("项目类型", "category");
         ev.put("类型", "category");
-        ev.put("性别限制", "genderLimit");
         ev.put("跑道数", "defaultLanes");
         ev.put("道数", "defaultLanes");
         ev.put("计分规则", "scoringType");
         ev.put("计分方式", "scoringType");
         ev.put("校纪录", "record");
         ev.put("纪录", "record");
-        ev.put("组次裁判数量", "refereesPerGroup");
-        ev.put("裁判人数", "refereesPerGroup");
         TYPE_COLUMN_ALIASES.put("event", ev);
 
         // 运动项目表（7列精简）：处理器读 eventCode/eventName/teamMembers/concurrency/category/
@@ -194,7 +245,20 @@ public final class ExcelColumnMapping {
         evs.put("场地编码", "defaultVenueCode");
         evs.put("每批所需时间", "perBatchMinutes");
         evs.put("每批所需分钟", "perBatchMinutes");
+        // 精简版模板末尾两列：性别 / 最大报名人数（必须落 gender 与 maxParticipants，
+        // 落到别的字段会让这两列在预览里显示成「未识别列」）
+        evs.put("性别", "gender");
+        evs.put("性别限制", "gender");
+        evs.put("最大报名人数", "maxParticipants");
+        evs.put("报名人数上限", "maxParticipants");
         TYPE_COLUMN_ALIASES.put("eventsimple", evs);
+        // 填写说明页：「字段 / 填写说明」两列是说明文字，不是业务数据 → 落 note，仅用于预览展示
+        Map<String, String> notice = new LinkedHashMap<>();
+        notice.put("字段", "field");
+        notice.put("填写说明", "note");
+        notice.put("说明", "note");
+        notice.put("备注", "note");
+        TYPE_COLUMN_ALIASES.put("notice", notice);
 
         // 用户表：处理器读 realName；全局匹配会把「姓名」落到 name（处理器不读）
         Map<String, String> user = new LinkedHashMap<>();

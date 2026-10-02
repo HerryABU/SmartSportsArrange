@@ -45,6 +45,24 @@ class ExcelColumnMappingTest {
     }
 
     @Test
+    @DisplayName("表格2 逐列：易被包含匹配抢走的列必须精确落位")
+    void eventTypePrecisionHeaders() {
+        assertEquals("code", ExcelColumnMapping.matchHeaderForType("event", "代码"));
+        assertEquals("track", ExcelColumnMapping.matchHeaderForType("event", "是否田径"));
+        assertEquals("laneCount", ExcelColumnMapping.matchHeaderForType("event", "道次"));
+        assertEquals("groupSize", ExcelColumnMapping.matchHeaderForType("event", "每组次几人"));
+        assertEquals("bundleGroup", ExcelColumnMapping.matchHeaderForType("event", "捆绑字母"));
+        assertEquals("concurrency", ExcelColumnMapping.matchHeaderForType("event", "并行数"));
+        // 「场地」vs「场地编码」：前者是场地名称（田径场），后者是场地编码（TRACK），绝不能串
+        assertEquals("defaultVenue", ExcelColumnMapping.matchHeaderForType("event", "场地"));
+        assertEquals("defaultVenueCode", ExcelColumnMapping.matchHeaderForType("event", "场地编码"));
+        assertEquals("maxDurationMinutes", ExcelColumnMapping.matchHeaderForType("event", "最大用时(分)"));
+        assertEquals("intervalMinutes", ExcelColumnMapping.matchHeaderForType("event", "间隔(分)"));
+        assertEquals("drawLots", ExcelColumnMapping.matchHeaderForType("event", "抽签(是/否)"));
+        assertEquals("maxParticipants", ExcelColumnMapping.matchHeaderForType("event", "最大报名人数"));
+    }
+
+    @Test
     @DisplayName("类型优先：班级表把「班级名称/班级」落到 name、把「班级编码」落到 code")
     void classTypeDistinguishesNameAndCode() {
         assertEquals("name", ExcelColumnMapping.matchHeaderForType("class", "班级名称"));

@@ -438,6 +438,10 @@ public class ExcelService {
         else if (l.contains("运动项目表")) return "eventsimple";
         else if (l.contains("场地表") || l.contains("场馆") || l.contains("venue")) return "venue";
         else if (l.contains("event") || l.contains("项目")) return "event";
+        // 填写说明页（「填写说明 / 使用说明 / 操作说明 / instruction…」）：无业务数据，整表跳过
+        else if (l.contains("填写说明") || l.contains("使用说明") || l.contains("说明页")
+                || l.contains("填写指南") || l.contains("填写要求") || l.contains("备注说明")
+                || l.contains("操作说明") || l.contains("instruction") || l.contains("guide")) return "notice";
         return null;
     }
 
@@ -521,6 +525,7 @@ public class ExcelService {
             case "athlete_signup" -> processCombinedRow(values);
             case "grade" -> processGradeRow(values);
             case "venue" -> processVenueRow(values);
+            case "notice" -> throw new RuntimeException("填写说明页无业务数据，不参与导入");
             default -> throw new RuntimeException("不支持的导入类型: " + type);
         }
     }
@@ -827,21 +832,60 @@ public class ExcelService {
         classInfoRepository.save(ci);
     }
 
+    /**
+     * 项目表（表格2 完整版）行处理：把模板 19 列全部落库。
+     *
+     * <p><b>为什么必须逐列落库</b>：表格2 是项目参数的<b>全量来源</b>（是否田径 / 道次 / 并行数 /
+     * 捆绑字母 / 最大用时 / 间隔 / 组次裁判数 / 抽签 / 最大报名人数 …），旧实现只挑了
+     * name/code/category/genderLimit/laneCount/scoringType/record/refereesPerGroup 八个键，
+     * 剩下十来列在预览里显示「已识别」、在导入时被<b>静默丢弃</b>。
+     * 「看得出表头却导不进数据」比「整表识别失败」更难排查，所以这里与
+     * {@link ExcelColumnMapping} 的 event 类型别名表一一对应补齐全。</p>
+     */
     private void processEventRow(Map<String, String> v) {
         String name = v.get("name");
         String code = v.get("code");
         if (name == null || code == null) throw new RuntimeException("项目名称和编码不能为空");
         if (eventRepository.existsByCode(code)) throw new RuntimeException("项目编码已存在: " + code);
 
+        String category = trimToNull(v.get("category"));
+        Boolean track = parseBooleanSafe(v.get("track"), null);
+        Integer laneCount = parseIntSafe(v.get("laneCount"), null);
+        // 田赛（是否田径=否）道次固定 0；径赛留空按 8 道
+        if (Boolean.FALSE.equals(track) && laneCount == null) {
+            laneCount = 0;
+        }
+        if (laneCount == null) {
+            laneCount = track == null ? 8 : (track ? 8 : 0);
+        }
+        Integer teamMembers = parseIntSafe(v.get("teamMembers"), 0);
+        Boolean team = parseBooleanSafe(v.get("team"), teamMembers != null && teamMembers > 1);
+        Integer sortOrder = parseIntSafe(v.get("sortOrder"), 0);
+
         Event event = Event.builder()
                 .name(name).code(code)
-                .category(v.get("category"))
-                .genderLimit(v.get("genderLimit"))
-                .defaultLanes(parseIntSafe(v.get("defaultLanes"), 8))
-                .scoringType(v.get("scoringType") != null ? v.get("scoringType") : "global")
-                .record(v.get("record"))
+                .category(category)
+                .track(track == null ? Boolean.TRUE : track)
+                .laneCount(laneCount)
+                .sortOrder(sortOrder == null ? 0 : sortOrder)
+                .groupSize(parseIntSafe(v.get("groupSize"), null))
+                .bundleGroup(trimToNull(v.get("bundleGroup")))
+                .concurrency(parseIntSafe(v.get("concurrency"), null))
+                .defaultVenueCode(trimToNull(v.get("defaultVenueCode")))
+                .genderLimit(trimToNull(v.get("genderLimit")))
+                .gradeGroup(trimToNull(v.get("gradeGroup")))
+                .team(team == null ? Boolean.FALSE : team)
+                .teamMembers(teamMembers == null ? 0 : teamMembers)
+                .defaultVenue(trimToNull(v.get("defaultVenue")))
+                .maxDurationMinutes(parseIntSafe(v.get("maxDurationMinutes"), null))
+                .intervalMinutes(parseIntSafe(v.get("intervalMinutes"), null))
                 .refereesPerGroup(parseIntSafe(v.get("refereesPerGroup"), 0))
-                .isEnabled(true).sortOrder(0).build();
+                .drawLots(parseBooleanSafe(v.get("drawLots"), Boolean.FALSE))
+                .maxParticipants(parseIntSafe(v.get("maxParticipants"), null))
+                .defaultLanes(laneCount)
+                .scoringType(v.get("scoringType") != null ? v.get("scoringType") : "global")
+                .record(trimToNull(v.get("record")))
+                .isEnabled(true).build();
         eventRepository.save(event);
     }
 
@@ -862,7 +906,11 @@ public class ExcelService {
         Integer concurrency = parseIntSafe(v.get("concurrency"), null);
         Integer perBatch = parseIntSafe(v.get("perBatchMinutes"), null);
         String venueCode = trimToNull(v.get("defaultVenueCode"));
+        // 「性别」列在精简模板里叫「性别」（不是「性别限制」）：两个键都认，避免整列性别丢失
         String gender = trimToNull(v.get("gender"));
+        if (gender == null) {
+            gender = trimToNull(v.get("genderLimit"));
+        }
         Integer maxParticipants = parseIntSafe(v.get("maxParticipants"), null);
 
         // 7列精简模板不含「是否田径」列，由项目类型推断径赛/田赛/趣味/球类，复用现有字段
