@@ -344,7 +344,13 @@ const mappingVisible = ref(false)
 const mappingRow = ref(null)
 const mappingTitle = computed(() => {
   const s = mappingRow.value
-  return s ? `列映射 · ${s.sheetName}（${preview.typeLabels[s.type] || s.type || '未识别'}）` : '列映射'
+  if (!s) return '列映射'
+  // 注意：<script setup> 里 ref 不会自动解包，必须写 preview.value。
+  // 曾经漏写成 preview.typeLabels[...]，点开「逐列编辑映射」时该 computed 在渲染期抛
+  // TypeError（Cannot read properties of undefined (reading '<type>')）→ 整页白框，
+  // 表现为「逐列编辑映射不可用」。
+  const labels = preview.value?.typeLabels || {}
+  return `列映射 · ${s.sheetName}（${labels[s.type] || s.type || '未识别'}）`
 })
 
 function openMapping (row) {
