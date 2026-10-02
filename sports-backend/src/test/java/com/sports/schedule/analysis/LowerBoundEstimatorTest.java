@@ -104,4 +104,33 @@ class LowerBoundEstimatorTest {
         assertEquals(0.0, a.dayGapPercent(), 0.001);
         assertNotNull(a.bindingResource());
     }
+
+    @Test
+    @DisplayName("瓶颈措辞按「该项目数」区分：无人兼项时不说兼项（避免与兼项统计自相矛盾）")
+    void bindingWordingDistinguishesSingleEntryFromCombined() {
+        // 场景取自真实日志：一个人只报 1 项，EventCooccurrenceService 如实报「0 名兼项」，
+        // 而下界日志却写「兼项总时长决定」，两条日志互相打脸、极易误导排查。
+        Set<Long> solo = Set.of(192L);
+        LowerBoundEstimator.Assessment soloAthlete = estimator.assess(
+                List.of(new LowerBoundEstimator.Item("径赛", 900, 0, solo)),
+                Map.of("径赛", 99), 420, 1, 900);
+
+        assertEquals("运动员", soloAthlete.bindingResource().substring(0, 3),
+                "单项时长 900 > 单日 420，瓶颈仍应落在运动员");
+        assertTrue(soloAthlete.bindingResource().contains("单项时长决定"),
+                "只报 1 项时要说「单项时长」，不能说「兼项」：" + soloAthlete.bindingResource());
+        assertFalse(soloAthlete.bindingResource().contains("兼项总时长"),
+                "无人兼项却写「兼项总时长」＝与兼项统计矛盾：" + soloAthlete.bindingResource());
+
+        // 对照：同一人兼报 3 项时，措辞仍应是「兼项总时长」
+        Set<Long> busy = Set.of(192L);
+        LowerBoundEstimator.Assessment multi = estimator.assess(
+                List.of(new LowerBoundEstimator.Item("径赛", 300, 0, busy),
+                        new LowerBoundEstimator.Item("田赛", 300, 0, busy),
+                        new LowerBoundEstimator.Item("田赛", 300, 0, busy)),
+                Map.of("径赛", 99, "田赛", 99), 420, 1, 900);
+
+        assertTrue(multi.bindingResource().contains("兼项总时长决定"),
+                "兼报 3 项时口径正确：" + multi.bindingResource());
+    }
 }

@@ -125,11 +125,13 @@ public class LowerBoundEstimator {
         }
         int athleteBound = 0;
         long busiest = -1;
+        int busiestCount = 0;
         for (Map.Entry<Long, Long> e : demandByAthlete.entrySet()) {
             int days = ceilDiv(e.getValue(), dailyCapacityMinutes);
             if (days > athleteBound) {
                 athleteBound = days;
                 busiest = e.getKey();
+                busiestCount = countByAthlete.getOrDefault(e.getKey(), 1);
             }
         }
 
@@ -150,8 +152,15 @@ public class LowerBoundEstimator {
         int lb = Math.max(Math.max(capacityBound, athleteBound), packingBound);
         String binding;
         if (lb == athleteBound && athleteBound > 0) {
+            // 这里 demandByAthlete 的口径是「该运动员所有项目的时长之和」。
+            // 一个人只报一项时，EventCooccurrenceService 会如实报「0 名兼项」，
+            // 若这里仍写成「兼项总时长」就会与那条日志自相矛盾、误导排查。
+            // 所以按该项目数分两种措辞。
+            String reason = busiestCount > 1
+                    ? "兼项总时长决定"
+                    : "单项时长决定（该项目无人兼项）";
             binding = "运动员（" + (busiest < 0 ? "-" : "运动员#" + busiest)
-                    + " 兼项总时长决定，与场地无关）";
+                    + " " + reason + "，与场地无关）";
         } else if (lb == capacityBound) {
             binding = "场地容量（" + capacityBinder + "）";
         } else {
