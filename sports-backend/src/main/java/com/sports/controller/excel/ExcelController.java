@@ -5,6 +5,8 @@ import com.sports.service.audit.AuditService;
 import com.sports.service.excel.ExcelService;
 import com.sports.service.system.SystemService;
 import com.sports.service.export.WordOrderBookService;
+import com.sports.service.excel.ExcelSheetInspector;
+import com.sports.service.excel.ImportPlanParser;
 import com.sports.service.excel.MultiTableImportService;
 import com.sports.service.excel.SheetPreviewBuilder;
 import jakarta.servlet.http.HttpServletResponse;
@@ -86,6 +88,34 @@ public class ExcelController {
                 multiTableImportService.preview(files == null ? List.of() : List.of(files),
                         plan == null ? Map.of() : plan,
                         SheetPreviewBuilder.LARGE_SAMPLE_SIZE, true));
+    }
+
+    /**
+     * 单张 Sheet 的<b>可视化预览</b>取数：返回指定页的逐行逐单元格 + 行号 + 分页信息，
+     * 前端据此画出真正的 Excel 网格（含「这一列会被导入成哪个字段」的表头标注）。
+     *
+     * <p>{@code type} / {@code columnMap} 可传用户改过的值，这样网格里看到的列就是他要导的列，
+     * 而不是后端自动猜的那套。</p>
+     */
+    @PostMapping("/multi/sheet-data")
+    public ApiResponse<?> sheetData(@RequestParam("files") MultipartFile[] files,
+                                    @RequestParam(defaultValue = "0") int fileIndex,
+                                    @RequestParam(defaultValue = "0") int sheetIndex,
+                                    @RequestParam(required = false) Boolean hasHeader,
+                                    @RequestParam(defaultValue = "1") int page,
+                                    @RequestParam(defaultValue = "50") int pageSize,
+                                    @RequestParam(required = false) String type,
+                                    @RequestParam(required = false) String columnMap) {
+        MultipartFile[] all = files == null ? new MultipartFile[0] : files;
+        MultipartFile file = fileIndex >= 0 && fileIndex < all.length ? all[fileIndex] : null;
+        if (file == null || file.isEmpty()) {
+            return ApiResponse.success("请先选择文件");
+        }
+        String fileName = file.getOriginalFilename() == null ? ("文件" + (fileIndex + 1)) : file.getOriginalFilename();
+        return ApiResponse.success(ExcelSheetInspector.inspect(
+                file, fileName, fileIndex, sheetIndex,
+                hasHeader == null || hasHeader,
+                page, pageSize, type, ImportPlanParser.columnMapOf(columnMap)));
     }
 
     /** 多表导入：files 可多选；plan 可选，用于逐表指定 type / columnMap。 */

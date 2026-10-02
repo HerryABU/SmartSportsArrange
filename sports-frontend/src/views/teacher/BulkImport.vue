@@ -88,9 +88,10 @@
               <div v-if="row.unmappedHeaders && row.unmappedHeaders.length" class="muted">
                 未识别列：{{ row.unmappedHeaders.join('、') }}
               </div>
-              <el-button v-if="row.advice" link type="primary" size="small" @click="openMapping(row)">
-                逐列编辑映射
-              </el-button>
+              <div class="col-ops">
+                <el-button link type="primary" size="small" @click="openMapping(row)">逐列编辑映射</el-button>
+                <el-button link type="info" size="small" @click="openGrid(f.fileIndex, row)">可视化预览</el-button>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="数据行" width="80">
@@ -128,6 +129,20 @@
       <template #footer>
         <el-button @click="mappingVisible = false">关闭</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 可视化 Excel 预览 -->
+    <el-dialog v-model="gridVisible" :title="gridTitle" width="min(1200px, 94vw)" append-to-body>
+      <ExcelGridPreview
+        v-if="gridRow"
+        ref="gridRef"
+        :files="files"
+        :file-index="gridRow.fileIndex"
+        :sheet-index="gridRow.sheetIndex"
+        :has-header="hasHeader"
+        :type="gridRow.type || null"
+        :column-map="gridRow.columnMap || {}"
+      />
     </el-dialog>
 
     <!-- 导入报告 -->
@@ -213,6 +228,7 @@ import { Files, Upload, Download, Document, Setting, Refresh } from '@element-pl
 import request from '@/utils/request'
 import { downloadApi } from '@/utils/download'
 import SheetMappingEditor from '@/components/excel/SheetMappingEditor.vue'
+import ExcelGridPreview from '@/components/excel/ExcelGridPreview.vue'
 
 const fileInput = ref(null)
 const files = ref([])
@@ -345,6 +361,26 @@ function openMapping (row) {
   mappingVisible.value = true
 }
 
+// ---- 可视化预览 ----
+const gridVisible = ref(false)
+const gridRow = ref(null)
+const gridRef = ref(null)
+const gridTitle = computed(() => {
+  const r = gridRow.value
+  return r ? `可视化预览 · ${r.sheetName}` : '可视化预览'
+})
+
+function openGrid (fileIndex, row) {
+  gridRow.value = {
+    fileIndex,
+    sheetIndex: row.sheetIndex,
+    sheetName: row.sheetName,
+    type: row.type,
+    columnMap: row.columnMap || {}
+  }
+  gridVisible.value = true
+}
+
 /** 映射编辑器点「应用映射」：写回本地计划，并立刻按指定重新解析一次（所见即所得）。 */
 function onMappingApplied (columnMap) {
   if (mappingRow.value) {
@@ -435,8 +471,9 @@ async function downloadMultiTemplate () {
 .row-actions { margin-top: 12px; display: flex; align-items: center; gap: 8px; }
 .file-block { margin-bottom: 14px; }
 .fb-head { font-size: 13px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
-.chip-map { display: inline-block; font-size: 11.5px; background: #eef2ff; color: #4338ca;
+  .chip-map { display: inline-block; font-size: 11.5px; background: #eef2ff; color: #4338ca;
   border-radius: 6px; padding: 1px 6px; margin: 1px 4px 1px 0; }
+  .col-ops { margin-top: 4px; display: flex; gap: 2px; }
 .muted { color: #9ca3af; font-size: 12px; }
 .danger-text { color: #b91c1c; font-size: 12px; }
 .err-line { color: #b91c1c; font-size: 12px; }
