@@ -39,6 +39,7 @@
         </el-menu-item-group>
         <el-menu-item-group title="⑥ 秩序册">
           <el-menu-item index="/teacher/order-book"><el-icon><Document /></el-icon><span>秩序册设计</span></el-menu-item>
+          <el-menu-item index="/teacher/ball-tournament"><el-icon><Trophy /></el-icon><span>球类赛程编排</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
@@ -93,6 +94,7 @@
         </el-menu-item-group>
         <el-menu-item-group title="⑥ 秩序册">
           <el-menu-item index="/teacher/order-book"><el-icon><Document /></el-icon><span>秩序册设计</span></el-menu-item>
+          <el-menu-item index="/teacher/ball-tournament"><el-icon><Trophy /></el-icon><span>球类赛程编排</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item index="/teacher/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         <el-menu-item index="/teacher/help"><el-icon><Reading /></el-icon><span>说明书</span></el-menu-item>
@@ -169,7 +171,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Guide, Location, Medal, Collection, WarningFilled, Document } from '@element-plus/icons-vue'
+import { Expand, Guide, Location, Medal, Collection, WarningFilled, Document, Trophy } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import OnboardingGuide from '@/components/OnboardingGuide.vue'
 import NotificationBell from '@/components/NotificationBell.vue'

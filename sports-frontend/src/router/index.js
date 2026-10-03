@@ -93,6 +93,12 @@ const routes = [
         meta: { title: '秩序册设计' }
       },
       {
+        path: 'ball-tournament',
+        name: 'TeacherBallTournament',
+        component: () => import('@/views/teacher/BallTournament.vue'),
+        meta: { title: '球类赛程编排' }
+      },
+      {
         path: 'schedule',
         name: 'TeacherSchedule',
         component: () => import('@/views/teacher/Schedule.vue'),

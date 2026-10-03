@@ -72,6 +72,10 @@ public class AiController {
                 out.put("conflictGraphScale", scale);
             }
         }
+
+        // 超级编排模型（一个模型覆盖九类编排）：加载状态 + 覆盖范围
+        out.put("superMoe", com.sports.schedule.ai.SuperMoeService.superModelInfo());
+
         return ApiResponse.success(out);
     }
 }
