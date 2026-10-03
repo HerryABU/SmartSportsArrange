@@ -75,12 +75,25 @@ public class BallTournamentService {
 
         // ---- 赛制选择：AI 或人工指定 ----
         int fmt = FMT_HYBRID;
+        int effGroups = groups <= 0 ? 2 : groups;
+        int effAdvance = advancePerGroup <= 0 ? 2 : advancePerGroup;
         Map<String, Object> aiAdvice = new LinkedHashMap<>();
         if (ai && (format == null || format.isBlank() || "auto".equalsIgnoreCase(format))) {
             aiAdvice = recommendByAi(teams, names, minutesPerMatch, daysLimit);
             Object rec = aiAdvice.get("recommendedFormat");
-            if (rec instanceof String s) {
-                fmt = indexOf(s);
+            if (rec instanceof String sv) {
+                fmt = indexOf(sv);
+            }
+            // 混合/小组赛制的分组参数一并由 AI 定（人工只给上限区间）
+            Object g = aiAdvice.get("suggestedGroups");
+            if (g instanceof Number gn && gn.intValue() >= 2) {
+                effGroups = gn.intValue();
+                aiAdvice.put("appliedGroups", effGroups);
+            }
+            Object ad = aiAdvice.get("suggestedAdvance");
+            if (ad instanceof Number an && an.intValue() >= 1) {
+                effAdvance = an.intValue();
+                aiAdvice.put("appliedAdvance", effAdvance);
             }
         } else if (format != null && !format.isBlank()) {
             fmt = indexOf(format);
@@ -112,7 +125,7 @@ public class BallTournamentService {
                 out.put("bracket", knockoutBracket(names));
             }
             case FMT_GROUP -> {
-                int g = Math.max(2, Math.min(groups <= 0 ? 2 : groups, names.size()));
+                int g = Math.max(2, Math.min(effGroups, names.size()));
                 Map<String, List<String>> gs = HybridGenerator.snakeGroup(names, g);
                 Map<String, List<RoundRobinGenerator.Match>> gm =
                         RoundRobinGenerator.groupRoundRobin(gs, doubleLeg);
@@ -128,9 +141,9 @@ public class BallTournamentService {
                 out.put("rounds", maxRound(ms));
             }
             default -> {
-                int g = Math.max(2, Math.min(groups <= 0 ? 2 : groups, names.size()));
+                int g = Math.max(2, Math.min(effGroups, names.size()));
                 HybridGenerator.Plan plan =
-                        HybridGenerator.plan(names, g, Math.max(1, advancePerGroup), doubleLeg);
+                        HybridGenerator.plan(names, g, Math.max(1, effAdvance), doubleLeg);
                 List<Map<String, Object>> ms = new ArrayList<>();
                 for (Map.Entry<String, List<RoundRobinGenerator.Match>> e
                         : plan.groupMatches().entrySet()) {
@@ -148,6 +161,9 @@ public class BallTournamentService {
 
         out.put("minutesPerMatch", minutesPerMatch);
         out.put("daysLimit", daysLimit);
+        out.put("appliedGroups", effGroups);
+        out.put("appliedAdvance", effAdvance);
+        out.put("algorithm", algorithmNote(fmt));
         out.put("estimatedMinutes", out.get("matchCount") instanceof Integer c ? c * minutesPerMatch : null);
         log.info("球类编排: format={}, 队伍 {} 支, 场次 {}", out.get("format"), names.size(),
                 out.get("matchCount"));
@@ -230,6 +246,29 @@ public class BallTournamentService {
             }
             out.put("seedOrder", seeded);
             out.put("daysEstimate", round3(a.daysEstimate()));
+
+            // ---- 分组参数建议：让 AI 一并决定「分几组、每组晋级几支」 ----
+            // 依据：混合/小组赛制下，组内循环场次 = g * (m-1)/2（m=每组队数）。
+            // 目标是把总场次压到「可用时段 × 每时段场次」以内，同时组数不小于 2。
+            int n = names.size();
+            int matchesPerWindow = Math.max(1, 240 / Math.max(10, minutesPerMatch));
+            int capacity = Math.max(1, (daysLimit >= 1 ? daysLimit : 2) * 3) * matchesPerWindow;
+            int bestG = 2;
+            double bestCost = Double.MAX_VALUE;
+            for (int g = 2; g <= Math.min(8, n / 2); g++) {
+                int m = (int) Math.ceil((double) n / g);
+                double cost = g * (m - 1) / 2.0;      // 组内循环场次
+                if (cost > capacity) {
+                    cost += 1000;                       // 超容量重罚
+                }
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    bestG = g;
+                }
+            }
+            out.put("suggestedGroups", bestG);
+            out.put("suggestedAdvance", Math.max(1, Math.min(4, n / bestG / 2)));
+            out.put("matchCapacityPerDay", capacity);
             // 九类任务权重（让调用方看到模型在关注什么）
             Map<String, Object> taskW = new LinkedHashMap<>();
             String[] names9 = SuperScheduleEncoder.taskNames();
@@ -312,6 +351,36 @@ public class BallTournamentService {
             case "group", "小组赛", "分组" -> FMT_GROUP;
             default -> FMT_HYBRID;
         };
+    }
+
+    /** 赛制算法说明（透明化：用户应知道系统用哪种排法）。 */
+    private static Map<String, Object> algorithmNote(int fmt) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        switch (fmt) {
+            case FMT_ROUND_ROBIN -> {
+                m.put("name", "循环赛（标准轮转）");
+                m.put("grouping", "Berger 表轮转法，保证各队轮次分布均衡");
+                m.put("homeAway", "主客场轮换分配，尽量平衡");
+                m.put("note", "场次随队数平方增长，队数多时优先考虑分组或淘汰");
+            }
+            case FMT_KNOCKOUT -> {
+                m.put("name", "单淘汰（标准种子排位）");
+                m.put("seeding", "递归种子序：1/2 号种子分居不同半区、只可能在决赛相遇");
+                m.put("bye", "队数非 2 的幂时高位种子轮空");
+                m.put("note", "淘汰赛需打「胜者/负者」等后续轮次，编排时可做二次编排");
+            }
+            case FMT_GROUP -> {
+                m.put("name", "小组赛（蛇形分组 + 组内循环）");
+                m.put("seeding", "蛇形分配 1→G、G→1 往复，强队分散到不同组");
+                m.put("note", "组数与每组队数决定总场次");
+            }
+            default -> {
+                m.put("name", "混合赛制（小组循环 + 交叉淘汰）");
+                m.put("seeding", "先蛇形分组，组内循环取前 N 名进入交叉淘汰");
+                m.put("note", "运动会最常用：既能打满场次又有淘汰看点");
+            }
+        }
+        return m;
     }
 
     private static double round3(double v) {
