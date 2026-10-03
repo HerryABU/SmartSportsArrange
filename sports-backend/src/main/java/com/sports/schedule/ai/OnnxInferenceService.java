@@ -43,21 +43,56 @@ public class OnnxInferenceService {
     private final String modelDir;
     private final String selectorModel;
     private final String gnnModel;
+    private final int mergeThreshold;
+
+    /** 最近一次推理的分层信息（供 /api/ai/status 观测规模与是否降级）。 */
+    private volatile HierarchicalGnnEncoder.HierEncoded lastHierarchical;
 
     private volatile OrtEnvironment env;
     private volatile OrtSession selectorSession;
     private volatile OrtSession gnnSession;
     private volatile boolean triedLoad = false;
 
+    /**
+     * Spring 用的主构造器。
+     *
+     * <p>⚠️ 必须显式标 {@code @Autowired}：本类为了给单测与分层推理留入口，<b>有两个</b>
+     * 构造器，Spring 面对多构造器时不会猜，会退去找无参构造器并抛
+     * {@code No default constructor found}。而这个错<b>只会在 Spring 上下文测试里暴露</b>——
+     * 单测都是手工 {@code new}，全绿，非常容易漏过去。</p>
+     */
+    @org.springframework.beans.factory.annotation.Autowired
     public OnnxInferenceService(
             @Value("${sports.schedule.ai.enabled:true}") boolean enabled,
             @Value("${sports.schedule.ai.model-dir:classpath:/models}") String modelDir,
             @Value("${sports.schedule.ai.selector-model:algorithm_selector.onnx}") String selectorModel,
             @Value("${sports.schedule.ai.gnn-model:conflict_gnn.onnx}") String gnnModel) {
+        this(enabled, modelDir, selectorModel, gnnModel,
+                HierarchicalGnnEncoder.DEFAULT_MERGE_THRESHOLD);
+    }
+
+    public OnnxInferenceService(
+            boolean enabled, String modelDir, String selectorModel, String gnnModel,
+            int mergeThreshold) {
         this.enabled = enabled;
         this.modelDir = modelDir;
         this.selectorModel = selectorModel;
         this.gnnModel = gnnModel;
+        this.mergeThreshold = mergeThreshold;
+    }
+
+    /** 最近一次推理的分层编码信息（未推理过则为 null）。 */
+    public HierarchicalGnnEncoder.HierEncoded lastHierarchical() {
+        return lastHierarchical;
+    }
+
+    private static double[] toDoubles(float[] src, int len) {
+        int n = Math.min(len, src == null ? 0 : src.length);
+        double[] out = new double[Math.max(0, n)];
+        for (int i = 0; i < n; i++) {
+            out[i] = src[i];
+        }
+        return out;
     }
 
     /** 模型是否已就绪（可安全推理）。 */
@@ -73,6 +108,14 @@ public class OnnxInferenceService {
         m.put("selector", ModelSource.describe(modelDir, selectorModel));
         m.put("gnn", ModelSource.describe(modelDir, gnnModel));
         m.put("loaded", enabled && ensureLoaded());
+        // 分层规模：单元数超过单层上限时 AI 仍会参与全部单元，这里如实暴露是否降级
+        var h = lastHierarchical;
+        if (h != null) {
+            m.put("unitCount", h.unitCount());
+            m.put("clusterCount", h.clusterCount());
+            m.put("singleLayerLimit", com.sports.schedule.ai.ConflictGraphEncoder.MAX_NODES);
+            m.put("hierarchical", h.degraded());
+        }
         return m;
     }
 
@@ -97,15 +140,24 @@ public class OnnxInferenceService {
             AiAdvisory.Strategy strategy = pCancel >= 0.5
                     ? AiAdvisory.Strategy.CANCEL_PATH : AiAdvisory.Strategy.HARD_SOLVE;
 
-            // ② 冲突图 → GNN 着色优先级（按 units 顺序对齐，截断到真实节点数）
-            ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(units);
-            float[] priority = runGnn(enc);
-            double[] trimmed = new double[enc.nodeCount];
-            for (int i = 0; i < enc.nodeCount; i++) {
-                trimmed[i] = priority[i];
+            // ② 冲突图 → GNN 着色优先级。
+            //    走**分层编码**：单元数 ≤ MAX_NODES 时与历史行为逐位一致；
+            //    超过时先并查集聚成簇、在簇图上推理，再把簇优先级展开回<b>全部</b>单元，
+            //    一个单元都不丢（旧实现直接截断到前 MAX_NODES，剩余单元静默无优先级）。
+            HierarchicalGnnEncoder.HierEncoded hier =
+                    HierarchicalGnnEncoder.encode(units, mergeThreshold);
+            if (hier.degraded()) {
+                log.info("AI 冲突图规模 {} 单元（超过单层上限 {}），启用分层推理：聚成 {} 簇，"
+                                + "簇图 {} 节点，无单元被丢弃",
+                        hier.unitCount(), ConflictGraphEncoder.MAX_NODES,
+                        hier.clusterCount(), hier.clusterGraph().nodeCount);
             }
+            float[] clusterPriority = runGnn(hier.clusterGraph());
+            double[] perUnit = HierarchicalGnnEncoder.toUnitPriority(
+                    hier, toDoubles(clusterPriority, hier.clusterGraph().nodeCount));
+            lastHierarchical = hier;
 
-            return Optional.of(new AiAdvisory(strategy, pCancel, trimmed));
+            return Optional.of(new AiAdvisory(strategy, pCancel, perUnit));
         } catch (Exception ex) {
             log.warn("AI 推理失败，回退规则编排: {}", ex.toString());
             return Optional.empty();

@@ -58,6 +58,20 @@ public class AiController {
         // 推理后端（CPU / DirectML / CUDA）与降级原因——「机器有显卡却没跑在显卡上」
         // 是最常见的困惑点，这里直接给出实际生效的 EP、探测过程与 OS 架构。
         out.put("execution", com.sports.schedule.ai.OnnxSessionFactory.get().describe());
+
+        // 冲突图规模：AI 在多大规模的编排上真正参与了（超过单层上限会自动启用分层推理）
+        Object adv = models.get("advisory");
+        if (adv instanceof Map<?, ?> advMap) {
+            Map<String, Object> scale = new LinkedHashMap<>();
+            for (String k : new String[]{"unitCount", "clusterCount", "singleLayerLimit", "hierarchical"}) {
+                if (advMap.containsKey(k)) {
+                    scale.put(k, advMap.get(k));
+                }
+            }
+            if (!scale.isEmpty()) {
+                out.put("conflictGraphScale", scale);
+            }
+        }
         return ApiResponse.success(out);
     }
 }
