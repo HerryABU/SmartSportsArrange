@@ -1636,6 +1636,23 @@ curl -s -H "Authorization: Bearer <token>" http://localhost:8080/api/ai/status
 这是**数据决定的**（没有冲突可躲），不是模型没工作；`D=` 分值仍在随输入变化，说明 G/D 网络在推理。
 想看到 AI 真正「择优」，必须造出有兼项的数据（同一运动员报 2 项以上）。
 
+**实测对照**（同一模型、同一套代码，只改输入的兼项关系）：
+
+| 输入 | 兼项人数 | 判别器 D 分 | 说明 |
+|------|:---:|:---:|------|
+| 单项全员 | 0 / 720 | `-2.231` | 冲突恒 0，无可躲 |
+| 加报兼项 | 18 / 36 | `-1.455` | 冲突目标非 0，D 分随之改变 |
+
+编排返回体里的 `aiReport` / `algorithmPortfolio.aiReport` 也会如实给出
+`laneStyle`（AI 派遣款型）、`rounds`（自对抗轮数）、`dScore`（判别器打分）、
+`conflictBefore` / `conflict`（择优前后冲突）、`improved`（是否真改进了）、
+`residualConflicts`（落库后残余冲突），以及 `adversarial: enabled | unavailable`
+（模型不可用时**如实报 unavailable，绝不静默**）。
+
+> ⚠️ `improved: false` + `conflictBefore = conflict = 0` 是**正常且正确**的：
+> 求解器主方案已把冲突降到 0，AI 候选方案自然无从改进——基线本就 0 冲突。
+> 这时判断 AI 是否在工作，要看 `dScore` 是否随输入变化，而不是看 `improved`。
+
 > 单测 `OnnxInferenceServiceTest#adviceActuallyDependsOnInput` 把上述因果链固化成了回归钉子：
 > 单元时长 ×30 → 取消概率必须变；兼项关系从「无边」变成「a-b 相连」→ GNN 优先级必须变。
 > 若哪天模型改成「无论输入都返回同一份常量」，该用例会立刻变红。
