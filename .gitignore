@@ -81,3 +81,15 @@ _trash/
 # 训练覆盖保护产生的自动备份（sports_ai.device.backup_before_overwrite）
 sports-ai/models/*.pt.bak.*
 sports-ai/models/*.pt.bak.smoke-*
+
+sports-ai/models/*.pt
+sports-ai/models/*.onnx
+
+# ===== 模型产物统一独立分发，不入库（2026-10-03）=====
+# 理由：26 个 onnx 合计约 90MB，且每次重训都会变动 —— 放进 git 会让仓库体积
+#       线性膨胀、每次提交都是二进制巨块、clone 变慢，而它对代码审查毫无价值。
+# ⚠️ .gitignore 对**已跟踪**文件无效：新增本规则的同时必须把在册的 onnx 从索引移除
+#    （用 git update-index --force-remove，只动索引、不动工作区文件）。
+# 分发方式见 docs/MODELS.md：模型清单 + sha256 校验 + 一键同步脚本。
+*.onnx
+models-dist/

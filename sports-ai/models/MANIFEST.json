@@ -1,0 +1,73 @@
+{
+  "schema": "sports-ai/models-manifest@1",
+  "note": "模型不入 git，按本清单独立分发；重训后请重新生成本清单。",
+  "count": 13,
+  "totalBytes": 46945770,
+  "models": {
+    "algorithm_selector.onnx": {
+      "bytes": 478761,
+      "sha256": "6c7a454c4a07207ab5df195028bc1e759c36087a9af238e222bb803f08f60976",
+      "usage": "算法选择器（硬解/取消）；缺失 → 默认策略"
+    },
+    "conflict_gnn.onnx": {
+      "bytes": 173407,
+      "sha256": "b5774e34c84a6ed1805f5a6813cd9deeb109d147ed2fabbaf5b4c29a942d1d2b",
+      "usage": "冲突簇着色 GNN；缺失 → 兼项退化为贪心着色"
+    },
+    "constraint_gnn.onnx": {
+      "bytes": 10896227,
+      "sha256": "1aeca2600d301d1b9f317a90d460fade39ef2784393a5523912d01839ff90f6d",
+      "usage": "约束图神经网络；缺失 → 约束评估走规则"
+    },
+    "forecast_direct.onnx": {
+      "bytes": 58799,
+      "sha256": "a21ff6bfc878d807c318f33f2a925e6709e942fbca9bc02f32a1ea3d44fd5bcc",
+      "usage": "趋势预测（单入单出）；缺失 → 不使用"
+    },
+    "forecast_mimo.onnx": {
+      "bytes": 60899,
+      "sha256": "60a38286ea0d442e826cd22c5ae6072f88e25caa3cd1fac436540e42636c5a24",
+      "usage": "趋势预测（多入多出）；缺失 → 不使用"
+    },
+    "lane_advisor.onnx": {
+      "bytes": 29281,
+      "sha256": "ea77b5fb402c9969594258d7fd2ea6aeb1aaa83ed977b2600e8f15b5490a12d9",
+      "usage": "道次派遣优先级；缺失 → 规则分道"
+    },
+    "referee_gnn.onnx": {
+      "bytes": 3088772,
+      "sha256": "329201df57efab8e7a9985a381a8f1d630b6caed1a6066fe022104edb0fbc670",
+      "usage": "裁判编排独立模型；缺失 → 规则派遣"
+    },
+    "scheme_diffusion.onnx": {
+      "bytes": 1331037,
+      "sha256": "04ec12a4bb5dfd87c85622d477ebc1c53353f2ab84a3faf05296cdd7e2b6ac9f",
+      "usage": "扩散式方案生成；缺失 → 不使用"
+    },
+    "scheme_discriminator.onnx": {
+      "bytes": 152147,
+      "sha256": "ae8e8464b8b3eae232e9cf4bb203e2631fe27231c0afed6ac154e60644c08911",
+      "usage": "方案评判器；缺失 → 跳过择优"
+    },
+    "scheme_generator.onnx": {
+      "bytes": 172032,
+      "sha256": "92ac9fe42f8f001541a7d7ff5b9d8f41348b9bdb5375bd5dec6a9cf0b35435c0",
+      "usage": "自对抗方案生成器；缺失 → 跳过生成式增强"
+    },
+    "scheme_refiner.onnx": {
+      "bytes": 160548,
+      "sha256": "e3e3b9b3384348b91df9e375fe5bb9055c2c0f3968fe8cd8f1c93c3cc4f9b656",
+      "usage": "方案精修器；缺失 → 跳过精修"
+    },
+    "super_moe.onnx": {
+      "bytes": 24821617,
+      "sha256": "356c2e1ab1d550366ba8627b44dbdd67255cb9dbd81a02e3c09d4f0963a2e623",
+      "usage": "统一编排超级模型（11 类任务）；缺失 → L4 退化为 L3（优化链）"
+    },
+    "tournament_gnn.onnx": {
+      "bytes": 5522243,
+      "sha256": "41daefd1a27e6807f83688c4c39b36b80d19e8e4a8eadd94628075f4ba9f306c",
+      "usage": "球类赛制 GNN（赛制/种子/公平性）；缺失 → 球类走规则赛制"
+    }
+  }
+}
