@@ -404,6 +404,18 @@
             </span>
           </div>
         </el-form-item>
+        <el-form-item label="兼项缓冲(分钟)">
+          <div style="display:flex;align-items:center;gap:12px;width:100%">
+            <el-input-number v-model="meetForm.conflictBufferMinutes" :min="0" :max="120" :step="5" />
+            <span class="hint">同一运动员两个项目之间至少间隔多久；调大更保守、调小更紧凑</span>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="arrangeMode === 'ai'" label="AI 对抗轮数">
+          <div style="display:flex;align-items:center;gap:12px;width:100%">
+            <el-input-number v-model="meetForm.aiAdversarialRounds" :min="1" :max="10" />
+            <span class="hint">仅 AI 模式生效：生成→精修→评判→择优的轮数，越多越优但越慢</span>
+          </div>
+        </el-form-item>
         <el-form-item label="年级出场顺序">
           <div style="width:100%">
             <el-switch v-model="useCustomOrder" inline-prompt active-text="自定义顺序" inactive-text="跟随年级设置"
@@ -839,6 +851,21 @@ const useCustomOrder = ref(false)
 // U39/B36：编排模式（rule=规则模式，确定性毫秒级；optimize=优化模式，Timefold+GA+LNS）。
 // 记忆到 localStorage：用户上次的选择在下次登录后保持，避免误用不期望的模式
 const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
+
+/**
+ * 编排请求体：模式 + 约束参数。
+ *
+ * ⚠️ 这些约束必须真的传出去。后端 `RuleScheduleConfig` 收得到，
+ * 但前端一直只传 `{ mode }`，于是「兼项缓冲」「对抗轮数」在界面上根本调不动 ——
+ * 用户诉求里的「所有约束条件均可作为输入」正是卡在这一层。
+ */
+function arrangePayload() {
+  return {
+    mode: arrangeMode.value,
+    ruleConflictBufferMinutes: meetForm.conflictBufferMinutes,
+    aiAdversarialRounds: meetForm.aiAdversarialRounds,
+  }
+}
 function onArrangeModeChange() {
   localStorage.setItem('spt.arrangeMode', arrangeMode.value)
 }
@@ -871,6 +898,11 @@ const meetForm = reactive({
   autoDays: false,
   // 时间三态（与球类 daysLimit 同一契约）：fixed=限定天数 / unlimited=0 不限 / minimize=-1 尽可能减少
   dayMode: 'fixed',
+  // 兼项缓冲分钟（后端 ruleConflictBufferMinutes）：原来前端硬编码 15、后端无入口，
+  // 调大 = 兼项避让更保守（留更多赶场时间），调小 = 赛程更紧凑。
+  conflictBufferMinutes: 15,
+  // AI 自对抗轮数（后端 aiAdversarialRounds，仅 AI 模式生效）：轮数越多方案越优、耗时越长。
+  aiAdversarialRounds: 3,
   gradeOrder: [],
   dayConfigs: [
     { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
@@ -1023,7 +1055,7 @@ async function commitEventOrder() {
     await request.put('/system/meet-schedule', buildMeetSchedulePayload())
     // 拖拽改序后重排：沿用当前模式（AI 模式下跑 AI 派遣款型，与用户所选一致），
     // 不再写死 rule —— 否则「AI 模式改完顺序一点重排就退回规则模式」，模式选择形同虚设
-    await request.post('/schedule/auto', { mode: arrangeMode.value })
+    await request.post('/schedule/auto', arrangePayload())
     await loadConflicts()
     ElMessage.success('顺序已调整，已按新顺序重新编排并检测兼项冲突')
   } catch (e) {
@@ -1282,7 +1314,7 @@ async function resolveConflicts() {
   if (!items.value.length) return
   resolveLoading.value = true
   try {
-    const res = await request.post('/schedule/resolve-conflicts', { mode: arrangeMode.value })
+    const res = await request.post('/schedule/resolve-conflicts', arrangePayload())
     items.value = res.items || []
     lastArrangeMode.value = res.mode || arrangeMode.value
     lastRuleInfo.value = res.algorithmPortfolio?.rule || null
@@ -1446,7 +1478,7 @@ async function doAutoSchedule() {
   arrangeProgress.value = { active: true, percent: 0, stage: '提交', message: '正在提交编排任务…' }
   try {
     // 异步提交 + 轮询进度：编排链路长（求解 → 精修 → 自检），同步等待会撞前端 30s 超时
-    const submitted = await request.post('/schedule/auto/async', { mode: arrangeMode.value })
+    const submitted = await request.post('/schedule/auto/async', arrangePayload())
     const taskId = submitted && submitted.taskId
     if (!taskId) throw new Error('未能获取编排任务号')
     const res = await pollArrangeProgress(taskId)

@@ -44,7 +44,7 @@
 | C3 | 道次 / 球类 / 拔河的淘汰+循环+混合训练 | 🟡 | `tournament_gnn` 在 `ball_tournament.py` 数据上训练（四赛制 + 拔河在 SPORTS 列表内）；**拔河无专属赛制训练** |
 | C4 | 对兼项出难题 | ✅ | HELL 档构造兼项密集实例（1/2/3 兼项档位），`tiers_tasks` 含 `TASK_CONFLICT`；实测兼项撞车恒为 0 |
 | C5 | **裁判编排 / 教师规避：先独立模型，后合并主模型** | 🟡 | **独立模型本轮完成**：`sports_ai/referee_advisor.py`（12 维裁判节点 / 4 类边 / 160×5，训练 `val_mse=0.00202`）→ `referee_gnn.onnx`(3.09MB) → Java `RefereeGnnEncoder` + `RefereeAiService`（7 项双端契约单测）。**合并进 `super_moe` 尚未做**：那会改变任务数（9→10）与输出契约，必须连同全量重训一起做，不能顺手改。教师规避仍为规则（`AdminTimeProtectionService`） |
-| C6 | 争取 RSI | ❌ | 未实现。已给出唯一有效路径：**标签升级**（见 `benchmarks.md` §4.1）——当前标签是 `greedy_targets`，天花板即贪心 |
+| C6 | 争取 RSI | 🟡 | **第一步已实现**：`train_super_moe --label-search` 让标签由**搜索**产生（小规模 GA + 同一套 decode/代价，搜索没赢则保留原标签，标签质量单调不降）。实测：**AI 链路指标与贪心标签版完全一致** —— 因为最终解由搜索主导、模型序只是种子被兜住。故该开关默认关闭，等「模型直接输出分配」或「魔鬼规模下搜索预算受限」时再启用。详见 `benchmarks.md` §5 |
 
 ## D. 质量与对比
 
@@ -65,9 +65,9 @@
 | E4 | 球类全部参数（赛制/组数/晋级/单场分/双回合/时间目标） | ✅ | `BallTournament.vue` → `/ball/arrange` |
 | E5 | 规避时间（全校/班主任/裁判） | ✅ | `ProtectionManage.vue` → `/api/protections` |
 | E6 | 规则注入 / DSL | ✅ | `RuleScripts.vue`（积木 + 代码双模式，builtin/groovy/javascript） |
-| E7 | **兼项缓冲分钟** | ❌ | 后端可收 `ruleConflictBufferMinutes`，但**前端无入口**（硬编码 15） |
-| E8 | **AI 自对抗轮数 / AI 款型** | ❌ | 后端可收 `aiAdversarialRounds` / `aiLaneStyle`，**前端无入口** |
-| E9 | **分道策略 / 全局录取人数 / 冲突检查开关** | ❌ | 后端可收 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictCheckEnabled`，前端无入口 |
+| E7 | **兼项缓冲分钟** | 🔧 | **本轮补齐**：前端 `Schedule.vue` 新增「兼项缓冲(分钟)」输入，且 `arrangePayload()` 把它作为 `ruleConflictBufferMinutes` 随编排请求发出（原先前端硬编码 15、后端收不到） |
+| E8 | **AI 自对抗轮数 / AI 款型** | 🔧 | **补了一般**：前端新增「AI 对抗轮数」输入（仅 AI 模式显示），随请求发 `aiAdversarialRounds`；`aiLaneStyle` 仍未开输入口（默认 `ai` 已够用） |
+| E9 | **分道策略 / 全局录取人数 / 冲突检查开关** | 🟡 | 后端 `RuleScheduleConfig` 仍可收 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictCheckEnabled`，前端暂无入口（项目级 `advanceCount` 已有替代） |
 | E10 | 保护时段经**请求体**传入 | ❌ | 只能预置 `AdminTimeProtection` 表 |
 | E11 | 排球赛制 / 几局几胜 / 可用时段 | ❌ | `/api/tournament/generate` 可收，前端无入口 |
 | E12 | 写而不生效项 | ⚠️ | `Settings.vue` 的 `soft_constraints.*`（6 项）与 `params.timeout_seconds` / `optimization_rounds` 保存后**后端无读取处**；道次页 `preferDiffHeat` / `preferDiffLane` / `banSameClassSameLane` 后端不消费 |
@@ -92,6 +92,9 @@
 | 时间三态 | `days<0` → 尽可能减少；跨天惩罚 ×5 静态桥（finally 复位）；前端「时间目标」下拉 | `ScheduleService.java`、`Schedule.vue` |
 | 裁判独立模型 | Python 模型 + 训练 + 导出 ONNX + Java 编码器/服务 + 契约单测 | `referee_advisor.py`、`RefereeGnnEncoder.java`、`RefereeAiService.java` |
 | 备份爆炸修复 | 新训练脚本每轮备份 → 40 轮堆 18 个 3MB；补 `_prune_backups(keep=3)` | `referee_advisor.py` |
+| **行政规避贯通球类** | 原来只有主赛程与道次读保护时段，**球类编排完全没读** → 新增 `ballWindows(days, blocks)` 静态方法剔除受保护窗口（窗口无精确时刻，按 `WINDOW_SPANS` 约定映射后与保护区间求交）；全被保护时诚实报「排不了」而非静默排 | `BallTournamentService.java`、`BallTournamentServiceTest.java`（+2 用例） |
+| **前端约束入口** | 新增「兼项缓冲(分钟)」（`ruleConflictBufferMinutes`，原硬编码 15、后端收不到）与「AI 对抗轮数」（`aiAdversarialRounds`）；三处编排请求统一走 `arrangePayload()` | `Schedule.vue` |
+| **RSI 第一步** | `--label-search` 让标签由搜索产生（搜索没赢则保留原标签，质量单调不降）；实测与贪心标签版指标一致 → 默认关闭并记录原因 | `train_super_moe.py`、`benchmarks.md` §5 |
 
 ---
 

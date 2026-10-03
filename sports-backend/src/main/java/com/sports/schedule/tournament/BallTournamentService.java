@@ -1,7 +1,10 @@
 package com.sports.schedule.tournament;
 
+import com.sports.entity.protection.AdminTimeProtection;
 import com.sports.schedule.ai.SuperMoeService;
 import com.sports.schedule.ai.SuperScheduleEncoder;
+import com.sports.schedule.support.protection.ProtectionMath;
+import com.sports.service.protection.AdminTimeProtectionService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -30,9 +33,40 @@ import java.util.Map;
 public class BallTournamentService {
 
     private final SuperMoeService superMoe;
+    private final AdminTimeProtectionService protectionService;
 
-    public BallTournamentService(SuperMoeService superMoe) {
+    /**
+     * 球类编排的「窗口 → 时刻」约定（每天 3 个窗口）。
+     *
+     * <p>球类窗口是粗粒度的 {@code (day, w)} 二元组、不带精确时刻，
+     * 而行政规避是按 {@code HH:mm} 区间定义的，两者对不上就没法求交。
+     * 所以这里把窗口固定映射到三个现实时段，再与保护区间比较——
+     * 这是<b>约定</b>，改动它等于改变「球赛能排在哪些时段」的业务含义。</p>
+     */
+    static List<SuperScheduleEncoder.Window> ballWindows(int days,
+                                                         List<AdminTimeProtection> blocks) {
+        List<SuperScheduleEncoder.Window> ws = new ArrayList<>();
+        for (int d = 1; d <= Math.max(1, days); d++) {
+            for (int w = 0; w < WINDOW_SPANS.length; w++) {
+                int[] span = WINDOW_SPANS[w];
+                if (!ProtectionMath.blockedByAny(d, span[0], span[1], blocks)) {
+                    ws.add(new SuperScheduleEncoder.Window(d, w, 240, "场", "P1"));
+                }
+            }
+        }
+        return ws;
+    }
+
+    private static final int[][] WINDOW_SPANS = {
+            {480, 660},    // w=0 上午 08:00–11:00
+            {840, 1020},   // w=1 下午 14:00–17:00
+            {1080, 1260},  // w=2 晚间 18:00–21:00
+    };
+
+    public BallTournamentService(SuperMoeService superMoe,
+                                 AdminTimeProtectionService protectionService) {
         this.superMoe = superMoe;
+        this.protectionService = protectionService;
     }
 
     public static final int FMT_GROUP = 0;
@@ -210,11 +244,17 @@ public class BallTournamentService {
             int nMatches = names.size() * (names.size() - 1) / 2;
             int perWindow = Math.max(1, 240 / Math.max(10, minutesPerMatch));
             int windows = Math.max(2, (int) Math.ceil(nMatches / (double) perWindow));
-            List<SuperScheduleEncoder.Window> ws = new ArrayList<>();
-            for (int d = 1; d <= Math.max(1, daysLimit <= 0 ? 2 : daysLimit); d++) {
-                for (int w = 0; w < 3; w++) {
-                    ws.add(new SuperScheduleEncoder.Window(d, w, 240, "场", "P1"));
-                }
+            // 行政规避必须影响**所有**编排，而不只是主赛程与道次：
+            // 全校避让时段（集会/考试/教师会议）里的窗口，球类同样不可用。
+            List<AdminTimeProtection> globalBlocks = protectionService.globalBlocks();
+            List<SuperScheduleEncoder.Window> ws =
+                    ballWindows(Math.max(1, daysLimit <= 0 ? 2 : daysLimit), globalBlocks);
+            if (ws.isEmpty()) {
+                // 诚实报「排不了」而不是静默回退到无保护的排法——后者会让用户以为规避没生效
+                out.put("degraded", true);
+                out.put("reason", "全部比赛窗口都落在「行政规避时间」内，"
+                        + "请调整规避设置或放宽比赛天数");
+                return out;
             }
             SuperScheduleEncoder.Encoded enc = superMoe.getEncoder()
                     .encode(units, ws, daysLimit, names.size());

@@ -1,6 +1,8 @@
 package com.sports.schedule.tournament;
 
+import com.sports.entity.protection.AdminTimeProtection;
 import com.sports.schedule.ai.SuperMoeService;
+import com.sports.service.protection.AdminTimeProtectionService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 球类赛程编排测试。
@@ -22,10 +26,64 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class BallTournamentServiceTest {
 
     private BallTournamentService service() {
-        // SuperMoeService 走真实构造；模型不在 classpath 时 advise 返回空 → 回退默认赛制，
-        // 正好覆盖「AI 不可用」的降级路径。
+        return serviceWith(List.of());
+    }
+
+    /**
+     * SuperMoeService 走真实构造；模型不在 classpath 时 advise 返回空 → 回退默认赛制，
+     * 正好覆盖「AI 不可用」的降级路径。保护服务用 mock：默认无避让时段，
+     * 与「未配置行政规避」的线上默认口径一致。
+     */
+    private BallTournamentService serviceWith(List<AdminTimeProtection> blocks) {
+        AdminTimeProtectionService protection = mock(AdminTimeProtectionService.class);
+        when(protection.globalBlocks()).thenReturn(blocks);
         return new BallTournamentService(
-                new SuperMoeService(true, "classpath:/models", "super_moe.onnx"));
+                new SuperMoeService(true, "classpath:/models", "super_moe.onnx"), protection);
+    }
+
+    /** 构造一条全校（GLOBAL）避让记录；day=null 表示对所有比赛日生效。 */
+    private static AdminTimeProtection gblock(Integer day, String from, String to) {
+        AdminTimeProtection p = new AdminTimeProtection();
+        p.setTargetType("GLOBAL");
+        p.setDay(day);
+        p.setStartTime(from);
+        p.setEndTime(to);
+        p.setEnabled(true);
+        return p;
+    }
+
+    @Test
+    @DisplayName("行政规避影响球类编排：受保护窗口被剔除（不只是主赛程与道次）")
+    void adminProtectionRemovesBallWindows() {
+        int days = 2;   // 2 天 × 3 窗口 = 6
+        assertEquals(6, BallTournamentService.ballWindows(days, List.of()).size(),
+                "无规避时应保留全部窗口");
+
+        // 第 1 天上午 08:00–11:00 落在 w=0 → 只剩 5 个
+        assertEquals(5, BallTournamentService.ballWindows(
+                days, List.of(gblock(1, "08:00", "11:00"))).size());
+
+        // 第 1 天全天避让 → 只剩第 2 天的 3 个
+        assertEquals(3, BallTournamentService.ballWindows(
+                days, List.of(gblock(1, "00:00", "23:59"))).size());
+
+        // 所有天全时段避让 → 一个窗口都不剩（上层据此诚实报「排不了」，
+        // 而不是静默排出违反行政规避的赛程）
+        assertEquals(0, BallTournamentService.ballWindows(
+                days, List.of(gblock(null, "00:00", "23:59"))).size());
+    }
+
+    @Test
+    @DisplayName("停用的避让记录不生效；不覆盖的午别也不该被误伤")
+    void disabledProtectionAndNonOverlappingSpansAreSafe() {
+        AdminTimeProtection off = gblock(1, "00:00", "23:59");
+        off.setEnabled(false);
+        assertEquals(6, BallTournamentService.ballWindows(2, List.of(off)).size(),
+                "enabled=false 的记录必须被忽略");
+
+        // 11:00–14:00 是三个窗口之间的空档，不与任何窗口相交 → 窗口数不变
+        assertEquals(6, BallTournamentService.ballWindows(
+                2, List.of(gblock(1, "11:00", "14:00"))).size());
     }
 
     private static List<BallTournamentService.Team> teams(int n) {

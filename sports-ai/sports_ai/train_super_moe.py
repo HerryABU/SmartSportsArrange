@@ -68,7 +68,36 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 TIERS = ["HELL", "REGULAR", "BLOCK", "LANE", "TEAM"]
 
 
-def make_dataset(n: int, seed: int) -> List[Dict]:
+def search_refined_priority(scen, n: int, base: Dict, seed: int) -> Dict:
+    """用搜索精修 priority 标签（RSI 的第一步）。
+
+    ⚠️ **安全保证**：先比「搜索解的代价」与「原标签顺序的代价」，
+    搜索没赢就原样返回 —— 标签质量只会变好、不会变坏，
+    所以打开这个开关不存在「训完更差」的风险。
+    """
+    # 延迟 import：训练脚本 → 评测脚本是单向依赖（反过来会成环），
+    # 且只有开启搜索时才需要付这份加载成本。
+    from sports_ai.evaluate_super_moe import cost_of, decode, ga_search
+
+    try:
+        order = ga_search(scen, n, None, seed=seed, pop=10, gens=12)
+        searched = decode(scen, n, None, None, "custom", order_override=order)
+        base_order = sorted(range(n), key=lambda i: -float(base["priority"][i]))
+        baseline = decode(scen, n, None, None, "custom", order_override=base_order)
+    except Exception as e:                     # noqa: BLE001 搜索失败不能拖垮训练
+        print(f"[label] 搜索精修失败，保留原标签: {e}")
+        return base
+    if cost_of(searched) >= cost_of(baseline):
+        return base
+    pri = np.zeros(n, dtype=np.float32)
+    for rank, idx in enumerate(order):
+        pri[int(idx)] = 1.0 - rank / max(1, n - 1)
+    if float(pri.std()) < 1e-4:
+        return base
+    return {**base, "priority": pri}
+
+
+def make_dataset(n: int, seed: int, label_search: bool = False) -> List[Dict]:
     """五档混合采样。**样本不通过 validate 就丢弃**（不修数据）。"""
     rng = random.Random(seed)
     data: List[Dict] = []
@@ -90,6 +119,9 @@ def make_dataset(n: int, seed: int) -> List[Dict]:
         if float(tg["priority"].std()) < 1e-4:
             rejected["目标无方差"] = rejected.get("目标无方差", 0) + 1
             continue
+        if label_search:
+            # RSI 第一步：让标签由搜索产生，抬高模型的天花板
+            tg = search_refined_priority(scen, enc["n"], tg, seed=rng.randint(0, 10 ** 9))
         data.append({**enc, "tier": tier, **tg})
     if rejected:
         print(f"[data] 判废统计: {rejected}")
@@ -191,6 +223,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--w-lb", type=float, default=0.01, help="负载均衡损失权重")
     ap.add_argument("--seed", type=int, default=20261007)
+    ap.add_argument("--label-search", action="store_true",
+                    help="用搜索精修 priority 标签（RSI 第一步）；搜索没赢则保留原标签")
     ap.add_argument("--resume", action="store_true",
                     help="从 models/super_moe.pt 续训（分段跑长任务时用）")
     ap.add_argument("--patience", type=int, default=-1,
@@ -210,8 +244,9 @@ def main() -> None:
     seed_all(0)
     print(f"[device] 训练设备: {describe_device(device)}")
 
-    print(f"[data] 生成 {args.samples} 个五档混合场景…")
-    data = make_dataset(args.samples, args.seed)
+    print(f"[data] 生成 {args.samples} 个五档混合场景…"
+          + ("（标签：搜索精修 / RSI）" if args.label_search else "（标签：贪心启发式）"))
+    data = make_dataset(args.samples, args.seed, label_search=args.label_search)
     if len(data) < 40:
         print("[data] 有效样本不足，终止")
         return
