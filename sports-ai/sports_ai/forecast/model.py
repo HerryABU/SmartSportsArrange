@@ -12,7 +12,7 @@ import torch.nn as nn
 
 
 class _GruEncoder(nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 64):
+    def __init__(self, in_dim: int, hidden: int = 160):
         super().__init__()
         self.gru = nn.GRU(in_dim, hidden, batch_first=True)
         self.hidden = hidden
@@ -25,7 +25,7 @@ class _GruEncoder(nn.Module):
 class DirectForecaster(nn.Module):
     """一次性输出未来 H 步（单头）。"""
 
-    def __init__(self, in_dim: int = 4, hidden: int = 64, h: int = 8):
+    def __init__(self, in_dim: int = 4, hidden: int = 160, h: int = 8):
         super().__init__()
         self.enc = _GruEncoder(in_dim, hidden)
         self.head = nn.Linear(hidden, h)
@@ -38,7 +38,7 @@ class DirectForecaster(nn.Module):
 class MimoForecaster(nn.Module):
     """H 个独立预测头（多输入多输出），一次性输出完整 H 步序列。"""
 
-    def __init__(self, in_dim: int = 4, hidden: int = 64, h: int = 8):
+    def __init__(self, in_dim: int = 4, hidden: int = 160, h: int = 8):
         super().__init__()
         self.enc = _GruEncoder(in_dim, hidden)
         self.heads = nn.ModuleList([nn.Linear(hidden, 1) for _ in range(h)])

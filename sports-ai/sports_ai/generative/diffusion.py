@@ -72,8 +72,8 @@ class SchemeDiffusion(nn.Module):
     因此训练用 8 步、推理用 32 步是同一个模型。
     """
 
-    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 128, noise: int = 8,
-                 slots: int = MAX_SLOTS, steps: int = 8, layers: int = 4):
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 192, noise: int = 8,
+                 slots: int = MAX_SLOTS, steps: int = 8, layers: int = 6):
         super().__init__()
         self.slots = slots
         self.steps = steps

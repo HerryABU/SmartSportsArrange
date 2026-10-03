@@ -18,7 +18,7 @@ from .scheme import MAX_SLOTS
 
 
 class SchemeDiscriminator(nn.Module):
-    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 64, slots: int = MAX_SLOTS,
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160, slots: int = MAX_SLOTS,
                  dropout: float = 0.2):
         super().__init__()
         # 着色方案拼到节点特征后面

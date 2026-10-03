@@ -17,7 +17,7 @@ from .scheme import MAX_SLOTS, gumbel_scheme
 
 
 class SchemeGenerator(nn.Module):
-    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 64, noise: int = 8,
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160, noise: int = 8,
                  slots: int = MAX_SLOTS):
         super().__init__()
         self.slots = slots

@@ -34,7 +34,7 @@ class SchemeRefiner(nn.Module):
     """
 
     def __init__(self, node_feat: int = NODE_FEAT_DIM, slots: int = MAX_SLOTS,
-                 hidden: int = 64, delta_scale: float = 0.6):
+                 hidden: int = 160, delta_scale: float = 0.6):
         super().__init__()
         self.slots = slots
         self.delta_scale = delta_scale

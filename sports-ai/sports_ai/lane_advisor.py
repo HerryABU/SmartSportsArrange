@@ -149,7 +149,7 @@ def make_batch(batch: int, seed: int, pad_to: int = LANE_TRAIN_PAD):
 class LaneAdvisor(nn.Module):
     """运动员级打分：8 维特征 → 派遣优先级（越大越先派）。"""
 
-    def __init__(self, feat: int = LANE_FEAT_DIM, hidden: int = 64, dropout: float = 0.1):
+    def __init__(self, feat: int = LANE_FEAT_DIM, hidden: int = 160, dropout: float = 0.1):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(feat, hidden), nn.ReLU(),
