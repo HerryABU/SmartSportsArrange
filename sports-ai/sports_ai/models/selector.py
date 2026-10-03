@@ -40,7 +40,7 @@ class _ResidualBlock(nn.Module):
 
 
 class AlgorithmSelector(nn.Module):
-    def __init__(self, n_features: int = 16, hidden: int = 96, blocks: int = 3,
+    def __init__(self, n_features: int = 16, hidden: int = 192, blocks: int = 5,
                  dropout: float = 0.15):
         super().__init__()
         self.proj = nn.Sequential(nn.Linear(n_features, hidden), nn.ReLU())

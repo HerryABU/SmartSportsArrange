@@ -10,7 +10,12 @@
 
 | # | 要求 | 状态 | 证据与说明 |
 |---|---|---|---|
-| A1 | 全部升级为**深层网络** | 🟡 | 核心三模型已深层化：`super_moe`（`GlobalBlock`×n_global + 专家内 `_ExpertStep`×expert_depth）、`constraint_gnn` 160/6、`tournament_gnn` 160/5。**其余 9 个 onnx 仍是旧结构**（`conflict_gnn` / `selector` / `lane_advisor` / GAN×3 / diffusion / forecast×2） |
+| A1 | 全部升级为**深层网络** | 🟡 | 已深层化：`super_moe`(128/2/2)、`constraint_gnn`(160/6)、`tournament_gnn`(160/5)、`referee_gnn`(160/5)、`teacher_gnn`(160/5)；**本轮新增** `conflict_gnn` 64/4→**160/6**、`algorithm_selector` 96/3→**192/5**（参数量各涨约 10 倍）。仍待做：`lane_advisor`、GAN×3、`scheme_diffusion`、`forecast×2` |
+
+> **深层化为什么可以「只改默认维度」**：`train_gnn.py` / `export_onnx.py` 都是
+> `ConflictGnn()` / `AlgorithmSelector()` **无参构造** —— 改模型类的默认 `hidden`/`layers`
+> 后训练与导出自动跟随，且**输入输出契约不变 → Java 侧一行都不用改**。
+> ⚠️ 但必须重训（改了默认维度用旧 `.pt` 会 shape 不匹配）+ 重导（onnx 固化的是导出那一刻的结构）。
 | A2 | 强悍鲁棒 | ✅ | 全部推理失败**静默回退规则**，绝不编排失败；`ModelSource` 支持 classpath 与外部热替换；`OnnxSessionFactory` EP 降级链 cpu/directml/cuda/auto |
 | A3 | 可重构 | 🔧 | 构造参数从 checkpoint `meta` 还原（写死默认值会 shape 不匹配）；本轮把训练预算抽成公共模块 `sports_ai/budget.py`；导出脚本改为「meta 优先 → 权重反推」 |
 | A4 | 搜索最新方法 | 🟡 | 已用 MoE 多门路由、图级条件路由、类型化邻接注意力、Diffusion 解码、CNN 局部块；未引入更新的 GNN 变体（如 Graph Transformer / 边感知注意力的替代实现） |
@@ -43,7 +48,7 @@
 | C2 | **300 人 / 10 项目 / 限 2-3 天** | 🟡 | BLOCK/REGULAR 档接近此规模（N≈34~70），实测各档工期均压到 `days_limit` 内；同样缺显式规模压测 |
 | C3 | 道次 / 球类 / 拔河的淘汰+循环+混合训练 | 🟡 | `tournament_gnn` 在 `ball_tournament.py` 数据上训练（四赛制 + 拔河在 SPORTS 列表内）；**拔河无专属赛制训练** |
 | C4 | 对兼项出难题 | ✅ | HELL 档构造兼项密集实例（1/2/3 兼项档位），`tiers_tasks` 含 `TASK_CONFLICT`；实测兼项撞车恒为 0 |
-| C5 | **裁判编排 / 教师规避：先独立模型，后合并主模型** | 🟡 | **独立模型本轮完成**：`sports_ai/referee_advisor.py`（12 维裁判节点 / 4 类边 / 160×5，训练 `val_mse=0.00202`）→ `referee_gnn.onnx`(3.09MB) → Java `RefereeGnnEncoder` + `RefereeAiService`（7 项双端契约单测）。**合并进 `super_moe` 尚未做**：那会改变任务数（9→10）与输出契约，必须连同全量重训一起做，不能顺手改。教师规避仍为规则（`AdminTimeProtectionService`） |
+| C5 | **裁判编排 / 教师规避：先独立模型，后合并主模型** | 🔧 | **两个独立模型都完成**：`referee_gnn.onnx`（12 维裁判节点 / 4 类边 / 160×5）+ `teacher_gnn.onnx`（**10 维教师节点** / 4 类边 / 160×5）。**合并也完成**：N_TASKS 9→11，两者作为影子任务并入同一张图（参数量 5.96M→7.09M，ONNX 输出 `任务权重[11]`）。仍待做：教师侧的 Java 服务接入（裁判侧已有 `RefereeAiService`） |
 | C6 | 争取 RSI | 🟡 | **第一步已实现**：`train_super_moe --label-search` 让标签由**搜索**产生（小规模 GA + 同一套 decode/代价，搜索没赢则保留原标签，标签质量单调不降）。实测：**AI 链路指标与贪心标签版完全一致** —— 因为最终解由搜索主导、模型序只是种子被兜住。故该开关默认关闭，等「模型直接输出分配」或「魔鬼规模下搜索预算受限」时再启用。详见 `benchmarks.md` §5 |
 
 ## D. 质量与对比
