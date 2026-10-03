@@ -13,6 +13,25 @@
 
     python -m sports_ai.train_super_moe --samples 1200 --epochs 40 --device cpu
 产出：``models/super_moe.pt`` + ``models/super_moe_stats.json``
+
+## ⚠️ 为什么每轮都要落盘（实战踩坑）
+
+训练跑 40 轮 ≈ 70 分钟，而**中途被杀一次就全白跑**：原实现只在最后写盘，
+进程一断（后台任务被回收 / 用户关机 / 端口占用）就只剩一个 epoch 29 的日志，
+磁盘上 ``super_moe.pt`` 还是上一次的旧权重，``stats.json`` 更是上上次训练
+的残留（val=4.23 / epoch=2），会**把人往完全错误的方向带**。
+
+所以改成：
+
+1. **每刷新一次 val 最优就立即写盘**（先写 ``.tmp`` 再 ``os.replace`` 原子替换，
+   中途被杀最多丢当前这一轮，不会写出半个文件）；
+2. 支持 ``--resume`` 从 ``models/super_moe.pt`` 续训，分段跑长任务不会互相打断；
+3. ``--patience`` 早停（val 连续不降就收工），避免过拟合后白烧时间。
+
+分段跑长训练的推荐姿势::
+
+    python -m sports_ai.train_super_moe --epochs 5 --resume   # 跑 5 轮，落盘
+    python -m sports_ai.train_super_moe --epochs 5 --resume   # 再来 5 轮
 """
 
 from __future__ import annotations
@@ -97,6 +116,39 @@ def to_tensors(batch: List[Dict], idxs: List[int], device):
     return (T(nf), T(abt), T(tm), T(mk), T(pri), T(slot), T(fmt).long())
 
 
+def save_best(model: torch.nn.Module, stats: Dict[str, object],
+              meta: Dict[str, object]) -> None:
+    """把当前最优权重**立刻**落盘。
+
+    原子性靠「先写 .tmp 再 os.replace」：被杀时不会留下半截文件，
+    下次启动的 ``--resume`` 也永远拿到一份完整可用的权重。
+
+    ⚠️ 权重里必须带上 ``meta``（hidden / steps）：这两个值**决定模型结构**，
+    原来它们只硬编码在训练与导出两个脚本里，训练用 ``--steps 4`` 而导出脚本
+    写死 ``STEPS = 8`` 时，``load_state_dict`` 会 shape 不匹配直接炸，
+    而这类报错在服务端表现为「模型加载失败 → 静默回退规则」，极难定位。
+    把结构元信息焊进 checkpoint，导出脚本读权重而不是猜常量。
+    """
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    tmp = os.path.join(MODEL_DIR, "super_moe.pt.tmp")
+    path = os.path.join(MODEL_DIR, "super_moe.pt")
+    torch.save({"state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "meta": meta}, tmp)
+    if os.path.exists(path):
+        backup_before_overwrite(path, f"super-moe-{os.path.splitext(os.path.basename(path))[0]}")
+    os.replace(tmp, path)
+    # ⚠️ 每轮都在备份 → 32 轮就是 380MB 垃圾（实测堆到 30 个 bak / 276MB）。
+    #    只留最近 3 份：够了（真要回退，前一份 + 当前就足以对照），其余清掉。
+    keep = 3
+    baks = sorted((f for f in os.listdir(MODEL_DIR) if ".bak.super-moe" in f),
+                  key=lambda f: os.path.getmtime(os.path.join(MODEL_DIR, f)),
+                  reverse=True)
+    for f in baks[keep:]:
+        os.remove(os.path.join(MODEL_DIR, f))
+    with open(os.path.join(MODEL_DIR, "super_moe_stats.json"), "w", encoding="utf-8") as fh:
+        json.dump(stats, fh, ensure_ascii=False, indent=2)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="训练统一编排超级模型 SuperScheduleMoE")
     ap.add_argument("--samples", type=int, default=1200)
@@ -107,6 +159,10 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--w-lb", type=float, default=0.01, help="负载均衡损失权重")
     ap.add_argument("--seed", type=int, default=20261007)
+    ap.add_argument("--resume", action="store_true",
+                    help="从 models/super_moe.pt 续训（分段跑长任务时用）")
+    ap.add_argument("--patience", type=int, default=0,
+                    help="val 连续多少轮不下降就早停；0=不早停")
     add_device_arg(ap)
     args = ap.parse_args()
 
@@ -132,12 +188,18 @@ def main() -> None:
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=args.hidden,
                              steps=args.steps).to(device)
     print(f"[model] 参数量 {sum(q.numel() for q in model.parameters()):,}")
+    if args.resume and os.path.exists(MODEL_DIR + "/super_moe.pt"):
+        raw = torch.load(MODEL_DIR + "/super_moe.pt", map_location=device)
+        # 兼容两种落盘格式：新格式 {"state_dict":…, "meta":…}，旧格式即裸 state_dict
+        model.load_state_dict(raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw)
+        print(f"[model] 已从 super_moe.pt 续训（hidden={args.hidden} steps={args.steps} 需一致）")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
     best = float("inf")
     best_state = None
     best_stats: Dict[str, object] = {}
+    stale = 0
     for epoch in range(args.epochs):
         model.train()
         tot, nb = 0.0, 0
@@ -186,17 +248,22 @@ def main() -> None:
                 "epoch": epoch,
             }
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            # ⚠️ 立刻落盘：训练随时可能被后台任务回收杀掉，只在最后写盘 = 一断全白跑
+            save_best(model, best_stats, {
+                "hidden": args.hidden, "steps": args.steps, "samples": args.samples,
+            })
+            stale = 0
+        else:
+            stale += 1
+            print(f"[save] 未刷新最优（连续 {stale} 轮），暂不写盘")
+        if args.patience and stale >= args.patience:
+            print(f"[stop] val 连续 {args.patience} 轮未下降，早停")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    path = os.path.join(MODEL_DIR, "super_moe.pt")
-    backup_before_overwrite(path, f"super-moe-{args.samples}x{args.epochs}")
-    torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
-    with open(os.path.join(MODEL_DIR, "super_moe_stats.json"), "w", encoding="utf-8") as fh:
-        json.dump(best_stats, fh, ensure_ascii=False, indent=2)
     print(f"best {json.dumps(best_stats, ensure_ascii=False)}")
-    print(f"→ 已保存 {path}")
+    print(f"→ 已落盘 models/super_moe.pt（best in epoch {best_stats.get('epoch')}）")
 
 
 if __name__ == "__main__":

@@ -265,15 +265,24 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:
         SuperVenue("足球场", 1), SuperVenue("操场", 2),
     ][: rng.randint(4, 8)]
 
-    # ---- 窗口（时段）---- 每窗口容量随场地与池变化
+    # ---- 窗口（时段）----
+    # ⚠️ 早期版本每个时段只开**一个**场地。这在真实运动会里不成立 ——
+    #    实际是「上午第一节：田径场 + 篮球场 + 沙坑同时跑」。
+    #    单场地版本带来两个致命后果：
+    #      ① 场地覆盖不全：单元会用到 11 种场地，而时段只随机铺 4~8 种，
+    #         实测 47 个单元里有 15 个「一个能放进去的时段都没有」；
+    #      ② 并行度假性偏低：每个时段只能塞 1 个单元，装不下东西。
+    #    改成每时段并行开 2~4 个场地，总容量再由单元需求反推（见下），
+    #    才是「既排得下、又逼得出装箱压力」的可行域。
     windows: List[SuperWindow] = []
     for d in range(1, max(2, days_limit if days_limit > 0 else days) + 1):
         for w in range(rng.choice([3, 4, 5])):
-            v = venues[rng.randrange(len(venues))]
-            pool = "P0" if v.name in ("田径场", "操场") else "P1"
-            windows.append(SuperWindow(day=d, window_idx=w,
-                                        capacity=rng.choice([120, 150, 180, 240, 300]),
-                                        venue=v.name, pool=pool))
+            k = rng.choice([2, 3, 3, 4])
+            for v in rng.sample(venues, min(k, len(venues))):
+                pool = "P0" if v.name in ("田径场", "操场") else "P1"
+                windows.append(SuperWindow(day=d, window_idx=w,
+                                            capacity=rng.choice([120, 150, 180, 240, 300]),
+                                            venue=v.name, pool=pool))
 
     units: List[SuperUnit] = []
 
@@ -361,6 +370,99 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:
                 venue=venue, pool="P1", grade=grade, duration=dur,
                 team_size=team_size, stage="main",
             ))
+
+    # ---- 容量可行性修复：「魔鬼条件」的第一条铁律 ----
+    # ⚠️ 坑：窗口容量随机(120~300)、单元时长随机(~70min)，二者**毫无耦合**。
+    #    早期版本 HELL/BLOCK/LANE 三档有近半样本「总容量 < 总需求」，
+    #    场景物理上就排不开 —— 模型再强也只能学到「排不下」，评测的「未排 27 个」
+    #    其实是场景的锅不是模型的锅。这种样本混进训练集，等于拿噪声当标签。
+    #
+    #    修法一（容量）：按总需求**反推**总容量到 1.3 倍。不再是「只放大」——
+    #    改成并行场地后总容量天然过剩（13 时段 × 3 场地 × ~200 = 7800 vs 需求 3290，
+    #    比 2.4 倍），太松就学不到装箱压力。所以统一缩放，两头都收：
+    #    比 1.8 倍还松就压下来，比 1.15 倍还紧就顶上去，永远落在有压力的可行域里。
+    #
+    #    修法二（场地覆盖）：任何单元的场地必须在至少一个时段里出现过，
+    #    否则这个单元「一个能放进去的时段都没有」，是死单元不是难题。
+    #    这里按缺几个补几个地改写时段场地，而不是删单元（删单元会破坏项目覆盖）。
+    max_dur = max((u.duration for u in units), default=120)
+    covered = {w.venue for w in windows}
+    missing = list(dict.fromkeys(u.venue for u in units if u.venue not in covered))
+    if missing:
+        # 改写时段场地。⚠️ 不能随便挑一个窗口改：若被顶掉的场地在别的时段也不存在，
+        #    等于把「死单元」从 v 换成旧场地，问题只是换了个地方复发。
+        #    只挑「同时段里同场地有 ≥2 个窗口」的那些位置来改 —— 改掉一个不影响该场地的覆盖。
+        #    另外优先铺到不同时段上，别让所有覆盖都堆在同一个时段。
+        def slots_of() -> Dict[int, List[int]]:
+            s: Dict[int, List[int]] = {}
+            for i, w in enumerate(windows):
+                s.setdefault((w.day, w.window_idx), []).append(i)
+            return s
+
+        used_slots: set = set()
+        for v in missing:
+            s = slots_of()
+            cands = [i for key, idxs in s.items()
+                     for i in idxs
+                     if key not in used_slots
+                     and sum(1 for j in idxs if windows[j].venue == windows[i].venue) >= 2]
+            if not cands:
+                cands = [i for i in range(len(windows)) if (windows[i].day, windows[i].window_idx) not in used_slots]
+            if not cands:
+                continue
+            wi = rng.choice(cands)
+            used_slots.add((windows[wi].day, windows[wi].window_idx))
+            windows[wi] = SuperWindow(day=windows[wi].day,
+                                      window_idx=windows[wi].window_idx,
+                                      capacity=windows[wi].capacity,
+                                      venue=v, pool=windows[wi].pool)
+
+    # ---- 按「场地」分组反推容量（必须在场地覆盖修复**之后**）----
+    # ⚠️ 坑：原先按**总容量**缩放（sum(cap) ≥ demand × 1.3）。总量看着富余 36%，
+    #    但落位的最小单位是「（时间桶 × 场地）」—— 单元只能落在**该桶已开自己场地**
+    #    的窗口里。某场地若只出现在 1 个桶，它的可用容量就是那一个桶的容量，
+    #    富余的容量全是别场地的，这些单元照旧无处可放。
+    #    实测修前 HELL：总容量富余 2002 min、人次富余 7031，仍未排 24/50 —— 就是这个原因。
+    #
+    #    修法（每个场地单独算账）：
+    #        need_v     = 该场地上所有单元时长之和 × 1.15
+    #        占用桶数 k = ceil(need_v / 目标单桶容量)，桶太散时把多余的撤掉
+    #        单桶容量   = ceil(need_v / k)
+    #    这样「每个场地都排得下」是结构性成立的，而整体仍保留 15% 装箱压力。
+    #    容量 0 表示该场地在这个时间桶**不开**（落位时直接跳过，等价于没这个窗口）。
+
+    def _set(idx: int, cap: int, drop: bool = False) -> None:
+        w0 = windows[idx]
+        windows[idx] = SuperWindow(day=w0.day, window_idx=w0.window_idx,
+                                   capacity=(0 if drop else max(max_dur, cap)),
+                                   venue=w0.venue, pool=w0.pool)
+
+    # ⚠️ 需求必须含 interval（赛前赛后的间隔缓冲）：落位检查是
+    #    ``load + duration + interval <= 容量``，只按 duration 反推会**系统性偏小**，
+    #    实测 30 个样本里 20 个出现「标签落位超容量」——标签不可行 = 白训。
+    demand_v: Dict[str, int] = {}
+    for u in units:
+        demand_v[u.venue] = demand_v.get(u.venue, 0) + u.duration + u.interval
+    target_cap = 180
+    for v, d in demand_v.items():
+        ids = [i for i, w in enumerate(windows) if w.venue == v]
+        if not ids:
+            continue
+        need = int(math.ceil(d * 1.15))
+        k = max(1, min(len(ids), int(math.ceil(need / target_cap))))
+        step = len(ids) / k
+        keep = sorted({ids[int(i * step)] for i in range(k)})
+        per = int(math.ceil(need / len(keep)))
+        for i in ids:
+            _set(i, per, drop=(i not in keep))
+
+    # 撤场地后可能出现「一个场地都没有」的空桶 —— 白占 16 个 slot 名额
+    by_slot: Dict[Tuple[int, int], List[int]] = {}
+    for i, w in enumerate(windows):
+        by_slot.setdefault((w.day, w.window_idx), []).append(i)
+    for idxs in by_slot.values():
+        if not idxs:
+            _set(rng.randrange(len(windows)), max_dur)
 
     # ---- 人员分配：唯一入口，任何单元都只能从「名额池」取 ----
     # ⚠️ 这段返工了 4 次，教训必须写死：
@@ -460,6 +562,8 @@ def validate_scenario(scen: "SuperScenario") -> Tuple[bool, str]:
     3. 球类档必须含淘汰赛与二次编排单元
     4. 时间目标三态必须合法（-1 / 0 / >=1）
     5. 单元数下限（太小的场景学不到东西）
+    6. 容量可行性：总容量 >= 总需求（生成器已按 1.25 倍放大，这里再兜一道，
+       防止以后有人改窗口生成逻辑时把不可行样本悄悄放进去）
 
     ⚠️ **为什么不「修」而是「丢」**：兼项超限的样本说明分配逻辑有 bug，
     修数据会把 bug 掩盖过去，模型学到的是被粉饰过的分布。
@@ -482,4 +586,14 @@ def validate_scenario(scen: "SuperScenario") -> Tuple[bool, str]:
         return False, "单元过少"
     if scen.n_athletes < 20:
         return False, "人数过少"
+    # 容量可行性（第 6 条）：总需求不能超出总容量
+    need = sum(u.duration for u in scen.units)
+    have = sum(int(w.capacity) for w in scen.windows)
+    if have < need:
+        return False, f"容量不足({have}<{need})"
+    # 兼项可行性：每个运动员每个时间桶最多露一次 → 桶数×人数 是总人次上界
+    nb = len({(w.day, w.window_idx) for w in scen.windows}) or 1
+    slots = sum(len(u.athletes) for u in scen.units)
+    if nb * scen.n_athletes < slots:
+        return False, "人次超桶"
     return True, "ok"

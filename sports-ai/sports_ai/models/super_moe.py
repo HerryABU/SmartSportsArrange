@@ -77,6 +77,51 @@ N_FORMATS = 4           # group / round_robin / knockout / hybrid
 TYPE_EMBED_DIM = 8
 
 
+class HeadAttention(nn.Module):
+    """手写多头自注意力 —— **ONNX 导出友好版**。
+
+    ⚠️ 为什么不用 ``nn.MultiheadAttention``（血的教训，务必保留）：
+
+    PyTorch 导出 ONNX 时，``nn.MultiheadAttention`` 内部的 reshape 会被
+    **常量折叠**成导出那一刻的形状（B / N 写死）。导出脚本用 ``B=2, N=24``
+    造假数据，服务端喂 ``N=3`` 就直接在
+    ``/moe/experts.8/node_att/Reshape_4`` 炸出
+    ``input_shape_size == requested_shape_size was false:
+    Input shape {3,1,128}, requested shape {24,4,32}``。
+
+    最阴的地方：**模型能加载成功、推理必失败**，异常在 ``advise()`` 里被
+    ``catch (Throwable)`` 吞掉后走「回退规则」—— 日志里只有一行 WARN，
+    线上表现就是「AI 功能没生效但也不报错」，比直接崩溃难查十倍。
+
+    这里的每个 reshape 都**从 ``x.shape`` 现算**，导出后是动态算子，
+    任意 N / B 都能推理。数学上与 MHA 完全等价（同 qkv 投影、同缩放点积）。
+    """
+
+    def __init__(self, hidden: int, heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.heads = heads
+        self.head_dim = hidden // heads
+        self.qkv = nn.Linear(hidden, hidden * 3)
+        self.proj = nn.Linear(hidden, hidden)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, key_padding_mask=None):
+        b, n, _ = x.shape
+        qkv = self.qkv(x).reshape(b, n, 3, self.heads, self.head_dim)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]     # [B,N,h,hd]
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        scores = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)   # [B,h,N,N]
+        if key_padding_mask is not None:
+            # ⚠️ 必须补成四维 [B,1,1,N]：mask 是 [B,N]（二维），
+            #    只 unsqueeze(1) 会变成 [B,1,N]，广播时前面补 1 变成 [1,1,B,N]，
+            #    与 scores [B,h,N,N] 按**尾对齐**会拿 B 去比 N，
+            #    报 "size of tensor a (2) must match tensor b (4) at dim 1"。
+            scores = scores.masked_fill(key_padding_mask[:, None, None, :], -1e4)
+        ctx = torch.softmax(scores, dim=-1) @ v                        # [B,h,N,hd]
+        ctx = ctx.transpose(1, 2).reshape(b, n, self.heads * self.head_dim)
+        return self.dropout(self.proj(ctx)), None
+
+
 class Expert(nn.Module):
     """单个专家：异构消息传递 + FFN（HM-MATAS 的边级+节点级双注意力结构）。"""
 
@@ -90,8 +135,8 @@ class Expert(nn.Module):
         self.edge_att = nn.Sequential(
             nn.Linear(hidden * 2, hidden // 2), nn.GELU(), nn.Linear(hidden // 2, 1)
         )
-        # 节点级更新
-        self.node_att = nn.MultiheadAttention(hidden, 4, dropout=dropout, batch_first=True)
+        # 节点级更新（手写 HeadAttention：导出 ONNX 时 reshape 形状是动态的）
+        self.node_att = HeadAttention(hidden, 4, dropout=dropout)
         self.norm1 = nn.LayerNorm(hidden)
         self.ffn = nn.Sequential(
             nn.Linear(hidden, hidden * 2), nn.GELU(),
@@ -130,7 +175,9 @@ class Expert(nn.Module):
 
         h = self.norm1(h + agg)
         # ---- 节点级注意力（残差）----
-        a2, _ = self.node_att(h, h, h, need_weights=False, key_padding_mask=(mask < 0.5))
+        # ⚠️ 始终传 key_padding_mask：导出 ONNX 时 if 分支会被固化，
+        #    恒真/恒假都会写死一条路径，那就白改了。
+        a2, _ = self.node_att(h, key_padding_mask=(mask < 0.5))
         h = self.norm2(h + a2)
         h = h + self.ffn(h)
         return h * mask.unsqueeze(-1)

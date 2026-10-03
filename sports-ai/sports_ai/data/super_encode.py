@@ -12,9 +12,23 @@
  16-19类型：task onehot 的前 4 维（项目/道次/球类/淘汰赛）
 =====  ==========================================================================
 
-**时间目标三态**（用户明确要求）编码在第 12 维：
+=====  ==========================================================================
+ 0-4   规模：单元数占比 / 人数 / 相对最挤单元 / 时长占比 / 场地数
+ 5-8   需求：装箱紧张度 / 容量余量 / 冲突暴露 / 兼项占比
+ 9-12  约束：是否项目块 / 块内单元占比 / 是否道次(heat>0) / heat 容量占比
+ 13-15 时间：时间目标三态 / 天数占比 / stage 编码
+ 16-19 类型：球类赛制 onehot（group/rr/knockout/hybrid）
+=====
+
+**时间目标三态**（用户明确要求）编码在第 **13** 维：
 ``days_limit >= 1 → 0.5``（硬约束）、``0 → 0.0``（不限）、``-1 → 1.0``（最小化）。
 原值保留在 ``SuperScenario.days_limit``，由 Java 端解释语义。
+
+⚠️ 这个文件头注释曾写「时间在第 12 维、16-19 是 task onehot」，**是错的**——
+实际布局是 time_goal@13 / stage@15 / fmt_onehot@16-19。
+Java 端 ``SuperScheduleEncoder`` 一开始也是按旧注释写的（21 维、timeGoal@12），
+被单测抓出来后两边一起改到 13。改这份特征表时必须同步三处：
+``super_encode.py`` / ``SuperScheduleEncoder.java`` / ``super_moe.onnx`` 的输入维度。
 """
 
 from __future__ import annotations
@@ -220,6 +234,26 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
             "type_mask": tmask[None], "mask": mask[None], "n": n}
 
 
+def _msbf_key(i: int, units, cap_by_venue: Dict[str, int],
+              vmap: Dict[Tuple[int, int], Dict[str, int]]) -> Tuple[int, float]:
+    """最受限优先（MSBF）的排序键：**(还能放进几个桶 ↑, 装箱紧度 ↓)**。
+
+    「还能放进几个桶」= 该单元在**当前桶容量**下（忽略已被谁占用）放得下的桶数；
+    这个数越小说明它越挑地方，越该先排 —— 否则好地方全被灵活单元占光。
+    """
+    u = units[i]
+    need = u.duration + u.interval
+    avail = 0
+    for key, caps in vmap.items():
+        # ⚠️ 必须取两次（.get 出值再比）：直接 caps[u.venue] 在场地没开这个桶时会 KeyError
+        capv = caps.get(u.venue, 0)
+        if capv > 0 and need <= capv:
+            avail += 1
+    cap = max(1, cap_by_venue.get(u.venue, 1))
+    tight = min(1.0, need / cap)
+    return (avail, -tight)
+
+
 def greedy_targets(scen: SuperScenario, n: int, n_slots: int = MAX_SLOTS
                    ) -> Dict[str, np.ndarray]:
     """约束驱动的自监督目标（不依赖标注的最优解）。
@@ -229,40 +263,81 @@ def greedy_targets(scen: SuperScenario, n: int, n_slots: int = MAX_SLOTS
     * ``priority``：0.6×装箱紧张度 + 0.4×冲突暴露 —— 越难排的越先排
     * ``slot``：贪心装箱得到的 one-hot 槽位方案（真实可行）
     * ``format``：场景里出现最多的球类赛制（无球类时跳过）
+
+    ⚠️ 槽位（slot）曾经是**假的**，这里必须钉死教训：
+
+    早期版本用 ``vkey = hash(u.venue) % n_slots`` 决定单元落在哪个槽 ——
+    两个致命问题：
+
+    1. 槽位与真实落位毫无关系（真实落位是「（时间桶 × 场地）」，而 hash 只认场地名），
+       于是「标签可行」变成了「标签随便」，模型学的是噪声；
+    2. **Python 字符串 hash 带随机化**（PYTHONHASHSEED 每进程不同），
+       同一场景两次训练的标签完全不同 —— 这是比噪声更糟的**标签抖动**，
+       loss 照样下降、指标照样好看，但模型什么都没学到。
+
+    现在改成与评测/线上同源的真实落位：先把 windows 压成时间桶、
+    只保留前 ``n_slots`` 个（按桶内总容量降序），再按「最受限优先 + best-fit」落位。
     """
     units = scen.units[:n]
-    cap_by_venue: Dict[str, int] = {}
+
+    # 时间桶 → {场地: 该桶内该场地容量}；容量 0 表示这个桶不开这个场地
+    cap_slot: Dict[Tuple[int, int], Dict[str, int]] = {}
     for w in scen.windows:
-        cap_by_venue[w.venue] = max(cap_by_venue.get(w.venue, 0), int(w.capacity))
+        cap_slot.setdefault((w.day, w.window_idx), {}).setdefault(w.venue, int(w.capacity))
+    ranked = sorted(cap_slot.items(), key=lambda kv: -sum(kv[1].values()))[:n_slots]
+    slot_ids = [k for k, _ in ranked]
+    vmap = dict(ranked)
 
     ath_cnt: Dict[int, int] = {}
     for u in units:
         for a in u.athletes:
             ath_cnt[a] = ath_cnt.get(a, 0) + 1
 
+    cap_by_venue: Dict[str, int] = {}
+    for w in scen.windows:
+        cap_by_venue[w.venue] = max(cap_by_venue.get(w.venue, 0), int(w.capacity))
+
     pri = np.zeros(n, dtype=np.float32)
     slot = np.zeros((n, n_slots), dtype=np.float32)
-    # 贪心装箱：按紧张度降序，逐个找第一个装得下的槽
-    used: Dict[int, int] = {}
-    order = sorted(range(len(units)),
-                   key=lambda i: -((units[i].duration + units[i].interval)
-                                   / max(1, cap_by_venue.get(units[i].venue, 1))))
+    if not slot_ids:
+        fmts = scen.formats()
+        fmt_t = np.zeros(4, dtype=np.int64)
+        if fmts:
+            fmt_t[max(fmts, key=lambda k: fmts[k])] = 1
+        return {"priority": pri, "slot": slot, "format": fmt_t}
+
+    def fits(si: int, i: int, load: Dict[int, int]) -> bool:
+        # ⚠️ si 是**桶在候选列表里的下标**，不是桶 id —— vmap 的键是 (day, window_idx)，
+        #    直接 vmap[si] 会 KeyError（第一次跑就炸在这）。
+        capv = vmap[slot_ids[si]].get(units[i].venue, 0)
+        if capv <= 0:
+            return False
+        return load.get(si, 0) + units[i].duration + units[i].interval <= capv
+
+    # ---- 落位：最受限优先（MSBF）+ best-fit ----
+    # MSBF = 「还能放进几个桶」最少的先排，这是装箱类问题的标准序；
+    # best-fit = 在放得下的桶里挑**剩余比例最小**的，比 first-fit 显著少制造碎片。
+    load: Dict[int, int] = {}
+    order = sorted(range(len(units)), key=lambda i: _msbf_key(i, units, cap_by_venue, vmap))
     for i in order:
+        u = units[i]
+        cands = [si for si in range(len(slot_ids)) if fits(si, i, load)]
+        if not cands:
+            # 真放不下（场景极端）：退到「容量最大」的桶，保证标签至少是个稳定值
+            cands = [max(range(len(slot_ids)),
+                         key=lambda si: max(0, vmap[slot_ids[si]].get(u.venue, 0)))]
+        best = min(cands, key=lambda si: (load.get(si, 0) + u.duration + u.interval)
+                   / max(1, max(0, vmap[slot_ids[si]].get(u.venue, 0))))
+        load[best] = load.get(best, 0) + u.duration + u.interval
+        slot[i, best] = 1.0
+
+    # priority 用落位**之后**的紧度（与被采用的桶绑定，比用 venue 全局容量更能反映真实压力）
+    for i in range(n):
         u = units[i]
         cap = max(1, cap_by_venue.get(u.venue, 1))
         tight = min(1.0, (u.duration + u.interval) / cap)
         expo = min(1.0, (sum(ath_cnt[a] - 1 for a in u.athletes) / max(1, len(u.athletes))) / 3.0)
         pri[i] = 0.6 * tight + 0.4 * expo
-        # 找一个还有余量的槽（粗粒度：按 venue 分桶）
-        vkey = hash(u.venue) % max(1, n_slots)
-        for k in range(n_slots):
-            s = (vkey + k) % n_slots
-            if used.get(s, 0) + u.duration <= cap:
-                used[s] = used.get(s, 0) + u.duration
-                slot[i, s] = 1.0
-                break
-        else:
-            slot[i, vkey % n_slots] = 1.0
     if pri.max() > 0:
         pri = pri / pri.max()
     fmts = scen.formats()

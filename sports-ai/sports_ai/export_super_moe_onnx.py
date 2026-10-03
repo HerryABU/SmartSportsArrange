@@ -41,8 +41,12 @@ from sports_ai.models.super_moe import (
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(ROOT, "models")
-HIDDEN = 128
 LAYERS_HINT = 3
+# ⚠️ 下面两个值**必须从权重里读**，不能写死：hidden/steps 决定模型结构，
+#    训练用 `--steps 4` 而这里写死 8 时，load_state_dict 会 shape 不匹配直接失败，
+#    服务端表现为「模型加载失败 → 静默回退规则」。训练脚本已把结构元信息
+#    焊进 checkpoint，所以这里读权重、绝不猜常量（仅当权重无 meta 时才回退默认值）。
+HIDDEN = 128
 STEPS = 8
 
 
@@ -50,8 +54,15 @@ def main() -> None:
     ckpt = os.path.join(MODEL_DIR, "super_moe.pt")
     if not os.path.exists(ckpt):
         raise SystemExit(f"缺少权重 {ckpt}，请先跑 train_super_moe")
-    model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=HIDDEN, steps=STEPS)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+    ck = torch.load(ckpt, map_location="cpu")
+    meta = ck["meta"] if isinstance(ck, dict) and "meta" in ck else {}
+    # ⚠️ 用局部小写名接收：直接写 HIDDEN = int(meta.get("hidden", HIDDEN))
+    #    会在赋值右侧引用同名局部变量 → UnboundLocalError: referenced before assignment
+    hidden = int(meta.get("hidden", HIDDEN))
+    steps = int(meta.get("steps", STEPS))
+    print(f"[export] 从权重读取结构 hidden={hidden} steps={steps}")
+    model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=hidden, steps=steps)
+    model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.eval()
 
     B, N = 2, 24
