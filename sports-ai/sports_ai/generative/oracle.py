@@ -54,13 +54,17 @@ def greedy_coloring_single(adj: np.ndarray, n: int, max_slots: int,
 def oracle_batch(adj: torch.Tensor, mask: torch.Tensor,
                  forbid: torch.Tensor | None, max_slots: int) -> torch.Tensor:
     """批量真样本：返回 one-hot 硬方案 [B, N, max_slots]。"""
-    b, n, _ = adj.shape
+    # ⚠️ adj 是 **[B, N, N] 三维**（不是四维）。曾写成 b, n, _ = adj.shape
+    #    期望四维，一旦真传三维张量就报 "too many values to unpack (expected 3)"。
+    b, n = adj.shape[0], adj.shape[1]
     adj_np = adj.detach().cpu().numpy()
     mask_np = mask.detach().cpu().numpy()
     forbid_np = forbid.detach().cpu().numpy() if forbid is not None else None
     out = np.zeros((b, n, max_slots), dtype=np.float32)
     for i in range(b):
-        ni = int(mask_np[i].sum())
+        # ⚠️ ni 必须**夹到 n 以内**：批量里若混入 mask 未清零但节点数超出的样本，
+        #    degree 数组只有 n 项，sorted 里按 -degree[i] 索引会直接 IndexError。
+        ni = min(n, int(mask_np[i].sum()))
         if ni == 0:
             continue
         fb = forbid_np[i] if forbid_np is not None else None

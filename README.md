@@ -1697,6 +1697,148 @@ cd sports-ai
 > 被备份污染的 `*_stats.json` / `*_metrics.json` 记得 `git checkout` 还原——
 > 它们是导出 ONNX 时固化归一化的依据，与权重必须成对。
 
+### 🏐 球类赛制 AI（TournamentGnn）
+
+球类/拔河原先**完全由规则执行**（`sports_ai/tournament/` 725 行，零 torch）：
+赛制靠人指定、种子只按名次、轮转公平性无人评估。现在由模型决策三件事：
+
+| 输出 | 维度 | 含义 |
+|---|---|---|
+| `format_logits` | 3 | 赛制推荐：round_robin / elimination / hybrid |
+| `seed_scores` | N | 种子排序分（越高越靠前，直接决定签位） |
+| `fairness_cost` | N | 轮转公平性成本（对手实力方差，越低越公平） |
+
+**4 类约束边**（顺序即 ONNX 通道号，双端契约）：
+
+| 通道 | 约束 | 边权 |
+|---|---|---|
+| 0 STRENGTH | 实力相近 | `1 − |实力差|`（越接近边越强） |
+| 1 SAME_CLASS | 同班同队（**应错开**） | 该单位队伍数占比 |
+| 2 ROUND | 同轮次 | 1.0 |
+| 3 VENUE | 同偏好场地 | 该场地偏好队数占比 |
+
+**训练是自监督的**：把三个赛制在同一份参赛队上**都实跑一遍**
+（`round_robin` / `single_elimination` / `hybrid_schedule`），按真实代价
+（场次×耗时 + 轮数×等待 + 同班早遇惩罚 − 参赛覆盖率收益）取最优。
+**规则引擎成了标签生成器**，模型学的是「从约束结构推断该用哪个赛制」。
+
+> ⚠️ 标签用 `softmax(-cost/T)` 软目标而非 one-hot：若只留 argmax，
+> 分布会退化成「按规模选赛制」的硬映射（实测只有 2 类出现，第三类彻底学不到）。
+
+```bash
+# 训练 + 导出
+python -m sports_ai.train_tournament_gnn --samples 900 --epochs 70 --layers 4 --device cpu
+python -m sports_ai.export_tournament_onnx
+```
+
+**调用**：`POST /api/tournament/generate` 的 `format` 传 `"auto"`（或不传）即由 AI 决定；
+响应里会带 `aiAdvice`：
+
+```json
+{
+  "format": "elimination",
+  "aiAdvice": {
+    "recommendedFormat": "elimination",
+    "formatProbabilities": {"round_robin": 0.04, "elimination": 0.63, "hybrid": 0.33},
+    "seedOrder": ["高三3班", "高一1班", "..."],
+    "avgFairnessCost": 0.081,
+    "teamCount": 12
+  }
+}
+```
+
+显式传 `round_robin` / `elimination` / `hybrid` 仍走原来的规则路径（可对照）。
+模型缺失或队伍数超单层上限时**如实回退**并在 `aiAdvice.degraded/reason` 里说明。
+
+实测训练结果（900 份场景 / 70 epoch）：
+`val_fmt_acc=1.000`、`val_seed_spearman=0.997`、`val_fair_mse=0.00076`。
+ONNX 动态轴 N=4/12/24/64 全部通过，与 PyTorch 最大差 4.8e-7。
+
+---
+
+### 🌊 方案生成器：新增 Diffusion 版（**与 GAN 并存，线上可切换**）
+
+新增 `generative/diffusion.py`（条件扩散），**没有替换 GAN**。两者并存，
+由 `sports.schedule.ai.scheme-generator: gan|diffusion` 选择（默认 `gan`）。
+
+**为什么做 Diffusion**（DISCO / DIFUSCO 一系思路）：
+GAN 的 minmax 训练不稳（易模式崩塌）、多一个判别器开销、推理步数不可控；
+扩散的训练就是去噪 MSE，逐步去噪天然向可行域靠，推理步数由调用方按预算取舍。
+
+**⚠️ 实测结论：Diffusion 目前不如 GAN，如实记录**
+
+24 个未见场景的残余冲突（越低越好）：
+
+| 方案 | 残余冲突 | 参数量 |
+|---|---:|---:|
+| Oracle 贪心上界 | 0.0000 | — |
+| **GAN 生成器（旧）** | **0.0269** | 40,528 |
+| Diffusion（新） | 0.0608 | 311,248 |
+
+所以默认仍走 GAN。Diffusion 的价值在**架构方向**（训练稳定、步数可控、
+可做 classifier-free guidance），不在当前指标。要真正超过 GAN，
+下一步应该加大训练步数（现 8 步偏少）、对 `forbid` 做无分类器引导，
+以及把 `Adjacency` 编码从单通道升级到 `ConstraintGnn` 的 6 通道。
+
+**训练中抓到的一个真 bug（很隐蔽）**：
+约束惩罚最初写在 `torch.no_grad()` 里 —— `x0_hat` 无梯度，
+`combination_loss` 虽然加进了 `loss`，但对参数**零贡献**，等于只加了个常数。
+模型于是只学「去噪」，完全没学「要可行」。移到 `no_grad` 之外后梯度才真正回传。
+回归钉子见 `tests/test_diffusion.py::test_constraint_term_reaches_gradients`。
+
+```bash
+python -m sports_ai.generative.train_diffusion --iters 3000 --steps 8 --w-constraint 1.0 --device cpu
+python -m sports_ai.export_diffusion_onnx --steps 8      # 导出（去噪步数烧进图）
+python tests/test_diffusion.py                            # 11 项回归
+```
+
+**另外两个导出坑**（都写进注释了）：
+- `torch.onnx.export` 必须显式 `dynamo=False`（PyTorch ≥2.6 的 dynamo 与 `dynamic_axes` 冲突）；
+- 网络里**不要写 `if float(tensor.max()) == 0.0: continue`**——Python float 转换
+  会被导出器当常量固化，某约束类型恰好缺席就永久写死。改用张量门控。
+
+---
+
+### 🧠 算法选择器 v2：语义 token Transformer
+
+`models/selector_v2.py` —— 16 维特征按 **5 组语义**（规模 / 需求 / 人员 / 结构 / 索引）
+先组内池化（均值+极值）成 5 个可学习 token，再做自注意力与 FFN。
+
+**⚠️ 实测 v2 目前明显不如 v1，如实记录**（1200 个未见场景，各自用自己训练时的归一化）：
+
+| 模型 | acc | macro_f1 | 参数量 |
+|---|---:|---:|---:|
+| **v1 残差 MLP** | **0.8583** | **0.8035** | 118,418 |
+| v2 语义 token Transformer | 0.5175 | 0.5166 | 75,010 |
+
+**根因**：我的「组内池化」把 4 维压成 (mean, max) 两列，**丢掉了维与维之间的差异**——
+而判据恰恰依赖具体某维的数值（例：「团下界 × 可用时段数」的交叉），
+一旦压成均值，模型就无法区分「哪一维高」。注意力解决不了这个问题，
+因为信息在**进注意力之前**就已经丢了。
+
+所以 **v1 仍为默认**，v2 保留作为架构探索。若要继续这条线，正确做法是
+**不池化**、直接把 16 维投影成 16 个 token（`Linear(1, d)` 逐维），
+或按语义组做 `Linear(group_width, d)` 而不经过 mean/max。
+
+v2 里**可保留的两点**（已验证有效，与池化无关）：
+1. **POMO 式共享基线**——CE 基线取批内全样本平均 log-prob，期望不变、方差下降；
+2. **macro-F1 选优 + 类权重**——accuracy 0.90 掩盖了 macro_f1 只有 0.888 的小类弱项。
+
+训练 `train_selector_v2.py` 与 v1 的三点差别：
+- **POMO 式共享基线**：CE 的基线取**批内全样本平均 log-prob** 而非本样本值。
+  同一场景有多种等价表述时，单样本基线会因「采到哪个等价解」而抖动；
+  减掉批均值期望不变、方差显著下降（POMO 用「N 条轨迹平均回报当基线」的同一思路）。
+- **类权重对齐** + 以 **macro-F1** 选最优（不是 accuracy——大类会掩盖小类崩掉）。
+- 标准化仍固化在模型内（`Normalize` 作为第一层），Java 端只喂原始 16 维。
+
+```bash
+python -m sports_ai.train_selector_v2 --samples 6000 --epochs 40 --d-model 64 --device cpu
+```
+
+⚠️ v1 权重与 ONNX 原样保留，v2 通过配置切换，**不破坏既有链路**。
+
+---
+
 ### 📊 怎么确认「AI 真的按这些点位与输入推理了」
 
 模型加载成功 ≠ 在推理。要坐实「输入 → 输出」的因果链，用下面三步（都不需要读代码）：
