@@ -124,8 +124,8 @@ class TournamentGnn(nn.Module):
     避免学到规模相关的静态特征），每个头自己是几层 MLP（用户要求的「多层感知机」）。
     """
 
-    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 96,
-                 layers: int = 3, n_formats: int = 3, dropout: float = 0.1):
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160,
+                 layers: int = 5, n_formats: int = 3, dropout: float = 0.1):
         super().__init__()
         self.proj = nn.Linear(node_feat, hidden)
         self.in_norm = nn.LayerNorm(hidden)

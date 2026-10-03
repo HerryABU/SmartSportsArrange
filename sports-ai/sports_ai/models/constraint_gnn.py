@@ -137,7 +137,7 @@ class ConstraintGnn(nn.Module):
     **因此导出的 ONNX 与旧模型不兼容，必须重新训练。**
     """
 
-    def __init__(self, node_feat: int = 16, hidden: int = 96, layers: int = 4,
+    def __init__(self, node_feat: int = 16, hidden: int = 160, layers: int = 6,
                  n_types: int = N_TYPES, dropout: float = 0.1):
         super().__init__()
         self.proj = nn.Linear(node_feat, hidden)

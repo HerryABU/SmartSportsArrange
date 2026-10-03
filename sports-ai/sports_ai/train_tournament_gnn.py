@@ -126,8 +126,10 @@ def main() -> None:
     p.add_argument("--samples", type=int, default=800)
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=16)
-    p.add_argument("--hidden", type=int, default=96)
-    p.add_argument("--layers", type=int, default=3)
+    # ⚠️ 必须与 models/tournament_gnn.py 的构造函数默认值一致：
+    #    训练用 96/3 而模型是 160/5 时，load_state_dict 直接 shape 不匹配。
+    p.add_argument("--hidden", type=int, default=160)
+    p.add_argument("--layers", type=int, default=5)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=20261004)
     add_device_arg(p)

@@ -47,6 +47,8 @@ public class SuperScheduleEncoder {
     public static final int N_EDGES = 8;
 
     public static final int NODE_FEAT_DIM = 20;
+    /** 图级（实例级）特征维数：冲突密度/规模/场地/天数/时间目标/并行度/填充率/块压力。 */
+    public static final int GRAPH_FEAT_DIM = 8;
     public static final int N_TASKS = 9;
     public static final int N_FORMATS = 4;
     public static final int MAX_SLOTS = 16;
@@ -107,8 +109,8 @@ public class SuperScheduleEncoder {
 
     /** 编码结果。 */
     public record Encoded(float[][] nodeFeat, float[][][] adjByType, float[] typeMask,
-                          float[] mask, int n, int daysLimit, boolean degraded,
-                          String degradeReason) {
+                          float[] mask, float[] graphFeat, int n, int daysLimit,
+                          boolean degraded, String degradeReason) {
 
         public float[][][] nodeFeatBatch() {
             return new float[][][]{nodeFeat};
@@ -141,11 +143,12 @@ public class SuperScheduleEncoder {
         java.util.Arrays.fill(mask, 1f);
         if (n == 0) {
             return new Encoded(new float[0][NODE_FEAT_DIM], new float[N_EDGES][0][0],
-                    new float[N_EDGES], mask, 0, daysLimit, false, null);
+                    new float[N_EDGES], mask, new float[GRAPH_FEAT_DIM],
+                    0, daysLimit, false, null);
         }
         if (n > MAX_NODES) {
             return new Encoded(new float[0][NODE_FEAT_DIM], new float[N_EDGES][0][0],
-                    new float[N_EDGES], mask, 0, daysLimit, true,
+                    new float[N_EDGES], mask, new float[GRAPH_FEAT_DIM], 0, daysLimit, true,
                     "待编排单元 " + n + " 超过单层上限 " + MAX_NODES + "，已回退规则编排");
         }
 
@@ -341,7 +344,45 @@ public class SuperScheduleEncoder {
                     fmtOh0, fmtOh1, fmtOh2, fmtOh3,               // 16-19 赛制 onehot
             };
         }
-        return new Encoded(feat, adj, tmask, mask, n, daysLimit, false, null);
+        // ---- 图级（实例级）特征：路由器据此判断「这场赛会该派哪位专家」 ----
+        // ⚠️ 八维必须与 sports_ai/data/super_encode.py 的 graph_feat 逐位对齐，
+        //    它是路由器的「问题结构」输入（冲突面多广、几天、时间目标、并行度…）。
+        double confSum = 0d;
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                confSum += adj[E_ATHLETE][i][j];
+            }
+        }
+        double confDensity = confSum / Math.max(1d, (double) n * n);
+        int maxParallel = 1;
+        int totalCapacity = 0;
+        if (windows != null) {
+            Map<String, Integer> perSlot = new LinkedHashMap<>();
+            for (Window w : windows) {
+                perSlot.merge(w.day() + "#" + w.windowIdx(), 1, Integer::sum);
+                totalCapacity += w.capacity();
+            }
+            for (Integer c : perSlot.values()) {
+                maxParallel = Math.max(maxParallel, c);
+            }
+        }
+        int demand = 0;
+        for (Unit u : units) {
+            demand += u.duration() + u.interval();
+        }
+        int blockCount = blockSize.size();
+        float[] graphFeat = new float[]{
+                (float) Math.min(1d, confDensity * 8d),                        // 0 冲突密度
+                Math.min(1f, n / 128f),                                        // 1 单元规模
+                Math.min(1f, nVenues / 12f),                                   // 2 场地数
+                Math.min(1f, maxDay / 7f),                                     // 3 天数
+                timeGoal,                                                      // 4 时间目标（0/0.5/1）
+                Math.min(1f, maxParallel / 4f),                                // 5 每时段并行场地数
+                Math.min(1f, demand / Math.max(1, totalCapacity)),             // 6 填充率
+                Math.min(1f, blockCount / (float) Math.max(1, maxDay) / 4f),  // 7 块压力
+        };
+
+        return new Encoded(feat, adj, tmask, mask, graphFeat, n, daysLimit, false, null);
     }
 
     // ------------------------------------------------------------------

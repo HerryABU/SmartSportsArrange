@@ -230,8 +230,39 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
         _ = task_oh
 
     mask = np.ones(n, dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # 图级（实例级）特征 —— 路由器的「问题结构」感知
+    #
+    # 节点特征告诉模型「这一个单元长什么样」，但编排里真正决定**派哪位专家上场**
+    # 的是整场赛会的结构：500 人 15 项目 1~3 兼项 vs 300 人 10 项目限 2~3 天，
+    # 这是两个完全不同的问题，却过去走同一套专家组合。
+    # 八维分别是：冲突密度 / 单元规模 / 场地数 / 天数 / 时间目标 / 并行度 / 填充率 / 块压力。
+    # ------------------------------------------------------------------
+    n_v = max(1, len(scen.venues))
+    conf_density = float(adj[0].sum()) / max(1.0, float(n) * n) if n else 0.0
+    _per_slot: Dict[tuple, set] = {}
+    for w in scen.windows:
+        _per_slot.setdefault((int(w.day), int(w.window_idx)), set()).add(w.venue)
+    max_par = max((len(v) for v in _per_slot.values()), default=1)
+    demand = float(sum((u.duration + u.interval) for u in scen.units))
+    total_cap = float(sum(int(w.capacity) for w in scen.windows))
+    fill = demand / max(1.0, total_cap)
+    days_eff = max(1, int(max_days))
+    graph_feat = np.array([
+        min(1.0, conf_density * 8.0),            # 0 冲突密度（兼项边占比）
+        min(1.0, n / 128.0),                     # 1 单元规模
+        min(1.0, n_v / 12.0),                    # 2 场地数
+        min(1.0, days_eff / 7.0),                # 3 天数
+        float(time_goal),                        # 4 时间目标（0 不限 / 1 尽量压缩 / 0.5 限定）
+        min(1.0, max_par / 4.0),                 # 5 每时段并行场地数
+        min(1.0, fill),                          # 6 填充率（需求/容量）
+        min(1.0, (scen.n_blocks / float(days_eff)) / 4.0),   # 7 块压力
+    ], dtype=np.float32)
+
     return {"node_feat": feat[None], "adj_by_type": adj[None],
-            "type_mask": tmask[None], "mask": mask[None], "n": n}
+            "type_mask": tmask[None], "mask": mask[None], "graph_feat": graph_feat[None],
+            "n": n}
 
 
 def _msbf_key(i: int, units, cap_by_venue: Dict[str, int],

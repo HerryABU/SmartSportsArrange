@@ -100,7 +100,7 @@ def to_tensors(batch: List[Dict], idxs: List[int], device):
     """把变长样本 pad 到批内最大 N（ONNX 侧 N 动态，PyTorch 批处理必须先 pad）。"""
     items = [batch[i] for i in idxs]
     width = max(d["n"] for d in items)
-    nf, abt, tm, mk, pri, slot, fmt = [], [], [], [], [], [], []
+    nf, abt, tm, mk, pri, slot, fmt, gf = [], [], [], [], [], [], [], []
     for d in items:
         n, pad = d["n"], width - d["n"]
         nf.append(np.pad(d["node_feat"][0], ((0, pad), (0, 0))))
@@ -112,8 +112,9 @@ def to_tensors(batch: List[Dict], idxs: List[int], device):
         sl[:n] = d["slot"]
         slot.append(sl)
         fmt.append(d["format"])
+        gf.append(d["graph_feat"][0])
     T = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32)).to(device)
-    return (T(nf), T(abt), T(tm), T(mk), T(pri), T(slot), T(fmt).long())
+    return (T(nf), T(abt), T(tm), T(mk), T(pri), T(slot), T(fmt).long(), T(gf))
 
 
 def save_best(model: torch.nn.Module, stats: Dict[str, object],
@@ -154,8 +155,15 @@ def main() -> None:
     ap.add_argument("--samples", type=int, default=1200)
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--hidden", type=int, default=128)
+    # ⚠️ 下面两个**决定模型结构**：hidden/steps/expert_depth/n_global 必须与
+    #    导出脚本读到的 meta 完全一致，否则 load_state_dict shape 不匹配 →
+    #    服务端「模型加载失败 → 静默回退规则」。所以它们全部焊进 checkpoint。
+    ap.add_argument("--hidden", type=int, default=192)
     ap.add_argument("--steps", type=int, default=8)
+    ap.add_argument("--expert-depth", type=int, default=2,
+                    help="每个专家内部堆叠的消息传递层数（1=旧版单层）")
+    ap.add_argument("--n-global", type=int, default=3,
+                    help="MoE 之后的主干深层推理块数")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--w-lb", type=float, default=0.01, help="负载均衡损失权重")
     ap.add_argument("--seed", type=int, default=20261007)
@@ -186,7 +194,8 @@ def main() -> None:
     print(f"[data] 训练 {len(tr)} / 验证 {len(va)}，档位分布 {tiers}")
 
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=args.hidden,
-                             steps=args.steps).to(device)
+                             steps=args.steps, expert_depth=args.expert_depth,
+                             n_global=args.n_global).to(device)
     print(f"[model] 参数量 {sum(q.numel() for q in model.parameters()):,}")
     if args.resume and os.path.exists(MODEL_DIR + "/super_moe.pt"):
         raw = torch.load(MODEL_DIR + "/super_moe.pt", map_location=device)
@@ -209,8 +218,9 @@ def main() -> None:
             sel = [int(i) for i in idx[k:k + args.batch]]
             if not sel:
                 continue
-            nf, abt, tm, mk, pri, slot, fmt = to_tensors(tr, sel, device)
-            loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt, w_lb=args.w_lb)
+            nf, abt, tm, mk, pri, slot, fmt, gf = to_tensors(tr, sel, device)
+            loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt,
+                                              w_lb=args.w_lb, graph_feat=gf)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -226,8 +236,9 @@ def main() -> None:
                 sel = list(range(k, min(len(va), k + max(1, args.batch))))
                 if not sel:
                     continue
-                nf, abt, tm, mk, pri, slot, fmt = to_tensors(va, sel, device)
-                loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt, w_lb=args.w_lb)
+                nf, abt, tm, mk, pri, slot, fmt, gf = to_tensors(va, sel, device)
+                loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt,
+                                                  w_lb=args.w_lb, graph_feat=gf)
                 vs.append(float(loss.item()))
                 vp.append(parts)
         vloss = float(np.mean(vs)) if vs else float("inf")
@@ -245,12 +256,14 @@ def main() -> None:
                 "val_slot_mse": float(np.mean([p["slot_mse"] for p in vp])),
                 "expert_usage": usage,
                 "min_expert_usage": usage_min,
+                "route_entropy": round(model.route_entropy(), 5),
                 "epoch": epoch,
             }
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             # ⚠️ 立刻落盘：训练随时可能被后台任务回收杀掉，只在最后写盘 = 一断全白跑
             save_best(model, best_stats, {
                 "hidden": args.hidden, "steps": args.steps, "samples": args.samples,
+                "expert_depth": args.expert_depth, "n_global": args.n_global,
             })
             stale = 0
         else:

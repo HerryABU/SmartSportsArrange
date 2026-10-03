@@ -314,12 +314,18 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
         ab = torch.from_numpy(data["adj_by_type"]).to(device)                 # [1,E,n,n]
         tm = torch.from_numpy(data["type_mask"]).to(device)                   # [1,E] 已带批
         mk = torch.from_numpy(data["mask"]).to(device)                        # [1,n] 已带批
+        # 图级上下文：路由要看「整个赛会的结构」才能分工，喂全零等于把图级分支废掉，
+        # 评测分数会平白低一截且看不出原因（图级路由是本轮架构升级的一部分）。
+        gf_np = data.get("graph_feat")
+        assert gf_np is not None, "编码器没产出 graph_feat，图级路由无从谈起"
+        gf = torch.from_numpy(np.asarray(gf_np, dtype=np.float32)).to(device)  # [1,8]
+        assert gf.dim() == 2 and gf.shape[-1] == 8, f"graph_feat 应为 [B,8]，实际 {tuple(gf.shape)}"
         assert tm.dim() == 2, f"type_mask 应为 [B,E]，实际 {tuple(tm.shape)}"
         assert mk.dim() == 2, f"mask 应为 [B,N]，实际 {tuple(mk.shape)}"
         assert nf.dim() == 3, f"node_feat 应为 [B,N,20]，实际 {tuple(nf.shape)}"
         assert ab.dim() == 4, f"adj 应为 [B,E,N,N]，实际 {tuple(ab.shape)}"
         with torch.no_grad():
-            pri, slot, _task, _fmt, _days = model(nf, ab, tm, mk)
+            pri, slot, _task, _fmt, _days = model(nf, ab, tm, mk, gf)
         pri_np = pri[0].cpu().numpy()
         slot_np = slot[0].cpu().numpy()
 
@@ -356,8 +362,17 @@ def main() -> None:
 
     if not os.path.exists(args.ckpt):
         raise SystemExit(f"缺少权重 {args.ckpt}，先跑 train_super_moe")
-    model = SuperScheduleMoE()
     ck = torch.load(args.ckpt, map_location="cpu")
+    # ⚠️ 构造参数必须来自权重 meta：深层版 SuperScheduleMoE 的 hidden / expert_depth /
+    #    n_global 会改变参数形状，写死 SuperScheduleMoE() 的默认 192/3/2 去加载
+    #    hidden=128 的权重会 load_state_dict 直接炸，而且报错信息完全看不出是这里。
+    meta = ck["meta"] if isinstance(ck, dict) and "meta" in ck else {}
+    model = SuperScheduleMoE(
+        hidden=int(meta.get("hidden", 192)),
+        steps=int(meta.get("steps", 8)),
+        expert_depth=int(meta.get("expert_depth", 2)),
+        n_global=int(meta.get("n_global", 3)),
+    )
     # 兼容两种落盘格式：{"state_dict":…, "meta":…} 与旧版裸 state_dict
     model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.to(args.device)

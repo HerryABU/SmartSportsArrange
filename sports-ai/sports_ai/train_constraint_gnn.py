@@ -478,8 +478,10 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--lr", type=float, default=2e-3)
-    p.add_argument("--hidden", type=int, default=96)
-    p.add_argument("--layers", type=int, default=4)
+    # ⚠️ 必须与 models/constraint_gnn.py 的构造函数默认值一致：
+    #    训练用 96/4 而模型是 160/6 时，load_state_dict 直接 shape 不匹配。
+    p.add_argument("--hidden", type=int, default=160)
+    p.add_argument("--layers", type=int, default=6)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=20261003)
     p.add_argument("--tier", default="mixed",

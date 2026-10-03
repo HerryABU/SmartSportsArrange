@@ -31,6 +31,7 @@ import os
 import torch
 
 from sports_ai.models.super_moe import (
+    GRAPH_FEAT_DIM,
     MAX_SLOTS,
     N_EDGES,
     N_FORMATS,
@@ -46,8 +47,11 @@ LAYERS_HINT = 3
 #    训练用 `--steps 4` 而这里写死 8 时，load_state_dict 会 shape 不匹配直接失败，
 #    服务端表现为「模型加载失败 → 静默回退规则」。训练脚本已把结构元信息
 #    焊进 checkpoint，所以这里读权重、绝不猜常量（仅当权重无 meta 时才回退默认值）。
-HIDDEN = 128
+HIDDEN = 192
 STEPS = 8
+# 旧权重（单层专家版）没有这两个键，回退到与新模型一致的默认值
+EXPERT_DEPTH = 2
+N_GLOBAL = 3
 
 
 def main() -> None:
@@ -60,8 +64,12 @@ def main() -> None:
     #    会在赋值右侧引用同名局部变量 → UnboundLocalError: referenced before assignment
     hidden = int(meta.get("hidden", HIDDEN))
     steps = int(meta.get("steps", STEPS))
-    print(f"[export] 从权重读取结构 hidden={hidden} steps={steps}")
-    model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=hidden, steps=steps)
+    edepth = int(meta.get("expert_depth", EXPERT_DEPTH))
+    nglo = int(meta.get("n_global", N_GLOBAL))
+    print(f"[export] 从权重读取结构 hidden={hidden} steps={steps} "
+          f"expert_depth={edepth} n_global={nglo}")
+    model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=hidden, steps=steps,
+                             expert_depth=edepth, n_global=nglo)
     model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.eval()
 
@@ -70,6 +78,8 @@ def main() -> None:
     adj = (torch.rand(B, N_EDGES, N, N) * (torch.rand(B, N_EDGES, N, N) > 0.85)).float()
     type_mask = torch.ones(B, N_EDGES)
     mask = torch.ones(B, N)
+    # 图级（实例级）特征：冲突密度 / 规模 / 场地数 / 天数 / 时间目标 / 并行度 / 填充率 / 块压力
+    graph_feat = torch.rand(B, GRAPH_FEAT_DIM)
 
     out = os.path.join(MODEL_DIR, "super_moe.onnx")
     dynamic_axes = {
@@ -77,6 +87,7 @@ def main() -> None:
         "adj_by_type": {0: "B", 2: "N", 3: "N"},
         "type_mask": {0: "B"},
         "mask": {0: "B", 1: "N"},
+        "graph_feat": {0: "B"},
         "priority": {0: "B", 1: "N"},
         "slot_logits": {0: "B", 1: "N"},
         "task_probs": {0: "B"},
@@ -85,9 +96,9 @@ def main() -> None:
     }
     torch.onnx.export(
         model,
-        (node_feat, adj, type_mask, mask),
+        (node_feat, adj, type_mask, mask, graph_feat),
         out,
-        input_names=["node_feat", "adj_by_type", "type_mask", "mask"],
+        input_names=["node_feat", "adj_by_type", "type_mask", "mask", "graph_feat"],
         output_names=["priority", "slot_logits", "task_probs", "format_logits", "days_estimate"],
         dynamic_axes=dynamic_axes,
         opset_version=17,
@@ -96,7 +107,8 @@ def main() -> None:
         dynamo=False,
     )
     print(f"导出完成: {out}  ({os.path.getsize(out) / 1024 / 1024:.2f} MB)")
-    print(f"  输入 {NODE_FEAT_DIM} 维节点特征 / {N_EDGES} 类约束边 / {MAX_SLOTS} 个时间槽")
+    print(f"  输入 {NODE_FEAT_DIM} 维节点特征 / {N_EDGES} 类约束边 / {MAX_SLOTS} 个时间槽 "
+          f"/ {GRAPH_FEAT_DIM} 维图级特征")
     print(f"  输出 优先级[N] + 槽位logits[N,{MAX_SLOTS}] + 任务权重[{N_TASKS}] "
           f"+ 赛制[{N_FORMATS}] + 天数[1]")
 

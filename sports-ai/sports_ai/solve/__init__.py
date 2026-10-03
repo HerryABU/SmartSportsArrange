@@ -7,12 +7,14 @@
 - :mod:`feasibility` 可解性下界分析（容量缺口 / 最少天数 / 团下界 / 超大单元）
 - :mod:`scheduler`  分批装箱 + 局部搜索（容量/池/兼项/偏序四约束）
 - :mod:`report`     不可解冲突的结构化输出（给程序消费的稳定 schema）
+- :mod:`repair`     神经网络输出 → 规则兜底（容量/兼项硬约束必须 100% 成立）
 """
 
 from .heats import HeatTask, expand_heats
 from .feasibility import analyze_bounds
 from .scheduler import ScheduleResult, schedule
 from .report import build_report, dump_report
+from .repair import fragmentation, need_of, repair_assignment
 
 __all__ = [
     "HeatTask",
@@ -22,4 +24,7 @@ __all__ = [
     "schedule",
     "build_report",
     "dump_report",
+    "fragmentation",
+    "need_of",
+    "repair_assignment",
 ]

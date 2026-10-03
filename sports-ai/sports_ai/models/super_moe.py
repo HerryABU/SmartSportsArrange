@@ -76,6 +76,13 @@ N_FORMATS = 4           # group / round_robin / knockout / hybrid
 
 TYPE_EMBED_DIM = 8
 
+# ---- 图级（实例级）特征 —— 路由器的「问题结构」感知（GPINN / Router-experts 思路）----
+# 过去路由器只看节点表征，等于「不管赛会多大、多挤，都走同一套专家组合」。
+# 编排里真正决定该用哪种专家的是**实例结构**：冲突面广不广、几天、时间目标
+# （x 天硬约束 / 0 不限 / -1 尽量压缩）、并行度高低。这八维就是它。
+GRAPH_FEAT_DIM = 8
+G_CONFLICT, G_UNITS, G_VENUES, G_DAYS, G_TIME_GOAL, G_PARALLEL, G_FILL, G_BLOCK = range(8)
+
 
 class HeadAttention(nn.Module):
     """手写多头自注意力 —— **ONNX 导出友好版**。
@@ -122,8 +129,8 @@ class HeadAttention(nn.Module):
         return self.dropout(self.proj(ctx)), None
 
 
-class Expert(nn.Module):
-    """单个专家：异构消息传递 + FFN（HM-MATAS 的边级+节点级双注意力结构）。"""
+class _ExpertStep(nn.Module):
+    """专家的**单独一层**：边级注意力聚合 + 节点级自注意力 + FFN（HM-MATAS 双注意力）。"""
 
     def __init__(self, hidden: int, n_edges: int = N_EDGES, dropout: float = 0.1):
         super().__init__()
@@ -183,6 +190,30 @@ class Expert(nn.Module):
         return h * mask.unsqueeze(-1)
 
 
+class Expert(nn.Module):
+    """单个专家：``depth`` 层异构消息传递栈（HM-MATAS 的边级+节点级双注意力）。
+
+    **为什么必须深**：编排的冲突簇常常 3~4 跳可达 —— 短跑（第 1 天 09:00）
+    → 接力（同人，第 1 天 15:00）→ 跳远（同一批人）→ …。单层专家只看得到
+    「直接邻居」，等于把间接兼项当无约束，于是排出来的赛程在**三步之外**炸开。
+    ``depth=2`` 起能看到 2~3 跳；配合残差与 LayerNorm 可以堆到 4 层仍不退化。
+    """
+
+    def __init__(self, hidden: int, n_edges: int = N_EDGES, dropout: float = 0.1, depth: int = 2):
+        super().__init__()
+        self.depth = depth
+        self.steps = nn.ModuleList([
+            _ExpertStep(hidden, n_edges, dropout) for _ in range(depth)
+        ])
+        self.out_norm = nn.LayerNorm(hidden)
+
+    def forward(self, h: torch.Tensor, adj: torch.Tensor,
+                type_mask: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        for s in self.steps:
+            h = s(h, adj, type_mask, mask)
+        return self.out_norm(h)
+
+
 class SharedKnowledge(nn.Module):
     """多视角知识共享层（CoEKS 的 multi-view knowledge sharing）。
 
@@ -220,6 +251,51 @@ class SharedKnowledge(nn.Module):
         return self.norm(h + self.drop(self.merge(torch.cat(views, dim=-1)))) * mask.unsqueeze(-1)
 
 
+class LocalConvBlock(nn.Module):
+    """CNN 分支：沿节点邻接序做 1-D 卷积，抽出「项目块」的局部结构描述。
+
+    ## 为什么编排需要 CNN 这一路
+
+    GNN 回答的是「谁和谁冲突」（关系），扩散回答的是「逐槽去噪出方案」（生成），
+    但还有一件事它们都不直接管：**一个项目必须在时间上成块连续，不能今天排一节、
+    明天挤一节「见缝插针」**。这是排班网格上的**空间局部性**——
+    相邻位置的单元属于同一项目，这一先验用卷积表达最直接。
+
+    ## 为什么是 Conv1d 而不是 Conv2d
+
+    Conv2d 要把 [B,N,H] 摊成 [B,H,R,C] 方阵，过程需要 ``int(sqrt(n))`` 这类
+    **Python 整数运算**去算边，而导出 ONNX 时它会被**常量折叠**成导出那一刻的 N——
+    正是我们上一轮在 ``nn.MultiheadAttention`` 上被坑过一次的同型错误
+    （服务端喂 N=3 直接 Reshape 崩溃，异常还被 ``catch(Throwable)`` 吞掉，
+    表现是「AI 没生效但也不报错」）。
+
+    ``Conv1d`` 直接在 [B,H,N] 上卷积，**N 是动态维度、无需任何 reshape/crop**，
+    ONNX 导出天然安全，数学上也等价（节点邻接序 = 网格扫描序）。
+
+    输出是该实例的**局部块结构向量** [B,H]，与全局池化向量拼接后再送路由与输出头。
+    """
+
+    def __init__(self, hidden: int, k: int = 5, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(hidden, hidden, kernel_size=k, padding=k // 2, bias=False),
+            nn.GELU(),
+            nn.Conv1d(hidden, hidden, kernel_size=k, padding=k // 2, bias=False),
+            nn.GELU(),
+            nn.Conv1d(hidden, hidden, kernel_size=k, padding=k // 2, bias=False),
+        )
+        self.proj = nn.Linear(hidden, hidden)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """x [B,N,H] / mask [B,N] → 局部块结构向量 [B,H]"""
+        h = x.transpose(1, 2)                                   # [B,H,N]
+        h = self.net(h)                                         # [B,H,N]
+        h = h.transpose(1, 2) * mask.unsqueeze(-1)              # [B,N,H]
+        g = h.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1.0)   # [B,H]
+        return self.drop(torch.tanh(self.proj(g)))
+
+
 class MultiGateMoE(nn.Module):
     """多门混合专家（MMOE）。
 
@@ -230,34 +306,63 @@ class MultiGateMoE(nn.Module):
     """
 
     def __init__(self, hidden: int, n_experts: int = N_TASKS, n_edges: int = N_EDGES,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, expert_depth: int = 2,
+                 use_graph: bool = True, graph_dim: int = GRAPH_FEAT_DIM,
+                 use_cnn: bool = True, n_views: int = 3):
         super().__init__()
         self.n_experts = n_experts
-        self.experts = nn.ModuleList([Expert(hidden, n_edges, dropout) for _ in range(n_experts)])
+        self.use_graph = use_graph
+        self.use_cnn = use_cnn
+        self.experts = nn.ModuleList(
+            [Expert(hidden, n_edges, dropout, depth=expert_depth) for _ in range(n_experts)])
         # 多门：每门一个 Linear(hidden → n_experts)
         self.gates = nn.ModuleList([nn.Linear(hidden, n_experts) for _ in range(n_experts)])
         # 路由器专家嵌入（MPI：让路由器「读懂」每位专家）
         self.expert_embed = nn.Parameter(torch.randn(n_experts, hidden) * 0.02)
+        # 图级特征投影：把「赛会结构」翻译成与专家嵌入同一空间的向量，
+        # 路由器据此判断「这种规模/这种紧迫度该派谁上」。
+        self.graph_proj = nn.Linear(graph_dim, hidden)
+        # CNN 分支：专家 consensus 表征 → 项目块局部结构（见 LocalConvBlock 注释）
+        self.moe_cnn = LocalConvBlock(hidden, 5, dropout)
         # 知识共享层
-        self.shared = SharedKnowledge(hidden, n_experts, n_views=3, dropout=dropout)
+        self.shared = SharedKnowledge(hidden, n_experts, n_views, dropout)
         self.norm = nn.LayerNorm(hidden)
         # 门控的负载均衡统计（供观测）
         self._last_gate_probs: Optional[torch.Tensor] = None
 
     def forward(self, h: torch.Tensor, adj: torch.Tensor,
-                type_mask: torch.Tensor, mask: torch.Tensor
-                ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """返回 (融合表征 [B,N,H], 平均门控概率 [B,n_experts])。"""
+                type_mask: torch.Tensor, mask: torch.Tensor,
+                graph_feat: Optional[torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """返回 (融合表征 [B,N,H], 平均门控概率 [B,n_experts], 结构上下文 [B,H])。
+
+        ``graph_feat`` 为 None 时退化为全零图级上下文（**保持旧契约可跑**，
+        Java 端升级到新 ONNX 之前不会炸）。
+        """
         b, n, hid = h.shape
         outs = []
         for e in range(self.n_experts):
             outs.append(self.experts[e](h, adj, type_mask, mask))
         expert_out = torch.stack(outs, dim=2)                    # [B,N,E,H]
 
+        # ---- CNN 分支：专家 consensus 上的局部块结构 ----
+        if self.use_cnn:
+            ctx = self.moe_cnn(expert_out.mean(dim=2), mask)     # [B,H]
+        else:
+            ctx = h.new_zeros(b, h.shape[-1])
+        # 图级（实例级）上下文：冲突密度 / 天数 / 时间目标 / 并行度 / 填充率 …
+        if self.use_graph:
+            gf = graph_feat if graph_feat is not None else h.new_zeros(b, self.graph_proj.in_features)
+            gctx = torch.tanh(self.graph_proj(gf))               # [B,H]
+            ctx = ctx + gctx
+            ctx = self.norm(ctx).unsqueeze(1).expand(b, n, hid)  # 广播到每个节点
+
         # ---- 多门：每门一个组合权重 ----
         # MPI 思路：把「专家嵌入」与节点表征做内积后再 softmax，
-        # 路由器因此显式感知每位专家的特化方向，而不是盲学。
-        q = h @ self.expert_embed.t()                            # [B,N,E]
+        # 路由器因此显式感知每位专家的特化方向，而不是盲学；
+        # 这里再把「结构上下文」也投影到同一空间做内积——
+        # 于是路由不再是「看节点长相」，而是「看整个赛会长什么样」。
+        q = (h @ self.expert_embed.t() + ctx @ self.expert_embed.t())   # [B,N,E]
         # 九个门各给一份 [B,N,E]，取平均得到该节点的专家组合权重
         q = q + torch.stack([g(h) for g in self.gates], dim=0).mean(dim=0)
         gates = torch.softmax(q, dim=-1)                         # [B,N,E]
@@ -276,7 +381,12 @@ class MultiGateMoE(nn.Module):
         #    撞上 einsum 的 e 维歧义报错。直接删掉。
         fused = self.shared(h, expert_out, mask)
         fused = self.norm(fused)
-        return fused, glob
+        # ⚠️ keepdim=True 是必须的：ctx.sum(dim=1) 得到 [B,H]，
+        #    而 mask.sum(dim=1) 是 [B] —— 广播按**尾维对齐**会变成 [1,B] 与 [B,H]
+        #    在最后一位上比 H 与 B。单样本时 B=1，[1] 与 H 恰好有一个是 1 能广播过去
+        #    （于是冒烟测试完全测不出来）；batch=16 时直接报
+        #    "size of tensor a (128) must match the size of tensor b (16)"。
+        return fused, glob, ctx.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1.0)
 
     def load_balancing_loss(self) -> torch.Tensor:
         """Switch Transformer 风格负载均衡：鼓励各专家被均匀使用。
@@ -298,7 +408,22 @@ class MultiGateMoE(nn.Module):
         g = self._last_gate_probs
         if g is None:
             return {}
-        return {f"E{i}": round(float(v), 5) for i, v in enumerate(g.mean(dim=(0, 1)).tolist())}
+        frac = g.mean(dim=(0, 1))                                # [E]
+        n = float(g.shape[-1])
+        # 路由熵（bits）：softmax 输出越尖峰熵越低。
+        # 使用率只看「有没有人干活」，熵看出「是不是所有活都堆在一个人身上」——
+        # 两个指标一起看才抓得住 MoE 的隐性失败。
+        ent = float(-(frac.clamp_min(1e-8) * frac.clamp_min(1e-8).log()).sum()) / math.log(max(2.0, n))
+        return {f"E{i}": round(float(v), 5) for i, v in enumerate(frac.tolist())}
+
+    def route_entropy(self) -> float:
+        """归一化路由熵（0~1，越大越均衡）。"""
+        g = self._last_gate_probs
+        if g is None:
+            return 0.0
+        p = g.mean(dim=(0, 1)).clamp_min(1e-8)
+        n = max(2, int(g.shape[-1]))
+        return float(-(p * p.log()).sum()) / math.log(n)
 
 
 class DiffusionDecoder(nn.Module):
@@ -370,47 +495,90 @@ class DiffusionDecoder(nn.Module):
         return x
 
 
-class SuperScheduleMoE(nn.Module):
-    """统一编排超级模型。"""
+class GlobalBlock(nn.Module):
+    """主干深层推理块（Pre-LN 残差 FFN）。
 
-    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 128,
+    作用是把 MoE 的融合表征**再想几步**再交给输出头。原来 proj→MoE→head 只有
+    一跳，等于「看到冲突图就立刻拍板」——而编排的正确解往往是二跳推理
+    （A 与 B 冲突、B 与 C 冲突 ⇒ 三者必须同批但内部串行，且 C 的场地在第三天被占）。
+    """
+
+    def __init__(self, hidden: int, dropout: float = 0.1, expand: int = 2):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden, hidden * expand), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden * expand, hidden))
+        self.norm2 = nn.LayerNorm(hidden)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        # Pre-LN：先归一化再进 FFN，残差加回 —— 深层不塌的前提
+        h = h + self.drop(self.ffn(self.norm1(h)))
+        h = self.norm2(h)
+        return h * mask.unsqueeze(-1)
+
+
+class SuperScheduleMoE(nn.Module):
+    """统一编排超级模型（深层版）。"""
+
+    def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 192,
                  n_experts: int = N_TASKS, n_edges: int = N_EDGES,
-                 n_slots: int = MAX_SLOTS, steps: int = 8, dropout: float = 0.1):
+                 n_slots: int = MAX_SLOTS, steps: int = 8, dropout: float = 0.1,
+                 expert_depth: int = 2, n_global: int = 3,
+                 use_graph: bool = True, use_cnn: bool = True):
         super().__init__()
         self.hidden = hidden
+        self.expert_depth = expert_depth
+        self.n_global = n_global
         self.proj = nn.Linear(node_feat, hidden)
         self.in_norm = nn.LayerNorm(hidden)
         self.type_emb = nn.Embedding(n_edges, TYPE_EMBED_DIM)
         self.ctx_proj = nn.Linear(TYPE_EMBED_DIM, hidden)
 
-        self.moe = MultiGateMoE(hidden, n_experts, n_edges, dropout)
+        self.moe = MultiGateMoE(hidden, n_experts, n_edges, dropout,
+                                expert_depth=expert_depth,
+                                use_graph=use_graph, use_cnn=use_cnn)
+        # 主干深层推理栈
+        self.globals = nn.ModuleList(
+            [GlobalBlock(hidden, dropout) for _ in range(n_global)])
 
-        # 四个输出头（都是多层感知机）
+        # 输出头（加深：局部+全局+结构上下文三路融合后再 MLP）
         self.priority_head = nn.Sequential(
-            nn.Linear(hidden * 2, hidden), nn.GELU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden // 2), nn.GELU(), nn.Linear(hidden // 2, 1))
+            nn.Linear(hidden * 3, hidden), nn.LayerNorm(hidden), nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden // 2, 1))
         self.format_head = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.GELU(), nn.Linear(hidden, N_FORMATS))
+            nn.Linear(hidden * 2, hidden), nn.GELU(), nn.LayerNorm(hidden),
+            nn.GELU(), nn.Linear(hidden, N_FORMATS))
         self.days_head = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.GELU(), nn.Linear(hidden, 1))
+            nn.Linear(hidden * 2, hidden), nn.GELU(), nn.LayerNorm(hidden),
+            nn.GELU(), nn.Linear(hidden, 1))
 
         self.decoder = DiffusionDecoder(hidden, n_slots, steps, dropout)
 
     def forward(self, node_feat: torch.Tensor, adj_by_type: torch.Tensor,
-                type_mask: torch.Tensor, mask: torch.Tensor):
+                type_mask: torch.Tensor, mask: torch.Tensor,
+                graph_feat: Optional[torch.Tensor] = None):
         h = torch.relu(self.in_norm(self.proj(node_feat))) * mask.unsqueeze(-1)
         ctx = (type_mask.unsqueeze(-1) * self.type_emb.weight.unsqueeze(0)).sum(1)
         h = h + self.ctx_proj(ctx).unsqueeze(1)
 
-        fused, gate_probs = self.moe(h, adj_by_type, type_mask, mask)
+        fused, gate_probs, struct_ctx = self.moe(h, adj_by_type, type_mask, mask,
+                                                 graph_feat=graph_feat)
+        # 主干深层推理
+        for blk in self.globals:
+            fused = blk(fused, mask)
 
         denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)      # [B,1]
         pooled = (fused * mask.unsqueeze(-1)).sum(dim=1) / denom  # [B,H]
-        zg = torch.cat([fused, pooled.unsqueeze(1).expand(-1, fused.shape[1], -1)], dim=-1)
+        zg = torch.cat([fused, pooled.unsqueeze(1).expand(-1, fused.shape[1], -1),
+                        struct_ctx.unsqueeze(1).expand(-1, fused.shape[1], -1)], dim=-1)
 
         priority = self.priority_head(zg).squeeze(-1) * mask     # [B,N]
-        format_logits = self.format_head(pooled)                  # [B,4]
-        days_estimate = self.days_head(pooled)                    # [B,1]
+        format_logits = self.format_head(torch.cat([pooled, struct_ctx], dim=-1))   # [B,4]
+        days_estimate = self.days_head(torch.cat([pooled, struct_ctx], dim=-1))     # [B,1]
         slot_logits = self.decoder(fused, mask)                   # [B,N,K]
         return priority, slot_logits, gate_probs, format_logits, days_estimate
 
@@ -418,10 +586,17 @@ class SuperScheduleMoE(nn.Module):
                       node_feat: torch.Tensor, adj_by_type: torch.Tensor,
                       type_mask: torch.Tensor, mask: torch.Tensor,
                       format_target: Optional[torch.Tensor] = None,
-                      w_lb: float = 0.01) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """自监督损失：优先级回归 + 槽位分配去噪 + 负载均衡。"""
+                      w_lb: float = 0.01,
+                      graph_feat: Optional[torch.Tensor] = None
+                      ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """自监督损失：优先级回归 + 槽位分配去噪 + 负载均衡。
+
+        ``graph_feat`` 来自 {@code super_encode}（冲突密度/场地数/天数/时间目标/…）。
+        不喂它，路由器的「图级」分支就永远是零向量——
+        等于花了一倍参数买了个恒不激活的模块。
+        """
         priority, slot_logits, _, format_logits, _ = self(
-            node_feat, adj_by_type, type_mask, mask)
+            node_feat, adj_by_type, type_mask, mask, graph_feat=graph_feat)
         m = mask.unsqueeze(-1)
         l_pri = (((priority - priority_target) ** 2) * mask).sum() / mask.sum().clamp(min=1.0)
         l_slot = (((slot_logits - slot_target) ** 2) * m).sum() / m.sum().clamp(min=1.0)
@@ -443,3 +618,7 @@ class SuperScheduleMoE(nn.Module):
 
     def expert_usage(self) -> Dict[str, float]:
         return self.moe.expert_usage()
+
+    def route_entropy(self) -> float:
+        """归一化路由熵（0~1）。**越接近 1 说明 9 位专家分工越均匀**。"""
+        return self.moe.route_entropy()

@@ -136,7 +136,10 @@ public class SuperMoeService {
                 "node_feat", featTensor(enc),
                 "adj_by_type", adjTensor(enc),
                 "type_mask", vecTensor(enc.typeMask()),
-                "mask", vecTensor(enc.mask())))) {
+                "mask", vecTensor(enc.mask()),
+                // ⚠️ graph_feat 是路由器的「问题结构」输入，缺了整个 MoE 的图级分支
+                //    恒为全零 —— 模型能跑但等于白加。八维与 super_encode.py 对齐。
+                "graph_feat", vecTensor(enc.graphFeat())))) {
 
             double[] priority = toVec(r.get(0));           // [B,N]
             double[][] slot = toMatrix(r.get(1));          // [B,N,K]
