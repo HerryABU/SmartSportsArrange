@@ -213,9 +213,12 @@ def main() -> None:
     os.makedirs(MODEL_DIR, exist_ok=True)
     path = os.path.join(MODEL_DIR, "tournament_gnn.pt")
     backup_before_overwrite(path, f"tournament-{args.samples}x{args.epochs}")
-    torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
+    torch.save({"state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "meta": {"hidden": args.hidden, "layers": args.layers,
+                         "samples": args.samples, "epochs": args.epochs}}, path)
     with open(os.path.join(MODEL_DIR, "tournament_gnn_stats.json"), "w", encoding="utf-8") as fh:
-        json.dump(best_metrics, fh, ensure_ascii=False, indent=2)
+        json.dump({**best_metrics, "hidden": args.hidden, "layers": args.layers},
+                  fh, ensure_ascii=False, indent=2)
     print(f"best {best_metrics}")
     print(f"→ 已保存 {path}")
 
