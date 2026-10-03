@@ -1605,9 +1605,97 @@ sports:
     ai:
       enabled: true                 # false = 完全禁用 AI（回退纯规则）
       model-dir: classpath:/models  # jar 内（单包交付）；也可指向 file:/opt/ai-models 热替换
+      execution-provider: cpu      # cpu | directml | cuda | auto（详见下节）
+      intra-op-threads: 0           # 0 = 交给 ONNX Runtime 按核数自适应
+      inter-op-threads: 0
 ```
 
 > 改外部模型目录即可**不重新打包**热替换模型；模型缺失时编排静默回退规则路径——因此 `GET /api/ai/status` 会逐个模型报告「来自 jar 还是外部、是否加载」，避免「AI 其实没跑」被误认为正常。
+
+### 🚀 GPU 加速与 Windows ARM64
+
+> ⚠️ **先看平台现状**：`com.microsoft:onnxruntime` 的 **CPU 版只内置四个平台**
+> native 库——`win-x64` / `linux-x64` / `linux-aarch64` / `osx-aarch64`，
+> **不含 `win-arm64`**。也就是说默认打出来的 jar 在**原生 Windows on ARM
+> （骁龙等）上根本起不来**，会直接抛 `UnsatisfiedLinkError`。
+
+**为什么 Windows ARM64 只能用 DirectML**（依据 ONNX Runtime 官方 EP 兼容表）：
+
+| EP | NVIDIA | AMD | Intel | 高通 / Win on ARM | Win x64 | **Win ARM64** | 额外依赖 |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| **DirectML** | ✅ | ✅ | ✅ | ✅ **首选** | ✅ | ✅ **Full** | 无（DirectX 12 系统自带） |
+| CUDA | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | CUDA 12 + cuDNN 9 |
+| CPU | — | — | — | — | ✅ | ❌（本项目依赖缺 native 库） | 无 |
+
+**怎么打包**（依赖用 profile 切换，**不要同时引**——三个变体的 Java 类完全同名，
+同时打进一个 jar 会 duplicate class）：
+
+```bash
+# 默认：CPU，跨平台最通用
+mvn -o clean package -DskipTests
+
+# Windows GPU 加速（NVIDIA / AMD / Intel / 高通都覆盖，含 ARM64）
+mvn -o clean package -DskipTests -Ponnx-gpu-directml
+
+# Linux 服务器 + NVIDIA 独显（性能最好，jar 体积 +200MB）
+mvn -o clean package -DskipTests -Ponnx-gpu-cuda
+```
+
+**怎么启用**（或改 `application.yml` / 命令行 `--sports.schedule.ai.execution-provider=directml`）：
+
+| 取值 | 行为 |
+|------|------|
+| `cpu` | 纯 CPU，默认。零外部依赖 |
+| `directml` | DirectX 12 GPU。**Windows ARM64 唯一可用选项** |
+| `cuda` | 仅 NVIDIA 独显 |
+| `auto` | 按 `directml → cuda → cpu` 依次探测，全失败回落 CPU |
+
+> **降级不阻塞**：GPU EP 缺依赖 / 缺驱动 / 初始化失败时会**静默回落 CPU** 并记录原因，
+> 编排照常出方案（同一份 ONNX 图在 CPU 与 GPU 上只差浮点末位）。
+> 但**只换配置不换依赖包**是常见错配——此时会走降级路径。
+> `GET /api/ai/status` 的 `execution` 字段会如实报出 `requested` / `effective` /
+> `gpu` / `degradeReason` / `probe` / OS 架构，一眼看清「到底跑在哪儿」：
+
+```json
+"execution": {
+  "requested": "directml", "effective": "cpu", "gpu": false,
+  "degradeReason": "directml 不可用，已回落 CPU",
+  "probe": ["directml: 不可用（NoClassDefFoundError: ai/onnxruntime/providers/DmlExecutionProvider)"],
+  "platform": "Windows 11/amd64"
+}
+```
+
+### 🧠 训练侧 GPU
+
+训练脚本此前**完全没有 device 判断**（`model = Xxx(...)` 之后直接 `loss.backward()`），
+现在统一走 `sports-ai/sports_ai/device.py`，所有训练入口都支持 `--device`：
+
+```bash
+cd sports-ai
+./venv/Scripts/python.exe -m sports_ai.train_selector --samples 4000 --epochs 30            # auto（默认）
+./venv/Scripts/python.exe -m sports_ai.train_selector --samples 4000 --device cuda          # 强制 GPU
+./venv/Scripts/python.exe -m sports_ai.train_gnn --device cuda
+./venv/Scripts/python.exe -m sports_ai.lane_advisor --iters 1500 --device cuda
+./venv/Scripts/python.exe -m sports_ai.curriculum.train_self_paced --device cuda
+./venv/Scripts/python.exe -m sports_ai.forecast.train_forecast --device cuda
+./venv/Scripts/python.exe -m sports_ai.generative.train_refiner --device cuda
+```
+
+| 取值 | 行为 |
+|------|------|
+| `auto`（默认） | CUDA → MPS（Apple Silicon）→ CPU |
+| `cuda` / `mps` | 强制。**不可用时直接报错**，不静默回落（避免"以为在 GPU 上"白等几小时） |
+| `cpu` | 显式指定，与改造前行为完全一致 |
+
+训练开始会打印 `[device] 训练设备: cuda:0 (NVIDIA ...)`，日志里一眼可辨。
+另有 `--no-amp` 关闭混合精度（仅 CUDA 生效）。
+
+> 🛡️ **模型覆盖保护**：训练脚本一律把结果写回 `models/*.pt`，一次小样本冒烟
+> （`--samples 200`）就会把正式权重当场冲掉，而 `.pt` **不在 git 跟踪范围内**。
+> 现在所有训练脚本保存前会自动备份（`[guard] 已备份既有模型 → xxx.pt.bak.smoke-200`），
+> `train_selector` 在样本量 < 1000 时还会额外打印警告。
+> 被备份污染的 `*_stats.json` / `*_metrics.json` 记得 `git checkout` 还原——
+> 它们是导出 ONNX 时固化归一化的依据，与权重必须成对。
 
 ### 📊 怎么确认「AI 真的按这些点位与输入推理了」
 
