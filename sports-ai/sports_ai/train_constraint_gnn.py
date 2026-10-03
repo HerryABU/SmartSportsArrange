@@ -24,7 +24,7 @@ import argparse
 import json
 import os
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -32,6 +32,7 @@ import torch.nn as nn
 
 from sports_ai.data.constraint_gnn_io import N_TYPES, encode_constraint_gnn_inputs
 from sports_ai.data.generator import Scenario, generate_scenario
+from sports_ai.data.scenarios import TIERS, generate_tier_scenario
 from sports_ai.device import add_device_arg, backup_before_overwrite, describe_device, resolve_device, seed_all
 from sports_ai.models.constraint_gnn import ConstraintGnn
 
@@ -158,9 +159,26 @@ def spearman(pred: np.ndarray, gold: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 # 数据集
 # ---------------------------------------------------------------------------
-def make_dataset(n: int, seed: int) -> List[Dict]:
+def make_dataset(n: int, seed: int, tiers: Optional[List[str]] = None) -> List[Dict]:
+    """生成训练集。
+
+    ``tiers`` 给定时按**档位**混合采样（REGULAR/HELL/BLOCK/LANE/TEAM），
+    对应用户点名的四类场景 + 球类；不给定则沿用通用场景生成器（历史行为）。
+    """
     rng = random.Random(seed)
     data = []
+    if tiers:
+        for i in range(n):
+            tier = tiers[i % len(tiers)]
+            sc = generate_tier_scenario(tier, seed=rng.randint(0, 10 ** 9))
+            enc = encode_tier_inputs(sc)
+            if enc is None or enc["n"] < 4:
+                continue
+            y = urgency_targets_tier(sc, enc["n"])
+            if float(y.std()) < 1e-4:
+                continue
+            data.append({**enc, "rank": y, "tier": tier})
+        return data
     for _ in range(n):
         s = generate_scenario(
             seed=rng.randint(0, 10 ** 9),
@@ -183,6 +201,133 @@ def make_dataset(n: int, seed: int) -> List[Dict]:
     return data
 
 
+def encode_tier_inputs(sc) -> Optional[Dict]:
+    """把档位场景编码成 6 通道图（字段名与通用生成器不同，故单独一份适配）。"""
+    units = sc.units
+    n = len(units)
+    if n == 0:
+        return None
+    from sports_ai.data.constraint_gnn_io import T_IDX
+    adj = np.zeros((N_TYPES, n, n), dtype=np.float32)
+    tmask = np.zeros(N_TYPES, dtype=np.float32)
+
+    # ATHLETE
+    by_ath: Dict[int, List[int]] = {}
+    for i, u in enumerate(units):
+        for a in u.athletes:
+            by_ath.setdefault(a, []).append(i)
+    shared: Dict[Tuple[int, int], int] = {}
+    for idxs in by_ath.values():
+        for x in range(len(idxs)):
+            for y in range(x + 1, len(idxs)):
+                k = (idxs[x], idxs[y]) if idxs[x] <= idxs[y] else (idxs[y], idxs[x])
+                shared[k] = shared.get(k, 0) + 1
+    if shared:
+        mx = float(max(shared.values()))
+        for (a, b), c in shared.items():
+            adj[T_IDX["ATHLETE"], a, b] = adj[T_IDX["ATHLETE"], b, a] = c / mx
+        tmask[T_IDX["ATHLETE"]] = 1.0
+
+    def grp(attr, t):
+        buck: Dict[str, List[int]] = {}
+        for i, u in enumerate(units):
+            k = getattr(u, attr, None)
+            if k:
+                buck.setdefault(str(k), []).append(i)
+        for idxs in buck.values():
+            if len(idxs) < 2:
+                continue
+            press = min(1.0, len(idxs) / max(1, n))
+            for x in range(len(idxs)):
+                for y in range(x + 1, len(idxs)):
+                    a, b = idxs[x], idxs[y]
+                    adj[t, a, b] = max(adj[t, a, b], press)
+                    adj[t, b, a] = adj[t, a, b]
+            tmask[t] = 1.0
+
+    grp("pool_label", T_IDX["POOL"])
+    grp("venue", T_IDX["VENUE"])          # ★ 现在有真实场地维度了
+    grp("group_key", T_IDX["GROUP"])
+    grp("grade", T_IDX["GRADE"])
+
+    # TIME：装箱 + 间隔（★ 现在有 interval 了）
+    cap_by_venue: Dict[str, int] = {}
+    for w in sc.placements:
+        cap_by_venue[w.venue] = max(cap_by_venue.get(w.venue, 0), int(w.window_capacity))
+    for i, u in enumerate(units):
+        cap = max(1, cap_by_venue.get(u.venue, 1))
+        for j in range(i + 1, n):
+            v = units[j]
+            need = u.raw_duration + v.raw_duration + max(u.interval, v.interval)
+            if need > cap:
+                w = min(1.0, need / cap)
+                adj[T_IDX["TIME"], i, j] = max(adj[T_IDX["TIME"], i, j], w)
+                adj[T_IDX["TIME"], j, i] = adj[T_IDX["TIME"], i, j]
+        tmask[T_IDX["TIME"]] = 1.0
+
+    feat = np.zeros((n, 16), dtype=np.float32)
+    total = float(sum(u.raw_duration for u in units)) or 1.0
+    max_expo = max((len(u.athletes) * u.raw_duration for u in units), default=1) or 1
+    evs = sorted(set(u.event_id for u in units))
+    venues = sorted(set(u.venue for u in units))
+    for i, u in enumerate(units):
+        people = len(u.athletes)
+        feat[i] = [
+            1.0 if u.track else 0.0,
+            min(people, 512) / 512.0,
+            min(int(sum(x.raw_duration for x in units)), 600) / 600.0,
+            1.0 if u.group_key else 0.0,
+            min(len([x for x in units if x.group_key == u.group_key]), 16) / 16.0 if u.group_key else 0.0,
+            0.0,
+            (evs.index(u.event_id) / max(1, len(evs) - 1)) if len(evs) > 1 else 0.0,
+            np.log1p(people) / np.log(513),
+            0.0,
+            0.0,
+            u.raw_duration / total,
+            (people * u.raw_duration) / max_expo,
+            len([x for x in units if x.event_id == u.event_id]) / max(1, n),
+            len([x for x in units if x.pool_label == u.pool_label]) / max(1, n),
+            1.0 if u.raw_duration >= 300 else 0.0,
+            (i / max(1, n - 1)) if n > 1 else 0.0,
+        ]
+    mask = np.ones(n, dtype=np.float32)
+    return {"node_feat": feat[None], "adj_by_type": adj[None], "type_mask": tmask[None],
+            "mask": mask[None], "n": n}
+
+
+def urgency_targets_tier(sc, n: int) -> np.ndarray:
+    """档位场景的约束驱动标签：在通用口径上**额外考虑间隔与项目块**。"""
+    units = sc.units[:n]
+    if not units:
+        return np.zeros(0, dtype=np.float32)
+    cnt: Dict[int, int] = {}
+    for u in units:
+        for a in u.athletes:
+            cnt[a] = cnt.get(a, 0) + 1
+    cap_by_venue: Dict[str, int] = {}
+    for w in sc.placements:
+        cap_by_venue[w.venue] = max(cap_by_venue.get(w.venue, 0), int(w.window_capacity))
+    block_size: Dict[str, int] = {}
+    for u in units:
+        if u.group_key:
+            block_size[u.group_key] = block_size.get(u.group_key, 0) + 1
+
+    tight = np.zeros(n, dtype=np.float32)
+    expo = np.zeros(n, dtype=np.float32)
+    for i, u in enumerate(units):
+        cap = max(1, cap_by_venue.get(u.venue, 1))
+        dur = max(1, int(u.raw_duration))
+        # 间隔越大越紧：把 interval 计入分母
+        tight[i] = min(1.0, (dur + u.interval) / cap)
+        if u.athletes:
+            expo[i] = min(1.0, (sum(cnt[a] - 1 for a in u.athletes) / len(u.athletes)) / 3.0)
+    if tight.max() > 0:
+        tight /= tight.max()
+    if expo.max() > 0:
+        expo /= expo.max()
+    return (0.6 * tight + 0.4 * expo).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # 训练
 # ---------------------------------------------------------------------------
@@ -191,8 +336,15 @@ def train(args) -> None:
     seed_all(0)
     print(f"[device] 训练设备: {describe_device(device)}")
 
+    tiers = None
+    if getattr(args, "tier", "mixed") != "generic":
+        if getattr(args, "tier", "mixed") == "mixed":
+            tiers = list(TIERS.keys())
+        else:
+            tiers = [args.tier]
+        print(f"[data] 档位混合训练: {tiers}（样本 {args.samples}）")
     print(f"[data] 生成 {args.samples} 个场景（约束驱动自监督标签）…")
-    data = make_dataset(args.samples, args.seed)
+    data = make_dataset(args.samples, args.seed, tiers=tiers)
     if not data:
         print("没有可用样本，训练终止")
         return
@@ -330,6 +482,8 @@ def main() -> None:
     p.add_argument("--layers", type=int, default=4)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=20261003)
+    p.add_argument("--tier", default="mixed",
+                   help="训练档位：mixed(四类场景+球类) / generic(通用) / REGULAR / HELL / BLOCK / LANE / TEAM")
     add_device_arg(p)
     train(p.parse_args())
 
