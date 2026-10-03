@@ -78,3 +78,6 @@ _trash/
 !sports-ai/
 !sports-ai/sports_ai/data/
 !sports-ai/sports_ai/data/**
+# 训练覆盖保护产生的自动备份（sports_ai.device.backup_before_overwrite）
+sports-ai/models/*.pt.bak.*
+sports-ai/models/*.pt.bak.smoke-*
