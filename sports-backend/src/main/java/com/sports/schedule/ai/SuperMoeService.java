@@ -123,6 +123,24 @@ public class SuperMoeService {
         }
     }
 
+    /** 模型是否声明了某个输入名（用于兼容旧版 onnx 缺新增输入的情况）。 */
+    private boolean modelHasInput(String name) {
+        if (session == null) {
+            return false;
+        }
+        try {
+            for (var info : session.getInputNames()) {
+                if (name.equals(info)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            log.warn("读取模型输入名失败，按「无该输入」处理: {}", t.toString());
+            return false;
+        }
+    }
+
     /** 推理。编码降级 / 模型不可用时返回空，由上层继续走规则。 */
     public Optional<Advice> advise(SuperScheduleEncoder.Encoded enc) {
         if (enc == null || enc.degraded() || enc.n() < 3) {
@@ -132,22 +150,37 @@ public class SuperMoeService {
             return Optional.empty();
         }
         int n = enc.n();
-        try (ai.onnxruntime.OrtSession.Result r = session.run(Map.of(
-                "node_feat", featTensor(enc),
-                "adj_by_type", adjTensor(enc),
-                "type_mask", vecTensor(enc.typeMask()),
-                "mask", vecTensor(enc.mask()),
-                // ⚠️ graph_feat 是路由器的「问题结构」输入，缺了整个 MoE 的图级分支
-                //    恒为全零 —— 模型能跑但等于白加。八维与 super_encode.py 对齐。
-                "graph_feat", vecTensor(enc.graphFeat())))) {
+        // ⚠️ 只喂模型**真的声明了**的输入名：磁盘上的 super_moe.onnx 可能是旧版
+        //    （无 graph_feat 输入），硬塞一个未知名字会直接跑不起来 → 整个 AI
+        //    推理静默回退规则，比「喂全零图级上下文」严重得多。
+        //    图级分支拿不到输入时退化成全零上下文，模型仍可用（只是路由少个信号）。
+        // ⚠️ feed 的构造也必须包在 try 里：featTensor/vecTensor 会抛受检异常，
+        //    抽出来放到 try 外面编译期就直接报「未报告的异常」。
+        try {
+            // ⚠️ 只喂模型**真的声明了**的输入名：磁盘上的 super_moe.onnx 可能是旧版
+            //    （无 graph_feat 输入），硬塞一个未知名字会直接跑不起来 → 整个 AI
+            //    推理静默回退规则，比「喂全零图级上下文」严重得多。
+            //    图级分支拿不到输入时退化成全零上下文，模型仍可用（只是路由少个信号）。
+            Map<String, ai.onnxruntime.OnnxTensor> feed = new java.util.LinkedHashMap<>();
+            feed.put("node_feat", featTensor(enc));
+            feed.put("adj_by_type", adjTensor(enc));
+            feed.put("type_mask", vecTensor(enc.typeMask()));
+            feed.put("mask", vecTensor(enc.mask()));
+            // ⚠️ graph_feat 是路由器的「问题结构」输入，缺了整个 MoE 的图级分支
+            //    恒为全零 —— 模型能跑但等于白加。八维与 super_encode.py 对齐。
+            if (modelHasInput("graph_feat")) {
+                feed.put("graph_feat", vecTensor(enc.graphFeat()));
+            }
+            try (ai.onnxruntime.OrtSession.Result r = session.run(feed)) {
 
-            double[] priority = toVec(r.get(0));           // [B,N]
-            double[][] slot = toMatrix(r.get(1));          // [B,N,K]
-            double[] taskProbs = toVec(r.get(2));          // [B,9]
-            double[] fmt = toVec(r.get(3));                // [B,4]
-            double days = toScalar(r.get(4));
+                double[] priority = toVec(r.get(0));           // [B,N]
+                double[][] slot = toMatrix(r.get(1));          // [B,N,K]
+                double[] taskProbs = toVec(r.get(2));          // [B,9]
+                double[] fmt = toVec(r.get(3));                // [B,4]
+                double days = toScalar(r.get(4));
 
-            return Optional.of(new Advice(priority, slot, taskProbs, fmt, days, n, Map.of()));
+                return Optional.of(new Advice(priority, slot, taskProbs, fmt, days, n, Map.of()));
+            }
         } catch (Throwable t) {
             log.warn("超级编排推理失败，回退规则编排: {}", t.toString());
             return Optional.empty();

@@ -41,6 +41,54 @@ class SuperScheduleEncoderTest {
     }
 
     @Test
+    @DisplayName("图级特征八维与 super_encode.py 逐位对齐（填充率不能被整数截断）")
+    void graphFeatMatchesPythonContract() {
+        SuperScheduleEncoder enc = new SuperScheduleEncoder();
+        List<SuperScheduleEncoder.Unit> us = List.of(
+                unit(0, 0, "blkA", "田径场", 60, 0),
+                unit(1, 0, "blkA", "田径场", 60, 0),
+                unit(2, 0, "blkB", "田径场", 60, 0));
+        var e = enc.encode(us, windows(), 2, 100);
+        float[] g = e.graphFeat();
+        assertEquals(8, g.length, "图级特征必须是八维");
+        // 0 冲突密度：三人运动员互不重叠 → 0
+        assertEquals(0f, g[0], 1e-6);
+        // 1 单元规模 3/128
+        assertEquals(3f / 128f, g[1], 1e-6);
+        // 2 场地数：田径场 + 沙坑 = 2
+        assertEquals(2f / 12f, g[2], 1e-6);
+        // 3 天数：windows 里最大 day = 2
+        assertEquals(2f / 7f, g[3], 1e-6);
+        // 4 时间目标：daysLimit>0 编码为 0.5
+        assertEquals(0.5f, g[4], 1e-6);
+        // 5 每时段并行场地数：三个时段各 1 个场地
+        assertEquals(1f / 4f, g[5], 1e-6);
+        // 6 填充率：需求 3*(60+15)=225，容量 3*240=720
+        // ⚠️ 这里钉死「必须浮点除」：写成 int 相除会先截断成 0，图级路由少收
+        //    一个最关键的结构信号，而且不报错。
+        assertEquals(225f / 720f, g[6], 1e-6);
+        // 7 块压力：2 块 / 2 天 / 4
+        assertEquals(2f / 2f / 4f, g[7], 1e-6);
+        for (float v : g) {
+            assertTrue(v >= 0f && v <= 1f, "图级特征应在 [0,1]，实际 " + v);
+        }
+    }
+
+    @Test
+    @DisplayName("并行场地数按时段内不同场地计，不是窗口条数")
+    void parallelCountsDistinctVenuesPerSlot() {
+        // 同一 (day, windowIdx) 开两个场地 = 并行 2；不同 windowIdx 是不同时段
+        var ws = List.of(
+                new SuperScheduleEncoder.Window(1, 0, 120, "田径场", "P0"),
+                new SuperScheduleEncoder.Window(1, 0, 120, "沙坑", "P0"),
+                new SuperScheduleEncoder.Window(1, 1, 240, "田径场", "P0"));
+        var e = new SuperScheduleEncoder().encode(
+                List.of(unit(0, 0, null, "田径场", 60, 0), unit(1, 0, null, "沙坑", 60, 0)),
+                ws, 1, 100);
+        assertEquals(2f / 4f, e.graphFeat()[5], 1e-6, "同一时段开两个场地才算并行 2");
+    }
+
+    @Test
     @DisplayName("双端契约：边类型顺序 / 特征维度 / 任务数 / 赛制数")
     void contractIsStable() {
         assertEquals(0, SuperScheduleEncoder.E_ATHLETE);

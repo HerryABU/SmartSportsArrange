@@ -239,7 +239,12 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
     # 这是两个完全不同的问题，却过去走同一套专家组合。
     # 八维分别是：冲突密度 / 单元规模 / 场地数 / 天数 / 时间目标 / 并行度 / 填充率 / 块压力。
     # ------------------------------------------------------------------
-    n_v = max(1, len(scen.venues))
+    # ⚠️ 场地数口径 = **有窗口的场地数**（窗口 = 真正能排的时段场地），必须与
+    #    Java SuperScheduleEncoder 的 nActiveVenues 一致。
+    #    早期这里取 len(scen.venues)（场景声明的全部场地），Java 侧却按「单元里
+    #    出现过的场地」算，两边在「声明了场地但没排单元/没开窗」时会算出不同的值，
+    #    路由拿到错的结构信号还不报错。
+    n_v = max(1, len({w.venue for w in scen.windows}) or len(scen.venues) or 1)
     conf_density = float(adj[0].sum()) / max(1.0, float(n) * n) if n else 0.0
     _per_slot: Dict[tuple, set] = {}
     for w in scen.windows:

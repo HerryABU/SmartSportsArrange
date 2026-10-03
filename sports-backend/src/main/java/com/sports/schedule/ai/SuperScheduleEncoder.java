@@ -4,8 +4,10 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 超级编排异构图编码器：把项目/道次/球类/淘汰赛/二次编排统一编成 8 类约束边的图，
@@ -273,6 +275,18 @@ public class SuperScheduleEncoder {
         int maxPeople = Math.max(1, units.stream()
                 .mapToInt(u -> u.athletes().size()).max().orElse(1));
         int nVenues = Math.max(1, (int) units.stream().map(Unit::venue).distinct().count());
+        // ⚠️ 图级第 2 维「场地数」口径必须与 super_encode.py 一致：**有窗口的场地数**
+        //    （窗口 = 实际能排的时段场地），不是「单元里出现过的场地数」，也不是
+        //    「场景声明的全部场地」—— 后两者在「声明了场地但没排任何单元/时段」时
+        //    会把 Java 与 Python 算出不同的值，路由拿到错的结构信号还不报错。
+        //    windows 为空时退回按单元统计，保证不会是 0。
+        int nActiveVenues = 0;
+        if (windows != null) {
+            nActiveVenues = (int) windows.stream().map(Window::venue).distinct().count();
+        }
+        if (nActiveVenues <= 0) {
+            nActiveVenues = nVenues;
+        }
         Map<String, Integer> blockSize = new LinkedHashMap<>();
         for (Unit u : units) {
             if (u.groupKey() != null && !u.groupKey().isBlank()) {
@@ -357,13 +371,18 @@ public class SuperScheduleEncoder {
         int maxParallel = 1;
         int totalCapacity = 0;
         if (windows != null) {
-            Map<String, Integer> perSlot = new LinkedHashMap<>();
+            // ⚠️ 每时段并行场地数 = 该时段的**不同场地数**，不是窗口条数。
+            //    早期按窗口条数 merge(+1) 计数，与 super_encode.py 的
+            //    「len(set(venues)) 取最大」不同口径；同一场地在一个时段开两条
+            //    窗口（如上午两节）时 Java 会比 Python 大。
+            Map<String, Set<String>> perSlot = new LinkedHashMap<>();
             for (Window w : windows) {
-                perSlot.merge(w.day() + "#" + w.windowIdx(), 1, Integer::sum);
+                perSlot.computeIfAbsent(w.day() + "#" + w.windowIdx(), k -> new LinkedHashSet<>())
+                        .add(w.venue());
                 totalCapacity += w.capacity();
             }
-            for (Integer c : perSlot.values()) {
-                maxParallel = Math.max(maxParallel, c);
+            for (Set<String> vs : perSlot.values()) {
+                maxParallel = Math.max(maxParallel, vs.size());
             }
         }
         int demand = 0;
@@ -374,11 +393,14 @@ public class SuperScheduleEncoder {
         float[] graphFeat = new float[]{
                 (float) Math.min(1d, confDensity * 8d),                        // 0 冲突密度
                 Math.min(1f, n / 128f),                                        // 1 单元规模
-                Math.min(1f, nVenues / 12f),                                   // 2 场地数
+                Math.min(1f, nActiveVenues / 12f),                              // 2 场地数（有窗口的场地）
                 Math.min(1f, maxDay / 7f),                                     // 3 天数
                 timeGoal,                                                      // 4 时间目标（0/0.5/1）
                 Math.min(1f, maxParallel / 4f),                                // 5 每时段并行场地数
-                Math.min(1f, demand / Math.max(1, totalCapacity)),             // 6 填充率
+                // ⚠️ 必须强转 float 再除：demand / totalCapacity 两边都是 int，
+                //    Java 会先做**整数除法截断**（5000/12000 = 0），于是填充率恒为 0，
+                //    图级路由少看到一个最关键的结构信号（而且不报错）。
+                Math.min(1f, demand / (float) Math.max(1, totalCapacity)),       // 6 填充率
                 Math.min(1f, blockCount / (float) Math.max(1, maxDay) / 4f),  // 7 块压力
         };
 
