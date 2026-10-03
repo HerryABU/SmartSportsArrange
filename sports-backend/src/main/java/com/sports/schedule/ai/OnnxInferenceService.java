@@ -126,7 +126,7 @@ public class OnnxInferenceService {
             }
             env = OrtEnvironment.getEnvironment();
             // ⚠️ 传入 byte[] 而非路径：jar 内资源无需落临时文件，避免权限/清理/并发覆盖问题
-            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+            OrtSession.SessionOptions options = OnnxSessionFactory.get().newSessionOptions();
             selectorSession = env.createSession(selBytes, options);
             gnnSession = env.createSession(gnnBytes, options);
             log.info("AI 编排模型就绪: {}（{}）", modelDir, ModelSource.describe(modelDir, selectorModel));

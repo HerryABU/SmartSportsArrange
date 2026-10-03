@@ -181,7 +181,7 @@ public class LaneAdvisorService {
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            session = env.createSession(bytes, new OrtSession.SessionOptions());
+            session = env.createSession(bytes, OnnxSessionFactory.get().newSessionOptions());
             log.info("道次 AI 模型就绪: {}", ModelSource.describe(modelDir, modelName));
             return true;
         } catch (Exception ex) {

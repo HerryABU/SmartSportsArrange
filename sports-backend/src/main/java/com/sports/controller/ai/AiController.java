@@ -54,6 +54,10 @@ public class AiController {
         models.put("laneAdvisor", laneAdvisor.modelInfo());
         out.put("models", models);
         out.put("modelSource", String.valueOf(inference.modelInfo().get("modelDir")));
+
+        // 推理后端（CPU / DirectML / CUDA）与降级原因——「机器有显卡却没跑在显卡上」
+        // 是最常见的困惑点，这里直接给出实际生效的 EP、探测过程与 OS 架构。
+        out.put("execution", com.sports.schedule.ai.OnnxSessionFactory.get().describe());
         return ApiResponse.success(out);
     }
 }

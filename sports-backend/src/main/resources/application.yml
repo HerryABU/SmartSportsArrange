@@ -131,6 +131,18 @@ sports:
     ai:
       # 总开关：false 时完全禁用 AI 编排（回退纯规则）
       enabled: true
+      # 推理后端（Execution Provider）：
+      #   cpu      —— 纯 CPU（默认）。零外部依赖，win-x64 / linux-x64 / linux-aarch64 / osx-aarch64 通用
+      #   directml —— DirectX 12 GPU，覆盖 NVIDIA / AMD / Intel / 高通，**Windows ARM64 唯一可用选项**
+      #   cuda     —— 仅 NVIDIA 独显（需机器自备 CUDA 12 + cuDNN 9，不支持 ARM64）
+      #   auto     —— 按 directml → cuda → cpu 依次探测，全失败自动回落 CPU
+      # ⚠️ 换了 EP 还得换依赖包，否则注册 EP 时会缺类（已自动降级 CPU，日志与 /api/ai/status 会说明）：
+      #   mvn -o clean package -Ponnx-gpu-directml   或   -Ponnx-gpu-cuda
+      # ⚠️ CPU 版 ORT **不含 win-arm64**，原生 Windows on ARM 必须用 directml。
+      execution-provider: cpu
+      # 线程数：0 = 交给 ONNX Runtime 自行决定（按 CPU 核数自适应）
+      intra-op-threads: 0
+      inter-op-threads: 0
       # 模型目录：默认 classpath:/models（jar 内，单包交付）；
       # 也可指向外部目录（如 ./ai-models 或 file:/opt/ai-models）以便不重新打包即可热替换模型。
       model-dir: classpath:/models

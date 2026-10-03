@@ -128,7 +128,7 @@ public class SchemeGeneratorService {
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            session = env.createSession(bytes, new OrtSession.SessionOptions());
+            session = env.createSession(bytes, OnnxSessionFactory.get().newSessionOptions());
             log.info("GAN 生成器模型就绪: {}", ModelSource.describe(modelDir, generatorModel));
             return true;
         } catch (Exception ex) {

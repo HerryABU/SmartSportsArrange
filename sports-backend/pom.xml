@@ -23,6 +23,9 @@
 		<springdoc.version>2.8.5</springdoc.version>
 		<!-- Timefold Solver：约束求解引擎（Apache-2.0，纯 Java 无 native 依赖） -->
 		<timefold.version>2.6.0</timefold.version>
+		<!-- ONNX Runtime：默认 CPU 变体（零外部依赖，换平台/换 GPU 用下方 profile 覆盖） -->
+		<onnxruntime.version>1.26.0</onnxruntime.version>
+		<onnxruntime.artifact>onnxruntime</onnxruntime.artifact>
 	</properties>
 
 	<dependencyManagement>
@@ -150,13 +153,19 @@
 		<!--
 		  ONNX Runtime（MIT）：AI 编排核心的部署侧推理引擎。
 		  训练侧（sports-ai/，Python 3.12）导出 .onnx，本依赖在 JVM 内直接加载推理，
-		  生产环境不依赖 Python 解释器。含各平台 native 库（win-x64/linux-x64/mac…），
-		  模型缺失/加载失败时由 OnnxInferenceService 优雅回退到规则编排，不阻塞主流程。
+		  生产环境不依赖 Python 解释器。模型缺失/加载失败时由 OnnxInferenceService
+		  优雅回退到规则编排，不阻塞主流程。
+
+		  ⚠️ 平台覆盖：CPU 版只内置 win-x64 / linux-x64 / linux-aarch64 / osx-aarch64
+		  **四个平台，没有 win-arm64**——Windows on ARM 机器直接抛 UnsatisfiedLinkError。
+		  要跑 ARM64 / 要 GPU 加速，用下面的 profile 换依赖（详见 README「GPU 加速与 Windows ARM64」）：
+		    -Ponnx-gpu-directml   DirectML（覆盖 NVIDIA/AMD/Intel/高通，**官方唯一支持 ARM64**）
+		    -Ponnx-gpu-cuda       CUDA（仅 NVIDIA 独显，机器需自备 CUDA 12 + cuDNN 9）
 		-->
 		<dependency>
 			<groupId>com.microsoft.onnxruntime</groupId>
-			<artifactId>onnxruntime</artifactId>
-			<version>1.26.0</version>
+			<artifactId>${onnxruntime.artifact}</artifactId>
+			<version>${onnxruntime.version}</version>
 		</dependency>
 
 		<!-- Lombok -->
@@ -208,4 +217,42 @@
 			</plugin>
 		</plugins>
 	</build>
+
+	<!--
+	  ONNX Runtime 变体切换。
+
+	  为什么用 profile 而不是同时引依赖：`onnxruntime` / `onnxruntime-directml` /
+	  `onnxruntime-gpu` 三者的 Java 类**完全同名**（都是 com.microsoft.onnxruntime.*），
+	  同时打进一个 jar 会 duplicate class。因此这里只切换 artifactId，保证 jar 里
+	  有且只有一份 ORT。
+
+	  用法：
+	    mvn -o clean package -DskipTests                      # 默认 CPU（win-x64/linux-x64/...）
+	    mvn -o clean package -DskipTests -Ponnx-gpu-directml   # DirectML：GPU + Windows ARM64
+	    mvn -o clean package -DskipTests -Ponnx-gpu-cuda       # CUDA：仅 NVIDIA
+	  运行时再配 sports.schedule.ai.execution-provider（cpu/directml/cuda/auto）。
+	-->
+	<profiles>
+		<!--
+		  DirectML：Windows 10 1903+/11 的通用 GPU 加速，DirectX 12 系统自带、无需 CUDA/cuDNN。
+		  官方 EP 兼容表里 **只有它支持 Windows ARM64**（CUDA / TensorRT 的 ARM 均为 No），
+		  且 Qualcomm 一栏明确写着 DirectML 是 Win on ARM 的 GPU 加速首选。
+		-->
+		<profile>
+			<id>onnx-gpu-directml</id>
+			<properties>
+				<onnxruntime.artifact>onnxruntime-directml</onnxruntime.artifact>
+			</properties>
+		</profile>
+		<!--
+		  CUDA：仅 NVIDIA 独显，性能最好但部署最重（jar +200MB，机器需自备 CUDA 12 + cuDNN 9）。
+		  注意：CUDA EP **不支持 Windows ARM64**。
+		-->
+		<profile>
+			<id>onnx-gpu-cuda</id>
+			<properties>
+				<onnxruntime.artifact>onnxruntime-gpu</onnxruntime.artifact>
+			</properties>
+		</profile>
+	</profiles>
 </project>

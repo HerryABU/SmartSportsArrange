@@ -291,7 +291,7 @@ public class AdversarialSchemeService {
                 return false;
             }
             env = OrtEnvironment.getEnvironment();
-            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+            OrtSession.SessionOptions options = OnnxSessionFactory.get().newSessionOptions();
             gen = env.createSession(genBytes, options);
             dis = env.createSession(disBytes, options);
             byte[] refBytes = ModelSource.read(modelDir, refName).orElse(null);
