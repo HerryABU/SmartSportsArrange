@@ -65,7 +65,11 @@ import torch.nn.functional as F
 # ---- 九类编排任务（与 super_scenarios.TASK_* 严格一致，双端契约）----
 TASK_PROJECT, TASK_LANE, TASK_BALL, TASK_KNOCKOUT = 0, 1, 2, 3
 TASK_BLOCK, TASK_CONFLICT, TASK_CAPACITY, TASK_MAKESPAN, TASK_RESECOND = 4, 5, 6, 7, 8
-N_TASKS = 9
+# ⚠️ 任务数**必须**与数据侧 sports_ai.data.super_scenarios.N_TASKS 一致（唯一真相源）。
+#    这里曾经硬编码 9：改了数据侧的 N_TASKS 之后，模型的专家数没有跟着变，
+#    症状是「参数量一模一样、expert_usage 里只出现 9 个专家」，排查时毫无线索。
+#    所以改成直接导入，让两处不可能再漂移。
+from sports_ai.data.super_scenarios import N_TASKS  # noqa: E402
 
 # ---- 边类型（与 super_scenarios.E_* 严格一致）----
 N_EDGES = 8

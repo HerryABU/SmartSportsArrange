@@ -50,7 +50,12 @@ TASK_CONFLICT = 5
 TASK_CAPACITY = 6
 TASK_MAKESPAN = 7
 TASK_RESECOND = 8
-N_TASKS = 9
+# 合并进超级模型的第 10、11 类任务：裁判编排 / 教师（行政）规避。
+# ⚠️ 它们的约束结构与项目编排同构，并入同一张图才能学到跨域耦合；
+#    常量改了必须连着重训（专家数变化会改权重形状，不重训 → Java 静默回退规则）。
+TASK_REFEREE = 9
+TASK_TEACHER = 10
+N_TASKS = 11
 
 TASK_NAMES = {
     TASK_PROJECT: "项目编排",
@@ -62,6 +67,8 @@ TASK_NAMES = {
     TASK_CAPACITY: "装箱容量",
     TASK_MAKESPAN: "工期压缩",
     TASK_RESECOND: "二次编排",
+    TASK_REFEREE: "裁判编排",
+    TASK_TEACHER: "教师规避",
 }
 
 # ---- 边类型（顺序即 ONNX 通道号，双端契约）----
@@ -209,6 +216,37 @@ EVENT_POOL: List[Tuple[str, bool, int, str, bool, float]] = [
 ]
 
 GRADES = ["高一", "高二", "高三"]
+
+
+def add_shadow_tasks(scen: "SuperScenario", rng) -> None:
+    """把裁判编排（TASK_REFEREE）与教师规避（TASK_TEACHER）单元并入现有场景。
+
+    叫「影子任务」是因为它们**不改变主流程的编排结果**，只作为同一张图上的
+    额外任务类型存在 —— 目的是让超级模型的 MoE 专家覆盖这两类编排，
+    从而在同一个实例里权衡「项目 vs 裁判 vs 教师时间」的耦合。
+    """
+    n_ref = rng.randint(2, 4)
+    for i in range(n_ref):
+        scen.units.append(SuperUnit(
+            key=f"REF{i}", name=f"裁判派遣组{i + 1}", task=TASK_REFEREE,
+            venue="V0", pool="REF", group_key="REF_GROUP",
+            duration=rng.randint(20, 39), interval=rng.randint(5, 14),
+            athletes=[rng.randint(1000, 1011) for _ in range(rng.randint(1, 2))],
+        ))
+    n_tch = rng.randint(2, 3)
+    for i in range(n_tch):
+        scen.units.append(SuperUnit(
+            key=f"TCH{i}", name=f"教师规避时段{i + 1}", task=TASK_TEACHER,
+            venue="V0", pool="TCH", group_key="TCH_GROUP",
+            duration=rng.randint(15, 34), interval=rng.randint(5, 14),
+            athletes=[rng.randint(2000, 2007) for _ in range(rng.randint(1, 2))],
+        ))
+    # 给影子任务补窗口：复用既有场地/时段口径，避免引入新的编排契约
+    if scen.windows:
+        w0 = scen.windows[0]
+        scen.windows.append(SuperWindow(day=w0.day, window_idx=len(scen.windows),
+                                        capacity=max(120, w0.capacity // 2),
+                                        venue="V0", pool="REF"))
 
 
 def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:

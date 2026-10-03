@@ -71,7 +71,9 @@ public class SuperScheduleEncoder {
 
     private static final String[] TASK_NAMES = {
             "项目编排", "道次编排", "球类赛制", "淘汰赛晋级", "项目块完整性",
-            "兼项避让", "装箱容量", "工期压缩", "二次编排"};
+            "兼项避让", "装箱容量", "工期压缩", "二次编排",
+            // 合并进超级模型的第 10、11 类任务（顺序即 ONNX 输出通道号，禁止改序）
+            "裁判编排", "教师规避"};
 
     /** 一个待编排单元。 */
     public record Unit(String key, String name, int task, boolean track, boolean team,

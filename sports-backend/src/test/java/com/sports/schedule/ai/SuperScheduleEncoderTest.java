@@ -103,7 +103,8 @@ class SuperScheduleEncoderTest {
         assertEquals(20, SuperScheduleEncoder.NODE_FEAT_DIM);
         assertEquals(9, SuperScheduleEncoder.N_TASKS);
         assertEquals(4, SuperScheduleEncoder.N_FORMATS);
-        assertEquals(9, SuperScheduleEncoder.taskNames().length);
+        // 合并裁判编排 / 教师规避后：9 → 11 类任务（顺序即 ONNX 输出通道号）
+        assertEquals(11, SuperScheduleEncoder.taskNames().length);
     }
 
     @Test
@@ -255,7 +256,7 @@ class SuperScheduleEncoderTest {
         assertTrue(a.isPresent() && b.isPresent(), "模型应可用");
 
         assertEquals(4, a.get().n(), "输出长度必须等于单元数");
-        assertEquals(9, a.get().taskProbs().length, "任务权重应为 9 维（九类编排）");
+        assertEquals(11, a.get().taskProbs().length, "任务权重应为 11 维（含裁判编排 / 教师规避）");
         assertEquals(4, a.get().formatLogits().length, "赛制应为 4 维");
         assertEquals(4, a.get().slotLogits().length, "槽位 logits 应为 [N][K]");
         assertEquals(SuperScheduleEncoder.MAX_SLOTS, a.get().slotLogits()[0].length);

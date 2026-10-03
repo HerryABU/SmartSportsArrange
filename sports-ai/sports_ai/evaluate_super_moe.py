@@ -424,8 +424,16 @@ def ga_search(scen: SuperScenario, n: int, slot_logits: np.ndarray,
         population.append(p)
 
     scored = [(fitness(p), p) for p in population]
+    best_cost = scored[0][0] if scored else math.inf
+    stalled = 0
+    # 停滞多少代就重启：太短会让搜索无法深耕，太长则等于不重启
+    restart_every = max(3, gens // 4)
     for _ in range(max(1, gens)):
         scored.sort(key=lambda t: t[0])
+        if scored[0][0] < best_cost - 1e-9:
+            best_cost, stalled = scored[0][0], 0
+        else:
+            stalled += 1
         nxt: List[List[int]] = [p for _, p in scored[:2]]      # 精英保留
 
         def tournament() -> List[int]:
@@ -436,6 +444,17 @@ def ga_search(scen: SuperScenario, n: int, slot_logits: np.ndarray,
             child = order_crossover(tournament(), tournament(), rng)
             mutate(child, rng)
             nxt.append(child)
+
+        if stalled >= restart_every:
+            # 【L2/L3 强化】下界引导重启：种群尾部换回「装箱紧度构造序」+ 随机重启。
+            # 用构造序而不是纯随机，是因为它带着「紧的单元先排」这条下界信息 ——
+            # 重启不是重新掷骰子，而是回到有信息量的起点。
+            nxt[-1] = list(seed_order)
+            for back in range(2, min(4, len(nxt)) + 1):
+                fresh = list(range(n))
+                rng.shuffle(fresh)
+                nxt[-back] = fresh
+            stalled = 0
         scored = [(fitness(p), p) for p in nxt]
     # 精英兜底：把外来种子也纳入最终比较，保证「借鉴」只可能变好、不可能变差。
     for s in (extra_seeds or []):
@@ -445,9 +464,30 @@ def ga_search(scen: SuperScenario, n: int, slot_logits: np.ndarray,
     return list(scored[0][1])
 
 
+def mc_uncertainty(model, nf, ab, tm, mk, gf, samples: int = 5) -> np.ndarray:
+    """MC Dropout：多次前向的预测方差 = 模型对该实例的「不确定度」[N]。
+
+    ⚠️ 必须临时切到 `train()` 模式前向，否则 dropout 关闭、方差恒为 0
+    （那就退化成「没有信息」，白算一遍）。
+    ⚠️ 这样做是安全的：本模型只有 LayerNorm + Dropout，没有 BatchNorm ——
+    train() 模式不会污染任何运行时统计量，事后切回 `eval()` 即可。
+    """
+    model.train()
+    acc: List[np.ndarray] = []
+    try:
+        with torch.no_grad():
+            for _ in range(max(2, samples)):
+                pri, _slot, _t, _f, _d = model(nf, ab, tm, mk, gf)
+                acc.append(pri[0].detach().cpu().numpy())
+    finally:
+        model.eval()
+    return np.var(np.stack(acc, axis=0), axis=0).astype(np.float32)
+
+
 def lns_refine(scen: SuperScenario, n: int, slot_logits: np.ndarray,
                order0: List[int], seed: int = 0,
-               rounds: int = 6, kill: int = 4) -> List[int]:
+               rounds: int = 6, kill: int = 4,
+               uncertain: Optional[np.ndarray] = None) -> List[int]:
     """破坏-重建大邻域精修（L4 借 L2/L3 的算子）。
 
     纯 GA 的交换/插入变异只能在「相近排列」里游走，容易卡在局部最优；
@@ -467,7 +507,14 @@ def lns_refine(scen: SuperScenario, n: int, slot_logits: np.ndarray,
     for _ in range(max(1, rounds)):
         if len(best) <= kill:
             break
-        picked = sorted(int(x) for x in rng.choice(len(best), size=kill, replace=False))
+        if uncertain is not None and len(uncertain) >= len(best):
+            # 前沿方法（GLNS 轨迹敏感性）：不随机摘，而是摘「模型最没把握」的——
+            # 那些正是结构歧义/高耦合所在，修它们的收益最大。
+            ranked = np.argsort(-uncertain[:len(best)])
+            picked = sorted(int(i) for i in ranked[:kill])
+        else:
+            # 无不确定度信息时退回随机破坏（保持与原实现等价）
+            picked = sorted(int(x) for x in rng.choice(len(best), size=kill, replace=False))
         drop = set(picked)
         removed = [best[i] for i in picked]
         rest = [x for i, x in enumerate(best) if i not in drop]
@@ -541,6 +588,8 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
         # 预算给得比纯 GA 大，因为 L4 这一档本来就比 L3 重（分钟级 vs 秒级）。
         # 模型只贡献「它认为的排布顺序」，落桶交给传统搜索 —— 因为实测模型的
         # slot_logits 现在还会带偏落桶（待重训修正），顺序信息则确实是正向的。
+        # 前沿方法一：用 MC Dropout 方差给出「模型最没把握的单元」
+        unc = mc_uncertainty(model, nf, ab, tm, mk, gf, samples=5)
         model_order = sorted(range(n), key=lambda i: -float(pri_np[i]))
         # 多起点重启：单次 GA 方差大（换随机种子可能差好几个未排单元），
         # 而 L4 在真实系统里本就是分钟级链路（aiAdversarialRounds 默认 3 轮），
@@ -551,7 +600,8 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
             rk = int(sd) * 31 + k
             cand = ga_search(scen, n, None, seed=rk, pop=24, gens=30,
                              extra_seeds=[model_order])
-            cand = lns_refine(scen, n, None, cand, seed=rk, rounds=8, kill=5)
+            cand = lns_refine(scen, n, None, cand, seed=rk, rounds=8, kill=5,
+                              uncertain=unc)
             c = cost_of(decode(scen, n, pri_np, None, "custom", order_override=cand))
             if c < best_cost:
                 best_cost, best_order = c, cand

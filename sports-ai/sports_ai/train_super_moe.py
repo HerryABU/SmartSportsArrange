@@ -51,6 +51,7 @@ if __package__ in (None, ""):
 
 from sports_ai.data.super_encode import MAX_SLOTS, encode_super_graph, greedy_targets
 from sports_ai.data.super_scenarios import (
+    add_shadow_tasks,
     N_EDGES,
     generate_super_scenario,
     validate_scenario,
@@ -107,6 +108,8 @@ def make_dataset(n: int, seed: int, label_search: bool = False) -> List[Dict]:
         attempts += 1
         tier = TIERS[len(data) % len(TIERS)]
         scen = generate_super_scenario(tier, seed=rng.randint(0, 10 ** 9))
+        # 合并裁判/教师任务（N_TASKS 9→11）：影子任务并入同一张图
+        add_shadow_tasks(scen, rng)
         ok, why = validate_scenario(scen)
         if not ok:
             rejected[why] = rejected.get(why, 0) + 1
