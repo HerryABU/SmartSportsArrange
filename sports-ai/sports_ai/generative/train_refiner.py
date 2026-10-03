@@ -23,6 +23,8 @@ from sports_ai.generative.generator import SchemeGenerator
 from sports_ai.generative.refiner import SchemeRefiner
 from sports_ai.generative.scheme import MAX_SLOTS, combination_loss
 from sports_ai.generative.train_gan import make_batch, make_forbid
+from sports_ai.device import (add_device_arg, backup_before_overwrite, describe_device,
+                             resolve_device, seed_all, to_device)
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
 
@@ -33,24 +35,28 @@ def _onehot(logits):
 
 
 def train(args):
-    torch.manual_seed(0); np.random.seed(0); random.seed(0)
+    device = resolve_device(getattr(args, "device", "auto"))
+    seed_all(0)
+    print(f"[device] 训练设备: {describe_device(device)}")
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     G = SchemeGenerator()
     G.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
     D = SchemeDiscriminator()
     D.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
+    G = G.to(device); D = D.to(device)
     for p in G.parameters():
         p.requires_grad_(False)
     for p in D.parameters():
         p.requires_grad_(False)
     G.eval(); D.eval()
 
-    R = SchemeRefiner()
+    R = SchemeRefiner().to(device)
     opt = torch.optim.Adam(R.parameters(), lr=3e-4, weight_decay=1e-4)
 
     node_feat, adj, mask = make_batch(args.batch, seed=args.seed)
-    forbid = make_forbid(mask, MAX_SLOTS, prob=args.forbid_prob, seed=1)
+    node_feat, adj, mask = to_device((node_feat, adj, mask), device)
+    forbid = to_device(make_forbid(mask.cpu(), MAX_SLOTS, prob=args.forbid_prob, seed=1), device)
     cap = max(1.0, float(mask.sum(1).mean()) / MAX_SLOTS * args.capacity_slack)
 
     def hard_conflict(logits):
@@ -63,7 +69,7 @@ def train(args):
         # ⚠️ 初始解必须与**推理时一致**：推理端用 z=0（确定性），早期训练却用随机 z，
         # 于是精修器学到的是「修正一个推理时根本不会出现的初始解」——实测把好解改坏
         # （冲突 0.0076 → 0.0198）。这里改用确定性初始解，并加两条保底约束。
-        z = torch.zeros(node_feat.shape[0], node_feat.shape[1], args.noise)
+        z = torch.zeros(node_feat.shape[0], node_feat.shape[1], args.noise, device=device)
         with torch.no_grad():
             init = G.logits_of(node_feat, adj, mask, z, forbid)      # G 的初始方案
             base_probs = torch.softmax(init, dim=-1)
@@ -97,7 +103,10 @@ def train(args):
                   f"conflict: 初始 {c0:.4f} → 精修 {c1:.4f}  (↓{100*(1-c1/max(1e-9,c0)):.1f}%)  "
                   f"D={d_score.item():.3f}  guard={loss_guard.item():.4f}  |Δ|={delta.abs().mean().item():.3f}")
 
-    torch.save(R.state_dict(), os.path.join(MODEL_DIR, "scheme_refiner.pt"))
+    # 覆盖前备份 + 权重存 CPU（跨设备加载更稳）
+    backup_before_overwrite(os.path.join(MODEL_DIR, "scheme_refiner.pt"), f"smoke-{args.iters}")
+    torch.save({k: v.detach().cpu() for k, v in R.state_dict().items()},
+               os.path.join(MODEL_DIR, "scheme_refiner.pt"))
     print("完成：models/scheme_refiner.pt")
 
 
@@ -116,6 +125,7 @@ def main():
     p.add_argument("--capacity-slack", type=float, default=1.5)
     p.add_argument("--log-every", type=int, default=250)
     p.add_argument("--seed", type=int, default=20260918)
+    add_device_arg(p)
     train(p.parse_args())
 
 

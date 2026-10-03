@@ -46,6 +46,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from sports_ai.device import (add_device_arg, backup_before_overwrite, describe_device,
+                             resolve_device, seed_all, to_device)
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
@@ -181,15 +183,16 @@ def top_half_overlap(pred: np.ndarray, truth: np.ndarray, n: int) -> float:
 # 训练 / 导出
 # ---------------------------------------------------------------------------
 def train(args) -> str:
-    torch.manual_seed(0)
-    np.random.seed(0)
-    model = LaneAdvisor()
+    device = resolve_device(getattr(args, "device", "auto"))
+    seed_all(0)
+    model = LaneAdvisor().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     loss_fn = nn.MSELoss(reduction="none")
 
-    print(f"[训练] 道次排序建议模型：{args.iters} 步，batch={args.batch}")
+    print(f"[训练] 道次排序建议模型：{args.iters} 步，batch={args.batch}  设备={describe_device(device)}")
     for it in range(args.iters):
         x, m, y = make_batch(args.batch, seed=args.seed + it)
+        x, m, y = to_device((x, m, y), device)
         pred = model(x, m)
         loss = (loss_fn(pred, y) * m).sum() / m.sum().clamp(min=1)
         opt.zero_grad()
@@ -198,14 +201,17 @@ def train(args) -> str:
         if (it + 1) % args.log_every == 0:
             with torch.no_grad():
                 ov = float(np.mean([
-                    top_half_overlap(pred[b].numpy(), y[b].numpy(), int(m[b].sum()))
+                    top_half_overlap(pred[b].cpu().numpy(), y[b].cpu().numpy(), int(m[b].sum()))
                     for b in range(x.shape[0])
                 ]))
                 print(f"  第 {it + 1:5d} 步  loss={loss.item():.5f}  前半段排序重合度={ov:.3f}（随机≈0.5）")
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     path = os.path.join(MODEL_DIR, "lane_advisor.pt")
-    torch.save(model.state_dict(), path)
+    # 覆盖前备份（冒烟训练别把正式权重冲掉）
+    backup_before_overwrite(path, f"smoke-{args.iters}")
+    # 权重存 CPU：跨设备/跨版本加载更稳（load_state_dict 默认 map_location='cpu'）
+    torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
     print(f"完成：{os.path.relpath(path, os.path.dirname(MODEL_DIR))}")
     return path
 
@@ -249,6 +255,7 @@ def main():
     p.add_argument("--iters", type=int, default=1500)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--seed", type=int, default=20260918)
+    add_device_arg(p)
     p.add_argument("--log-every", type=int, default=300)
     p.add_argument("--export", action="store_true")
     p.add_argument("--verify", action="store_true")

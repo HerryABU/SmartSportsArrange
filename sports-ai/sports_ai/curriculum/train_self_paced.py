@@ -30,6 +30,7 @@ from sports_ai.data.generator import generate_scenario
 from sports_ai.models.selector import AlgorithmSelector
 from sports_ai.train_selector import solvable
 from .difficulty import measure
+from sports_ai.device import add_device_arg, backup_before_overwrite, describe_device, resolve_device, seed_all, to_device
 
 MODEL_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
@@ -56,8 +57,9 @@ def build_pool(n: int, seed: int):
     return np.asarray(X, np.float32), np.asarray(y, np.int64), np.asarray(diff, np.float32)
 
 
-def _fit(model, X, y, mean, std, epochs, lr=1e-3, batch=128, sel=None):
+def _fit(model, X, y, mean, std, epochs, lr=1e-3, batch=128, sel=None, device=None):
     """在（可选的）子集 sel 上训练。"""
+    device = device or torch.device("cpu")
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = nn.CrossEntropyLoss()
     Xn = (X - mean) / std
@@ -66,8 +68,9 @@ def _fit(model, X, y, mean, std, epochs, lr=1e-3, batch=128, sel=None):
         if len(idx) == 0:
             continue
         torch.manual_seed(0)
-        perm = torch.randperm(len(idx))
-        Xt = torch.from_numpy(Xn[idx]); yt = torch.from_numpy(y[idx])
+        # perm 必须在 device 上：CPU 索引索引 CUDA 张量会抛 indices should be either on cpu...
+        perm = torch.randperm(len(idx), device=device)
+        Xt = torch.from_numpy(Xn[idx]).to(device); yt = torch.from_numpy(y[idx]).to(device)
         for b in range(0, len(idx), batch):
             bi = perm[b:b + batch]
             opt.zero_grad()
@@ -76,10 +79,12 @@ def _fit(model, X, y, mean, std, epochs, lr=1e-3, batch=128, sel=None):
             opt.step()
 
 
-def _eval(model, X, y, mean, std):
+def _eval(model, X, y, mean, std, device=None):
+    device = device or torch.device("cpu")
     model.eval()
     with torch.no_grad():
-        pred = model(torch.from_numpy((X - mean) / std)).argmax(1).numpy()
+        # argmax 后必须 .cpu()，GPU 张量不能直接 .numpy()
+        pred = model(torch.from_numpy((X - mean) / std).to(device)).argmax(1).cpu().numpy()
     return accuracy_score(y, pred), f1_score(y, pred, zero_division=0)
 
 
@@ -161,30 +166,33 @@ def train(args):
     mean, std = X[tr].mean(0), X[tr].std(0) + 1e-6
 
     # ---------- ① 自步学习：课程从易到难 ----------
-    sp_model = AlgorithmSelector(n_features=N_FEATURES)
+    device = resolve_device(getattr(args, 'device', 'auto'))
+    print(f"[device] 训练设备: {describe_device(device)}")
+    sp_model = AlgorithmSelector(n_features=N_FEATURES).to(device)
     order = tr[np.argsort(diff[tr])]                      # 按难度升序
     for ep, frac in enumerate(np.linspace(args.start_frac, 1.0, args.epochs)):
         k = max(1, int(len(order) * frac))
         sel = order[:k]                                   # 只喂「当前够简单」的样本
         thr = diff[sel].max()
-        _fit(sp_model, X, y, mean, std, epochs=1, sel=sel)
+        _fit(sp_model, X, y, mean, std, epochs=1, sel=sel, device=device)
         if (ep + 1) % max(1, args.epochs // 6) == 0 or ep == args.epochs - 1:
-            acc, f1 = _eval(sp_model, X[va], y[va], mean, std)
+            acc, f1 = _eval(sp_model, X[va], y[va], mean, std, device=device)
             print(f"[SPL] epoch {ep+1:3d}  难度阈值={thr:.3f}  样本 {k}/{len(order)}  "
                   f"val_acc={acc:.3f}  val_f1={f1:.3f}")
 
     # ---------- ② 直接训练（基线） ----------
-    base_model = AlgorithmSelector(n_features=N_FEATURES)
-    _fit(base_model, X, y, mean, std, epochs=args.epochs, sel=tr)
-    b_acc, b_f1 = _eval(base_model, X[va], y[va], mean, std)
+    base_model = AlgorithmSelector(n_features=N_FEATURES).to(device)
+    _fit(base_model, X, y, mean, std, epochs=args.epochs, sel=tr, device=device)
+    b_acc, b_f1 = _eval(base_model, X[va], y[va], mean, std, device=device)
 
     # ---------- ③ 自改进：用 GAN 生成器对困难实例试解 ----------
     print("[自改进] 用 GAN 生成器对困难实例试解 …")
     improve_rate = _self_improve()
-    sp_acc, sp_f1 = _eval(sp_model, X[va], y[va], mean, std)
+    sp_acc, sp_f1 = _eval(sp_model, X[va], y[va], mean, std, device=device)
     print(f"直接训练: acc={b_acc:.3f} f1={b_f1:.3f}")
     print(f"自步学习: acc={sp_acc:.3f} f1={sp_f1:.3f}")
 
+    backup_before_overwrite(os.path.join(MODEL_DIR, 'selector_selfpaced.pt'), f"selfpaced-{args.pool}")
     torch.save(sp_model.state_dict(), os.path.join(MODEL_DIR, "selector_selfpaced.pt"))
     import json
     with open(os.path.join(MODEL_DIR, "selfpaced_metrics.json"), "w", encoding="utf-8") as fh:
@@ -201,6 +209,7 @@ def main():
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--start-frac", type=float, default=0.3, help="初始课程占比（最易的 30%）")
     p.add_argument("--seed", type=int, default=20260918)
+    add_device_arg(p)
     train(p.parse_args())
 
 

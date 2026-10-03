@@ -22,6 +22,8 @@ from sklearn.metrics import accuracy_score, f1_score
 
 from sports_ai.data.features import N_FEATURES, extract_features
 from sports_ai.data.generator import generate_scenario
+from sports_ai.device import (add_device_arg, backup_before_overwrite, describe_device,
+                             resolve_device, seed_all)
 from sports_ai.models.selector import AlgorithmSelector
 from sports_ai.solve.feasibility import analyze_bounds
 
@@ -61,9 +63,9 @@ def make_dataset(n: int, seed: int):
 
 
 def train(args):
-    torch.manual_seed(0)
-    np.random.seed(0)
-    random.seed(0)
+    device = resolve_device(getattr(args, "device", "auto"))
+    seed_all(0)
+    print(f"[device] 训练设备: {describe_device(device)}")
 
     X, y = make_dataset(args.samples, seed=args.seed)
     # 标准化：mean/std 存下来供导出固化。
@@ -78,19 +80,20 @@ def train(args):
     idx = np.random.permutation(len(X))
     n_train = int(len(X) * 0.8)
     tr_idx, va_idx = idx[:n_train], idx[n_train:]
-    Xtr = torch.from_numpy(Xn[tr_idx])
-    ytr = torch.from_numpy(y[tr_idx])
-    Xva = torch.from_numpy(Xn[va_idx])
+    Xtr = torch.from_numpy(Xn[tr_idx]).to(device)
+    ytr = torch.from_numpy(y[tr_idx]).to(device)
+    Xva = torch.from_numpy(Xn[va_idx]).to(device)
     yva = y[va_idx]
 
-    model = AlgorithmSelector(n_features=N_FEATURES)
+    model = AlgorithmSelector(n_features=N_FEATURES).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     loss_fn = nn.CrossEntropyLoss()
 
     best_f1, best_state = 0.0, None
     for epoch in range(args.epochs):
         model.train()
-        perm = torch.randperm(len(Xtr))
+        # 索引张量必须与 Xtr 同设备：CPU 索引索引 CUDA 张量会抛 indices should be either on cpu...
+        perm = torch.randperm(len(Xtr), device=device)
         for b in range(0, len(Xtr), args.batch):
             batch = perm[b:b + args.batch]
             xb, yb = Xtr[batch], ytr[batch]
@@ -102,7 +105,7 @@ def train(args):
         model.eval()
         with torch.no_grad():
             logits = model(Xva)
-            pred = logits.argmax(dim=1).numpy()
+            pred = logits.argmax(dim=1).cpu().numpy()
         acc = accuracy_score(yva, pred)
         f1 = f1_score(yva, pred, zero_division=0)
         if f1 > best_f1:
@@ -111,6 +114,14 @@ def train(args):
 
     model.load_state_dict(best_state)
     os.makedirs(MODEL_DIR, exist_ok=True)
+    # ⚠️ 覆盖前先备份：小样本冒烟训练会把正式权重与 selector_stats.json（导出 ONNX 时
+    #    固化 mean/std 的依据）一并冲掉，而 .pt 通常不在 git 跟踪内，丢了找不回。
+    tag = f"smoke-{args.samples}x{args.epochs}"
+    if args.samples < 1000:
+        print(f"[guard] 警告：本次仅 {args.samples} 样本（正式训练建议 ≥4000），"
+              f"结果会覆盖正式模型（备份后覆盖）")
+    backup_before_overwrite(os.path.join(MODEL_DIR, "selector.pt"), tag)
+    backup_before_overwrite(os.path.join(MODEL_DIR, "selector_stats.json"), tag)
     torch.save(model.state_dict(), os.path.join(MODEL_DIR, "selector.pt"))
     with open(os.path.join(MODEL_DIR, "selector_stats.json"), "w", encoding="utf-8") as fh:
         json.dump({"mean": mean.tolist(), "std": std.tolist()}, fh, ensure_ascii=False, indent=2)
@@ -123,6 +134,7 @@ def main():
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--seed", type=int, default=20260918)
+    add_device_arg(p)
     train(p.parse_args())
 
 
