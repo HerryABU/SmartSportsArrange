@@ -15,6 +15,7 @@ import com.sports.repository.arrange.ArrangementReservationRepository;
 import com.sports.repository.event.EventRefereeRepository;
 import com.sports.repository.venue.VenueRepository;
 import com.sports.schedule.opt.solver.Placement;
+import com.sports.schedule.opt.solver.ScheduleConstraintProvider;
 import com.sports.schedule.opt.solver.ScheduleOptimizer;
 import com.sports.schedule.analysis.LowerBoundEstimator;
 import com.sports.schedule.analysis.DaysEstimator;
@@ -368,10 +369,17 @@ public class ScheduleService {
         // 未显式指定 days（或开启 autoDays）时，先按「每日时段容量」反推需要排多少天，
         // 再据此生成 dayConfigs —— 让「每天安排的时间」决定「能排多少天」，而非写死天数。
         // 每日模板取 dayConfigs[0] 的时段（各天时段本可不同，自动模式下统一按首日时段复制）。
-        boolean autoDays = Boolean.TRUE.equals(cfg.get("autoDays"))
-                || intVal(cfg.get("days"), 0) <= 0;
+        // ===== 时间三态（与球类 `daysLimit` 契约保持一致）=====
+        //   days >= 1  → 硬约束：就排这么多天
+        //   days == 0  → 不限：按每日时段容量自动推算需要多少天
+        //   days == -1 → 尽可能减少：自动推算 + 放大跨天惩罚，逼求解器把工期压紧
+        // 原实现是 `intVal(days, 0) <= 0`，把 0 与负数混为一谈，
+        // 于是「尽可能减少」在这条主链路上根本没有表达方式（球类有、主田径没有）。
+        int rawDays = intVal(cfg.get("days"), Integer.MIN_VALUE);
+        boolean minimizeDays = rawDays < 0;
+        boolean autoDays = Boolean.TRUE.equals(cfg.get("autoDays")) || rawDays == 0;
         int estimatedDays = 0;
-        if (autoDays) {
+        if (autoDays || minimizeDays) {
             List<Map<String, Object>> dayConfigs = castList(cfg.get("dayConfigs"));
             List<Map<String, Object>> template = dayConfigs.isEmpty()
                     ? List.of(defaultAutoDayConfig()) : dayConfigs.subList(0, 1);
@@ -383,7 +391,9 @@ public class ScheduleService {
             estimatedDays = DaysEstimator.estimateDays(units, dailyMinutes, trackSlots, fieldSlots, unitInterval);
             cfg.put("dayConfigs", buildAutoDayConfigs(cfg, estimatedDays, template));
             cfg.put("days", estimatedDays);
-            log.info("空时间限制：按每日 {} 分钟自动推算需 {} 天", dailyMinutes, estimatedDays);
+            log.info("{}：按每日 {} 分钟自动推算需 {} 天",
+                    minimizeDays ? "时间目标=尽可能减少(压缩工期)" : "时间限制=不限",
+                    dailyMinutes, estimatedDays);
         }
 
         // 时间窗：按 (天, 时段) 顺序铺开
@@ -496,14 +506,22 @@ public class ScheduleService {
         // 三态：rule=规则模式；ai=AI 模式（求解链 + AI 派遣 + 推理时自对抗）；optimize=优化模式（既有行为）
         portfolioInfo.put("mode", ruleConfig.aiMode() ? RuleScheduleConfig.MODE_AI
                 : (ruleConfig.ruleMode() ? RuleScheduleConfig.MODE_RULE : RuleScheduleConfig.MODE_OPTIMIZE));
-        if (ruleConfig.ruleMode()) {
-            solveComponent.fillSolvedFromRules(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
-                    fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
-                    windows, event2Group, unitInterval, ruleConfig, solvedPlacement, portfolioInfo);
-        } else {
-            solveComponent.fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
-                    fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
-                    windows, event2Group, unitInterval, ruleConfig, solvedPlacement, solverStat, portfolioInfo);
+        // days==-1（尽可能减少）时放大跨天惩罚。求解器由 Timefold 反射实例化、
+        // 不在 Spring 容器里，拿不到请求级配置 → 走静态桥（同 RuleInjectionHolder 模式）。
+        // 必须 finally 复位：静态状态会跨请求存活，忘了复位会污染后续所有编排。
+        ScheduleConstraintProvider.setMinimizeDaysMode(minimizeDays);
+        try {
+            if (ruleConfig.ruleMode()) {
+                solveComponent.fillSolvedFromRules(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
+                        fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
+                        windows, event2Group, unitInterval, ruleConfig, solvedPlacement, portfolioInfo);
+            } else {
+                solveComponent.fillSolvedFromSolver(units, trackPool, fieldPool, dedicatedPools, mainVenueCode,
+                        fieldVenueCodes, codeToName, codeToParallelMax, trackSlots, fieldSlots,
+                        windows, event2Group, unitInterval, ruleConfig, solvedPlacement, solverStat, portfolioInfo);
+            }
+        } finally {
+            ScheduleConstraintProvider.setMinimizeDaysMode(false);
         }
         if (solverStat[0] > 0) {
             log.info("约束求解: 采用 {} 个项目的位置与时长，求解后残余兼项冲突 {} 处",

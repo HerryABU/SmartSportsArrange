@@ -248,6 +248,32 @@ python -m sports_ai.evaluate_super_moe --seeds 3 --out ../_trash/eval.json
 
 ---
 
+### 5.4 `referee_gnn.onnx` —— 裁判编排独立模型
+
+| 项 | 内容 |
+|---|---|
+| **设计动机** | 裁判派遣原来是纯规则（专长优先 → 负载均衡 → 并行组次不重用）。规则能保证「不出错」，但表达不了「专长匹配 / 负载 / 保护时段 / 同单位回避 / 经验」这些因素之间该怎样**加权取舍**——那正是模型的强项 |
+| 原理 | 类型化邻接消息传递 + Pre-LN 残差 FFN，**逐裁判输出派遣优先级**。模型只负责**排序**，「并行组次不得重用同一裁判」等硬规则仍由 Java 把关，因此模型输出再离谱也不会产生不合规派遣 |
+| 输入 | `node_feat[B,N,12]` / `adj_by_type[B,4,N,N]` / `type_mask[B,4]` / `mask[B,N]` |
+| 输出 | `priority[B,N]`（越高越先派） |
+| **12 维特征** | 专长匹配度 / 负载比例 / 可用时段比例 / 受保护 / 经验等级 / 同单位 / 并行冲突风险 / 历史派遣归一 / 连续工作长度 / 搭档协同 / 时段偏好匹配 / 资历归一 |
+| **4 类边** | 0 同专长竞争 / 1 同单位回避 / 2 同受保护 / 3 负载耦合 |
+| 具体参数 | `hidden=160` / `layers=5` / `n_types=4` / `node_feat=12` / dropout 0.1 |
+| 训练指标 | `val_mse=**0.00202**`（best at epoch 37） |
+| ONNX 大小 | 3,088,772 B（opset 17，`dynamo=False`，N 动态轴） |
+| 消费方 | `RefereeAiService` + `RefereeGnnEncoder`（独立模型层） |
+
+```bash
+cd sports-ai
+python -m sports_ai.referee_advisor --mode both --samples 800 --epochs 40 \
+    --hidden 160 --layers 5 --device cpu     # 训练 + 导出
+```
+
+> ⚠️ **「合并进主模型」是下一步**：那需要把 `super_moe` 的任务数 9→10 并改输出契约，
+> 必须连同全量重训一起做，不能顺手改（改了不重训 → shape 不匹配 → 静默回退规则）。
+
+---
+
 ## 6. 训练预算机制（`sports_ai/budget.py`）
 
 **为什么需要**：2026-10-03 实测教训 —— 把 `hidden` 96→128 并加深后仍按 5-6 轮训，

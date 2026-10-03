@@ -52,6 +52,61 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     private static final int DAY_PENALTY = 200;
     /** 当天时段顺延的软惩罚粒度：每 N 分钟记 1 分 */
     private static final int START_MINUTE_PENALTY_STEP = 5;
+    /**
+     * 项目块被打散的软惩罚：同一项目的组次被拆到不同比赛日。
+     *
+     * <p>这是「防止见缝插针」在求解期的抓手：项目本该成块排布，一旦跨天，
+     * 说明中间被别的项目插了进去。取值需显著大于「压缩 1 分钟」（1 分），
+     * 又小于跨一天（{@link #DAY_PENALTY}）——「项目被拆散」比「多占一天」更该避免。</p>
+     */
+    private static final int BLOCK_BREAK_PENALTY = 120;
+
+    /**
+     * 「尽可能减少工期」开关（时间三态里的 {@code days == -1}）。
+     *
+     * <p>求解器由 Timefold 反射实例化、不在 Spring 容器里，拿不到请求级配置，
+     * 因此沿用本项目已有的静态桥模式（同 {@code RuleInjectionHolder}）：
+     * 由 {@code ScheduleService} 在求解前设置、求解后复位。</p>
+     *
+     * <p>开启后跨天惩罚放大 {@link #MINIMIZE_DAY_FACTOR} 倍 —— 让求解器宁可把项目挤进
+     * 同一时段，也不轻易多占一天。这才是「尽可能减少」与「不限（0）」的实质差别。</p>
+     */
+    private static volatile boolean minimizeDaysMode = false;
+    private static final int MINIMIZE_DAY_FACTOR = 5;
+
+    /** 由 ScheduleService 在求解前调用；求解结束必须复位，避免污染后续请求。 */
+    public static void setMinimizeDaysMode(boolean v) {
+        minimizeDaysMode = v;
+    }
+
+    /** 当前跨天惩罚：`尽可能减少` 时放大，其余情况用基准值。 */
+    private static int dayPenalty() {
+        return minimizeDaysMode ? DAY_PENALTY * MINIMIZE_DAY_FACTOR : DAY_PENALTY;
+    }
+
+    /**
+     * 判定「项目块是否被打散」：同一项目的两个已排组次落在不同比赛日。
+     *
+     * <p>抽成静态纯函数是为了**可测**：Timefold 的约束方法必须拿到 {@code ConstraintFactory}
+     * 才能触发，单测里造不出来；把判定逻辑独立出来后，约束与测试共用同一份实现，
+     * 测的就是真实语义而不是「方法存在」这种空话。</p>
+     */
+    static boolean breaksBlock(ScheduleUnit a, ScheduleUnit b) {
+        return a != null && b != null
+                && a.isPlaced() && b.isPlaced()
+                && a.getEventId() != null && a.getEventId().equals(b.getEventId())
+                && a.getPlacement().getDay() != b.getPlacement().getDay();
+    }
+
+    /** 测试探针：块状惩罚值（供断言用，不参与业务逻辑）。 */
+    static int blockBreakPenaltyForTest() {
+        return BLOCK_BREAK_PENALTY;
+    }
+
+    /** 测试探针：当前跨天惩罚（供断言 `尽可能减少` 开关是否生效）。 */
+    static int dayPenaltyForTest() {
+        return dayPenalty();
+    }
 
     @Override
     public Constraint[] defineConstraints(ConstraintFactory cf) {
@@ -63,6 +118,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 mustNotOverlapInBin(cf),
                 groupMustStartTogether(cf),
                 athleteMustNotClash(cf),
+                projectBlockContiguity(cf),
                 keepRealDuration(cf),
                 preferEarlierDay(cf),
                 preferEarlierStart(cf),
@@ -266,12 +322,35 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 .asConstraint("keepRealDuration");
     }
 
+    /**
+     * 软：<b>项目块完整性</b> —— 同一项目的组次必须聚拢，不许被别的项目「见缝插针」打散。
+     *
+     * <p>用户诉求里反复强调「项目必须是块状，不能见缝插针乱排」。原来的约束集里只有
+     * {@link #groupMustStartTogether}（同组<b>同时刻开赛</b>），那是「同时开始」而不是
+     * 「连续成块」—— 一个项目的 6 个组次可以分别排在第 1、3、5 天且完全不违规。
+     * 本约束补上这一层：同项目跨天即罚，把「块状」变成求解器真的会去优化的目标。</p>
+     *
+     * <p>为何用软约束而不是硬约束：容量客观不足时硬约束会让求解器直接无解，
+     * 而现场要的是「给一个最不碎片的可行方案，并告诉我差多少」。这也与
+     * {@link #athleteMustNotClash} 的三层评分设计保持一致。</p>
+     */
+    private Constraint projectBlockContiguity(ConstraintFactory cf) {
+        return cf.forEachIncludingUnassigned(ScheduleUnit.class)
+                .filter(u -> u.isPlaced() && u.getEventId() != null)
+                .join(ScheduleUnit.class,
+                        Joiners.equal(ScheduleUnit::getEventId),
+                        Joiners.lessThan(ScheduleUnit::getKey))
+                .filter(ScheduleConstraintProvider::breaksBlock)
+                .penalize(HardMediumSoftScore.ONE_SOFT, (a, b) -> BLOCK_BREAK_PENALTY)
+                .asConstraint("projectBlockContiguity");
+    }
+
     /** 软：优先排在前面的比赛日（跨天代价高，避免赛程无谓拉长） */
     private Constraint preferEarlierDay(ConstraintFactory cf) {
         return cf.forEachIncludingUnassigned(ScheduleUnit.class)
                 .filter(ScheduleUnit::isPlaced)
                 .penalize(HardMediumSoftScore.ONE_SOFT,
-                        u -> Math.max(0, u.getPlacement().getDay() - 1) * DAY_PENALTY)
+                        u -> Math.max(0, u.getPlacement().getDay() - 1) * dayPenalty())
                 .asConstraint("preferEarlierDay");
     }
 

@@ -387,11 +387,21 @@
             placeholder="选择第一天日期" style="width: 220px" @change="syncDates" />
           <span class="hint" style="margin-left:12px">共 {{ meetForm.days }} 天，每天具体日期自动顺延</span>
         </el-form-item>
-        <el-form-item label="比赛天数">
+        <el-form-item label="时间目标">
           <div style="display:flex;align-items:center;gap:12px;width:100%">
-            <el-switch v-model="meetForm.autoDays" active-text="自动推算" inactive-text="手动指定" />
-            <el-input-number v-if="!meetForm.autoDays" v-model="meetForm.days" :min="1" :max="10" @change="syncDays" />
-            <span v-else class="hint">按每天时段容量自动推算需要多少天（编排时按报名规模算出天数）</span>
+            <!-- 与球类 daysLimit 同一套契约：限定 x 天 / 0 不限 / -1 尽可能减少 -->
+            <el-select v-model="meetForm.dayMode" style="width:140px">
+              <el-option label="限定天数" value="fixed" />
+              <el-option label="不限" value="unlimited" />
+              <el-option label="尽可能减少" value="minimize" />
+            </el-select>
+            <el-input-number v-if="meetForm.dayMode === 'fixed'" v-model="meetForm.days"
+                             :min="1" :max="10" @change="syncDays" />
+            <span v-else class="hint">
+              {{ meetForm.dayMode === 'unlimited'
+                ? '不限制天数：按每天时段容量推算需要几天就排几天（输入 0）'
+                : '不限天数但尽可能压缩工期：求解器会尽量把项目挤进同一时段、避免多占一天（输入 -1）' }}
+            </span>
           </div>
         </el-form-item>
         <el-form-item label="年级出场顺序">
@@ -859,6 +869,8 @@ const meetForm = reactive({
   startDate: '',
   days: 2,
   autoDays: false,
+  // 时间三态（与球类 daysLimit 同一契约）：fixed=限定天数 / unlimited=0 不限 / minimize=-1 尽可能减少
+  dayMode: 'fixed',
   gradeOrder: [],
   dayConfigs: [
     { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
@@ -942,8 +954,12 @@ function buildMeetSchedulePayload() {
   return {
     meetName: meetForm.meetName,
     startDate: meetForm.startDate,
-    days: meetForm.autoDays ? 1 : meetForm.dayConfigs.length,
-    autoDays: !!meetForm.autoDays,
+    // 时间三态 → 后端 days：限定=具体天数；不限=0；尽可能减少=-1
+    days: meetForm.dayMode === 'fixed'
+      ? meetForm.dayConfigs.length
+      : (meetForm.dayMode === 'minimize' ? -1 : 0),
+    autoDays: meetForm.dayMode !== 'fixed',
+    dayMode: meetForm.dayMode,
     dayConfigs: meetForm.dayConfigs,
     // 未自定义时回传空数组 → 服务端归一化，使“年级管理”调整 sortOrder 仍可传导，防止冻结
     gradeOrder: useCustomOrder.value ? meetForm.gradeOrder : [],
@@ -1091,6 +1107,9 @@ async function openMeetConfig() {
     const res = await request.get('/system/meet-schedule')
     Object.assign(meetForm, res)
     meetForm.autoDays = !!res.autoDays
+    // 回填三态：优先用显式 dayMode；否则按 dayConfigs/autoDays 推断（兼容历史配置）
+    meetForm.dayMode = res.dayMode
+      || (Number(res.days) < 0 ? 'minimize' : (res.autoDays ? 'unlimited' : 'fixed'))
     // 规范化 dayConfigs / slots
     meetForm.dayConfigs = (res.dayConfigs || []).map((dc, i) => ({
       day: dc.day || i + 1,

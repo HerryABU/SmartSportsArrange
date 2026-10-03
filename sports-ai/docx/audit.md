@@ -30,10 +30,10 @@
 | B4 | 拔河的淘汰/循环/混合 | 🟡 | 拔河作为团体项目**复用球类同一套赛制生成**，无专属赛制实现（`ExcelService` TUG 项、裁判专长含拔河） |
 | B5 | 混合编排 | ✅ | 赛制层 `HybridGenerator`（小组+淘汰）；编排层 `super_moe` 把跨大类任务统一到一张冲突图（`tournament/adapt.py` 是桥梁） |
 | B6 | 兼项避免 | ✅ | 约束层 `athleteMustNotClash`；缓冲 15 分钟（`ConflictService.CONFLICT_BUFFER_MIN`）；规则模式可经 `ruleConflictBufferMinutes` 覆盖；**优化/AI 档仍是硬编码 15** |
-| B7 | **防止见缝插针（项目必须块状）** | ❌ | **全仓库无块状硬约束或代价项**。现有最接近的是 `groupMustStartTogether`（同组**同时开赛**，不要求连续成块）；`E_BLOCK` 只是模型输入特征；碎片仅由 LNS/ALNS 窗口邻域间接改善 |
+| B7 | **防止见缝插针（项目必须块状）** | 🔧 | **本轮补上**：`ScheduleConstraintProvider.projectBlockContiguity`（同一项目的组次跨天即罚，`BLOCK_BREAK_PENALTY=120`；用软约束而非硬约束，避免容量不足时直接把求解器逼到无解）+ 可测纯函数 `breaksBlock` + 7 项单测。`E_BLOCK` 仍是模型输入特征；碎片另有 LNS/ALNS 窗口邻域处理 |
 | B8 | **淘汰赛后第二次编排道次** | 🟡 | 预赛→决赛两轮 ✅（`computeQualifiers` + `arrangePool(ROUND_FINAL)` + `appendFinalScheduleRow`，`/qualify` `/rearrange` 接口齐备）；**无复赛/半决赛多轮**（轮次常量只有 `preliminary` / `final`）；球类 `resecond` 是**占位实现**（只回 `reschedulable=true`，未真正重排槽位） |
-| B9 | 避开兼项 + 压缩赛程 | 🟡 | 兼项 ✅；压缩：球类 `daysLimit` **三态完整**（≥1 硬约束 / 0 不限 / -1 最小化）；**主田径编排缺三态** —— `ScheduleService` 只有「指定天数 / `<=0` 自动推算」两态，无 `-1` 语义 |
-| B10 | 时间三态（x / 0 / -1） | 🟡 | 见 B9。`SuperScheduleEncoder` 侧三态编码已就绪（`>=1→0.5` / `0→0.0` / `<0→1.0`），但主流程未消费 |
+| B9 | 避开兼项 + 压缩赛程 | ✅ | 兼项 ✅；压缩：球类 `daysLimit` 三态完整；**本轮把主田径编排也补齐三态** —— `ScheduleService` 解析 `days<0 → 尽可能减少`，并把跨天惩罚放大 5 倍（静态桥 `ScheduleConstraintProvider.setMinimizeDaysMode`，`finally` 复位防跨请求泄漏） |
+| B10 | 时间三态（x / 0 / -1） | ✅ | 后端三态已补齐（见 B9）；前端「时间目标」下拉为 限定天数 / 不限 / 尽可能减少 三选一，提交时映射 `days = 具体天数 / 0 / -1`；`SuperScheduleEncoder` 侧三态编码（`>=1→0.5`/`0→0.0`/`<0→1.0`）已一致 |
 
 ## C. 魔鬼条件与训练
 
@@ -43,7 +43,7 @@
 | C2 | **300 人 / 10 项目 / 限 2-3 天** | 🟡 | BLOCK/REGULAR 档接近此规模（N≈34~70），实测各档工期均压到 `days_limit` 内；同样缺显式规模压测 |
 | C3 | 道次 / 球类 / 拔河的淘汰+循环+混合训练 | 🟡 | `tournament_gnn` 在 `ball_tournament.py` 数据上训练（四赛制 + 拔河在 SPORTS 列表内）；**拔河无专属赛制训练** |
 | C4 | 对兼项出难题 | ✅ | HELL 档构造兼项密集实例（1/2/3 兼项档位），`tiers_tasks` 含 `TASK_CONFLICT`；实测兼项撞车恒为 0 |
-| C5 | **裁判编排 / 教师规避：先独立模型，后合并主模型** | ❌ | **只有规则、无独立模型**：`AdminTimeProtectionService`（GLOBAL/TEACHER/REFEREE 三类）+ `ArrangementService.assignReferees`（专长优先→负载均衡→并行组次不重用）。无任何裁判/教师 onnx，也未进入 `super_moe` 的专家头 |
+| C5 | **裁判编排 / 教师规避：先独立模型，后合并主模型** | 🟡 | **独立模型本轮完成**：`sports_ai/referee_advisor.py`（12 维裁判节点 / 4 类边 / 160×5，训练 `val_mse=0.00202`）→ `referee_gnn.onnx`(3.09MB) → Java `RefereeGnnEncoder` + `RefereeAiService`（7 项双端契约单测）。**合并进 `super_moe` 尚未做**：那会改变任务数（9→10）与输出契约，必须连同全量重训一起做，不能顺手改。教师规避仍为规则（`AdminTimeProtectionService`） |
 | C6 | 争取 RSI | ❌ | 未实现。已给出唯一有效路径：**标签升级**（见 `benchmarks.md` §4.1）——当前标签是 `greedy_targets`，天花板即贪心 |
 
 ## D. 质量与对比
@@ -80,7 +80,18 @@
 | F2 | 训练预算随深度缩放 | 🔧 | 新增 `sports_ai/budget.py`，三个训练脚本共用；低于建议预算 60% 打醒目 WARN；checkpoint `meta` 记录 `epochs_run` / `budget_epochs` / `budget_satisfied` |
 | F3 | git 纪律 | ✅ | 本轮已提交 `93f03a0`（GNN 深层化 + 导出修复）、`fbb62e6`（super_moe 补训收敛）；后续提交见 git log |
 | F4 | `super_scenarios.py` stat 幽灵 M | 🔧 | 根因是**索引 size 27885（LF 存法）vs 工作区 28484（CRLF）**，差 599 字节 = 行数；`git hash-object` 走 autocrlf 规范化所以 hash 一致，`status` 直接比 size 就判脏。已用 `git add` 刷新 stat 缓存，工作区干净且暂存区零内容变化 |
-| F5 | 全量回归 | ✅ | **543 passed / 0 failed** |
+| F5 | 全量回归 | ✅ | **550 passed / 0 failed**（543 → 550，新增 7 项块状/三态测试） |
+
+---
+
+## 附：本轮（第二次升级）新增与修复
+
+| 项 | 内容 | 证据 |
+|---|---|---|
+| 块状约束 | `projectBlockContiguity` 软约束 + `breaksBlock` 纯函数 + 7 项单测 | `ScheduleConstraintProvider.java`、`ProjectBlockContiguityTest.java` |
+| 时间三态 | `days<0` → 尽可能减少；跨天惩罚 ×5 静态桥（finally 复位）；前端「时间目标」下拉 | `ScheduleService.java`、`Schedule.vue` |
+| 裁判独立模型 | Python 模型 + 训练 + 导出 ONNX + Java 编码器/服务 + 契约单测 | `referee_advisor.py`、`RefereeGnnEncoder.java`、`RefereeAiService.java` |
+| 备份爆炸修复 | 新训练脚本每轮备份 → 40 轮堆 18 个 3MB；补 `_prune_backups(keep=3)` | `referee_advisor.py` |
 
 ---
 
