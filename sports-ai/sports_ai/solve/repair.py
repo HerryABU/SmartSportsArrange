@@ -28,7 +28,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 MAX_ROUNDS = 4      # 修复迭代上限，防止「挪过来撞、挪过去超」的死循环
 
@@ -50,7 +50,8 @@ def _slot_key(sid: Tuple[int, int]) -> Tuple[int, int]:
 def repair_assignment(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
                       cap_by_slot_venue: Dict[Tuple[Tuple[int, int], str], int],
                       athlete_of: Optional[Dict[str, List[int]]] = None,
-                      max_rounds: int = MAX_ROUNDS
+                      max_rounds: int = MAX_ROUNDS,
+                      need_fn: Optional[Callable[[Any], int]] = None
                       ) -> Tuple[Dict[str, Tuple[int, int]], Dict[str, Any]]:
     """把一份槽位分配修成硬约束可行，返回 ``(修复后分配, 报告)``。
 
@@ -59,7 +60,13 @@ def repair_assignment(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
     :param slot_of:           单元 key → 槽 id ``(day, window_idx)``
     :param cap_by_slot_venue: ``(槽 id, 场地)`` → 该槽该场地的容量
     :param athlete_of:        单元 key → 参与者 id 列表；None 表示无兼项约束
+    :param need_fn:           占用量口径，默认 :func:`need_of`（时长+间隔）。
+        ⚠️ 调用方**必须**对齐自己那一套口径：解码器把窗口容量按`纯时长`计，
+        传默认口径会把装得下的位置判成超载、无谓搬动；反之场景生成器若按
+        「时长+间隔」扣容量，也必须用默认口径。口径不一致比不修复更糟。
     """
+    if need_fn is None:
+        need_fn = need_of
     report: Dict[str, Any] = {"capacity_fixes": 0, "conflict_fixes": 0,
                               "blocked": [], "rounds": 0, "feasible": True}
     slot_of = dict(slot_of)
@@ -74,9 +81,10 @@ def repair_assignment(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
 
     for rnd in range(max_rounds):
         report["rounds"] = rnd + 1
-        moved_capacity = _fix_capacity(units, slot_of, cap_by_slot_venue, order, report)
+        moved_capacity = _fix_capacity(units, slot_of, cap_by_slot_venue, order,
+                                      report, need_fn)
         moved_conflict = _fix_conflict(units, slot_of, athlete_of,
-                                       cap_by_slot_venue, order, report)
+                                       cap_by_slot_venue, order, report, need_fn)
         if not moved_capacity and not moved_conflict:
             break
 
@@ -88,7 +96,7 @@ def repair_assignment(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
         if u is None:
             continue
         v = getattr(u, "venue", "V0")
-        load[(sid, v)] = load.get((sid, v), 0) + need_of(u)
+        load[(sid, v)] = load.get((sid, v), 0) + need_fn(u)
     for (sid, venue), used in load.items():
         cap = cap_by_slot_venue.get((sid, venue), 0)
         if used > cap:
@@ -116,7 +124,8 @@ def repair_assignment(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
 def _relocate(units: List[Any], slot_of: Dict[str, Tuple[int, int]], key: str,
               cap_by_slot_venue: Dict[Tuple[Tuple[int, int], str], int],
               load: Dict[Tuple[Tuple[int, int], str], int],
-              order: List[Tuple[int, int]]) -> bool:
+              order: List[Tuple[int, int]],
+              need_fn: Callable[[Any], int]) -> bool:
     """把单元挪到第一个**装得下**的后续槽（往后找，保持时间单调）。"""
     cur = slot_of.get(key)
     if cur is None:
@@ -129,7 +138,7 @@ def _relocate(units: List[Any], slot_of: Dict[str, Tuple[int, int]], key: str,
     if unit is None:
         return False
     venue = getattr(unit, "venue", "V0")
-    need = need_of(unit)
+    need = need_fn(unit)
     try:
         start = order.index(cur)
     except ValueError:
@@ -148,7 +157,8 @@ def _relocate(units: List[Any], slot_of: Dict[str, Tuple[int, int]], key: str,
 
 def _fix_capacity(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
                   cap_by_slot_venue: Dict[Tuple[Tuple[int, int], str], int],
-                  order: List[Tuple[int, int]], report: Dict[str, Any]) -> bool:
+                  order: List[Tuple[int, int]], report: Dict[str, Any],
+                  need_fn: Callable[[Any], int]) -> bool:
     """超载槽里挑「最占地方」的单元挪走（挪走收益最大，收敛最快）。"""
     un = {getattr(u, "key", None): u for u in units}
     load: Dict[Tuple[Tuple[int, int], str], int] = {}
@@ -157,7 +167,7 @@ def _fix_capacity(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
         if u is None:
             continue
         v = getattr(u, "venue", "V0")
-        load[(sid, v)] = load.get((sid, v), 0) + need_of(u)
+        load[(sid, v)] = load.get((sid, v), 0) + need_fn(u)
 
     for (sid, venue), used in sorted(load.items(), key=lambda kv: -kv[1]):
         cap = cap_by_slot_venue.get((sid, venue), 0)
@@ -165,9 +175,9 @@ def _fix_capacity(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
             continue
         occupants = [k for k, s in slot_of.items()
                      if s == sid and getattr(un.get(k), "venue", None) == venue]
-        occupants.sort(key=lambda k: -need_of(un.get(k)))
+        occupants.sort(key=lambda k: -need_fn(un.get(k)))
         for k in occupants:
-            if _relocate(units, slot_of, k, cap_by_slot_venue, load, order):
+            if _relocate(units, slot_of, k, cap_by_slot_venue, load, order, need_fn):
                 report["capacity_fixes"] += 1
                 return True
         report["blocked"].append(f"{sid}/{venue} 超载 {used}>{cap} 且无空槽")
@@ -177,7 +187,8 @@ def _fix_capacity(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
 def _fix_conflict(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
                   athlete_of: Optional[Dict[str, List[int]]],
                   cap_by_slot_venue: Dict[Tuple[Tuple[int, int], str], int],
-                  order: List[Tuple[int, int]], report: Dict[str, Any]) -> bool:
+                  order: List[Tuple[int, int]], report: Dict[str, Any],
+                  need_fn: Callable[[Any], int]) -> bool:
     """同一人在同一槽 → 把**时间靠后**的那个往后挪（不动已稳定的早场安排）。"""
     if not athlete_of:
         return False
@@ -189,7 +200,7 @@ def _fix_conflict(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
         if u is None:
             continue
         v = getattr(u, "venue", "V0")
-        load[(sid, v)] = load.get((sid, v), 0) + need_of(u)
+        load[(sid, v)] = load.get((sid, v), 0) + need_fn(u)
         with_slot.setdefault(sid, []).append(key)
 
     for sid, keys in with_slot.items():
@@ -197,7 +208,8 @@ def _fix_conflict(units: List[Any], slot_of: Dict[str, Tuple[int, int]],
         for k in sorted(keys, key=lambda x: _slot_key(slot_of[x])):
             for a in athlete_of.get(k, []):
                 if a in seen:
-                    if _relocate(units, slot_of, k, cap_by_slot_venue, load, order):
+                    if _relocate(units, slot_of, k, cap_by_slot_venue, load, order,
+                                 need_fn):
                         report["conflict_fixes"] += 1
                         return True
                     report["blocked"].append(

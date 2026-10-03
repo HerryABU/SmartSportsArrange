@@ -35,6 +35,7 @@ import argparse
 import json
 import math
 import os
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -51,6 +52,7 @@ from sports_ai.data.super_scenarios import (
     generate_super_scenario,
 )
 from sports_ai.models.super_moe import SuperScheduleMoE
+from sports_ai.solve.repair import repair_assignment
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIERS = ("HELL", "REGULAR", "BLOCK", "LANE", "TEAM")
@@ -222,6 +224,45 @@ def decode(
         for i in left:
             _try_place(i)
 
+    # ---- 硬约束兜底：显式复用 solve/repair.py ----
+    # ⚠️ 为什么不能省：上面那 3 轮回填只补「没地方放」的单元，**不会**修正
+    #    已经放下去的容量超占与兼项撞车——而这两条恰恰是现场事故。
+    #    模型学的是排序，没有任何机制保证硬约束，交付前必须过一道规则修复。
+    #    三种模式共用同一套修复，比出来的才是「排序质量」而不是「谁运气好」。
+    #    ⚠️ 口径必须对齐解码器：窗口容量按`纯时长`扣，所以显式传 need_fn，
+    #       不能用默认 need_of（时长+间隔），否则装得下的位置被判超载、乱搬。
+    def _need(u) -> int:                                  # noqa: ANN001
+        return int(u.duration)
+
+    caps_r: Dict[Tuple[Tuple[int, int], str], int] = {}
+    for b in range(nb):
+        for w in win_by_bucket[b]:
+            caps_r[(buckets[b], w.venue)] = int(w.capacity)
+    units_r = [SimpleNamespace(key=str(i), duration=int(units[i].duration),
+                               interval=int(units[i].interval),
+                               venue=units[i].venue)
+               for i in range(n)]
+    slot_r = {str(i): buckets[b] for i, b in assign.items() if b is not None}
+    ath_r = {str(i): list(units[i].athletes) for i in range(n) if units[i].athletes}
+    repaired, rep_r = repair_assignment(units_r, slot_r, caps_r, ath_r, need_fn=_need)
+    n_repair = rep_r["capacity_fixes"] + rep_r["conflict_fixes"]
+    n_blocked = len(rep_r["blocked"])
+    if n_repair or n_blocked:
+        # 以修复后的分配为交付口径，重算 load 与桶归属，后面的违规统计才自洽
+        for i in range(n):
+            sid = repaired.get(str(i))
+            if sid is not None and sid in buckets:
+                assign[i] = buckets.index(sid)
+        load = {}
+        bucket_units = {b: [] for b in range(nb)}
+        bucket_athletes = {b: set() for b in range(nb)}
+        for i, b in assign.items():
+            if b is None:
+                continue
+            bucket_units[b].append(i)
+            bucket_athletes[b].update(units[i].athletes)
+            load[(b, units[i].venue)] = load.get((b, units[i].venue), 0) + int(units[i].duration)
+
     # ---- 违规统计 ----
     # ① 兼项冲突：同桶且共享运动员（解码阶段已经避开了，这里复算以独立验证）
     clash = 0
@@ -288,6 +329,9 @@ def decode(
         "lane_clash": lane_clash,
         "days_used": days_used,
         "days_limit": scen.days_limit,
+        # 修复层计数：模型越差 → 交付前要补的洞越多，这本身就是鲁棒性指标
+        "repairs": int(n_repair),
+        "blocked": int(n_blocked),
     }
 
 
@@ -391,7 +435,8 @@ def main() -> None:
         print(f"{tier:<8} 单元={s['model']['n_units']:<4} "
               f"未排 {r['unplaced']:<5.1f} 兼项撞 {r['athlete_clash']:<5.1f} "
               f"超占 {r['capacity_overflow']:<6.1f} 碎块 {r['frag_blocks']:<4.1f} "
-              f"道次撞 {r['lane_clash']:<4.1f} 工期 {r['days_used']}/{r['days_limit']}")
+              f"道次撞 {r['lane_clash']:<4.1f} 工期 {r['days_used']}/{r['days_limit']} "
+              f"修复 {s['model'].get('repairs', 0):<4.0f} 修不了 {s['model'].get('blocked', 0):<3.0f}")
         print(f"{'':<8} 对比 greedy → 未排 {r['unplaced']}-{g['unplaced']:<5.1f} "
               f"兼项撞 {r['athlete_clash']}-{g['athlete_clash']:<5.1f} "
               f"超占 {r['capacity_overflow']}-{g['capacity_overflow']:<6.1f} "
