@@ -121,6 +121,14 @@ def spearman_per_sample(pred: np.ndarray, gold: List[np.ndarray], ns: List[int])
     return float(np.mean(out)) if out else 0.0
 
 
+from sports_ai.budget import report_budget
+
+# 基线档 = 本脚本的默认结构（hidden=160 / layers=5）。
+BASE_HIDDEN = 160
+BASE_DEPTH_UNITS = 6   # layers=5 时的 layers+1
+BASE_EPOCHS = 60
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="训练球类赛制模型 TournamentGnn")
     p.add_argument("--samples", type=int, default=800)
@@ -134,6 +142,11 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=20261004)
     add_device_arg(p)
     args = p.parse_args()
+    # ⚠️ 加深/加宽后若不同步加训练预算，指标会「看起来」更差，别误判成架构问题。
+    report_budget("tournament_gnn", hidden=args.hidden, base_hidden=BASE_HIDDEN,
+                  depth_units=args.layers + 1, base_depth_units=BASE_DEPTH_UNITS,
+                  base_epochs=BASE_EPOCHS, base_patience=10,
+                  epochs=args.epochs, patience=10)
 
     device = resolve_device(args.device)
     seed_all(0)

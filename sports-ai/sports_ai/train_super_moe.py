@@ -150,10 +150,34 @@ def save_best(model: torch.nn.Module, stats: Dict[str, object],
         json.dump(stats, fh, ensure_ascii=False, indent=2)
 
 
+from sports_ai.budget import BASE_HIDDEN, budget_for, report_budget
+
+BASE_EPOCHS = 24       # 基线档（hidden=128 / expert_depth=1 / n_global=2）的经验预算
+BASE_DEPTH_UNITS = 4   # expert_depth + n_global + 1 在基线档上的取值
+BASE_PATIENCE = 8
+
+
+def depth_units_of(expert_depth: int, n_global: int) -> int:
+    """super_moe 的深度口径：专家内堆叠 + 主干深层块 + 1（输入投影）。"""
+    return max(1, expert_depth) + max(1, n_global) + 1
+
+
+def budget_for_depth(hidden: int, expert_depth: int, n_global: int) -> tuple:
+    """按网络深度推导 (建议 epochs, 建议 patience)。
+
+    ⚠️ 这条机制是踩坑换来的：加深网络却不同步加训练预算时，val 指标会**看起来**变差，
+    极易被误读成「深层架构不如浅层」，于是白改架构。实际是没训够。
+    公式与告警文案见 sports_ai.budget（三个训练脚本共用唯一真相源）。
+    """
+    return budget_for(hidden, BASE_HIDDEN, depth_units_of(expert_depth, n_global),
+                      BASE_DEPTH_UNITS, BASE_EPOCHS, BASE_PATIENCE)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="训练统一编排超级模型 SuperScheduleMoE")
     ap.add_argument("--samples", type=int, default=1200)
-    ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--epochs", type=int, default=0,
+                    help="训练轮数；0=按网络深度自动推导（深层需要更多轮，见 budget_for_depth）")
     ap.add_argument("--batch", type=int, default=8)
     # ⚠️ 下面两个**决定模型结构**：hidden/steps/expert_depth/n_global 必须与
     #    导出脚本读到的 meta 完全一致，否则 load_state_dict shape 不匹配 →
@@ -169,11 +193,19 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=20261007)
     ap.add_argument("--resume", action="store_true",
                     help="从 models/super_moe.pt 续训（分段跑长任务时用）")
-    ap.add_argument("--patience", type=int, default=0,
-                    help="val 连续多少轮不下降就早停；0=不早停")
+    ap.add_argument("--patience", type=int, default=-1,
+                    help="val 连续多少轮不下降就早停；-1=按深度自动；0=不早停")
     add_device_arg(ap)
     args = ap.parse_args()
 
+    want_epochs, want_patience = budget_for_depth(
+        args.hidden, args.expert_depth, args.n_global)
+    epochs = args.epochs if args.epochs > 0 else want_epochs
+    patience = args.patience if args.patience >= 0 else want_patience
+    report_budget("super_moe", hidden=args.hidden, base_hidden=BASE_HIDDEN,
+                  depth_units=depth_units_of(args.expert_depth, args.n_global),
+                  base_depth_units=BASE_DEPTH_UNITS, base_epochs=BASE_EPOCHS,
+                  base_patience=BASE_PATIENCE, epochs=epochs, patience=patience)
     device = resolve_device(args.device)
     seed_all(0)
     print(f"[device] 训练设备: {describe_device(device)}")
@@ -203,13 +235,13 @@ def main() -> None:
         model.load_state_dict(raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw)
         print(f"[model] 已从 super_moe.pt 续训（hidden={args.hidden} steps={args.steps} 需一致）")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
 
     best = float("inf")
     best_state = None
     best_stats: Dict[str, object] = {}
     stale = 0
-    for epoch in range(args.epochs):
+    for epoch in range(epochs):
         model.train()
         tot, nb = 0.0, 0
         idx = np.arange(len(tr))
@@ -264,13 +296,17 @@ def main() -> None:
             save_best(model, best_stats, {
                 "hidden": args.hidden, "steps": args.steps, "samples": args.samples,
                 "expert_depth": args.expert_depth, "n_global": args.n_global,
+                # 预算可诊断性：只看到 val_loss 时无法判断「训够了没有」，
+                # 把实际轮数与建议预算一并写进 meta，一眼就能看出是不是没训够。
+                "epochs_run": epoch + 1, "budget_epochs": want_epochs,
+                "budget_satisfied": bool(epoch + 1 >= want_epochs * 0.6),
             })
             stale = 0
         else:
             stale += 1
             print(f"[save] 未刷新最优（连续 {stale} 轮），暂不写盘")
-        if args.patience and stale >= args.patience:
-            print(f"[stop] val 连续 {args.patience} 轮未下降，早停")
+        if patience and stale >= patience:
+            print(f"[stop] val 连续 {patience} 轮未下降，早停（本段已跑 {epoch + 1} 轮）")
             break
 
     if best_state is not None:

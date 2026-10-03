@@ -472,6 +472,22 @@ def _pad_ranks(ranks, sel, total_n: int, device):
     return torch.from_numpy(np.stack([ranks[i] for i in sel])).to(device)
 
 
+from sports_ai.budget import report_budget as _report_budget
+
+# 基线档 = 本脚本的默认结构（hidden=160 / layers=6）。
+BASE_HIDDEN = 160
+BASE_DEPTH_UNITS = 7   # layers=6 时的 layers+1
+BASE_EPOCHS = 40
+
+
+def _report(args) -> None:
+    """⚠️ 加深/加宽后若不同步加训练预算，指标会「看起来」更差，别误判成架构问题。"""
+    _report_budget("constraint_gnn", hidden=args.hidden, base_hidden=BASE_HIDDEN,
+                   depth_units=args.layers + 1, base_depth_units=BASE_DEPTH_UNITS,
+                   base_epochs=BASE_EPOCHS, base_patience=10,
+                   epochs=args.epochs, patience=10)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--samples", type=int, default=800)
@@ -487,7 +503,9 @@ def main() -> None:
     p.add_argument("--tier", default="mixed",
                    help="训练档位：mixed(四类场景+球类) / generic(通用) / REGULAR / HELL / BLOCK / LANE / TEAM")
     add_device_arg(p)
-    train(p.parse_args())
+    args = p.parse_args()
+    _report(args)
+    train(args)
 
 
 if __name__ == "__main__":

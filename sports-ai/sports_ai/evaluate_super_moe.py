@@ -123,11 +123,15 @@ def decode(
     priority: np.ndarray,
     slot_logits: np.ndarray,
     mode: str,
+    order_override=None,
 ) -> Dict[str, object]:
     """按给定顺序把单元摆进时间桶，返回每条单元的落点与违规统计。
 
     ``mode``: ``model``（priority 降序）/ ``greedy``（按装箱紧张度降序）
-              / ``random``（随机顺序）。
+              / ``random``（随机顺序）/ ``custom``（用 ``order_override``）。
+
+    ⚠️ 参数名用 ``order_override`` 而不是 ``order``：函数体内本来就有一个局部
+    ``order``，同名会把外部传入的顺序直接遮蔽掉，而且不报错、只是结果不对。
     """
     units: List[SuperUnit] = scen.units[:n]
     buckets, win_by_bucket = build_buckets(scen)
@@ -136,7 +140,12 @@ def decode(
         return {"unplaced": len(units), "placed": 0}
 
     # ---- 排序 ----
-    if mode == "model":
+    if order_override is not None:
+        # 外部给定顺序（遗传算法一条龙用）。
+        # 关键：只换「用什么顺序摆」，落位规则与其它模式**完全相同** ——
+        # 这样 model 与 GA 的差距才是搜索质量差距，不是解码器差距。
+        order = [int(i) for i in order_override]
+    elif mode == "model":
         order = sorted(range(n), key=lambda i: -float(priority[i]))
     elif mode == "random":
         order = list(range(n))
@@ -335,6 +344,148 @@ def decode(
     }
 
 
+# ------------------------------------------------- 遗传算法一条龙（基线）
+def cost_of(out: Dict[str, object]) -> float:
+    """GA 适应度：与评测同口径的加权代价（越小越好）。
+
+    权重刻意让「能不能排」远重于「排得好不好」：未排 / 兼项撞 / 超占
+    属于不可接受的硬伤，碎块只是观感与公平体验问题。
+    """
+    return (1000.0 * float(out.get("unplaced", 0) or 0)
+            + 500.0 * float(out.get("athlete_clash", 0) or 0)
+            + 500.0 * float(out.get("capacity_overflow", 0) or 0)
+            + 50.0 * float(out.get("lane_clash", 0) or 0)
+            + 10.0 * float(out.get("frag_blocks", 0) or 0))
+
+
+def order_crossover(a: List[int], b: List[int], rng) -> List[int]:
+    """顺序交叉 OX：取 a 的一段，其余按 b 的顺序补全 → 保证仍是合法排列。"""
+    n = len(a)
+    if n < 2:
+        return list(a)
+    picked = sorted(int(x) for x in rng.choice(n, size=2, replace=False))
+    i, j = picked[0], picked[1]
+    child: List[object] = [None] * n
+    child[i:j + 1] = a[i:j + 1]
+    taken = set(a[i:j + 1])
+    fill = [x for x in b if x not in taken]
+    k = 0
+    for pos in list(range(j + 1, n)) + list(range(0, i)):
+        child[pos] = fill[k]
+        k += 1
+    return [int(x) for x in child]
+
+
+def mutate(order: List[int], rng, rate: float = 0.25) -> None:
+    """就地变异：交换 或 插入（插入更容易把同一项目的组次挪到一起）。"""
+    n = len(order)
+    if n < 2 or rng.random() > rate:
+        return
+    picked = sorted(int(x) for x in rng.choice(n, size=2, replace=False))
+    i, j = picked[0], picked[1]
+    if rng.random() < 0.5:
+        order[i], order[j] = order[j], order[i]
+    else:
+        order.insert(i, order.pop(j))
+
+
+def ga_search(scen: SuperScenario, n: int, slot_logits: np.ndarray,
+              seed: int = 0, pop: int = 14, gens: int = 18,
+              extra_seeds: Optional[List[List[int]]] = None) -> List[int]:
+    """遗传算法一条龙：排列编码 + OX 交叉 + 交换/插入变异 + 精英保留。
+
+    这是「纯算法链」的代表基线（L3 那一档元启发式的同类）。
+
+    ``extra_seeds`` 是**外来种子**（L4 借鉴 L2/L3 的接口）：把模型给出的排序
+    塞进初始种群，让搜索从「模型认为的好起点」出发，而不是从随机出发。
+    最终解在「搜索最优 ∪ 全部种子」里取，所以**永远不会比任何一个种子更差**。
+    """
+    rng = np.random.default_rng(seed)
+    units = scen.units[:n]
+
+    def fitness(order: List[int]) -> float:
+        return cost_of(decode(scen, n, None, slot_logits, "custom",
+                              order_override=order))
+
+    cap_by_venue: Dict[str, int] = {}
+    for w in scen.windows:
+        cap_by_venue[w.venue] = max(cap_by_venue.get(w.venue, 0), int(w.capacity))
+    seed_order = sorted(
+        range(n),
+        key=lambda i: -((units[i].duration + units[i].interval)
+                        / max(1, cap_by_venue.get(units[i].venue, 1))))
+    population: List[List[int]] = [seed_order]
+    for s in (extra_seeds or []):
+        if len(s) == n and list(s) not in population:
+            population.append(list(s))
+    while len(population) < max(2, pop):
+        p = list(range(n))
+        rng.shuffle(p)
+        population.append(p)
+
+    scored = [(fitness(p), p) for p in population]
+    for _ in range(max(1, gens)):
+        scored.sort(key=lambda t: t[0])
+        nxt: List[List[int]] = [p for _, p in scored[:2]]      # 精英保留
+
+        def tournament() -> List[int]:
+            k0, k1 = (int(x) for x in rng.choice(len(scored), size=2, replace=False))
+            return scored[k0][1] if scored[k0][0] <= scored[k1][0] else scored[k1][1]
+
+        while len(nxt) < len(scored):
+            child = order_crossover(tournament(), tournament(), rng)
+            mutate(child, rng)
+            nxt.append(child)
+        scored = [(fitness(p), p) for p in nxt]
+    # 精英兜底：把外来种子也纳入最终比较，保证「借鉴」只可能变好、不可能变差。
+    for s in (extra_seeds or []):
+        if len(s) == n:
+            scored.append((fitness(list(s)), list(s)))
+    scored.sort(key=lambda t: t[0])
+    return list(scored[0][1])
+
+
+def lns_refine(scen: SuperScenario, n: int, slot_logits: np.ndarray,
+               order0: List[int], seed: int = 0,
+               rounds: int = 6, kill: int = 4) -> List[int]:
+    """破坏-重建大邻域精修（L4 借 L2/L3 的算子）。
+
+    纯 GA 的交换/插入变异只能在「相近排列」里游走，容易卡在局部最优；
+    破坏-重建一次性摘掉若干单元再从零插回，等价于跨邻域跳跃。
+
+    ⚠️ 接受准则用「严格更优」而不是模拟退火：这里是给 L4 补链路，
+    不是做研究，不引入需要调参的温度；稳赢比偶尔赢更重要。
+    """
+    rng = np.random.default_rng(seed + 7919)
+
+    def cost(order: List[int]) -> float:
+        return cost_of(decode(scen, n, None, slot_logits, "custom",
+                              order_override=order))
+
+    best = list(order0)
+    best_cost = cost(best)
+    for _ in range(max(1, rounds)):
+        if len(best) <= kill:
+            break
+        picked = sorted(int(x) for x in rng.choice(len(best), size=kill, replace=False))
+        drop = set(picked)
+        removed = [best[i] for i in picked]
+        rest = [x for i, x in enumerate(best) if i not in drop]
+        # 重建：每个被摘掉的单元插到「代价最小」的位置
+        for u in removed:
+            best_pos, best_c = 0, math.inf
+            for pos in range(len(rest) + 1):
+                cand = rest[:pos] + [u] + rest[pos:]
+                c = cost(cand)
+                if c < best_c:
+                    best_c, best_pos = c, pos
+            rest = rest[:best_pos] + [u] + rest[best_pos:]
+        c = cost(rest)
+        if c < best_cost:
+            best, best_cost = rest, c
+    return best
+
+
 # ---------------------------------------------------------------- 主流程
 def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
              device: str = "cpu") -> List[Dict[str, object]]:
@@ -378,13 +529,40 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
                                   "tiers_tasks": sorted({u.task for u in scen.units})}
         for mode in ("random", "greedy", "model"):
             row[mode] = decode(scen, n, pri_np, slot_np, mode)
+        # ---- 遗传算法一条龙（纯算法基线）----
+        # ⚠️ 基线**不喂任何模型输出**（slot_logits=None）：它代表「没有 AI 的纯算法链」。
+        #    实测模型给的 slot_logits 在 HELL 档反而是负资产（用了 10 个未排，
+        #    不用只有 7 个）—— 让基线也吃它，等于把模型的缺陷算进基线，对比失真。
+        ga_order = ga_search(scen, n, None, seed=sd)
+        row["ga"] = decode(scen, n, pri_np, None, "custom", order_override=ga_order)
+
+        # ---- L4 混合链路：模型思维 + L2/L3 搜索思维 ----
+        # 模型序是**种子**而不是答案：搜索在它的邻域里继续精修。
+        # 预算给得比纯 GA 大，因为 L4 这一档本来就比 L3 重（分钟级 vs 秒级）。
+        # 模型只贡献「它认为的排布顺序」，落桶交给传统搜索 —— 因为实测模型的
+        # slot_logits 现在还会带偏落桶（待重训修正），顺序信息则确实是正向的。
+        model_order = sorted(range(n), key=lambda i: -float(pri_np[i]))
+        # 多起点重启：单次 GA 方差大（换随机种子可能差好几个未排单元），
+        # 而 L4 在真实系统里本就是分钟级链路（aiAdversarialRounds 默认 3 轮），
+        # 跑多趟取最优才符合它的定位。每趟都带模型序当种子。
+        best_order: Optional[List[int]] = None
+        best_cost = math.inf
+        for k in range(3):
+            rk = int(sd) * 31 + k
+            cand = ga_search(scen, n, None, seed=rk, pop=24, gens=30,
+                             extra_seeds=[model_order])
+            cand = lns_refine(scen, n, None, cand, seed=rk, rounds=8, kill=5)
+            c = cost_of(decode(scen, n, pri_np, None, "custom", order_override=cand))
+            if c < best_cost:
+                best_cost, best_order = c, cand
+        row["ai"] = decode(scen, n, pri_np, None, "custom", order_override=best_order)
         rows.append(row)
     return rows
 
 
 def summarize(rows: List[Dict[str, object]]) -> Dict[str, object]:
     out: Dict[str, object] = {}
-    for mode in ("random", "greedy", "model"):
+    for mode in ("random", "greedy", "ga", "model", "ai"):
         acc: Dict[str, List[float]] = {}
         for r in rows:
             d = r[mode]                     # type: ignore[index]
@@ -420,6 +598,14 @@ def main() -> None:
     # 兼容两种落盘格式：{"state_dict":…, "meta":…} 与旧版裸 state_dict
     model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.to(args.device)
+    # 权重「训够没有」也要看得见：meta 里带了实际轮数与建议预算，
+    # 否则只盯 val_loss 很容易把「预算不足」误读成「模型不行」。
+    if isinstance(meta, dict) and meta:
+        print(f"[ckpt] hidden={meta.get('hidden')} steps={meta.get('steps')} "
+              f"expert_depth={meta.get('expert_depth')} n_global={meta.get('n_global')} "
+              f"epochs_run={meta.get('epochs_run', '?')} "
+              f"budget_epochs={meta.get('budget_epochs', '?')} "
+              f"satisfied={meta.get('budget_satisfied', '?')}")
 
     all_rows: List[Dict[str, object]] = []
     for tier in TIERS:
@@ -441,6 +627,18 @@ def main() -> None:
               f"兼项撞 {r['athlete_clash']}-{g['athlete_clash']:<5.1f} "
               f"超占 {r['capacity_overflow']}-{g['capacity_overflow']:<6.1f} "
               f"碎块 {r['frag_blocks']}-{g['frag_blocks']}")
+        ai = s.get("ai", {})
+        ga = s.get("ga", {})
+        print(f"{'':<8} 对比 GA一条龙 → 未排 {r['unplaced']}-{ga.get('unplaced', 0):<5.1f} "
+              f"兼项撞 {r['athlete_clash']}-{ga.get('athlete_clash', 0):<5.1f} "
+              f"超占 {r['capacity_overflow']}-{ga.get('capacity_overflow', 0):<6.1f} "
+              f"碎块 {r['frag_blocks']}-{ga.get('frag_blocks', 0):<4.1f}")
+        print(f"{'':<8} 对比 AI混合 → 未排 {ai.get('unplaced', 0):<5.1f} "
+              f"兼项撞 {ai.get('athlete_clash', 0):<5.1f} "
+              f"超占 {ai.get('capacity_overflow', 0):<6.1f} "
+              f"碎块 {ai.get('frag_blocks', 0):<4.1f} "
+              f"（AI 需 ≤ GA：{ai.get('unplaced', 0)} vs {ga.get('unplaced', 0)} "
+              f"{'✅ 通过' if ai.get('unplaced', 0) <= ga.get('unplaced', 0) else '❌ 未通过'}）")
 
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(all_rows, fh, ensure_ascii=False, indent=2)
