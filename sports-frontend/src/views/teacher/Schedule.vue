@@ -75,6 +75,17 @@
 
     <!-- 规划层预演结果：确定性启发 + 前向剪枝 + 局部回退，秒级给出方案与诊断 -->
     <el-dialog v-model="planDialog" title="规划预演（只读，不影响现有赛程）" width="860px">
+      <!-- 规划器的可控参数：不是「越大约好」的旋钮，说明写在标签旁，避免误调 -->
+      <el-form inline size="small" style="margin-bottom: 10px">
+        <el-form-item label="回退上限">
+          <el-input-number v-model="planOpts.maxBacktracks" :min="100" :max="200000" :step="1000" />
+          <span class="plan-hint">病态实例的刹车；超限即停止并如实报未排</span>
+        </el-form-item>
+        <el-form-item label="重启次数">
+          <el-input-number v-model="planOpts.maxRestarts" :min="1" :max="20" />
+          <span class="plan-hint">换序重来的次数，带启发信息不纯随机</span>
+        </el-form-item>
+      </el-form>
       <template v-if="planResult">
         <el-alert :type="planResult.feasible ? 'success' : 'warning'" show-icon :closable="false"
                   style="margin-bottom: 12px">
@@ -935,11 +946,19 @@ const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
 const planDialog = ref(false)
 const planResult = ref(null)
 const planLoading = ref(false)
+// 规划器参数。默认值与后端 DEFAULT_MAX_BACKTRACKS / maxRestarts 保持一致，
+// 前端不传时后端走同一套默认，所以「不改也能跑，改了立刻生效」。
+const planOpts = reactive({ maxBacktracks: 20000, maxRestarts: 3 })
 
 async function doPlanPreview () {
   planLoading.value = true
   try {
-    const res = await request.post('/schedule/plan', arrangePayload())
+    // 与编排同构的配置 + 规划器专有参数（后者仅预演端点消费）
+    const res = await request.post('/schedule/plan', {
+      ...arrangePayload(),
+      maxBacktracks: planOpts.maxBacktracks,
+      maxRestarts: planOpts.maxRestarts
+    })
     planResult.value = res
     planDialog.value = true
     if (!res.feasible) {
@@ -1754,6 +1773,11 @@ watch(coKeyword, () => { coPage.value = 1 })
 </script>
 
 <style scoped>
+.plan-hint {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #909399;
+}
 .schedule-page { display: flex; flex-direction: column; gap: 12px; }
 .toolbar-card { border-radius: 12px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
