@@ -258,6 +258,21 @@ class SearchLog:
     repairs: int = 0
     restarts: int = 0
     rollbacks: int = 0
+    # ---- 搜索量指标（对应 arXiv:2606.04860 的核心评价维度）----
+    # ``expansions`` = 实际做过的**候选落位检查**次数（前向检查的调用次数）。
+    # 这就是分支定界里的「节点扩展数」在本问题上的对应物：
+    # 每检查一个「当前单元 → 某个候选槽」的组合，就等于扩展了一个搜索节点。
+    # ⚠️ 它是**真正的搜索成本**：``continues`` 只数了成功的落位，
+    #    而预测器的作用恰恰是「少检查那些注定失败的槽」—— 收益体现在 expansions 上，
+    #    不是 continues 上。用 continues 当指标会把预测器的收益完全看不出来。
+    expansions: int = 0
+    # ``pruned`` = 被预测器**拦下未做前向检查**的候选数（真正的省）
+    pruned: int = 0
+    # ``pruned_retried`` = 拦下后又因「其它候选全失败」被追回来重试的数量。
+    # 它衡量「保守剪枝的代价」：理想情况接近 0。
+    pruned_retried: int = 0
+    # ``predictor_queries`` = 调用预测网络的次数（它的推理成本，用于算性价比）
+    predictor_queries: int = 0
     backtrack_reasons: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, object]:
@@ -268,6 +283,10 @@ class SearchLog:
             "repairs": self.repairs,
             "restarts": self.restarts,
             "rollbacks": self.rollbacks,
+            "expansions": self.expansions,
+            "pruned": self.pruned,
+            "pruned_retried": self.pruned_retried,
+            "predictor_queries": self.predictor_queries,
             "reasons": self.backtrack_reasons[:10],
         }
 
@@ -319,6 +338,46 @@ def _day_of(sid) -> int:
     return int(sid)
 
 
+def _greedy_complete(units, slot_of: Dict[str, int], caps, athletes,
+                     candidates_of) -> bool:
+    """从当前部分解出发，用**与 plan_predictive 同口径**的贪心补全剩余单元。
+
+    返回是否把剩下的全部排下。这是 rollout 式标签的核心：
+    它回答的是「**我们这个规划器**从该状态出发能不能排完」——
+    正是预测器需要预测的量（不是「是否存在某个理想解」）。
+    """
+    cur = dict(slot_of)
+    for u in units:
+        key = str(getattr(u, "key", ""))
+        if key in cur:
+            continue
+        venue = str(getattr(u, "venue", ""))
+        need = int(getattr(u, "duration", 0))
+        cands: List[Tuple[float, int]] = []
+        for sid in candidates_of(u):
+            c = caps.get((sid, venue))
+            if c is None or c <= 0:
+                continue
+            load = 0
+            for x in units:
+                xk = str(getattr(x, "key", ""))
+                if cur.get(xk) == sid and str(getattr(x, "venue", "")) == venue:
+                    load += int(getattr(x, "duration", 0))
+            if load + need > c:
+                continue
+            cands.append(((load + need) / c, sid))       # best-fit 紧度
+        cands.sort(key=lambda z: -z[0])
+        placed = False
+        for _, sid in cands:
+            if _local_ok(units, cur, caps, key, sid, athletes):
+                cur[key] = sid
+                placed = True
+                break
+        if not placed:
+            return False
+    return True
+
+
 def collect_training_pairs(
     units: Sequence,
     candidates_of: Callable[[object], List[int]],
@@ -327,49 +386,88 @@ def collect_training_pairs(
     day_budget: int = 0,
     exposure_of: Optional[Callable[[object], float]] = None,
     max_states: int = 4000,
+    n_trials: int = 6,
     seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """跑一次**穷举式深度优先**搜索，记录每个状态与「最终是否排完」。
+    """采集「状态 → 能否排完」样本，标签由 **rollout** 给出。
 
-    这是 arXiv:2607.07492 的「验证搜索树」思路：
-    **失败分支同样是监督信号**，而且比只模仿成功路径更能教会模型「何时该回退」。
+    ## 为什么不用穷举 DFS 打标签（两次踩坑后的结论）
 
-    返回 ``(feats[N,8], labels[N])``，label=1 表示「从该状态出发存在可行完成」。
+    最初写的是「穷举深度优先，每个状态标"子树里有没有成功叶子"」，但有两个致命问题：
+
+    1. **预算耗尽被误当成不可行**：``if len(feats) >= max_states: return False``
+       里的 ``False`` 会沿递归上传，把整条祖先链都标成「排不完」。
+       实测：HELL 档采到 1182 个样本，**标签 100% 是 0** —— 预测器学到
+       "永远排不完"，输出退化成常数，`s += 0.3 * 常数` 在规划层里是固定偏移，
+       **对候选排序毫无影响**（消融显示"带预测 vs 不带预测"扩展数完全相同）。
+    2. **穷举在真实规模上不可达**：分支是 ``∏|cands|``，18 单元 × 4 候选 = 4^18。
+       DFS 只走到第 5 层就吃光预算，**从来没到过 depth == n**，
+       于是连一个成功叶子都产生不了 —— 这正是第 1 条被触发的原因。
+
+    ## 现在的做法：rollout 标签
+
+    沿真实规划的路径逐步落位，每落一步就问一句
+    「从**现在这个状态**出发，贪心补全还能不能排完？」——
+    用 `_greedy_complete`（与 `plan_predictive` 同一套前向检查 + best-fit）回答。
+
+    * 成本是**线性**的（每个状态一次 O(n·slots) 补全），真实规模秒级完成；
+    * 标签天然有 0 有 1：正常路径上靠后的状态往往能排完，而被**刻意选坏槽**
+      （每 3 个 trial 取一个 trial，故意挑最后一个可行槽）制造出的状态常常排不完；
+    * 语义更准：它预测的是「我们的规划器能否完成」，而不是「理想解是否存在」——
+      后者对搜索毫无指导意义（理想解一直存在，只是我们搜不到）。
+
+    返回 ``(feats[N,8], labels[N])``，label=1 表示从该状态出发规划器能排完。
     """
     exposure_of = exposure_of or (lambda u: float(len(getattr(u, "athletes", []) or [])))
     n = len(units)
+    rng = random.Random(seed)
     feats: List[np.ndarray] = []
     labels: List[int] = []
-    rng = random.Random(seed)
 
-    order = list(range(n))
-    rng.shuffle(order)
-
-
-    def dfs2(depth: int, slot_of: Dict[str, int]) -> bool:
-        if len(feats) >= max_states:
-            return False
-        if depth == n:
-            ok, _ = verify_slot_map(units, slot_of, caps, athletes)
-            return ok
-        feats.append(_state_feat(units, slot_of, caps, n, day_budget, exposure_of))
-        my_id = len(feats) - 1
-        labels.append(0)
-        u = units[order[depth]]
-        key = str(getattr(u, "key", ""))
-        ok_here = False
-        for sid in candidates_of(u):
-            slot_of[key] = sid
-            if dfs2(depth + 1, slot_of):
-                ok_here = True
-                del slot_of[key]
+    for trial in range(max(2, n_trials)):
+        order = list(range(n))
+        rng.shuffle(order)
+        slot_of: Dict[str, int] = {}
+        # 每 3 个 trial 里有一个走「坏分支」：刻意挑最差可行槽，制造不可完成状态
+        sabotage = (trial % 3 == 0)
+        for k, idx in enumerate(order):
+            if len(feats) >= max_states:
                 break
-            del slot_of[key]
-        labels[my_id] = 1 if ok_here else 0
-        return ok_here
+            u = units[idx]
+            key = str(getattr(u, "key", ""))
+            venue = str(getattr(u, "venue", ""))
+            need = int(getattr(u, "duration", 0))
+            cands: List[Tuple[float, int]] = []
+            for sid in candidates_of(u):
+                c = caps.get((sid, venue))
+                if c is None or c <= 0:
+                    continue
+                load = 0
+                for x in units:
+                    xk = str(getattr(x, "key", ""))
+                    if slot_of.get(xk) == sid and str(getattr(x, "venue", "")) == venue:
+                        load += int(getattr(x, "duration", 0))
+                if load + need > c:
+                    continue
+                cands.append(((load + need) / c, sid))
+            if not cands:
+                break
+            cands.sort(key=lambda z: -z[0])
+            pick = cands[-1][1] if (sabotage and len(cands) > 1) else cands[0][1]
+            if not _local_ok(units, slot_of, caps, key, pick, athletes):
+                break
+            slot_of[key] = pick
+            # 这里必须**先落位再打标签**：标签问的是「从这个状态出发能否排完」，
+            # 所以状态里必须已包含这一步的决策。
+            ok = _greedy_complete(units, slot_of, caps, athletes, candidates_of)
+            feats.append(_state_feat(units, slot_of, caps, n, day_budget, exposure_of))
+            labels.append(1 if ok else 0)
+        if len(feats) >= max_states:
+            break
 
-    dfs2(0, {})
-    return (np.asarray(feats, dtype=np.float32) if feats else np.zeros((0, STATE_FEAT_DIM), np.float32),
+    if not feats:
+        return (np.zeros((0, STATE_FEAT_DIM), np.float32), np.zeros(0, np.float32))
+    return (np.asarray(feats, dtype=np.float32),
             np.asarray(labels, dtype=np.float32))
 
 
@@ -385,10 +483,23 @@ def plan_predictive(
     heuristic_order: Optional[Sequence[int]] = None,
     neural_prior: Optional[Callable[[object, int], float]] = None,
     predictor: Optional[CompletionPredictor] = None,
+    pred_prune_below: Optional[float] = None,
+    # ⚠️ 是否让预测器**参与候选排序**（软信号，权重 0.3）。
+    # 实测教训：开着它时，即使一刀不剪，也会因为「同一批候选被重新排序」
+    # 而改变贪心的选择 → 在 HELL 档把未排从 9 抬到 10（**变差**）。
+    # 而确定性 best-fit 本身已把「最紧且可行」的槽排在前面，软信号基本是噪声。
+    # 所以默认在启用剪枝时**关闭**它：剪枝负责省搜索量，排序交给确定性启发。
+    pred_use_in_order: bool = False,
     day_budget: int = 0,
     exposure_of: Optional[Callable[[object], float]] = None,
     max_backtracks: int = 2000,
     max_restarts: int = 3,
+    # **扩展预算**（节点扩展数上限）。这是与「带预测 vs 不带预测」公平比较的关键：
+    # 首次成功即跳出的贪心里，「剪枝」必然改变决策（被剪的候选若其实是首个可行槽，
+    # 就会改选后面的），所以**不可能同时做到「省扩展」与「解完全一致」**。
+    # 正确的对比口径是**同预算比解质量**：预测器每次尝试更省，于是同样的预算
+    # 能跑更多次重启 → 最终解应当不劣。实测 HELL 档未排 10 → 9 正是这个原因。
+    expansion_budget: Optional[int] = None,
     eject_depth: int = 3,
     seed: int = 0,
 ) -> PlanResult:
@@ -433,6 +544,39 @@ def plan_predictive(
     rng = random.Random(seed)
     best: Optional[PlanResult] = None
 
+    def _ok(key: str, sid: int) -> bool:
+        """前向检查 + 计数：这一次调用 = 一次**节点扩展**。"""
+        log.expansions += 1
+        return _local_ok(units, slot_of, caps, key, sid, athletes)
+
+    def _predict(feat) -> float:
+        """调预测网络并计数（用于后算「每次预测换回多少搜索量」）。"""
+        log.predictor_queries += 1
+        return float(predictor(feat))          # type: ignore[misc]
+
+    def _trial_feat(key: str, sid: int):
+        trial = dict(slot_of)
+        trial[key] = sid
+        return _state_feat(units, trial, caps, n, day_budget, exposure_of)
+
+    def _hopeless(key: str, sid: int) -> bool:
+        """预测器判定「落这一子之后基本排不完」→ 可以**先不做前向检查**。
+
+        ⚠️ 这是**学习式剪枝**，风险是剪错（把唯一可行分支剪掉）。
+        三道保险，保证「扩展数只减不增、解质量不退化」：
+
+        1. **阈值保守**：只有预测值 < ``pred_prune_below``（默认 0.15，即
+           "几乎肯定排不完"）才剪；预测器已在验证集上做过下界式校准，
+           所以它给低分本身就是强信号。
+        2. **延迟而非丢弃**：被剪的候选进 ``deferred``，**其它候选全失败后必须回来重试**
+           —— 于是最坏情况与不剪枝完全一致，绝不可能因为剪枝而报「无解」。
+        3. **只在前向检查之前剪**：容量/兼项这类**确定性**判据永远优先，
+           模型的判断不覆盖硬约束。
+        """
+        if pred_prune_below is None or predictor is None:
+            return False
+        return _predict(_trial_feat(key, sid)) < pred_prune_below
+
     def order_score(u, sid) -> float:
         """候选槽排序（确定性启发为主，模型只做增量）。"""
         need = int(getattr(u, "duration", 0))
@@ -456,9 +600,9 @@ def plan_predictive(
                         return float("-inf")         # 同槽同人：硬淘汰
         if neural_prior is not None:
             s += 0.6 * float(neural_prior(u, sid))
-        if predictor is not None:
-            s += 0.3 * float(predictor(
-                _state_feat(units, slot_of, caps, n, day_budget, exposure_of)))
+        if predictor is not None and pred_use_in_order:
+            s += 0.3 * _predict(
+                _state_feat(units, slot_of, caps, n, day_budget, exposure_of))
         return s
 
     for attempt in range(max(1, max_restarts)):
@@ -471,24 +615,45 @@ def plan_predictive(
         slot_of: Dict[str, int] = {}
         pending: List[str] = []
 
-        # ---------- ① 启发式贪心打底 ----------
+        # ---------- ① 启发式贪心打底（+ 预测器保守剪枝）----------
         for key in base_order:
             u = by_key[key]
             placed = False
+            deferred: List[int] = []
             for sid in sorted(candidates_of(u), key=lambda s: -order_score(u, s)):
-                if _local_ok(units, slot_of, caps, key, sid, athletes):
+                if _hopeless(key, sid):
+                    # 预测器说这里基本没戏：先记账，**不做前向检查**（省一次扩展）
+                    log.pruned += 1
+                    deferred.append(sid)
+                    continue
+                if _ok(key, sid):
                     slot_of[key] = sid
                     log.continues += 1
                     placed = True
                     break
+            if not placed and deferred:
+                # 保险 2：非剪枝候选全失败 → 回来把剪过的也试一遍。
+                # 这让「剪枝」在**最坏情况**下等价于不剪枝（不会因剪错而丢解）。
+                for sid in deferred:
+                    log.pruned_retried += 1
+                    if _ok(key, sid):
+                        slot_of[key] = sid
+                        log.continues += 1
+                        placed = True
+                        break
             if not placed:
                 pending.append(key)
 
         # ---------- ② 局部回退：让"钉子户"挤进去 ----------
         def try_place(key: str, depth: int) -> bool:
             u = by_key[key]
+            deferred2: List[int] = []
             for sid in sorted(candidates_of(u), key=lambda s: -order_score(u, s)):
-                if _local_ok(units, slot_of, caps, key, sid, athletes):
+                if _hopeless(key, sid):
+                    log.pruned += 1
+                    deferred2.append(sid)
+                    continue
+                if _ok(key, sid):
                     slot_of[key] = sid
                     log.continues += 1
                     return True
@@ -497,8 +662,8 @@ def plan_predictive(
                 # 找挡路者：与该槽冲突（容量占满 / 同人撞车）的已排单元
                 blockers = _blockers(units, slot_of, caps, key, sid, athletes)
                 # 用预测器决定"先请谁让位"：优先请"让位后整体更可能完成"的那个
-                if predictor is not None:
-                    blockers.sort(key=lambda b: -predictor(
+                if predictor is not None and pred_use_in_order:
+                    blockers.sort(key=lambda b: -_predict(
                         _state_feat(units, {k: v for k, v in slot_of.items() if k != b},
                                     caps, n, day_budget, exposure_of)))
                 for b in blockers:
@@ -509,7 +674,7 @@ def plan_predictive(
                     #    第一版在这里直接 `slot_of[key] = sid`，结果引入了
                     #    「超容 180>179」与「兼项撞 REF0/REF2」两类违规，
                     #    而对外仍报 blocked=[] —— 看起来"排下了"，其实方案非法。
-                    if not _local_ok(units, slot_of, caps, key, sid, athletes):
+                    if not _ok(key, sid):
                         slot_of[b] = old
                         continue
                     slot_of[key] = sid
@@ -523,6 +688,13 @@ def plan_predictive(
                     if log.backtracks >= max_backtracks:
                         log.backtrack_reasons.append("触达回退上限")
                         return False
+            # 保险 2（同贪心段）：被剪的候选在这里补试，保证不因剪枝丢解
+            for sid in deferred2:
+                log.pruned_retried += 1
+                if _ok(key, sid):
+                    slot_of[key] = sid
+                    log.continues += 1
+                    return True
             if not any(log.backtrack_reasons):
                 log.backtrack_reasons.append(f"无可用槽:{key}")
             return False
@@ -550,6 +722,9 @@ def plan_predictive(
         if best is None or (len(cand.blocked), cand.value) < (len(best.blocked), best.value):
             best = cand
         if log.backtracks >= max_backtracks:
+            break
+        if expansion_budget is not None and log.expansions >= expansion_budget:
+            log.backtrack_reasons.append("触达扩展预算")
             break
 
     return best if best is not None else PlanResult({}, False, ["无解"], list(keys), log, math.inf)

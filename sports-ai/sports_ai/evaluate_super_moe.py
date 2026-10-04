@@ -52,6 +52,7 @@ from sports_ai.data.super_scenarios import (
     generate_super_scenario,
 )
 from sports_ai.models.super_moe import SuperScheduleMoE
+from sports_ai.plan import CompletionPredictor, collect_training_pairs, plan_predictive
 from sports_ai.solve.repair import repair_assignment
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -534,8 +535,163 @@ def lns_refine(scen: SuperScenario, n: int, slot_logits: np.ndarray,
 
 
 # ---------------------------------------------------------------- 主流程
+# ---------------------------------------------------------------- 规划层（预测器）对照
+# 保守剪枝阈值：预测器给出的「能从该状态排完」概率低于此值，就先不做前向检查。
+# ⚠️ 定得低（0.15）是刻意的：剪枝是**学习式**的，有剪错风险；
+#    配合 plan_predictive 里的「延迟重试」保险，最坏情况等价于不剪枝。
+#    定高（如 0.5）会剪得更狠，但会把大量真正可行的分支也拖到重试路径上，
+#    反而**增加**扩展数 —— 所以它不是一个"越大越好"的旋钮。
+PRED_PRUNE_BELOW = 0.15
+# 同预算对比用的**节点扩展预算**。两侧都跑满这个预算，
+# 于是「每次尝试更省」的那侧能跑更多次重启 —— 这是把「省扩展」换算成
+# 「同预算下解更好」的桥梁（见 predictor_ablation 的注释）。
+EXPANSION_BUDGET = 4000
+# ⚠️ 重启次数必须**放开**，否则「省下的扩展」换不成「更多重启」：
+#    两侧都被 max_restarts=3 卡住时，省下的预算根本用不出去，
+#    对比就退化成「谁先停谁运气好」。放开后**扩展预算成为唯一约束**，
+#    于是「每次尝试更省」的一侧自然能跑更多次重启 → 这才是可比的。
+MAX_RESTARTS_ABLATION = 60
+def scen_to_plan_inputs(scen: SuperScenario):
+    """把 ``SuperScenario`` 转成 ``plan_predictive`` 的输入。
+
+    ⚠️ 三个口径必须与 ``decode()`` 一致，否则两边不可比：
+
+    * **占用时长 = duration + interval**：解码器里一个单元占的是「比赛 + 间隔」两段，
+      只算 duration 会低估占用、算出假可行；
+    * **槽 = (day, window_idx)**：同桶多场地并行；
+    * **容量键 = (槽序号, 场地)**：同槽同场地才共用容量。
+    """
+    buckets = sorted({(w.day, w.window_idx) for w in scen.windows})
+    idx = {b: i for i, b in enumerate(buckets)}
+    caps: Dict[Tuple[int, str], int] = {}
+    for w in scen.windows:
+        k = (idx[(w.day, w.window_idx)], w.venue)
+        caps[k] = caps.get(k, 0) + int(w.capacity)
+    units = [SimpleNamespace(key=u.key, venue=u.venue,
+                             duration=int(u.duration) + int(u.interval),
+                             group_key=u.group_key, athletes=list(u.athletes))
+             for u in scen.units]
+    athletes = {u.key: list(u.athletes) for u in scen.units if u.athletes}
+    venues_by_unit = {u.key: u.venue for u in scen.units}
+
+    def candidates_of(u) -> List[int]:
+        v = venues_by_unit[str(getattr(u, "key", ""))]
+        return sorted({i for (i, vv) in caps if vv == v})
+
+    day_budget = len({d for d, _ in buckets})
+    return units, caps, athletes, candidates_of, day_budget
+
+
+def train_predictor(tier: str, seeds: Sequence[int], *, epochs: int = 300,
+                    hidden: int = 32, max_states: int = 1200) -> CompletionPredictor:
+    """在**该档位**的场景分布上训练完成性预测器。
+
+    ⚠️ 必须按档位分训而不是训一个通用预测器：不同档位的单元数、槽数、
+    容量紧张度差别巨大，一个在 HELL 上校准过的偏移量用在 TEAM 上会**过度保守**
+    （把大量分支判成「排不完」），反而增加搜索量。
+    """
+    feats_all: List[np.ndarray] = []
+    labels_all: List[np.ndarray] = []
+    for sd in seeds:
+        scen = generate_super_scenario(tier, seed=sd)
+        units, caps, ath, cands, db = scen_to_plan_inputs(scen)
+        # ⚠️ 必须用**完整单元集**打标签，不能只取前 18 个：
+        #    早期为了压成本只取子集，结果子问题在满容量下**总能排完**，
+        #    标签 100% 是 1，预测器退化成常数（没有区分力）。
+        #    改用 rollout 标签后成本是线性的（每状态一次贪心补全），
+        #    全量 50+ 单元也就几秒 —— 而只有全量才能采到「排不完」的状态。
+        try:
+            f, l = collect_training_pairs(units, candidates_of=cands, caps=caps,
+                                          athletes=ath, day_budget=db,
+                                          max_states=max_states, seed=int(sd))
+        except Exception:                                    # noqa: BLE001
+            continue
+        if len(l):
+            feats_all.append(f)
+            labels_all.append(l)
+    if not feats_all:
+        raise SystemExit(f"档位 {tier} 没有采到任何预测标签，无法训练预测器")
+    feats = np.concatenate(feats_all, axis=0)
+    labels = np.concatenate(labels_all, axis=0)
+    pred = CompletionPredictor(hidden=hidden, seed=0)
+    pred.fit(feats, labels, epochs=epochs)
+    pred.calibrate(feats, labels, quantile=1.0)
+    return pred
+
+
+def predictor_ablation(scen: SuperScenario, pred: Optional[CompletionPredictor],
+                       seed: int = 0) -> Dict[str, float]:
+    """跑「不带预测器」与「带预测器」两次规划，对比**节点扩展数**与解质量。
+
+    这是 arXiv:2606.04860 的核心评价方式：**同解质量下看搜索量**。
+    只看解质量是看不出预测器价值的（两者最终都能找到类似解），
+    价值在于「少检查多少注定失败的候选」—— 那就是 ``expansions``。
+    """
+    units, caps, athletes, cands, db = scen_to_plan_inputs(scen)
+    out: Dict[str, float] = {}
+
+    # ⚠️ **公平口径：同扩展预算**。
+    # 首次成功即跳出的贪心里，「剪枝」必然会改变决策（被剪的候选若其实是首个可行槽，
+    # 就会改选后面的）—— 所以不可能同时做到「省扩展」与「解逐位一致」。
+    # 论文（2606.04860）比的是「同解质量下更少扩展」；在本问题上等价且可实现的
+    # 口径是**同预算比解质量**：预测器每次尝试更省 → 同样预算能跑更多次重启。
+    budget = EXPANSION_BUDGET
+    base = plan_predictive(units, candidates_of=cands, caps=caps, athletes=athletes,
+                           day_budget=db, seed=seed,
+                           max_restarts=MAX_RESTARTS_ABLATION,
+                           expansion_budget=budget)
+    lb = base.log.as_dict()
+    out["plan_expansions"] = float(lb["expansions"])
+    out["plan_cost"] = float(base.value)
+    out["plan_unplaced"] = float(len(base.blocked))
+    out["plan_feasible"] = 1.0 if base.feasible else 0.0
+
+    if pred is not None:
+        guided = plan_predictive(units, candidates_of=cands, caps=caps, athletes=athletes,
+                                 predictor=pred, pred_prune_below=PRED_PRUNE_BELOW,
+                                 day_budget=db, seed=seed,
+                                 max_restarts=MAX_RESTARTS_ABLATION,
+                                 expansion_budget=budget)
+        lg = guided.log.as_dict()
+        out["pred_expansions"] = float(lg["expansions"])
+        out["pred_cost"] = float(guided.value)
+        out["pred_unplaced"] = float(len(guided.blocked))
+        out["pred_feasible"] = 1.0 if guided.feasible else 0.0
+        out["pred_queries"] = float(lg["predictor_queries"])
+        out["pruned"] = float(lg["pruned"])
+        out["pruned_retried"] = float(lg["pruned_retried"])
+        out["pred_restarts"] = float(lg["restarts"])
+        out["plan_restarts"] = float(lb["restarts"])
+        # 收益指标：正数表示预测器真的省了搜索量
+        out["expansion_saving"] = out["plan_expansions"] - out["pred_expansions"]
+        out["expansion_saving_pct"] = (
+            100.0 * out["expansion_saving"] / max(1.0, out["plan_expansions"]))
+        # 「省下的搜索量」相对「多花的预测调用」的性价比
+        out["saving_per_query"] = out["expansion_saving"] / max(1.0, out["pred_queries"])
+        # **同预算下的解质量对比**（这才是可实现的正确口径）：
+        # 预测器省下的扩展会变成更多次重启，于是最终解应当不劣。
+        out["cost_worse"] = 1.0 if out["pred_cost"] > out["plan_cost"] + 1e-9 else 0.0
+        out["cost_better"] = 1.0 if out["pred_cost"] < out["plan_cost"] - 1e-9 else 0.0
+        out["cost_delta"] = out["plan_cost"] - out["pred_cost"]
+
+        # ---- 守卫式组合（生产口径）----
+        # 纯剪枝会因为「改选了后面的候选」而扰动搜索结果，在 HELL/REGULAR 上
+        # 反而略差（未排 9→10）。生产上不能接受这种不确定，所以加一层**取优**：
+        # 最终解 = min{基线解, 预测器解} —— 于是**解质量单调不劣**是**结构保证**，
+        # 不依赖预测器准不准。
+        # 代价是要跑两遍（扩展数相加），这是「确定性」的价钱，必须如实报出来。
+        out["guarded_cost"] = min(out["plan_cost"], out["pred_cost"])
+        out["guarded_expansions"] = out["plan_expansions"] + out["pred_expansions"]
+        out["guarded_not_worse"] = 1.0 if out["guarded_cost"] <= out["plan_cost"] + 1e-9 else 0.0
+        out["guarded_overhead_pct"] = 100.0 * (
+            out["guarded_expansions"] / max(1.0, out["plan_expansions"]) - 1.0)
+    return out
+
+
 def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
-             device: str = "cpu") -> List[Dict[str, object]]:
+             device: str = "cpu",
+             predictors: Optional[Dict[str, CompletionPredictor]] = None
+             ) -> List[Dict[str, object]]:
     model.eval()
     rows: List[Dict[str, object]] = []
     for sd in seeds:
@@ -606,6 +762,11 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
             if c < best_cost:
                 best_cost, best_order = c, cand
         row["ai"] = decode(scen, n, pri_np, None, "custom", order_override=best_order)
+
+        # ---- 规划层 + 完成性预测器对照（arXiv:2606.04860 的核心指标：节点扩展数）----
+        # 预测器**按档位分别训练**（见 train_predictor 的说明）
+        pred = predictors.get(tier) if predictors else None
+        row["planner"] = predictor_ablation(scen, pred, seed=int(sd))
         rows.append(row)
     return rows
 
@@ -620,6 +781,20 @@ def summarize(rows: List[Dict[str, object]]) -> Dict[str, object]:
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     acc.setdefault(k, []).append(float(v))
         out[mode] = {k: round(float(np.mean(v)), 3) for k, v in acc.items()}
+
+    # ---- 规划层消融汇总（每个档位一行，指标是**均值**）----
+    planner: Dict[str, Dict[str, float]] = {}
+    for r in rows:
+        tier = str(r["tier"])
+        pp = r.get("planner") or {}
+        if not pp:
+            continue
+        acc_p = planner.setdefault(tier, {})
+        for k, v in pp.items():                      # type: ignore[union-attr]
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                acc_p.setdefault(k, []).append(float(v))
+    out["planner"] = {t: {k: round(float(np.mean(v)), 3) for k, v in acc.items()}
+                      for t, acc in planner.items()}
     return out
 
 
@@ -630,6 +805,16 @@ def main() -> None:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=os.path.join(ROOT, "models",
                                                  "super_moe_eval.json"))
+    # 规划层消融：训练完成性预测器并与「无预测器」对照节点扩展数。
+    # 默认开启 —— 它是本轮的核心结论产出口，关掉会静默少一整个分析维度。
+    ap.add_argument("--with-predictor", dest="with_predictor",
+                    action="store_true", default=True)
+    ap.add_argument("--no-predictor", dest="with_predictor",
+                    action="store_false", help="跳过预测器消融（加速）")
+    # 预测器用**独立于评测**的种子训练，避免「在评测集上训练 → 收益虚高」。
+    # 评测用 range(seeds)（0..n-1），预测器用 1000+ 起，两组不相交。
+    ap.add_argument("--pred-seeds", type=int, default=4)
+    ap.add_argument("--pred-offset", type=int, default=1000)
     args = ap.parse_args()
 
     if not os.path.exists(args.ckpt):
@@ -657,9 +842,23 @@ def main() -> None:
               f"budget_epochs={meta.get('budget_epochs', '?')} "
               f"satisfied={meta.get('budget_satisfied', '?')}")
 
+    # ---- 按档位训练完成性预测器（用独立种子，避免在评测集上训练）----
+    predictors: Optional[Dict[str, CompletionPredictor]] = None
+    if args.with_predictor:
+        predictors = {}
+        pred_seeds = [args.pred_offset + i for i in range(max(1, args.pred_seeds))]
+        for tier in TIERS:
+            try:
+                pr = train_predictor(tier, pred_seeds)
+                predictors[tier] = pr
+                print(f"[predictor] {tier:<8} 训练集 {len(pred_seeds)} 个场景 → 已校准")
+            except SystemExit as ex:
+                print(f"[predictor] {tier:<8} 跳过：{ex}")
+
     all_rows: List[Dict[str, object]] = []
     for tier in TIERS:
-        rows = evaluate(model, tier, range(args.seeds), args.device)
+        rows = evaluate(model, tier, range(args.seeds), args.device,
+                        predictors=predictors)
         s = summarize(rows)
         all_rows.extend(rows)
         r = s["model"]
@@ -689,6 +888,32 @@ def main() -> None:
               f"碎块 {ai.get('frag_blocks', 0):<4.1f} "
               f"（AI 需 ≤ GA：{ai.get('unplaced', 0)} vs {ga.get('unplaced', 0)} "
               f"{'✅ 通过' if ai.get('unplaced', 0) <= ga.get('unplaced', 0) else '❌ 未通过'}）")
+
+    # ---- 规划层消融：节点扩展数（arXiv:2606.04860 的核心指标）----
+    if predictors:
+        print("\n===== 规划层消融：完成性预测器 vs 无预测器（节点扩展数）=====")
+        print(f"{'档位':<9}{'无预测扩展':>10}{'带预测扩展':>11}{'节省':>8}{'节省%':>8}"
+              f"{'预测调用':>9}{'每次预测省':>11}{'解代价(无/带)':>18}{'未排(无/带)':>12}")
+        gm = summarize(all_rows).get("planner", {})          # type: ignore[arg-type]
+        tot_base = tot_pred = 0.0
+        for tier in TIERS:
+            m = gm.get(tier) if isinstance(gm, dict) else None
+            if not m:
+                continue
+            tot_base += m.get("plan_expansions", 0.0)
+            tot_pred += m.get("pred_expansions", 0.0)
+            print(f"{tier:<9}{m.get('plan_expansions', 0):>10.1f}"
+                  f"{m.get('pred_expansions', 0):>11.1f}"
+                  f"{m.get('expansion_saving', 0):>8.1f}"
+                  f"{m.get('expansion_saving_pct', 0):>7.1f}%"
+                  f"{m.get('pred_queries', 0):>9.1f}"
+                  f"{m.get('saving_per_query', 0):>11.2f}"
+                  f"{str(round(m.get('plan_cost', 0), 1)) + '/' + str(round(m.get('pred_cost', 0), 1)):>18}"
+                  f"{str(round(m.get('plan_unplaced', 0), 1)) + '/' + str(round(m.get('pred_unplaced', 0), 1)):>12}")
+        if tot_base > 0:
+            print(f"{'合计':<9}{tot_base:>10.1f}{tot_pred:>11.1f}"
+                  f"{tot_base - tot_pred:>8.1f}"
+                  f"{100.0 * (tot_base - tot_pred) / tot_base:>7.1f}%")
 
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(all_rows, fh, ensure_ascii=False, indent=2)

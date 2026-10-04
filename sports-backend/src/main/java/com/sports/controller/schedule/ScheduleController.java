@@ -1,6 +1,7 @@
 package com.sports.controller.schedule;
 
 import com.sports.common.web.ApiResponse;
+import com.sports.service.schedule.PredictivePlannerService;
 import com.sports.service.schedule.ScheduleProgressTracker;
 import com.sports.service.schedule.ScheduleService;
 import com.sports.service.schedule.ScheduleTaskExecutor;
@@ -27,6 +28,7 @@ public class ScheduleController {
     private final ScheduleService scheduleService;
     private final ScheduleProgressTracker progressTracker;
     private final ScheduleTaskExecutor taskExecutor;
+    private final PredictivePlannerService predictivePlannerService;
 
     /** 查看当前赛程 */
     @GetMapping
@@ -39,6 +41,26 @@ public class ScheduleController {
     public ApiResponse<?> autoSchedule(@RequestBody(required = false) Map<String, Object> config) {
         log.info("自动编排项目赛程: config={}", config);
         return ApiResponse.success("赛程编排完成", scheduleService.autoSchedule(config));
+    }
+
+    /**
+     * 规划层**预演**（只读，不落库）：确定性启发 + 前向剪枝 + 局部回退，秒级给出方案与诊断。
+     *
+     * <p>为什么单独开一个预演端点：优化档与 AI 档都要跑秒级到分钟级，而「能不能排下、
+     * 卡在哪」这个问题其实秒级就能回答。预演把这件事独立出来，用户可以：</p>
+     * <ul>
+     *   <li>先看可行性，再决定要不要花时间跑重档；</li>
+     *   <li>拿到**节点扩展数 / 回退 / 修复 / 重启**这些诊断数字，把「排不出来」变成可定位的问题；</li>
+     *   <li>对比不同配置（天数、时段、并行数）下的容量够不够。</li>
+     * </ul>
+     *
+     * <p>返回中的 {@code violations} 恒应为空 —— 它只承载「非法落位」（超容/兼项）。
+     * 一旦非空即说明规划器产出了非法方案，属缺陷；「排不下」一律走 {@code unplaced}。</p>
+     */
+    @PostMapping("/plan")
+    public ApiResponse<?> planPreview(@RequestBody(required = false) Map<String, Object> config) {
+        log.info("规划层预演: config={}", config);
+        return ApiResponse.success(predictivePlannerService.plan(config));
     }
 
     /**

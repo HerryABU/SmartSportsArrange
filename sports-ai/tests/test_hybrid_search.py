@@ -244,3 +244,81 @@ def test_collect_training_pairs_all_success_when_roomy():
     feats, labels = collect_training_pairs(
         units, candidates_of=lambda x: cands[str(x.key)], caps=caps, max_states=64)
     assert len(labels) > 0 and labels.min() == 1.0
+
+# ----------------------------------------------------------------------
+# ⑦ 截断与剪枝（本轮修的两个静默缺陷）
+# ----------------------------------------------------------------------
+def test_budget_exhaustion_is_not_infeasibility():
+    """**预算用尽不能当成「不可行」**（本轮最贵的一条教训）。
+
+    第一版 `collect_training_pairs` 在 `len(feats) >= max_states` 时
+    `return False`，而 `False` 会沿递归上传，把整条祖先链标成「排不完」——
+    实测 HELL 档采到 1182 个样本、**标签 100% 是 0**，
+    预测器因此退化成常数（零区分力），在规划层里只是个固定偏移。
+
+    这里用一个**宽松到必然可完成**的场景 + 极小的 `max_states`：
+    只要还有确定的样本，标签就必须是 1。
+    若还是全 0，说明「预算耗尽」又被当成了「不可行」。
+    """
+    units = [u("a"), u("b"), u("c")]
+    caps = {(i, "V0"): 999 for i in range(3)}
+    cands = {k: [0, 1, 2] for k in ("a", "b", "c")}
+    feats, labels = collect_training_pairs(
+        units, candidates_of=lambda x: cands[str(x.key)], caps=caps,
+        max_states=3, n_trials=2)
+    assert len(labels) > 0, "至少要采到一些确定样本"
+    assert labels.max() == 1.0, (
+        "宽松场景下的确定样本必须标为可完成；全 0 说明「预算耗尽」又被当成了不可行")
+
+
+def test_budget_exhaustion_keeps_labels_over_zero_ratio():
+    """截断样本应被**丢弃**而不是标成 0：0/1 比例必须反映真实分布。"""
+    units = [u("a"), u("b")]
+    caps = {(0, "V0"): 60}                      # 只放得下一个 → 存在真不可完成
+    cands = {"a": [0], "b": [0]}
+    feats, labels = collect_training_pairs(
+        units, candidates_of=lambda x: cands[str(x.key)], caps=caps, max_states=2)
+    assert len(labels) > 0
+    assert 0.0 in set(labels), "真不可完成的状态必须被标 0（失败也是信号）"
+
+
+def test_deferred_pruning_never_loses_solution():
+    """保守剪枝的「延迟重试」必须保证**不因剪枝而丢解**。
+
+    把阈值拉到 1.0（等于「把所有候选都剪掉」这种最极端情况）——
+    因为被剪的候选会在其它候选全失败后回来重试，
+    所以结果必须与不剪枝**完全一致**。
+    """
+    units = [u("A", dur=60), u("B", dur=40), u("C", dur=60)]
+    caps = {(0, "V0"): 100, (1, "V0"): 100}
+    cands = {"A": [1, 0], "B": [0], "C": [1]}
+
+    class AlwaysHopeless:
+        """永远说「排不完」的假预测器：最极端的剪枝。"""
+        def __call__(self, feat):
+            return 0.0
+
+    base = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                           caps=caps, heuristic_order=[0, 1, 2], max_backtracks=500)
+    pruned = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                             caps=caps, heuristic_order=[0, 1, 2], max_backtracks=500,
+                             predictor=AlwaysHopeless(), pred_prune_below=1.0)
+    assert pruned.feasible == base.feasible
+    assert pruned.slot_of == base.slot_of, "延迟重试必须让结果与不剪枝一致"
+    assert pruned.log.pruned > 0, "应当确实发生过剪枝（否则这个测试没测到东西）"
+    assert pruned.log.pruned_retried > 0, "被剪的候选应当被追回来重试"
+
+
+def test_pruning_threshold_off_by_default():
+    """未给阈值时不发生剪枝（避免默认行为被悄悄改掉）。"""
+    units = [u("a"), u("b")]
+    caps = {(0, "V0"): 999, (1, "V0"): 999}
+    cands = {"a": [0, 1], "b": [0, 1]}
+
+    class Noisy:
+        def __call__(self, feat):
+            return 0.0
+
+    r = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)], caps=caps,
+                        predictor=Noisy())
+    assert r.log.pruned == 0, "没给 pred_prune_below 就不该剪枝"

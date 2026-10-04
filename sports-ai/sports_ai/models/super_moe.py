@@ -553,6 +553,38 @@ class GlobalBlock(nn.Module):
         return h * mask.unsqueeze(-1)
 
 
+# 高估惩罚倍数。1.0 = 普通 MSE；>1 = 偏向低估。
+# 出处：arXiv:2606.04860 —— 用 MSE 训练的代价/价值网络会**系统性高估**，
+# 破坏 A*/分支定界的**可采纳性**（admissible 要求「绝不高估代价」），
+# 结果把最优分支提前剪掉。修法是「非对称损失（重罚高估）+ 验证集校准偏移」。
+# 本文件先把非对称损失用在两个**预测类**输出头上（days / quality），
+# 因为它们在规划层里被当作「下界/保守估计」使用。
+ASYM_OVER_PENALTY = 3.0
+
+
+def asymmetric_mse(pred: "torch.Tensor", target: "torch.Tensor",
+                   beta: float = ASYM_OVER_PENALTY) -> "torch.Tensor":
+    """非对称 MSE：**高估**（pred > target）罚 ``beta`` 倍，低估罚 1 倍。
+
+    ⚠️ 为什么不用普通 MSE：训练目标（贪心落位的结果）本身只是**一个可行解**，
+    不是最优解 —— 它给出的工期/质量是「参考值」而非上界。普通 MSE 会让模型
+    对它做**无偏**拟合，于是有一半概率输出高于参考值的数；而在规划层里，
+    高于参考值的预测会被读成「这里还有空间/这个方案更好」，
+    把搜索引向实际上更差的区域。
+
+    加了这项后，``days_head`` 的预测会偏保守（倾向于「工期不会更短」），
+    ``quality_head`` 会偏保守（倾向于「不轻易说方案好」）——
+    即两个头都变成**可信的下界式信号**，符合可采纳性要求。
+
+    ``beta`` 越大越保守。3.0 是个经验值：实测既能把高估压下去，
+    又不会让输出塌到常数（塌成常数时 ``asym_mse`` 的分位数校准会失去区分力）。
+    """
+    d = pred - target
+    one = torch.ones_like(d)
+    w = torch.where(d > 0, one * beta, one)
+    return (w * d * d).mean()
+
+
 class SuperScheduleMoE(nn.Module):
     """统一编排超级模型（深层版）。"""
 
@@ -685,11 +717,13 @@ class SuperScheduleMoE(nn.Module):
             # ⚠️ 修掉一个真缺口：days_head 此前**从未被训练过** ——
             #    forward 里算出来了，training_loss 却把它丢弃（`_`），
             #    等于「工期预测」这个能力一直是个随机初始化的头。
-            l_days = ((days_estimate.squeeze(-1) - days_target.squeeze(-1)) ** 2).mean()
+            # 非对称：高估工期罚更重 → 工期预测成为**保守下界**（可采纳）
+            l_days = asymmetric_mse(days_estimate.squeeze(-1), days_target.squeeze(-1))
             loss = loss + 0.3 * l_days
             parts["days_mse"] = float(l_days.item())
         if quality_target is not None:
-            l_q = ((quality_score.squeeze(-1) - quality_target.squeeze(-1)) ** 2).mean()
+            # 非对称：高估质量罚更重 → 不轻易宣称「方案好」（保守）
+            l_q = asymmetric_mse(quality_score.squeeze(-1), quality_target.squeeze(-1))
             loss = loss + 0.3 * l_q
             parts["quality_mse"] = float(l_q.item())
         return loss, parts

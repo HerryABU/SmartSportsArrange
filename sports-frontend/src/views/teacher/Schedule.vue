@@ -73,6 +73,69 @@
       </template>
     </el-alert>
 
+    <!-- 规划层预演结果：确定性启发 + 前向剪枝 + 局部回退，秒级给出方案与诊断 -->
+    <el-dialog v-model="planDialog" title="规划预演（只读，不影响现有赛程）" width="860px">
+      <template v-if="planResult">
+        <el-alert :type="planResult.feasible ? 'success' : 'warning'" show-icon :closable="false"
+                  style="margin-bottom: 12px">
+          <template #title>
+            {{ planResult.feasible
+              ? `可行：${planResult.assignment?.length || 0} 个单元全部排下`
+              : `未完全排下：${planResult.unplaced || 0} 个单元排不下（共 ${planResult.nUnits} 个）` }}
+          </template>
+          <template #default>
+            <span v-if="planResult.reason">{{ planResult.reason }}</span>
+            <span v-else>
+              耗时 {{ planResult.elapsedMs }}ms · 单元 {{ planResult.nUnits }} · 时段 {{ planResult.nSlots }}
+              · 代价 {{ planResult.cost }}
+            </span>
+          </template>
+        </el-alert>
+
+        <!-- 非法落位必须恒为 0：它是「方案本身错」的信号，与「排不下」是两回事 -->
+        <el-alert v-if="(planResult.violations || []).length" type="error" show-icon :closable="false"
+                  style="margin-bottom: 12px">
+          <template #title>检测到 {{ planResult.violations.length }} 处非法落位（超容 / 兼项撞车）——请上报缺陷</template>
+          <template #default>
+            <div v-for="(v, i) in planResult.violations.slice(0, 5)" :key="i">· {{ v }}</div>
+          </template>
+        </el-alert>
+
+        <el-descriptions :column="4" border size="small" style="margin-bottom: 12px">
+          <el-descriptions-item label="节点扩展数">{{ planResult.diagnostics?.expansions }}</el-descriptions-item>
+          <el-descriptions-item label="落位次数">{{ planResult.diagnostics?.continues }}</el-descriptions-item>
+          <el-descriptions-item label="回退">{{ planResult.diagnostics?.backtracks }}</el-descriptions-item>
+          <el-descriptions-item label="修复">{{ planResult.diagnostics?.repairs }}</el-descriptions-item>
+          <el-descriptions-item label="重启">{{ planResult.diagnostics?.restarts }}</el-descriptions-item>
+          <el-descriptions-item label="让位回滚">{{ planResult.diagnostics?.rollbacks }}</el-descriptions-item>
+          <el-descriptions-item label="剪枝">{{ planResult.diagnostics?.pruned }}</el-descriptions-item>
+          <el-descriptions-item label="剪后重试">{{ planResult.diagnostics?.prunedRetried }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div v-if="(planResult.unplacedKeys || []).length" style="margin-bottom: 12px">
+          <b style="color: #b88230">排不下的单元：</b>
+          <el-tag v-for="k in planResult.unplacedKeys.slice(0, 12)" :key="k" size="small" type="warning"
+                  effect="plain" style="margin: 2px">{{ k }}</el-tag>
+          <span v-if="planResult.unplacedKeys.length > 12" style="font-size: 12px; color: #909399">
+            等 {{ planResult.unplacedKeys.length }} 个
+          </span>
+        </div>
+
+        <el-table v-if="(planResult.assignment || []).length" :data="planResult.assignment" size="small"
+                  max-height="320" stripe>
+          <el-table-column prop="day" label="天" width="60" />
+          <el-table-column prop="slotName" label="时段" width="90" />
+          <el-table-column prop="eventCode" label="项目编码" width="110" />
+          <el-table-column prop="eventName" label="项目" min-width="130" />
+          <el-table-column prop="grade" label="年级" width="90" />
+          <el-table-column prop="venue" label="场地" min-width="110" />
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="planDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <el-alert type="info" show-icon :closable="false" style="border-radius: 10px">
       <template #title>
         编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；
@@ -108,6 +171,8 @@
     <el-card v-if="!items.length" shadow="never" class="empty-card">
       <el-empty description="暂无赛程，先配置运动会日程，再点击「一键编排赛程」">
         <el-button type="primary" :icon="MagicStick" @click="doAutoSchedule">立即编排</el-button>
+        <!-- 预演：秒级回答「排不排得下、卡在哪」，不落库不覆盖现有赛程 -->
+        <el-button :icon="DataAnalysis" @click="doPlanPreview">规划预演</el-button>
       </el-empty>
     </el-card>
 
@@ -717,7 +782,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, Refresh, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar } from '@element-plus/icons-vue'
+import { MagicStick, Download, Refresh, RefreshLeft, EditPen, Setting, Plus, Delete, Top, Bottom, Search, Remove, Calendar, DataAnalysis } from '@element-plus/icons-vue'
 import axios from 'axios'
 import request from '@/utils/request'
 import { apiBase } from '@/utils/base'
@@ -859,6 +924,36 @@ const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
  * 但前端一直只传 `{ mode }`，于是「兼项缓冲」「对抗轮数」在界面上根本调不动 ——
  * 用户诉求里的「所有约束条件均可作为输入」正是卡在这一层。
  */
+// ---------------------------------------------------------------------------
+// 规划层预演：秒级回答「排不排得下、卡在哪」，**只读不落库**
+// 后端 /api/schedule/plan 走确定性启发 + 前向剪枝 + 局部回退，
+// 返回 unmatched/violations/diagnostics 三组信息：
+//   · unplaced    —— 排不下（容量/兼项约束导致），是「客观差多少」
+//   · violations  —— 非法落位（超容/兼项撞），**必须恒为 0**；非 0 即是缺陷
+//   · diagnostics —— 节点扩展数/回退/修复/重启，把「排不出来」变成可定位的数字
+// ---------------------------------------------------------------------------
+const planDialog = ref(false)
+const planResult = ref(null)
+const planLoading = ref(false)
+
+async function doPlanPreview () {
+  planLoading.value = true
+  try {
+    const res = await request.post('/schedule/plan', arrangePayload())
+    planResult.value = res
+    planDialog.value = true
+    if (!res.feasible) {
+      ElMessage.warning(`预演未完全排下：${res.unplaced || 0} 个单元排不下`)
+    } else {
+      ElMessage.success(`预演可行（${res.assignment?.length || 0} 个单元，耗时 ${res.elapsedMs}ms）`)
+    }
+  } catch (e) {
+    ElMessage.error('规划预演失败：' + (e?.message || e))
+  } finally {
+    planLoading.value = false
+  }
+}
+
 function arrangePayload() {
   return {
     mode: arrangeMode.value,
