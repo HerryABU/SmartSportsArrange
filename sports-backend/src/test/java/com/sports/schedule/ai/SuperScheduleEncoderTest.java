@@ -101,10 +101,22 @@ class SuperScheduleEncoderTest {
         assertEquals(7, SuperScheduleEncoder.E_TEAM);
         assertEquals(8, SuperScheduleEncoder.N_EDGES);
         assertEquals(20, SuperScheduleEncoder.NODE_FEAT_DIM);
-        assertEquals(9, SuperScheduleEncoder.N_TASKS);
+        assertEquals(17, SuperScheduleEncoder.N_TASKS);
+        assertEquals(11, SuperScheduleEncoder.N_UNIT_TASKS);
         assertEquals(4, SuperScheduleEncoder.N_FORMATS);
-        // 合并裁判编排 / 教师规避后：9 → 11 类任务（顺序即 ONNX 输出通道号）
-        assertEquals(11, SuperScheduleEncoder.taskNames().length);
+        // 任务数演进：9（初版）→ 11（合并裁判编排 / 教师规避）
+        //            → 17（本轮合并 GAN 生成/判别 + refiner + diffusion + lane_advisor + forecast）
+        // 顺序即 ONNX 输出通道号，**只允许在尾部追加**。
+        assertEquals(17, SuperScheduleEncoder.taskNames().length);
+        assertEquals(SuperScheduleEncoder.N_TASKS, SuperScheduleEncoder.taskNames().length,
+                "任务名个数与 N_TASKS 必须一致（双端契约）");
+        // 末 6 位是能力专家，名称必须逐字对得上 Python 侧 TASK_NAMES
+        assertEquals("方案生成", SuperScheduleEncoder.taskNames()[11]);
+        assertEquals("方案精修", SuperScheduleEncoder.taskNames()[12]);
+        assertEquals("扩散去噪", SuperScheduleEncoder.taskNames()[13]);
+        assertEquals("道次派遣", SuperScheduleEncoder.taskNames()[14]);
+        assertEquals("工期预测", SuperScheduleEncoder.taskNames()[15]);
+        assertEquals("方案判别", SuperScheduleEncoder.taskNames()[16]);
     }
 
     @Test
@@ -256,10 +268,25 @@ class SuperScheduleEncoderTest {
         assertTrue(a.isPresent() && b.isPresent(), "模型应可用");
 
         assertEquals(4, a.get().n(), "输出长度必须等于单元数");
-        assertEquals(11, a.get().taskProbs().length, "任务权重应为 11 维（含裁判编排 / 教师规避）");
+        assertEquals(SuperScheduleEncoder.N_TASKS, a.get().taskProbs().length,
+                "任务权重应为 17 维（11 任务专家 + 6 能力专家）");
         assertEquals(4, a.get().formatLogits().length, "赛制应为 4 维");
         assertEquals(4, a.get().slotLogits().length, "槽位 logits 应为 [N][K]");
         assertEquals(SuperScheduleEncoder.MAX_SLOTS, a.get().slotLogits()[0].length);
+
+        // ③ 本轮新增的两个输出（合并 lane_advisor / GAN 判别器）必须真的存在。
+        //    ⚠️ 断言的是「形状与取值范围」，不是「数值等于多少」——
+        //    数值随权重变化，写死会在每次重训后假失败。
+        assertTrue(a.get().hasLaneAdvice(),
+                "模型应输出 lane_logits（道次派遣，替代 lane_advisor）");
+        assertEquals(4, a.get().laneLogits().length, "道次 logits 应为 [N][K]");
+        assertEquals(SuperScheduleEncoder.MAX_SLOTS, a.get().laneLogits()[0].length);
+        assertEquals(4, a.get().laneSlots().length, "道次派遣建议应有 N 条");
+        assertTrue(a.get().qualityScore() > 0.0 && a.get().qualityScore() < 1.0,
+                "质量分经 Sigmoid 应落在开区间 (0,1)，实际 " + a.get().qualityScore());
+        assertTrue(java.util.Set.of("good", "fair", "poor").contains(a.get().qualityLevel()),
+                "质量分级只应有 good/fair/poor 三档");
+        assertTrue(a.get().daysEstimate() >= 0.0, "工期预测不应为负");
 
         boolean differs = false;
         double[] pa = a.get().priority();

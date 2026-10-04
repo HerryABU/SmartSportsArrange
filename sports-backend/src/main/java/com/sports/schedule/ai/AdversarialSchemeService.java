@@ -93,9 +93,19 @@ public class AdversarialSchemeService {
         return m;
     }
 
-    /** 一次推理时自对抗的结果。 */
+    /**
+     * 一次推理时自对抗的结果。
+     *
+     * @param rounds    **被采纳**的候选来自第几轮（0 = 基线即最优）
+     * @param roundsRun **实际执行**的对抗轮数
+     *
+     * <p>⚠️ 这两个必须分开：只有 {@code rounds} 时，「一轮都没跑」和
+     * 「跑了 4 轮但没有候选优于基线」会得到同一个值 0 —— 调用方无法区分
+     * 「功能没生效」与「模型已经很好」。项目里 {@code LnsImprover.Report}
+     * 早就把 {@code rounds / acceptedRounds} 分开报了，这里对齐同一口径。</p>
+     */
     public record SchemeResult(int[] slots, double dScore, double conflict, double conflictBefore,
-                               boolean refined, int rounds) {
+                               boolean refined, int rounds, int roundsRun) {
         /** 综合得分：判别器评分越高、残余冲突越低越好。 */
         public double score(double lambda) {
             return dScore - lambda * conflict;
@@ -125,8 +135,9 @@ public class AdversarialSchemeService {
             float[] baseLogits = runGenerator(enc, new float[n * NOISE_DIM], forbid);
             int[] baseSlots = argmaxSlots(baseLogits, n);
             double baselineConflict = hardConflict(baseSlots, enc.adj, n);
+            int plannedRounds = Math.max(1, rounds);
             SchemeResult best = new SchemeResult(baseSlots, runDiscriminator(enc, oneHot(baseLogits, n)),
-                    baselineConflict, baselineConflict, false, 0);
+                    baselineConflict, baselineConflict, false, 0, plannedRounds);
 
             for (int r = 0; r < Math.max(1, rounds); r++) {
                 float[] z = gaussian(n * NOISE_DIM, rng);
@@ -141,7 +152,8 @@ public class AdversarialSchemeService {
                 int[] slots = argmaxSlots(usedLogits, n);
                 double conflict = hardConflict(slots, enc.adj, n);
                 double dScore = runDiscriminator(enc, scheme);
-                SchemeResult cand = new SchemeResult(slots, dScore, conflict, baselineConflict, refined, r + 1);
+                SchemeResult cand = new SchemeResult(slots, dScore, conflict, baselineConflict,
+                        refined, r + 1, plannedRounds);
                 // 择优准则：**残余冲突优先**（编排的核心目标），冲突相同再看判别器评分。
                 if (cand.conflict() < best.conflict() - 1e-9
                         || (Math.abs(cand.conflict() - best.conflict()) <= 1e-9
@@ -149,8 +161,8 @@ public class AdversarialSchemeService {
                     best = cand;
                 }
             }
-            log.info("推理时自对抗: {} 轮，基线冲突={} → 最终冲突={}, D={}, 精修={}",
-                    rounds, String.format("%.3f", best.conflictBefore()),
+            log.info("推理时自对抗: 执行 {} 轮、采纳自第 {} 轮，基线冲突={} → 最终冲突={}, D={}, 精修={}",
+                    best.roundsRun(), best.rounds(), String.format("%.3f", best.conflictBefore()),
                     String.format("%.3f", best.conflict()),
                     String.format("%.3f", best.dScore()), best.refined());
             return Optional.of(best);

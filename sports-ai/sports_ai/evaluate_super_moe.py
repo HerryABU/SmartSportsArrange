@@ -477,7 +477,7 @@ def mc_uncertainty(model, nf, ab, tm, mk, gf, samples: int = 5) -> np.ndarray:
     try:
         with torch.no_grad():
             for _ in range(max(2, samples)):
-                pri, _slot, _t, _f, _d = model(nf, ab, tm, mk, gf)
+                pri, _slot, _t, _f, _d, _lane, _qual = model(nf, ab, tm, mk, gf)
                 acc.append(pri[0].detach().cpu().numpy())
     finally:
         model.eval()
@@ -567,7 +567,7 @@ def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
         assert nf.dim() == 3, f"node_feat 应为 [B,N,20]，实际 {tuple(nf.shape)}"
         assert ab.dim() == 4, f"adj 应为 [B,E,N,N]，实际 {tuple(ab.shape)}"
         with torch.no_grad():
-            pri, slot, _task, _fmt, _days = model(nf, ab, tm, mk, gf)
+            pri, slot, _task, _fmt, _days, _lane, _qual = model(nf, ab, tm, mk, gf)
         pri_np = pri[0].cpu().numpy()
         slot_np = slot[0].cpu().numpy()
 

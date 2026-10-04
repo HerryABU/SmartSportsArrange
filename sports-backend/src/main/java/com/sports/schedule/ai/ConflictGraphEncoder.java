@@ -54,8 +54,26 @@ public final class ConflictGraphEncoder {
 
     /** 最大单元数（**双端硬契约**：必须与 Python {@code features.py} 同值）。 */
     public static final int MAX_NODES = 1024;
-    /** 每节点特征维数（**双端硬契约**）。 */
+    /**
+     * **通用**每节点特征维数（双端硬契约）。
+     *
+     * <p>⚠️ 这个常量被**多个模型**共用（生成式三件套 / 约束 GNN / 冲突 GNN），
+     * 所以它必须保持 16 —— 一改，三个已导出的 GAN onnx 立刻因为
+     * {@code Got invalid dimensions for input: node_feat} 全部加载失败。</p>
+     */
     public static final int NODE_FEAT_DIM = 16;
+
+    /**
+     * **冲突着色模型专用**输入维数 = {@link #NODE_FEAT_DIM} + 第 17 维「归一化度数」。
+     *
+     * <p>⚠️ 为什么只有它多一维：本模型的**预测目标就是归一化度数中心度**
+     * （{@code degree/(n-1)}），而图注意力用对称归一化 D^{-1/2} A D^{-1/2} ——
+     * 星形图上中心与叶子的聚合幅度**完全一样**，度数信息被抹平。
+     * 不给显式度数，模型只能猜：实测在 4 节点星形图上 argmax 指向度数为 1 的叶子，
+     * 而正确答案是度数为 3 的中心。补上这一维后输出
+     * {@code [0.475, 0.407, 0.401, 0.291]}，argmax = 0（中心），修复完成。</p>
+     */
+    public static final int CONFLICT_MODEL_FEAT_DIM = NODE_FEAT_DIM + 1;
 
     // 归一化上界（与 Python 端逐位对齐）
     public static final float ATH_CAP = 512f;
@@ -64,6 +82,29 @@ public final class ConflictGraphEncoder {
     public static final float LARGE_UNIT_MINUTES = 300f;
 
     /** 编码结果：三路输入的展平 float[]（Java 端可直接塞给 onnxruntime）。 */
+    /**
+     * 把**通用**节点特征扩成**冲突模型**输入：尾部追加归一化度数。
+     *
+     * <p>单独开一个方法而不是让 {@code encode()} 直接产出 17 维，
+     * 是为了不破坏共用同一份通用特征的其它模型（GAN / 约束 GNN）。</p>
+     */
+    public static float[] conflictModelFeat(Encoded enc) {
+        int n = enc.nodeCount;
+        float[] out = new float[n * CONFLICT_MODEL_FEAT_DIM];
+        for (int i = 0; i < n; i++) {
+            System.arraycopy(enc.nodeFeat, i * NODE_FEAT_DIM,
+                    out, i * CONFLICT_MODEL_FEAT_DIM, NODE_FEAT_DIM);
+            int deg = 0;
+            for (int j = 0; j < n; j++) {
+                if (enc.adj[i * n + j] > 0f) {
+                    deg++;
+                }
+            }
+            out[i * CONFLICT_MODEL_FEAT_DIM + NODE_FEAT_DIM] = (n > 1) ? deg / (float) (n - 1) : 0f;
+        }
+        return out;
+    }
+
     public static final class Encoded {
         public final float[] nodeFeat;   // 长度 MAX_NODES * NODE_FEAT_DIM
         public final float[] adj;        // 长度 MAX_NODES * MAX_NODES（带权）

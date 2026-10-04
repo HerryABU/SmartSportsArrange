@@ -204,10 +204,14 @@ public class OnnxInferenceService {
         if (n <= 0) {
             return new float[0];
         }
-        long[] nodeShape = {1, n, ConflictGraphEncoder.NODE_FEAT_DIM};
+        // ⚠️ 冲突模型吃 **17 维**（通用 16 + 归一化度数），不是通用的 16 维。
+        //    这里必须用 conflictModelFeat(...) 扩展，否则 onnxruntime 直接报
+        //    "Got invalid dimensions for input: node_feat"。
+        long[] nodeShape = {1, n, ConflictGraphEncoder.CONFLICT_MODEL_FEAT_DIM};
         long[] adjShape = {1, n, n};
         long[] maskShape = {1, n};
-        try (OnnxTensor nt = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.nodeFeat), nodeShape);
+        try (OnnxTensor nt = OnnxTensor.createTensor(env,
+                FloatBuffer.wrap(ConflictGraphEncoder.conflictModelFeat(enc)), nodeShape);
              OnnxTensor at = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.adj), adjShape);
              OnnxTensor mt = OnnxTensor.createTensor(env, FloatBuffer.wrap(enc.mask), maskShape)) {
             Map<String, OnnxTensor> inputs = new LinkedHashMap<>();

@@ -18,7 +18,7 @@
 并在 ``scenarios`` 里保留原始值供 Java 端解释——**模型只吃归一化值，
 决策含义要靠 Java 端那一侧翻译**，两边必须同步。
 
-## 九类编排任务（MoE 的专家划分依据）
+## 十七类编排任务（MoE 的专家划分依据）
 
 ``TASK_*`` 常量与模型的专家一一对应：
 
@@ -31,6 +31,14 @@
 6 CAPACITY 装箱/容量
 7 MAKESPAN 工期压缩
 8 RESECOND 二次编排（淘汰赛后重排道次）
+9 REFEREE  裁判编排
+10 TEACHER 教师（行政）规避
+-------- 以上 11 位是「任务专家」，按**节点**路由 --------
+11 GENERATE  方案生成    \ 16 QUALITY 方案判别
+12 REFINE    方案精修    /  这 6 位是「能力专家」，按**实例（图级）**路由，
+13 DIFFUSION 扩散去噪    \ 分别替代此前独立服役的
+14 DISPATCH  道次派遣    /  GAN(生成/判别) + refiner + diffusion +
+15 FORECAST  工期预测       lane_advisor + forecast 共 7 个模型
 """
 
 from __future__ import annotations
@@ -55,7 +63,37 @@ TASK_RESECOND = 8
 #    常量改了必须连着重训（专家数变化会改权重形状，不重训 → Java 静默回退规则）。
 TASK_REFEREE = 9
 TASK_TEACHER = 10
-N_TASKS = 11
+
+# ---- 第 12~17 位：「能力专家」（本轮把 7 个独立模型合并进来）----
+# 这六位**不是可排单元**，而是作用在整个实例上的**算法能力**，所以它们在 MoE 里
+# 走**图级路由**（见 super_moe.MultiGateMoE 的异构门控）：任务专家回答
+# 「这个节点该先排还是后排」，能力专家回答「这个实例需要多少生成/精修/派遣/预测」。
+# 这是 Graph-MoE 综述里「路由粒度」那一轴的落地——同构专家只会摊薄容量，
+# 异构专家（不同输入依赖）才带来分工。
+#
+#   常量              语义        替代的原独立模型
+#   ----------------  ----------  ----------------------------------------
+#   TASK_GENERATE     方案生成    scheme_generator.onnx      (GAN 生成器)
+#   TASK_REFINE       方案精修    scheme_refiner.onnx
+#   TASK_DIFFUSION    扩散去噪    scheme_diffusion.onnx
+#   TASK_DISPATCH     道次派遣    lane_advisor.onnx
+#   TASK_FORECAST     工期预测    forecast_direct.onnx + forecast_mimo.onnx
+#   TASK_QUALITY      方案判别    scheme_discriminator.onnx  (GAN 判别器)
+#
+# ⚠️ 铁律（与上一次 9→11 同样的坑）：改了 N_TASKS 就必须**连着重训**，
+#    专家数变化会改 moe/gate/输出头的权重形状；不重训则 load_state_dict 形状
+#    不匹配，而 Java 侧的表现是**静默回退规则**（不报错、只是 AI 不生效）。
+TASK_GENERATE = 11
+TASK_REFINE = 12
+TASK_DIFFUSION = 13
+TASK_DISPATCH = 14
+TASK_FORECAST = 15
+TASK_QUALITY = 16
+
+# 有真实输入单元的「任务专家」个数：0..N_UNIT_TASKS-1 走**节点级**路由；
+# 其余（能力专家）走**图级**路由。二者共享同一套专家池与负载均衡。
+N_UNIT_TASKS = 11
+N_TASKS = 17
 
 TASK_NAMES = {
     TASK_PROJECT: "项目编排",
@@ -69,6 +107,12 @@ TASK_NAMES = {
     TASK_RESECOND: "二次编排",
     TASK_REFEREE: "裁判编排",
     TASK_TEACHER: "教师规避",
+    TASK_GENERATE: "方案生成",
+    TASK_REFINE: "方案精修",
+    TASK_DIFFUSION: "扩散去噪",
+    TASK_DISPATCH: "道次派遣",
+    TASK_FORECAST: "工期预测",
+    TASK_QUALITY: "方案判别",
 }
 
 # ---- 边类型（顺序即 ONNX 通道号，双端契约）----
@@ -225,13 +269,19 @@ def add_shadow_tasks(scen: "SuperScenario", rng) -> None:
     额外任务类型存在 —— 目的是让超级模型的 MoE 专家覆盖这两类编排，
     从而在同一个实例里权衡「项目 vs 裁判 vs 教师时间」的耦合。
     """
+    # ⚠️ 影子单元的"运动员"必须**互不相同**：
+    #    它们代表不同的裁判组 / 不同的教师，语义上不可能是同一个人。
+    #    早期写成 `rng.randint(1000, 1011)` 会随机让两个裁判组共享同一个 ID，
+    #    而所有影子单元又被强制放进**同一个 V0 槽** —— 于是"同槽同人"这条
+    #    硬约束让它们**永远排不下**（实测每次都有 2~3 个影子单元成为未排钉子户）。
+    #    改成按序号取唯一 ID 后，影子任务不再自相冲突。
     n_ref = rng.randint(2, 4)
     for i in range(n_ref):
         scen.units.append(SuperUnit(
             key=f"REF{i}", name=f"裁判派遣组{i + 1}", task=TASK_REFEREE,
             venue="V0", pool="REF", group_key="REF_GROUP",
             duration=rng.randint(20, 39), interval=rng.randint(5, 14),
-            athletes=[rng.randint(1000, 1011) for _ in range(rng.randint(1, 2))],
+            athletes=[100000 + i],                     # 每个裁判组一个唯一 ID
         ))
     n_tch = rng.randint(2, 3)
     for i in range(n_tch):
@@ -239,13 +289,21 @@ def add_shadow_tasks(scen: "SuperScenario", rng) -> None:
             key=f"TCH{i}", name=f"教师规避时段{i + 1}", task=TASK_TEACHER,
             venue="V0", pool="TCH", group_key="TCH_GROUP",
             duration=rng.randint(15, 34), interval=rng.randint(5, 14),
-            athletes=[rng.randint(2000, 2007) for _ in range(rng.randint(1, 2))],
+            athletes=[200000 + i],                     # 每位教师一个唯一 ID
         ))
-    # 给影子任务补窗口：复用既有场地/时段口径，避免引入新的编排契约
+    # 给影子任务补窗口：复用既有场地/时段口径，避免引入新的编排契约。
+    # ⚠️ 容量必须**按影子任务的实际需求算**，不能拍一个常数：
+    #    原先写死 `max(120, w0.capacity // 2)`，而影子任务总需求常达 200+ 分钟
+    #    （2~4 个裁判组 ×20~39 分 + 2~3 个教师时段 ×15~34 分）→
+    #    窗口容量客观装不下。当时靠 `greedy_targets` 的「放不下就退到最大桶」
+    #    兜住了，但那是**超容标签**：模型会学到「超容也算排下了」，
+    #    而确定性校验器（与线上一致）会判它不可行 —— 训练与部署的可行性口径就此分叉。
+    #    现在按需求分配，并留 20% 余量。
     if scen.windows:
+        shadow_need = sum(int(u.duration) + int(u.interval) for u in scen.units if u.key.startswith(("REF", "TCH")))
         w0 = scen.windows[0]
         scen.windows.append(SuperWindow(day=w0.day, window_idx=len(scen.windows),
-                                        capacity=max(120, w0.capacity // 2),
+                                        capacity=max(120, int(shadow_need * 1.2)),
                                         venue="V0", pool="REF"))
 
 

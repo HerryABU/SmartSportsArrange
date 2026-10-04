@@ -51,7 +51,19 @@ public class SuperScheduleEncoder {
     public static final int NODE_FEAT_DIM = 20;
     /** 图级（实例级）特征维数：冲突密度/规模/场地/天数/时间目标/并行度/填充率/块压力。 */
     public static final int GRAPH_FEAT_DIM = 8;
-    public static final int N_TASKS = 9;
+    /**
+     * 任务（专家）总数。
+     * ⚠️ 必须与 Python 侧 {@code super_scenarios.N_TASKS} 一致（双端契约）。
+     * 这行曾经写死 9：合并裁判/教师（9→11）时漏改，直到本轮合并
+     * GAN/Diffusion/forecast（11→17）才发现 —— 常量不同步本身不报错，
+     * 只会在 Java 按错通道读 taskProbs 时静默取到错误维度。
+     */
+    public static final int N_TASKS = 17;
+    /**
+     * 有真实输入单元的「任务专家」个数（0..N_UNIT_TASKS-1 走**节点级**路由）；
+     * 其余为「能力专家」（走**图级**路由，同一实例共享一份门控）。
+     */
+    public static final int N_UNIT_TASKS = 11;
     public static final int N_FORMATS = 4;
     public static final int MAX_SLOTS = 16;
 
@@ -72,8 +84,13 @@ public class SuperScheduleEncoder {
     private static final String[] TASK_NAMES = {
             "项目编排", "道次编排", "球类赛制", "淘汰赛晋级", "项目块完整性",
             "兼项避让", "装箱容量", "工期压缩", "二次编排",
-            // 合并进超级模型的第 10、11 类任务（顺序即 ONNX 输出通道号，禁止改序）
-            "裁判编排", "教师规避"};
+            // 第 10、11 类：裁判编排 / 教师规避（顺序即 ONNX 输出通道号，禁止改序）
+            "裁判编排", "教师规避",
+            // 第 12~17 类：**能力专家**（本轮把 7 个独立模型合并进来）。
+            // 与前面 11 位不同，它们走「图级路由」——同一实例内所有节点共享一份门控，
+            // 回答的是「这个赛会需要多少生成/精修/派遣/预测」而不是「这个单元怎么排」。
+            "方案生成", "方案精修", "扩散去噪", "道次派遣", "工期预测", "方案判别"};
+
 
     /** 一个待编排单元。 */
     public record Unit(String key, String name, int task, boolean track, boolean team,

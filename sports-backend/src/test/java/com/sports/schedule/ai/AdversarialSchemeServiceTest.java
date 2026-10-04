@@ -54,7 +54,13 @@ class AdversarialSchemeServiceTest {
         // 自对抗（多轮 G↔D + 精修 + 基线作候选）在冲突上绝不劣于单次生成
         assertTrue(r.conflict() <= r.conflictBefore() + 1e-6,
                 "自对抗不应比单次生成更差（基线 " + r.conflictBefore() + " vs " + r.conflict() + "）");
-        assertTrue(r.rounds() >= 1);
+        // ⚠️ 这里**不能**断言 `rounds() >= 1`：rounds 是「采纳自第几轮」，
+        //    当基线本身就是最优（模型够好）时它合法地等于 0 —— 那正是我们希望的情形。
+        //    原来断言 >=1 会让「模型变好」反而导致测试失败，本末倒置。
+        //    真正该钉住的是「对抗循环确实执行了」+「不劣于基线」这两条不变量。
+        assertEquals(4, r.roundsRun(), "对抗循环应执行满 4 轮（roundsRun 是执行轮数）");
+        assertTrue(r.rounds() >= 0 && r.rounds() <= r.roundsRun(),
+                "采纳轮次必须落在 [0, 执行轮数] 内");
     }
 
     /**

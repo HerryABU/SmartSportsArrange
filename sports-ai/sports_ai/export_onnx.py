@@ -34,7 +34,10 @@ import numpy as np
 import torch
 
 from sports_ai.data.features import N_FEATURES, NODE_FEAT_DIM
-from sports_ai.data.gnn_io import TRAIN_PAD_TO
+# ⚠️ 冲突图用 **CONFLICT_FEAT_DIM**（17 = 16 通用 + 度数），不是 features.NODE_FEAT_DIM（16）。
+#    两者混用会让 dummy 输入与模型第一层权重对不上，导出直接报
+#    `mat1 and mat2 shapes cannot be multiplied (256x16 and 17x160)`。
+from sports_ai.data.gnn_io import CONFLICT_FEAT_DIM, TRAIN_PAD_TO
 from sports_ai.models.gnn import ConflictGnn
 from sports_ai.models.selector import AlgorithmSelector, Normalize
 
@@ -59,6 +62,10 @@ def export_selector(path: str) -> None:
         wrapper, dummy, path,
         input_names=["features"], output_names=["strategy"],
         opset_version=17,
+        # ⚠️ PyTorch ≥2.6 默认走 dynamo 导出器：它**依赖 onnxscript**，而本项目
+        #    Python 环境没装 → 导出直接 ModuleNotFoundError 崩掉（其它导出脚本都有这行）。
+        #    而且 dynamo 导出器与 dynamic_axes 冲突，n 动态轴会失效。
+        dynamo=False,
     )
     print(f"[ok] 导出 {os.path.basename(path)}")
 
@@ -70,7 +77,7 @@ def export_gnn(path: str) -> None:
 
     # 用训练时的补齐长度做导出 dummy，但把 n 声明为**动态轴**——模型因此接受任意节点数。
     n = TRAIN_PAD_TO
-    node_feat = torch.zeros((1, n, NODE_FEAT_DIM), dtype=torch.float32)
+    node_feat = torch.zeros((1, n, CONFLICT_FEAT_DIM), dtype=torch.float32)
     adj = torch.zeros((1, n, n), dtype=torch.float32)
     mask = torch.zeros((1, n), dtype=torch.float32)
     torch.onnx.export(
@@ -79,6 +86,8 @@ def export_gnn(path: str) -> None:
         dynamic_axes={"node_feat": {1: "n"}, "adj": {1: "n", 2: "n"},
                       "mask": {1: "n"}, "priority": {1: "n"}},
         opset_version=17,
+        # 同上：dynamo 导出器与 dynamic_axes 冲突，必须显式关掉。
+        dynamo=False,
     )
     print(f"[ok] 导出 {os.path.basename(path)}（节点数 n 为动态轴）")
 

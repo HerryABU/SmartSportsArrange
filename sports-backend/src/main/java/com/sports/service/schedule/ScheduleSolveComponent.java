@@ -171,10 +171,14 @@ public class ScheduleSolveComponent {
             rep.put("score", r3(s.score(ADVERSARIAL_LAMBDA)));
             rep.put("refined", s.refined());
             rep.put("roundsUsed", s.rounds());
+            // 与 LnsImprover.Report 同口径：执行轮数 / 采纳轮数分开报，
+            // 否则「没跑」与「跑了但没改进」无法区分。
+            rep.put("roundsRun", s.roundsRun());
             rep.put("improved", s.conflict() < s.conflictBefore() - 1e-9);
             rep.put("note", "候选方案与求解器主方案独立评估、互不覆盖；主方案仍为落库结果");
-            log.info("AI 自对抗: 轮数 {}, D分 {}, 候选冲突 {}（单次生成基线 {}），择优改进={}",
-                    s.rounds(), r3(s.dScore()), r4(s.conflict()), r4(s.conflictBefore()), s.conflict() < s.conflictBefore() - 1e-9);
+            log.info("AI 自对抗: 执行 {} 轮/采纳自第 {} 轮, D分 {}, 候选冲突 {}（单次生成基线 {}），择优改进={}",
+                    s.roundsRun(), s.rounds(), r3(s.dScore()), r4(s.conflict()), r4(s.conflictBefore()),
+                    s.conflict() < s.conflictBefore() - 1e-9);
         } catch (Exception ex) {
             rep.put("adversarial", "error");
             rep.put("note", "自对抗执行失败（不影响编排）：" + (ex.getMessage() == null ? ex.toString() : ex.getMessage()));

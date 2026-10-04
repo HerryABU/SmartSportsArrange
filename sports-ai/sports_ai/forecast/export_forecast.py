@@ -28,7 +28,9 @@ def _export(factory, ckpt, path):
     m.load_state_dict(torch.load(os.path.join(MODEL_DIR, ckpt), map_location="cpu"))
     m.eval()
     dummy = torch.zeros((1, L_IN, IN_DIM), dtype=torch.float32)
-    torch.onnx.export(m, dummy, path, input_names=["x"], output_names=["y"], opset_version=17)
+    torch.onnx.export(m, dummy, path, input_names=["x"], output_names=["y"], opset_version=17,
+                      # ⚠️ PyTorch ≥2.6 默认 dynamo 导出器依赖 onnxscript（本环境未装）。
+                      dynamo=False)
     print(f"[ok] 导出 {os.path.basename(path)}")
 
 

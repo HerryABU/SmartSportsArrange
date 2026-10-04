@@ -135,7 +135,24 @@ class ConflictGraphEncoderTest {
         ConflictGraphEncoder.Encoded enc = ConflictGraphEncoder.encode(List.of(prelim, fin, big));
         int d = ConflictGraphEncoder.NODE_FEAT_DIM;
 
-        assertEquals(16, d, "契约：16 维节点特征");
+        assertEquals(16, d, "通用节点特征仍是 16 维（生成式三件套共用，改不得）");
+        assertEquals(17, ConflictGraphEncoder.CONFLICT_MODEL_FEAT_DIM,
+                "冲突模型专用输入 = 16 通用 + 1 度数");
+        // 扩展后的特征必须真的多出「归一化度数」那一维，且与邻接算出的度数一致
+        float[] ext = ConflictGraphEncoder.conflictModelFeat(enc);
+        int n = enc.nodeCount;
+        assertEquals(n * 17, ext.length, "扩展特征长度 = n × 17");
+        for (int i = 0; i < n; i++) {
+            int deg = 0;
+            for (int j = 0; j < n; j++) {
+                if (enc.adj[i * n + j] > 0f) {
+                    deg++;
+                }
+            }
+            float expect = (n > 1) ? deg / (float) (n - 1) : 0f;
+            assertEquals(expect, ext[i * 17 + 16], 1e-6f,
+                    "第 17 维必须等于归一化度数（节点 " + i + "）");
+        }
         assertEquals(0.0f, enc.nodeFeat[0 * d + 8], 1e-6, "预赛 is_final=0");
         assertEquals(1.0f, enc.nodeFeat[1 * d + 8], 1e-6, "决赛 is_final=1");
         assertEquals(0.0f, enc.nodeFeat[0 * d + 9], 1e-6, "高一 grade_idx=0");

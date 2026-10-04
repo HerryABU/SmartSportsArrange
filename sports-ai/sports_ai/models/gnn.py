@@ -38,7 +38,7 @@ from .graph import GraphConvBlock, normalized_adj
 
 
 class ConflictGnn(nn.Module):
-    def __init__(self, node_feat: int = 16, hidden: int = 160, layers: int = 6,
+    def __init__(self, node_feat: int = 17, hidden: int = 160, layers: int = 6,
                  dropout: float = 0.1):
         super().__init__()
         self.proj = nn.Linear(node_feat, hidden)

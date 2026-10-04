@@ -9,12 +9,17 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * 超级编排模型推理服务——<b>一个模型覆盖全部九类编排</b>。
+ * 超级编排模型推理服务——<b>一个模型覆盖全部十七类编排能力</b>。
  *
  * <p>此前项目编排、道次编排、球类赛制各走各自的模型（constraint_gnn /
  * lane_advisor / tournament_gnn …），彼此的表征与目标不互通，无法学到
  * 「道次编排也要顾及装箱、球类编排也要顾及兼项」这类跨域策略。
- * 本服务把九类编排统一到一个 {@code super_moe.onnx} 上。</p>
+ * 本服务把十七类编排统一到一个 {@code super_moe.onnx} 上。</p>
+ *
+ * <p>专家分两层：0..10 是<b>任务专家</b>（节点级路由），11..16 是<b>能力专家</b>
+ * （图级路由：方案生成/精修/扩散/道次派遣/工期预测/方案判别），
+ * 后六位分别替代了此前独立服役的 scheme_generator / scheme_refiner /
+ * scheme_diffusion / lane_advisor / forecast_* / scheme_discriminator 七个模型。</p>
  *
  * <h3>降级原则</h3>
  * 模型缺失 / 规模超限 / 推理异常时返回 {@link Optional#empty()}，
@@ -27,19 +32,55 @@ public class SuperMoeService {
     /** 一次超级模型推理的结果。 */
     public record Advice(double[] priority,          // [N] 调度优先级，越高越先排
                          double[][] slotLogits,      // [N][K] 时间槽 logits
-                         double[] taskProbs,         // [9] 九类任务权重
+                         double[] taskProbs,         // [N_TASKS] 任务/能力权重（17 维）
                          double[] formatLogits,      // [4] 球类赛制
-                         double daysEstimate,        // 预计天数
+                         double daysEstimate,        // 预计工期（天）
+                         double[][] laneLogits,      // [N][K] 道次派遣 logits（替代 lane_advisor）
+                         double qualityScore,        // [0,1] 方案质量分（替代 GAN 判别器）
                          int n,
                          java.util.Map<String, Double> expertUsage) {
 
         /** 每个单元的时间槽（argmax）。 */
         public int[] slots() {
-            int[] out = new int[slotLogits.length];
-            for (int i = 0; i < slotLogits.length; i++) {
+            return argmaxRows(slotLogits);
+        }
+
+        /** 道次派遣建议（argmax）。旧版模型没有该输出时返回空数组。 */
+        public int[] laneSlots() {
+            return argmaxRows(laneLogits);
+        }
+
+        /** 是否有道次派遣输出（旧版 onnx 无此通道）。 */
+        public boolean hasLaneAdvice() {
+            return laneLogits != null && laneLogits.length > 0;
+        }
+
+        /**
+         * 方案质量的定性判定。
+         *
+         * <p>⚠️ 这只是**参考信号**，不是裁决：质量分由模型回归得到，
+         * 真正「方案能不能用」始终由 {@code ScheduleFeasibilityService} 与
+         * 硬约束校验决定。模型自评再高也不能覆盖不可行。</p>
+         */
+        public String qualityLevel() {
+            if (qualityScore >= 0.75) {
+                return "good";
+            }
+            if (qualityScore >= 0.5) {
+                return "fair";
+            }
+            return "poor";
+        }
+
+        private static int[] argmaxRows(double[][] m) {
+            if (m == null || m.length == 0) {
+                return new int[0];
+            }
+            int[] out = new int[m.length];
+            for (int i = 0; i < m.length; i++) {
                 int best = 0;
-                for (int k = 1; k < slotLogits[i].length; k++) {
-                    if (slotLogits[i][k] > slotLogits[i][best]) {
+                for (int k = 1; k < m[i].length; k++) {
+                    if (m[i][k] > m[i][best]) {
                         best = k;
                     }
                 }
@@ -173,13 +214,24 @@ public class SuperMoeService {
             }
             try (ai.onnxruntime.OrtSession.Result r = session.run(feed)) {
 
-                double[] priority = toVec(r.get(0));           // [B,N]
-                double[][] slot = toMatrix(r.get(1));          // [B,N,K]
-                double[] taskProbs = toVec(r.get(2));          // [B,9]
-                double[] fmt = toVec(r.get(3));                // [B,4]
-                double days = toScalar(r.get(4));
+                // ⚠️ **按输出名读取，而不是按索引**。
+                //    本轮输出从 5 个扩到 7 个（新增 lane_logits / quality_score）。
+                //    按索引读的话，今后任何一次「在中间插入输出」都会让老代码
+                //    静默读错张量 —— 不报错、数值看着还挺像，是最难查的一类故障；
+                //    而名字是稳定不变量。旧版模型缺某个名字时回退到历史索引，
+                //    保证磁盘上还是旧 onnx 时也能正常跑。
+                double[] priority = toVec(named(r, "priority", 0));       // [B,N]
+                double[][] slot = toMatrix(named(r, "slot_logits", 1));   // [B,N,K]
+                double[] taskProbs = toVec(named(r, "task_probs", 2));    // [B,N_TASKS]
+                double[] fmt = toVec(named(r, "format_logits", 3));       // [B,4]
+                double days = toScalar(named(r, "days_estimate", 4));
+                double[][] lane = r.get("lane_logits").isPresent()
+                        ? toMatrix(named(r, "lane_logits", 5)) : new double[0][];
+                double quality = r.get("quality_score").isPresent()
+                        ? toScalar(named(r, "quality_score", 6)) : 0.0;
 
-                return Optional.of(new Advice(priority, slot, taskProbs, fmt, days, n, Map.of()));
+                return Optional.of(new Advice(priority, slot, taskProbs, fmt, days,
+                        lane, quality, n, Map.of()));
             }
         } catch (Throwable t) {
             log.warn("超级编排推理失败，回退规则编排: {}", t.toString());
@@ -221,6 +273,26 @@ public class SuperMoeService {
     private ai.onnxruntime.OnnxTensor vecTensor(float[] src) throws Exception {
         return ai.onnxruntime.OnnxTensor.createTensor(env,
                 java.nio.FloatBuffer.wrap(src), new long[]{1, src.length});
+    }
+
+    /**
+     * 按输出名取值；磁盘上是旧版模型（没有该输出名）时回退到历史索引。
+     *
+     * <p>返回 {@code null} 不抛异常 —— 上层 {@code toVec/toMatrix} 对 null 已做空值保护，
+     * 缺通道时退化成空数组，不会把整个推理拖进「回退规则」。</p>
+     */
+    private static ai.onnxruntime.OnnxValue named(ai.onnxruntime.OrtSession.Result r,
+                                                  String name, int legacyIndex) {
+        java.util.Optional<ai.onnxruntime.OnnxValue> byName = r.get(name);
+        if (byName.isPresent()) {
+            return byName.get();
+        }
+        try {
+            return r.get(legacyIndex);
+        } catch (Throwable t) {
+            log.warn("模型缺少输出 {} 且索引 {} 越界: {}", name, legacyIndex, t.toString());
+            return null;
+        }
     }
 
     private static Object val(Object v) throws Exception {
@@ -285,10 +357,12 @@ public class SuperMoeService {
     public static Map<String, Object> superModelInfo() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("covers", java.util.Arrays.asList(SuperScheduleEncoder.taskNames()));
+        m.put("nTasks", SuperScheduleEncoder.N_TASKS);
+        m.put("nUnitTasks", SuperScheduleEncoder.N_UNIT_TASKS);
         m.put("edgeTypes", java.util.List.of("兼项", "项目块", "场地", "并发池",
                 "道次", "装箱间隔", "晋级", "同队"));
         m.put("maxNodes", SuperScheduleEncoder.MAX_NODES);
-        m.put("note", "一个模型覆盖九类编排；加载状态见 /api/schedule/auto 响应的 superMoeLoaded");
+        m.put("note", "一个模型覆盖十七类编排能力；加载状态见 /api/schedule/auto 响应的 superMoeLoaded");
         return m;
     }
 

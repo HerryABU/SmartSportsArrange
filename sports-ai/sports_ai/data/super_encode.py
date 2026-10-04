@@ -2,15 +2,15 @@
 
 与 Java 端 ``SuperScheduleEncoder`` 逐位对齐。
 
-## 20 维节点特征（顺序即契约）
+## 20 维节点特征（顺序即契约，**Java 端 SuperScheduleEncoder 逐位一致**）
 
-=====  ==========================================================================
- 0-3  规模：单元数占比 / 人数占比 / 时长占比 / 场地占比
- 4-7  需求：装箱紧张度(dur+interval)/cap / 容量余量 / 冲突边数占比 / 兼项占比
- 8-11 约束：是否项目块 / 块内单元数占比 / 是否道次(heat>0) / heat 容量占比
- 12-15时间：时间目标(0不限/0.5硬约束/1最小化) / 天数占比 / stage 编码 / 赛制 onehot
- 16-19类型：task onehot 的前 4 维（项目/道次/球类/淘汰赛）
-=====  ==========================================================================
+=====  ==================================================================================
+ 0-4   规模：单元数占比 / 人数 / 相对最挤单元 / 时长占比 / 场地数
+ 5-8   需求：装箱紧张度 (dur+interval)/cap / 容量余量 / 冲突暴露 / 兼项占比
+ 9-12  约束：是否项目块 / 块内单元占比 / 是否道次(heat>0) / heat 容量占比
+ 13-15 时间：时间目标三态 / 天数占比 / stage 编码
+ 16-19 赛制：group / round_robin / knockout / hybrid 四种球类赛制的 one-hot
+=====  ==================================================================================
 
 =====  ==========================================================================
  0-4   规模：单元数占比 / 人数 / 相对最挤单元 / 时长占比 / 场地数
@@ -24,8 +24,10 @@
 ``days_limit >= 1 → 0.5``（硬约束）、``0 → 0.0``（不限）、``-1 → 1.0``（最小化）。
 原值保留在 ``SuperScenario.days_limit``，由 Java 端解释语义。
 
-⚠️ 这个文件头注释曾写「时间在第 12 维、16-19 是 task onehot」，**是错的**——
-实际布局是 time_goal@13 / stage@15 / fmt_onehot@16-19。
+⚠️ 这个文件头注释曾出现**两张互相矛盾的特征表**（一张说 16-19 是 task onehot、
+一张说 16-19 是赛制 onehot），且代码里还残留一行把第 19 维覆盖成「淘汰赛标记」——
+三者互相打架。现已统一为上面这一张（与 Java 逐位核对过），
+并删掉了那行覆盖：time_goal@13 / days@14 / stage@15 / fmt_onehot@16-19。
 Java 端 ``SuperScheduleEncoder`` 一开始也是按旧注释写的（21 维、timeGoal@12），
 被单测抓出来后两边一起改到 13。改这份特征表时必须同步三处：
 ``super_encode.py`` / ``SuperScheduleEncoder.java`` / ``super_moe.onnx`` 的输入维度。
@@ -200,10 +202,8 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
         else:
             expo = 0.0
         fmt_oh = [0.0] * N_FORMATS
-        if u.fmt is not None:
+        if u.fmt is not None and 0 <= u.fmt < N_FORMATS:
             fmt_oh[u.fmt] = 1.0
-        task_oh = [0.0] * 4
-        task_oh[u.task if u.task < 4 else 3] = 1.0
         feat[i] = [
             n / 128.0,                                  # 0 单元数占比
             min(people, 512) / 512.0,                   # 1 人数
@@ -225,9 +225,13 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
             # 15-18：赛制 onehot（group/rr/knockout/hybrid），无赛制则全 0
             fmt_oh[0], fmt_oh[1], fmt_oh[2], fmt_oh[3],
         ]
-        # 第 19 维：淘汰赛 / 二次编排标记（这两类需要跨轮次联动）
-        feat[i, 19] = 1.0 if u.task in (TASK_KNOCKOUT, TASK_RESECOND) else 0.0
-        _ = task_oh
+        # ⚠️ 这里**曾经**有一行 `feat[i, 19] = 1.0 if u.task in (TASK_KNOCKOUT, TASK_RESECOND)`
+        #    把第 19 维（本该是「混合赛制」one-hot 的第 4 位）覆盖成「淘汰赛/二次编排标记」。
+        #    它 Java 侧从来没有对应实现 —— 于是**训练与推理对同一个维度的语义不同**，
+        #    而这类错位不报错、指标也照常下降，是本项目最危险的一类契约缺陷。
+        #    删掉后 16-19 维在双端都严格是 group / round_robin / knockout / hybrid。
+        #    淘汰赛的跨轮次信息本来就由 E_BRACKET 边承载，二次编排由 stage(第 15 维) 承载，
+        #    不需要再占一个标量维度。
 
     mask = np.ones(n, dtype=np.float32)
 
@@ -299,6 +303,13 @@ def greedy_targets(scen: SuperScenario, n: int, n_slots: int = MAX_SLOTS
     * ``priority``：0.6×装箱紧张度 + 0.4×冲突暴露 —— 越难排的越先排
     * ``slot``：贪心装箱得到的 one-hot 槽位方案（真实可行）
     * ``format``：场景里出现最多的球类赛制（无球类时跳过）
+    * ``lane_mask``：该单元是否**有道次/批次语义**（``heat_capacity>0 或 lanes>0``）。
+      道次派遣头（替代 lane_advisor）只对这批单元产生损失，其余单元不参与 ——
+      田赛、球类、裁判单元没有"第几道"可分，硬给它们派道次只会污染梯度。
+    * ``days``：本次贪心落位**实际跨了几个比赛日**（工期真值）。这是此前
+      独立服役的 forecast 模型要预测的量，现在作为超级模型的回归目标。
+    * ``quality``：方案质量代理 = ``1/(1+各桶负载变异系数)``。这是 GAN 判别器
+      要判的"方案好不好"的可解释、可自监督真值：负载越均衡 → 方案越优。
 
     ⚠️ 槽位（slot）曾经是**假的**，这里必须钉死教训：
 
@@ -340,7 +351,13 @@ def greedy_targets(scen: SuperScenario, n: int, n_slots: int = MAX_SLOTS
         fmt_t = np.zeros(4, dtype=np.int64)
         if fmts:
             fmt_t[max(fmts, key=lambda k: fmts[k])] = 1
-        return {"priority": pri, "slot": slot, "format": fmt_t}
+        # ⚠️ 早退分支必须和正常分支**返回同一组键**，否则下游 to_tensors 取
+        #    lane_mask/days/quality 会 KeyError —— 而这条分支只在极端场景触发，
+        #    日常训练完全测不到（典型的"上线才炸"）。
+        return {"priority": pri, "slot": slot, "format": fmt_t,
+                "lane_mask": np.zeros(n, dtype=np.float32),
+                "days": np.zeros(1, dtype=np.float32),
+                "quality": np.zeros(1, dtype=np.float32)}
 
     def fits(si: int, i: int, load: Dict[int, int]) -> bool:
         # ⚠️ si 是**桶在候选列表里的下标**，不是桶 id —— vmap 的键是 (day, window_idx)，
@@ -380,4 +397,21 @@ def greedy_targets(scen: SuperScenario, n: int, n_slots: int = MAX_SLOTS
     fmt_t = np.zeros(4, dtype=np.int64)
     if fmts:
         fmt_t[max(fmts, key=lambda k: fmts[k])] = 1
-    return {"priority": pri, "slot": slot, "format": fmt_t}
+
+    # ---- 新增：道次掩码 / 工期 / 方案质量（覆盖 lane_advisor + forecast + GAN 判别器）----
+    # ⚠️ 判据要包含 ``track``：实测只有 LANE 档会生成 ``heat_capacity>0` 的单元，
+    #    若只认 hc/lanes，则 4/5 的样本里道次头**完全拿不到梯度**（mask 求和恒为 0），
+    #    道次派遣能力等于没训。径赛（track=True）天然有"第几道"的语义，
+    #    把它纳入掩码后梯度覆盖到全部档位。
+    lane_mask = np.array(
+        [1.0 if (units[i].track or units[i].heat_capacity > 0 or units[i].lanes > 0) else 0.0
+         for i in range(n)], dtype=np.float32)
+    used_days = sorted({slot_ids[si][0] for si in load.keys()})
+    days_t = np.array(
+        [float(used_days[-1] - used_days[0] + 1)] if used_days else [0.0], dtype=np.float32)
+    loads = np.array([load.get(si, 0) for si in range(len(slot_ids))], dtype=np.float32)
+    cv = float(loads.std() / max(1e-6, float(loads.mean()))) if loads.size and loads.mean() > 0 else 0.0
+    quality_t = np.array([1.0 / (1.0 + cv)], dtype=np.float32)
+
+    return {"priority": pri, "slot": slot, "format": fmt_t,
+            "lane_mask": lane_mask, "days": days_t, "quality": quality_t}

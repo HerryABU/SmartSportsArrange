@@ -1,7 +1,7 @@
 """冲突簇 GNN 的输入编码（**动态节点数**契约，与 Java 端 ``ConflictGraphEncoder`` 严格对齐）。
 
 把编排实例编码成 GNN 三路输入：
-- ``node_feat``: [1, n, NODE_FEAT_DIM]  节点特征（16 维，构造保证落在 [0,1]）
+- ``node_feat``: [1, n, CONFLICT_FEAT_DIM]  节点特征（17 维 = 16 通用维 + 第 17 维「度数」，构造保证落在 [0,1]）
 - ``adj``:       [1, n, n]              **带权邻接**（共享运动员数归一化，无自环）
 - ``mask``:      [1, n]                 1=真实节点，0=填充（仅当 ``pad_to`` 补齐时出现）
 
@@ -58,6 +58,18 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .features import MAX_NODES, NODE_FEAT_DIM
+
+# ⚠️ 冲突图**单独**多一维「度数」，不动共享的 NODE_FEAT_DIM：
+#    共享常量还被生成式三件套（generator/discriminator/refiner）使用，
+#    改它会让三个已导出的 onnx 全部失效（又要重训）。
+#
+#    为什么必须显式给度数：本模型的**预测目标就是归一化度数中心度**
+#    （`degree/(n-1)`），而图注意力用的是对称归一化 D^{-1/2} A D^{-1/2} ——
+#    在星形图上中心与叶子的聚合幅度**完全一样**，度数信息被归一化抹掉了。
+#    实测：16 维时模型在 4 节点星形图上输出 [0.108,0.070,0.082,0.119]，
+#    argmax 指向只有 1 条边的叶子，而正确答案是度数为 3 的中心节点。
+#    一句话：**要预测什么，输入里就该有那个东西的可判据。**
+CONFLICT_FEAT_DIM = NODE_FEAT_DIM + 1
 from .generator import Scenario, Unit
 
 #: 归一化上界（与 Java 端逐位对齐，改动必须双端同步）
@@ -102,7 +114,7 @@ def encode_gnn_inputs(scenario: Scenario, pad_to: Optional[int] = None,
     n = min(total, MAX_NODES)
     size = n if pad_to is None else max(n, int(pad_to))
 
-    node_feat = np.zeros((size, NODE_FEAT_DIM), dtype=np.float32)
+    node_feat = np.zeros((size, CONFLICT_FEAT_DIM), dtype=np.float32)
     adj = np.zeros((size, size), dtype=np.float32)
     mask = np.zeros((size,), dtype=np.float32)
 
@@ -166,6 +178,9 @@ def encode_gnn_inputs(scenario: Scenario, pad_to: Optional[int] = None,
         node_feat[i, 13] = pool_size.get(u.pool_label, 0) / n_total
         node_feat[i, 14] = 1.0 if dur >= LARGE_UNIT_MINUTES else 0.0
         node_feat[i, 15] = (i / max(1, n - 1)) if n > 1 else 0.0
+        # 第 16 维：归一化度数 —— **与标签同源**（标签就是 degree/(n-1)）。
+        # 对称归一化的消息传递会把度数幅度抹平，所以必须显式给出。
+        node_feat[i, 16] = degree[i] / max(1, n - 1)
         mask[i] = 1.0
 
     # ---- 标签：归一化度数中心度（着色优先级，落在 [0,1]）----

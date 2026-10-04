@@ -234,6 +234,8 @@ def export(args) -> str:
         output_names=["priority"],
         dynamic_axes={"athlete_feat": {1: "n"}, "mask": {1: "n"}, "priority": {1: "n"}},
         opset_version=17,
+        # ⚠️ PyTorch ≥2.6 默认走 dynamo 导出器：依赖 onnxscript（本环境未装）且与 dynamic_axes 冲突。
+        dynamo=False,
     )
     inline_weights(path)
     print(f"[ok] 导出 {os.path.basename(path)}（运动员数 n 为动态轴）")

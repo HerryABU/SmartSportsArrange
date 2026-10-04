@@ -136,6 +136,8 @@ def to_tensors(batch: List[Dict], idxs: List[int], device):
     items = [batch[i] for i in idxs]
     width = max(d["n"] for d in items)
     nf, abt, tm, mk, pri, slot, fmt, gf = [], [], [], [], [], [], [], []
+    # 三个新目标（覆盖 lane_advisor / forecast / GAN 判别器）
+    lmask, days_t, qual_t = [], [], []
     for d in items:
         n, pad = d["n"], width - d["n"]
         nf.append(np.pad(d["node_feat"][0], ((0, pad), (0, 0))))
@@ -148,8 +150,14 @@ def to_tensors(batch: List[Dict], idxs: List[int], device):
         slot.append(sl)
         fmt.append(d["format"])
         gf.append(d["graph_feat"][0])
+        # ⚠️ padding 区必须置 0：lane_mask=0 表示「不参与道次损失」，
+        #    用 1 填充会让 pad 出来的假节点把分母撑大、梯度被稀释。
+        lmask.append(np.pad(d["lane_mask"], (0, pad)))
+        days_t.append(d["days"])
+        qual_t.append(d["quality"])
     T = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32)).to(device)
-    return (T(nf), T(abt), T(tm), T(mk), T(pri), T(slot), T(fmt).long(), T(gf))
+    return (T(nf), T(abt), T(tm), T(mk), T(pri), T(slot), T(fmt).long(), T(gf),
+            T(lmask), T(days_t), T(qual_t))
 
 
 def save_best(model: torch.nn.Module, stats: Dict[str, object],
@@ -288,9 +296,11 @@ def main() -> None:
             sel = [int(i) for i in idx[k:k + args.batch]]
             if not sel:
                 continue
-            nf, abt, tm, mk, pri, slot, fmt, gf = to_tensors(tr, sel, device)
-            loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt,
-                                              w_lb=args.w_lb, graph_feat=gf)
+            (nf, abt, tm, mk, pri, slot, fmt, gf,
+             lmask, days_t, qual_t) = to_tensors(tr, sel, device)
+            loss, parts = model.training_loss(
+                pri, slot, nf, abt, tm, mk, fmt, w_lb=args.w_lb, graph_feat=gf,
+                lane_mask=lmask, days_target=days_t, quality_target=qual_t)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -306,17 +316,24 @@ def main() -> None:
                 sel = list(range(k, min(len(va), k + max(1, args.batch))))
                 if not sel:
                     continue
-                nf, abt, tm, mk, pri, slot, fmt, gf = to_tensors(va, sel, device)
-                loss, parts = model.training_loss(pri, slot, nf, abt, tm, mk, fmt,
-                                                  w_lb=args.w_lb, graph_feat=gf)
+                (nf, abt, tm, mk, pri, slot, fmt, gf,
+                 lmask, days_t, qual_t) = to_tensors(va, sel, device)
+                loss, parts = model.training_loss(
+                    pri, slot, nf, abt, tm, mk, fmt, w_lb=args.w_lb, graph_feat=gf,
+                    lane_mask=lmask, days_target=days_t, quality_target=qual_t)
                 vs.append(float(loss.item()))
                 vp.append(parts)
         vloss = float(np.mean(vs)) if vs else float("inf")
         usage = model.expert_usage()
         usage_min = min(usage.values()) if usage else 0.0
+        def _m(key):
+            vals = [p[key] for p in vp if key in p]
+            return float(np.mean(vals)) if vals else float("nan")
         print(f"epoch {epoch:3d}  train={tot / max(1, nb):.5f}  val={vloss:.5f}  "
-              f"pri_mse={np.mean([p['priority_mse'] for p in vp]):.5f}  "
-              f"slot_mse={np.mean([p['slot_mse'] for p in vp]):.5f}  "
+              f"pri_mse={_m('priority_mse'):.5f}  "
+              f"slot_mse={_m('slot_mse'):.5f}  "
+              f"lane_mse={_m('lane_mse'):.5f}  days_mse={_m('days_mse'):.4f}  "
+              f"qual_mse={_m('quality_mse'):.5f}  "
               f"专家最低使用率={usage_min:.4f}")
         if vloss < best:
             best = vloss

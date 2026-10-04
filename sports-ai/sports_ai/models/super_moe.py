@@ -69,7 +69,7 @@ TASK_BLOCK, TASK_CONFLICT, TASK_CAPACITY, TASK_MAKESPAN, TASK_RESECOND = 4, 5, 6
 #    这里曾经硬编码 9：改了数据侧的 N_TASKS 之后，模型的专家数没有跟着变，
 #    症状是「参数量一模一样、expert_usage 里只出现 9 个专家」，排查时毫无线索。
 #    所以改成直接导入，让两处不可能再漂移。
-from sports_ai.data.super_scenarios import N_TASKS  # noqa: E402
+from sports_ai.data.super_scenarios import N_TASKS, N_UNIT_TASKS  # noqa: E402
 
 # ---- 边类型（与 super_scenarios.E_* 严格一致）----
 N_EDGES = 8
@@ -301,26 +301,44 @@ class LocalConvBlock(nn.Module):
 
 
 class MultiGateMoE(nn.Module):
-    """多门混合专家（MMOE）。
+    """多门混合专家（MMOE）—— **异构门控**版。
 
-    * 9 个专家各管一摊（任务域）
-    * 9 个「门」，每个门学一个任务域到专家的**软组合权重**
-    * 最终输出 = 各门输出的加权融合
+    专家池分成两层，**路由粒度不同**（Graph-MoE 综述里「路由粒度」那一轴的落地）：
+
+    * **任务专家** `0..N_UNIT_TASKS-1`（项目/道次/球类/…/裁判/教师）
+      —— 走**节点级**路由：每个节点各自决定该请哪几位专家。
+      它们回答的是「**这个单元**该先排还是后排、该落哪个桶」。
+
+    * **能力专家** `N_UNIT_TASKS..N_TASKS-1`（生成/精修/扩散/派遣/预测/判别）
+      —— 走**图级**路由：同一实例内所有节点拿到**同一个**门控权重。
+      它们回答的是「**这个赛会**需要多少方案生成、多少精修、要预测得多准」。
+
+    ⚠️ 为什么必须异构：上一轮把专家从 9 扩到 11 时全是同构的——所有专家
+    读同样的输入、只看节点表征。那样扩出来的专家只是在**摊薄容量**：
+    `load_balancing_loss` 会把使用率强行拉平均，可每个专家学到的几乎是同一件事。
+    本轮把新来的 6 位改用「只由图级上下文决定」的门控（去掉节点表征项），
+    它们才真正练成**实例级**专家，与节点级任务专家形成分工。
+
     * load-balancing loss 防止专家塌缩
     """
 
     def __init__(self, hidden: int, n_experts: int = N_TASKS, n_edges: int = N_EDGES,
                  dropout: float = 0.1, expert_depth: int = 2,
                  use_graph: bool = True, graph_dim: int = GRAPH_FEAT_DIM,
-                 use_cnn: bool = True, n_views: int = 3):
+                 use_cnn: bool = True, n_views: int = 3,
+                 n_unit_tasks: int = N_UNIT_TASKS):
         super().__init__()
         self.n_experts = n_experts
+        self.n_unit_tasks = min(n_unit_tasks, n_experts)
         self.use_graph = use_graph
         self.use_cnn = use_cnn
         self.experts = nn.ModuleList(
             [Expert(hidden, n_edges, dropout, depth=expert_depth) for _ in range(n_experts)])
-        # 多门：每门一个 Linear(hidden → n_experts)
-        self.gates = nn.ModuleList([nn.Linear(hidden, n_experts) for _ in range(n_experts)])
+        # 多门：每门一个 Linear(hidden → n_unit_tasks)。
+        # ⚠️ 只对**任务专家**建门：能力专家的门控完全由图级上下文给出（见 forward），
+        #    给它们配门等于白建一组永不被读的参数。
+        self.gates = nn.ModuleList(
+            [nn.Linear(hidden, self.n_unit_tasks) for _ in range(self.n_unit_tasks)])
         # 路由器专家嵌入（MPI：让路由器「读懂」每位专家）
         self.expert_embed = nn.Parameter(torch.randn(n_experts, hidden) * 0.02)
         # 图级特征投影：把「赛会结构」翻译成与专家嵌入同一空间的向量，
@@ -366,9 +384,21 @@ class MultiGateMoE(nn.Module):
         # 路由器因此显式感知每位专家的特化方向，而不是盲学；
         # 这里再把「结构上下文」也投影到同一空间做内积——
         # 于是路由不再是「看节点长相」，而是「看整个赛会长什么样」。
-        q = (h @ self.expert_embed.t() + ctx @ self.expert_embed.t())   # [B,N,E]
-        # 九个门各给一份 [B,N,E]，取平均得到该节点的专家组合权重
-        q = q + torch.stack([g(h) for g in self.gates], dim=0).mean(dim=0)
+        q_base = (h @ self.expert_embed.t() + ctx @ self.expert_embed.t())   # [B,N,E]
+        # 多门各给一份 [B,N,U]（U = 任务专家数），取平均得到该节点的任务专家组合权重
+        gate_term = torch.stack([g(h) for g in self.gates], dim=0).mean(dim=0)   # [B,N,U]
+        # ⚠️ 拼接而不是相加：gate_term 是 [B,N,U]，q_base 是 [B,N,E]（E>U），
+        #    直接相加会按尾维广播 → 静默算错（且 batch=1 时不报错）。
+        q = torch.cat([q_base[:, :, :self.n_unit_tasks] + gate_term,
+                       q_base[:, :, self.n_unit_tasks:]], dim=-1)          # [B,N,E]
+        if self.n_unit_tasks < self.n_experts:
+            # 能力专家：门控**只由图级上下文决定**（去掉节点表征与门），
+            # 于是同一实例内所有节点对这些专家的权重相同 —— 它们成了实例级专家。
+            # ⚠️ expert_embed 是 [E, H]：要取**能力专家那几行**，所以切 dim0
+            #    （self.expert_embed[n_unit:, :]）。写成 [:, n_unit:] 切的是 hidden 维，
+            #    会变成 [17, H-11] 相乘直接报 shapes cannot be multiplied。
+            cap = (ctx[:, :1, :] @ self.expert_embed[self.n_unit_tasks:, :].t())  # [B,1,C]
+            q = torch.cat([q[:, :, :self.n_unit_tasks], cap.expand(b, n, -1)], dim=-1)
         gates = torch.softmax(q, dim=-1)                         # [B,N,E]
         self._last_gate_probs = gates.detach()
 
@@ -559,6 +589,20 @@ class SuperScheduleMoE(nn.Module):
         self.days_head = nn.Sequential(
             nn.Linear(hidden * 2, hidden), nn.GELU(), nn.LayerNorm(hidden),
             nn.GELU(), nn.Linear(hidden, 1))
+        # 道次派遣头（替代原 lane_advisor.onnx）：[B,N,K] 的「该单元派到哪条道/哪一批次」。
+        # 形状与 slot_logits 相同但**目标不同**：只有径赛类单元（lane_mask=1）参与损失，
+        # 田赛/球类/裁判单元没有「第几道」可分，硬给它们派道只会污染梯度。
+        self.lane_head = nn.Sequential(
+            nn.Linear(hidden * 3, hidden), nn.LayerNorm(hidden), nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden // 2, n_slots))
+        # 方案判别头（替代原 scheme_discriminator.onnx / GAN 判别器）：
+        # 给整个实例打一个 [B,1] 的「方案质量」分，目标是负载均衡度 1/(1+CV)。
+        # 用 Sigmoid 把输出压进 (0,1)，与质量目标同量纲 —— 免去输出侧再做裁剪。
+        self.quality_head = nn.Sequential(
+            nn.Linear(hidden * 2, hidden), nn.GELU(), nn.LayerNorm(hidden),
+            nn.GELU(), nn.Linear(hidden, 1), nn.Sigmoid())
 
         self.decoder = DiffusionDecoder(hidden, n_slots, steps, dropout)
 
@@ -580,18 +624,30 @@ class SuperScheduleMoE(nn.Module):
         zg = torch.cat([fused, pooled.unsqueeze(1).expand(-1, fused.shape[1], -1),
                         struct_ctx.unsqueeze(1).expand(-1, fused.shape[1], -1)], dim=-1)
 
+        gc = torch.cat([pooled, struct_ctx], dim=-1)
         priority = self.priority_head(zg).squeeze(-1) * mask     # [B,N]
-        format_logits = self.format_head(torch.cat([pooled, struct_ctx], dim=-1))   # [B,4]
-        days_estimate = self.days_head(torch.cat([pooled, struct_ctx], dim=-1))     # [B,1]
+        format_logits = self.format_head(gc)                      # [B,4]
+        days_estimate = self.days_head(gc)                        # [B,1]
         slot_logits = self.decoder(fused, mask)                   # [B,N,K]
-        return priority, slot_logits, gate_probs, format_logits, days_estimate
+        lane_logits = self.lane_head(zg)                          # [B,N,K]
+        quality_score = self.quality_head(gc)                     # [B,1] ∈ (0,1)
+        # 返回顺序即 ONNX 输出顺序（export_super_moe_onnx 的 output_names 必须同步）：
+        #   0 priority / 1 slot_logits / 2 task_probs / 3 format_logits
+        #   4 days_estimate / 5 lane_logits / 6 quality_score
+        # ⚠️ **新输出只能往尾部追加**：Java 侧按名读取（见 SuperMoeService），
+        #    但历史版本是按索引读的，插在中间会让老代码静默读错张量。
+        return (priority, slot_logits, gate_probs, format_logits,
+                days_estimate, lane_logits, quality_score)
 
     def training_loss(self, priority_target: torch.Tensor, slot_target: torch.Tensor,
                       node_feat: torch.Tensor, adj_by_type: torch.Tensor,
                       type_mask: torch.Tensor, mask: torch.Tensor,
                       format_target: Optional[torch.Tensor] = None,
                       w_lb: float = 0.01,
-                      graph_feat: Optional[torch.Tensor] = None
+                      graph_feat: Optional[torch.Tensor] = None,
+                      lane_mask: Optional[torch.Tensor] = None,
+                      days_target: Optional[torch.Tensor] = None,
+                      quality_target: Optional[torch.Tensor] = None
                       ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """自监督损失：优先级回归 + 槽位分配去噪 + 负载均衡。
 
@@ -599,7 +655,8 @@ class SuperScheduleMoE(nn.Module):
         不喂它，路由器的「图级」分支就永远是零向量——
         等于花了一倍参数买了个恒不激活的模块。
         """
-        priority, slot_logits, _, format_logits, _ = self(
+        (priority, slot_logits, _, format_logits, days_estimate,
+         lane_logits, quality_score) = self(
             node_feat, adj_by_type, type_mask, mask, graph_feat=graph_feat)
         m = mask.unsqueeze(-1)
         l_pri = (((priority - priority_target) ** 2) * mask).sum() / mask.sum().clamp(min=1.0)
@@ -618,6 +675,23 @@ class SuperScheduleMoE(nn.Module):
             l_fmt = -(tgt * logp).sum(dim=-1).mean()
             loss = loss + 0.3 * l_fmt
             parts["format_ce"] = float(l_fmt.item())
+        if lane_mask is not None:
+            # 道次派遣：只在 lane_mask=1 的单元上算（田赛/球类无道可分）。
+            lm = lane_mask.unsqueeze(-1) * m
+            l_lane = (((lane_logits - slot_target) ** 2) * lm).sum() / lm.sum().clamp(min=1.0)
+            loss = loss + 0.3 * l_lane
+            parts["lane_mse"] = float(l_lane.item())
+        if days_target is not None:
+            # ⚠️ 修掉一个真缺口：days_head 此前**从未被训练过** ——
+            #    forward 里算出来了，training_loss 却把它丢弃（`_`），
+            #    等于「工期预测」这个能力一直是个随机初始化的头。
+            l_days = ((days_estimate.squeeze(-1) - days_target.squeeze(-1)) ** 2).mean()
+            loss = loss + 0.3 * l_days
+            parts["days_mse"] = float(l_days.item())
+        if quality_target is not None:
+            l_q = ((quality_score.squeeze(-1) - quality_target.squeeze(-1)) ** 2).mean()
+            loss = loss + 0.3 * l_q
+            parts["quality_mse"] = float(l_q.item())
         return loss, parts
 
     def expert_usage(self) -> Dict[str, float]:

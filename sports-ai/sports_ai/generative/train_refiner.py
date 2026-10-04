@@ -34,7 +34,45 @@ def _onehot(logits):
     return torch.zeros_like(logits).scatter_(-1, idx, 1.0)
 
 
+def _model_defaults(cls, *keys) -> dict:
+    """读取模型类的构造默认值（用于预算换算，避免把维度再抄一遍）。
+
+    ⚠️ 为什么不在训练脚本里写死 160/6：写死就等于**又造了一个真相源**，
+    下次有人把模型默认维度改大，这里不会跟着变 ——
+    「改了默认维度但训练预算没跟上」正是本轮踩的坑。
+    """
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    out = {}
+    for name, p in sig.parameters.items():
+        if name == "self" or not isinstance(p.default, (int, float, bool)):
+            continue
+        # ⚠️ 不传 keys 时返回**全部**数值默认值。第一版写成"只在 keys 里找"，
+        #    而调用处 `_model_defaults(ConflictGnn)` 根本没传 keys →
+        #    keys 为空 → 返回空字典 → KeyError: 'hidden'（训练直接崩）。
+        if keys and name not in keys:
+            continue
+        out[name] = p.default
+    return out
+
+
 def train(args):
+    # ---- 训练预算 ↔ 深度检查（机制性防呆，不是一次性手调）----
+    # ⚠️ 本轮真实教训：hidden 从 64 提到 160 之后仍按旧的 2000 迭代去跑，
+    #    模型**没训够**，产物在「对抗生成应降低冲突」这类断言上直接失败 ——
+    #    表现像「深层架构更差」，真因是预算没跟上。
+    from sports_ai.budget import report_budget
+    report_budget(
+        "schemerefiner",
+        hidden=_model_defaults(SchemeRefiner)["hidden"],
+        base_hidden=64,
+        depth_units=1,
+        base_depth_units=1,
+        base_epochs=2000,
+        base_patience=2000,
+        epochs=args.iters,
+        patience=args.iters,
+    )
     device = resolve_device(getattr(args, "device", "auto"))
     seed_all(0)
     print(f"[device] 训练设备: {describe_device(device)}")

@@ -261,3 +261,79 @@ def mc_uncertainty(model, nf, ab, tm, mk, gf, samples=5):
 | P1 | 专家**归纳偏置分化**（不同 hop 范围/聚合方式） | MoE-GNN 综述「专家分工」 | 中（改结构 + 重训） |
 | P2 | 节点-通道联合门控（3D gating） | FilterMoE | 高（改门控 + 全量重训） |
 | — | 不推荐 | STEM-GNN 的跨分布泛化 | 与「单赛事编排」定位不匹配 |
+
+
+---
+
+## 8. 本轮：把 7 个独立模型合并进超级模型（N_TASKS 11 → 17）
+
+### 8.1 为什么不是「把专家数从 11 加到 17」
+
+上一轮 9→11 时，11 位专家是**同构**的：读同样的输入、只看节点表征。
+`load_balancing_loss` 会把使用率强行拉平均，loss 曲线也好看，
+但每个专家学到的几乎是同一件事 —— **扩出来的只是参数量，不是分工**。
+
+所以本轮引入**异构门控**（`MultiGateMoE`）：
+
+| 层 | 下标 | 路由依据 | 回答的问题 |
+|---|---|---|---|
+| 任务专家 | `0..10` | **节点表征**（每个节点各自一份门控） | 「**这个单元**该先排还是后排、落哪个桶」 |
+| 能力专家 | `11..16` | **图级上下文**（同一实例共享一份门控） | 「**这个赛会**需要多少生成/精修/派遣/预测」 |
+
+实现上，能力专家的门控**只由图级上下文决定**（去掉节点表征项与门控项），
+于是同一实例内所有节点对这些专家的权重相同 —— 它们成了**实例级**专家。
+这也对应 Graph-MoE 综述里「路由粒度」那一轴：光有负载均衡不够，
+**输入依赖不同**才能保证专家真正分化。
+
+### 8.2 六个能力专家各替代谁
+
+| 常量 | 语义 | 替代的原独立模型 | 对应输出 |
+|---|---|---|---|
+| `TASK_GENERATE`=11 | 方案生成 | `scheme_generator.onnx`（GAN-G） | 复用 `slot_logits` |
+| `TASK_REFINE`=12 | 方案精修 | `scheme_refiner.onnx` | 复用 `slot_logits` |
+| `TASK_DIFFUSION`=13 | 扩散去噪 | `scheme_diffusion.onnx` | 复用 `slot_logits`（内部 `DiffusionDecoder`） |
+| `TASK_DISPATCH`=14 | 道次派遣 | `lane_advisor.onnx` | **`lane_logits` [N,K]**（新增） |
+| `TASK_FORECAST`=15 | 工期预测 | `forecast_direct` + `forecast_mimo` | **`days_estimate` [1]**（补训） |
+| `TASK_QUALITY`=16 | 方案判别 | `scheme_discriminator.onnx`（GAN-D） | **`quality_score` [1]**（新增） |
+
+**生成 / 精修 / 扩散三者复用 `slot_logits`** 不是偷懒：它们的输出本质都是
+「单元 → 资源」的分配矩阵，而超级模型内部的 `DiffusionDecoder` 本来就是
+「从噪声生成 → 迭代去噪精修」的过程，与这三个模型同源。
+真正需要**新输出**的是派遣（有道次语义）、预测（标量工期）与判别（质量分）。
+
+### 8.3 训练目标：三个新的自监督真值
+
+| 目标 | 定义 | 覆盖的原模型 | 为什么可信 |
+|---|---|---|---|
+| `lane_mask` + `slot` | 只有**径赛/批次**单元参与道次损失 | `lane_advisor` | 田赛/球类/裁判没有「第几道」可分，硬给会污染梯度 |
+| `days` | 贪心落位**实际跨的天数** | `forecast×2` | 直接来自真实落位，不是拍脑袋的常数 |
+| `quality` | `1/(1+各桶负载变异系数)` | `scheme_discriminator` | 负载越均衡 → 方案越优，可解释、可自监督 |
+
+⚠️ **`lane_mask` 的判据必须包含 `track`**：实测只有 LANE 档会生成
+`heat_capacity > 0` 的单元，若只认 `heat_capacity/lanes`，则 **4/5 的样本里
+道次头完全拿不到梯度**（mask 求和恒为 0），道次派遣能力等于没训。
+径赛（`track=True`）天然有分道语义，纳入后梯度覆盖到全部档位。
+
+### 8.4 输出契约：5 → 7，且**只能尾部追加**
+
+```
+0 priority[N]  1 slot_logits[N,K]  2 task_probs[17]  3 format_logits[4]
+4 days_estimate[1]  5 lane_logits[N,K]（新）  6 quality_score[1]（新）
+```
+
+Java 侧已从**按索引读**改为**按输出名读**（`SuperMoeService.named`），
+旧 onnx 缺某个名字时回退到历史索引。按索引读的话，今后任何一次
+「在中间插入输出」都会让老代码**静默读错张量** —— 不报错、数值看着还挺像，
+是最难查的一类故障；而名字是稳定不变量。
+
+### 8.5 顺手修掉的一个真缺口
+
+`days_head` **从未被训练过**：`forward` 里算出来了，`training_loss` 却把它丢弃
+（`days_estimate` 接成了 `_`）。也就是说「工期预测」这个能力此前一直是个
+**随机初始化的头**，而它对应的正好是原 `forecast` 模型要干的活。
+本轮补上回归目标后才真正可用。
+
+> 同类问题还有一个：Java `SuperScheduleEncoder.N_TASKS` 写死 9，
+> 上一次 9→11 合并时**漏改**；Python `super_moe.py` 也曾自己写死 `N_TASKS=9`。
+> 常量不同步本身**不报错**，只会在按错通道读 `taskProbs` 时静默取错维度。
+> 现已双向收敛（Python 从 `super_scenarios` 导入、Java 有单测钉住）。

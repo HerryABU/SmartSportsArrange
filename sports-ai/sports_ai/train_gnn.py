@@ -34,7 +34,15 @@ def make_batch(samples: int, seed: int):
     for _ in range(samples):
         s = generate_scenario(
             seed=rng.randint(0, 10 ** 9),
-            n_athletes=rng.randint(150, 800),
+            # ⚠️ 规模必须**覆盖到极小赛会**：原先写死 150~800 人，
+            #    而推理侧完全可能是「一个年级 4 个项目、十来个学生」的小型运动会。
+            #    实测：仅用 150~800 人训练时，模型在 4 节点星形图上输出
+            #    [0.080,0.064,0.069,0.080]（几乎无区分、量级也对不上），
+            #    而正确标签是 [1.0,0.667,0.667,0.333] —— 因为标签是
+            #    `度数/(n-1)`，**n 越小标签越大**，模型没见过大标签就永远输出小值。
+            #    这就是「训练分布没覆盖推理分布」的典型后果：
+            #    模型不报错，只是在那个区间完全失效。
+            n_athletes=rng.randint(4, 800),
             n_days=rng.randint(2, 6),
             multi_event_prob=rng.uniform(0.4, 0.85),
             grades=["高一", "高二", "高三"],
@@ -56,8 +64,52 @@ def make_batch(samples: int, seed: int):
     )
 
 
+def _model_defaults(cls, *keys) -> dict:
+    """读取模型类的构造默认值（用于预算换算，避免把维度再抄一遍）。
+
+    ⚠️ 为什么不在训练脚本里写死 160/6：写死就等于**又造了一个真相源**，
+    下次有人把模型默认维度改大，这里不会跟着变 ——
+    「改了默认维度但训练预算没跟上」正是本轮踩的坑。
+    """
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    out = {}
+    for name, p in sig.parameters.items():
+        if name == "self" or not isinstance(p.default, (int, float, bool)):
+            continue
+        # ⚠️ 不传 keys 时返回**全部**数值默认值。第一版写成"只在 keys 里找"，
+        #    而调用处 `_model_defaults(ConflictGnn)` 根本没传 keys →
+        #    keys 为空 → 返回空字典 → KeyError: 'hidden'（训练直接崩）。
+        if keys and name not in keys:
+            continue
+        out[name] = p.default
+    return out
+
+
 def train(args):
     torch.manual_seed(0)
+
+    # ---- 训练预算 ↔ 深度检查（机制性防呆，不是一次性手调）----
+    # ⚠️ 本轮真实教训：把 hidden 从 64 提到 160、layers 从 4 提到 6 之后，
+    #    仍按旧的 20 轮去跑，模型**没训够**，于是产物在
+    #    「中心节点应得最高着色优先级」这类泛化断言上直接失败 ——
+    #    表现像「深层架构更差」，真因是预算没跟上。用共享模块把这条钉死。
+    #    ⚠️ 维度不写死：从模型类的构造默认值读（_model_defaults），
+    #    否则「改了默认维度、预算没跟着变」会再次发生。
+    from sports_ai.budget import report_budget
+    _gnn_dims = _model_defaults(ConflictGnn)
+    report_budget(
+        "conflict_gnn",
+        hidden=_gnn_dims["hidden"],
+        base_hidden=64,
+        depth_units=_gnn_dims["layers"] + 1,
+        base_depth_units=5,
+        base_epochs=20,
+        base_patience=20,
+        epochs=args.epochs,
+        patience=args.epochs,
+    )
+
     np.random.seed(0)
     random.seed(0)
 

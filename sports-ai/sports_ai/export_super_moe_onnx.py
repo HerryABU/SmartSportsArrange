@@ -93,13 +93,19 @@ def main() -> None:
         "task_probs": {0: "B"},
         "format_logits": {0: "B"},
         "days_estimate": {0: "B"},
+        # 新增两个输出（合并 lane_advisor / GAN 判别器）：N,K 都必须是动态轴，
+        # 否则导出时被常量折叠成 dummy 的形状，服务端喂别的 N 直接 Reshape 崩。
+        "lane_logits": {0: "B", 1: "N"},
+        "quality_score": {0: "B"},
     }
     torch.onnx.export(
         model,
         (node_feat, adj, type_mask, mask, graph_feat),
         out,
         input_names=["node_feat", "adj_by_type", "type_mask", "mask", "graph_feat"],
-        output_names=["priority", "slot_logits", "task_probs", "format_logits", "days_estimate"],
+        # ⚠️ 输出顺序 = SuperScheduleMoE.forward 的返回顺序，**新输出只能往后追加**。
+        output_names=["priority", "slot_logits", "task_probs", "format_logits",
+                      "days_estimate", "lane_logits", "quality_score"],
         dynamic_axes=dynamic_axes,
         opset_version=17,
         do_constant_folding=True,
@@ -109,7 +115,7 @@ def main() -> None:
     print(f"导出完成: {out}  ({os.path.getsize(out) / 1024 / 1024:.2f} MB)")
     print(f"  输入 {NODE_FEAT_DIM} 维节点特征 / {N_EDGES} 类约束边 / {MAX_SLOTS} 个时间槽 "
           f"/ {GRAPH_FEAT_DIM} 维图级特征")
-    print(f"  输出 优先级[N] + 槽位logits[N,{MAX_SLOTS}] + 任务权重[{N_TASKS}] "
+    print(f"  输出 优先级[N] + 槽位logits[N,{MAX_SLOTS}] + 任务权重[{N_TASKS}] + 道次logits + 质量分 "
           f"+ 赛制[{N_FORMATS}] + 天数[1]")
 
 

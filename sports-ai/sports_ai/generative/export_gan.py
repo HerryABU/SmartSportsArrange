@@ -93,6 +93,8 @@ def export_generator(path: str) -> None:
         dynamic_axes={k: DYN[k] for k in ("node_feat", "adj", "mask", "z", "forbid", "logits")}
         | {"scheme": DYN["scheme_out"]},
         opset_version=17,
+        # ⚠️ PyTorch ≥2.6 默认走 dynamo 导出器：依赖 onnxscript（本环境未装）且与 dynamic_axes 冲突。
+        dynamo=False,
     )
     print(f"[ok] 导出 {os.path.basename(path)}（n 动态）")
 
@@ -113,6 +115,8 @@ def export_discriminator(path: str) -> None:
         output_names=["logits"],
         dynamic_axes={k: DYN[k] for k in ("node_feat", "adj", "mask", "scheme")},
         opset_version=17,
+        # ⚠️ PyTorch ≥2.6 默认走 dynamo 导出器：依赖 onnxscript（本环境未装）且与 dynamic_axes 冲突。
+        dynamo=False,
     )
     print(f"[ok] 导出 {os.path.basename(path)}（n 动态）")
 
@@ -134,6 +138,8 @@ def export_refiner(path: str) -> None:
         output_names=["logits"],
         dynamic_axes={k: DYN[k] for k in ("node_feat", "adj", "mask", "init_logits", "forbid", "logits")},
         opset_version=17,
+        # ⚠️ PyTorch ≥2.6 默认走 dynamo 导出器：依赖 onnxscript（本环境未装）且与 dynamic_axes 冲突。
+        dynamo=False,
     )
     print(f"[ok] 导出 {os.path.basename(path)}（n 动态）")
 
