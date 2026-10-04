@@ -51,7 +51,9 @@ def make_batch(samples: int, seed: int):
             field_lanes=rng.choice([2, 3, 4, 5]),
             day_windows=rng.choice([(180, 150), (240, 240), (210, 210)]),
         )
-        nf, adj, mk, lb = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO)
+        # ⚠️ 冲突着色模型必须带第 17 维度数（它的预测目标就是度数中心度）；
+        #    其余消费方（生成式/forecast/curriculum）保持默认 16 维。
+        nf, adj, mk, lb = encode_gnn_inputs(s, pad_to=TRAIN_PAD_TO, with_degree=True)
         nfs.append(nf)
         adjs.append(adj)
         mks.append(mk)

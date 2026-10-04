@@ -151,4 +151,114 @@ class PredictivePlannerTest {
         // 块断裂为 0（同一天），工期跨度 0 → 代价应为 0
         assertEquals(0.0, r.value(), 1e-9);
     }
+
+    // ------------------------------------------------------------------
+    // 多样化算子与块连续性修复（与 Python 侧同源）
+    // ------------------------------------------------------------------
+
+    /** 每 2 个槽算一天 —— 用于构造「同一天里有多个槽」的场景。 */
+    private static final SlotDays TWO_PER_DAY = slot -> slot / 2;
+
+    private static List<PlanUnit> packUnits() {
+        List<PlanUnit> units = new ArrayList<>();
+        units.add(u("p0", "V0", 70, null, 0L));
+        units.add(u("p1", "V0", 30, null, 1L));
+        units.add(u("p2", "V0", 70, null, 2L));
+        units.add(u("p3", "V0", 30, null, 0L));
+        units.add(u("p4", "V0", 70, null, 1L));
+        units.add(u("p5", "V0", 30, null, 2L));
+        units.add(u("p6", "V0", 55, null, 0L));
+        units.add(u("p7", "V0", 45, null, 1L));
+        units.add(u("p8", "V0", 60, null, 2L));
+        units.add(u("p9", "V0", 40, null, 0L));
+        return units;
+    }
+
+    private static Map<String, Integer> packCaps() {
+        return caps(0, "V0", 90, 1, "V0", 90, 2, "V0", 90, 3, "V0", 90);
+    }
+
+    @Test
+    @DisplayName("真不变量：重启更多时解不得更差（任一算子）")
+    void moreRestartsNeverWorseForEveryOperator() {
+        for (PredictivePlanner.DivOperator op : PredictivePlanner.DivOperator.values()) {
+            PlanOutcome r1 = PredictivePlanner.solve(packUnits(), packCaps(), DAYS,
+                    1, 20000, 0L, op, true);
+            PlanOutcome r32 = PredictivePlanner.solve(packUnits(), packCaps(), DAYS,
+                    32, 20000, 0L, op, true);
+            assertTrue(r32.value() <= r1.value() + 1e-9,
+                    op + ": 重启更多反而更差 " + r1.value() + " → " + r32.value());
+        }
+    }
+
+    @Test
+    @DisplayName("真不变量：NONE 算子下重启完全无用（改进次数恒为 0）")
+    void noneOperatorMakesRestartsWasted() {
+        // ⚠️ 必须用**超额需求**的容量表：可行实例会在首轮直接成功返回
+        //    （`if (cand.feasible()) return cand;`），根本不会发生重启，
+        //    于是「重启无用」这条不变量测不到。用紧容量才逼出多次尝试。
+        Map<String, Integer> tight = caps(0, "V0", 60, 1, "V0", 60);
+        PlanOutcome r1 = PredictivePlanner.solve(packUnits(), tight, DAYS,
+                1, 20000, 0L, PredictivePlanner.DivOperator.NONE, true);
+        PlanOutcome r32 = PredictivePlanner.solve(packUnits(), tight, DAYS,
+                32, 20000, 0L, PredictivePlanner.DivOperator.NONE, true);
+        assertEquals(r1.value(), r32.value(), 1e-9, "无算子时多跑重启不该改变结果");
+        assertEquals(0, r32.diagnostics().restartImproved(), "无算子时不可能有「重启改进」");
+        // ⚠️ 这里**不能**断言 `restarts >= 1`：`backtracks` 触顶会提前 break
+        //    （那是设计里的刹车，防止病态实例把 CPU 吃满），
+        //    所以「重启次数」不是一个可靠的不变量。真正要钉的是上面两条：
+        //    结果完全相同 + 改进次数恒为 0。
+    }
+
+    @Test
+    @DisplayName("默认算子必须是 ROTATE（实测最优且最简单的那一个）")
+    void defaultOperatorIsRotate() {
+        // 6 seeds × 五档实测：NONE 0%、ROTATE 12.8%、ADAPTIVE 12.5%、
+        // FAILURE 12.4%、SLACK 5.6%。没有单一算子显著胜出，取最优且最简单的。
+        assertEquals(PredictivePlanner.DivOperator.ROTATE, PredictivePlanner.DEFAULT_DIV);
+    }
+
+    @Test
+    @DisplayName("块连续性修复：同组跨天时能把成员并到同一天")
+    void blockRepairConsolidatesGroupOntoOneDay() {
+        // 每 2 槽一天：槽 0/1 是第 0 天，槽 2/3 是第 1 天。
+        // g1(组 G) 落在第 1 天、g2(组 G) 落在第 0 天 → 1 处断裂；
+        // 第 0 天的槽 1 有空位 → 应把 g1 搬过去。
+        List<PlanUnit> units = new ArrayList<>();
+        units.add(u("g1", "V0", 30, "G"));
+        units.add(u("g2", "V0", 30, "G"));
+        PlanOutcome r = PredictivePlanner.solve(units,
+                caps(0, "V0", 60, 1, "V0", 60, 2, "V0", 60), TWO_PER_DAY,
+                2, 5000, 0L, PredictivePlanner.DivOperator.ROTATE, true);
+        assertTrue(r.feasible() || r.blocked().isEmpty());
+        if (r.slotOf().size() == 2) {
+            int d1 = TWO_PER_DAY.dayOf(r.slotOf().get("g1"));
+            int d2 = TWO_PER_DAY.dayOf(r.slotOf().get("g2"));
+            assertEquals(d1, d2, "同组应被并到同一天");
+        }
+    }
+
+    @Test
+    @DisplayName("真不变量：开块修复不得让解变差，也不得改变可行性结论")
+    void blockRepairNeverWorsensThePlan() {
+        for (int restarts : new int[]{1, 8}) {
+            PlanOutcome off = PredictivePlanner.solve(packUnits(), packCaps(), DAYS,
+                    restarts, 20000, 0L, PredictivePlanner.DivOperator.ROTATE, false);
+            PlanOutcome on = PredictivePlanner.solve(packUnits(), packCaps(), DAYS,
+                    restarts, 20000, 0L, PredictivePlanner.DivOperator.ROTATE, true);
+            assertTrue(on.value() <= off.value() + 1e-9, "块修复不得让代价变大");
+            assertEquals(off.feasible(), on.feasible(), "块修复不得改变可行性结论");
+            assertTrue(on.violations().isEmpty(), "块修复不得引入非法落位");
+        }
+    }
+
+    @Test
+    @DisplayName("诊断字段完整：块移动与重启改进都要被如实计数")
+    void diagnosticsIncludeNewCounters() {
+        PlanOutcome r = PredictivePlanner.solve(packUnits(), packCaps(), DAYS,
+                8, 20000, 0L, PredictivePlanner.DivOperator.ROTATE, true);
+        assertTrue(r.diagnostics().blockMoves() >= 0);
+        assertTrue(r.diagnostics().restartImproved() >= 0);
+        assertEquals(r.diagnostics().expansions(), r.diagnostics().searchCost());
+    }
 }

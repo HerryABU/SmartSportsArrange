@@ -1,7 +1,12 @@
 """冲突簇 GNN 的输入编码（**动态节点数**契约，与 Java 端 ``ConflictGraphEncoder`` 严格对齐）。
 
 把编排实例编码成 GNN 三路输入：
-- ``node_feat``: [1, n, CONFLICT_FEAT_DIM]  节点特征（17 维 = 16 通用维 + 第 17 维「度数」，构造保证落在 [0,1]）
+- ``node_feat``: [1, n, NODE_FEAT_DIM]  节点特征（**默认 16 维**通用维，构造保证落在 [0,1]）
+  —— 冲突着色模型需要**额外**的第 17 维「归一化度数」时，传 ``with_degree=True``
+  （见 ``CONFLICT_FEAT_DIM``）。⚠️ 这个开关是必须的：生成式三件套 / forecast /
+  curriculum 都用同一个函数取特征，**只有冲突 GNN 需要那一维**。
+  早期版本无条件产出 17 维，直接把四个消费方全部打挂
+  （报 ``mat1 and mat2 shapes cannot be multiplied (256x17 and 16x160)``）。
 - ``adj``:       [1, n, n]              **带权邻接**（共享运动员数归一化，无自环）
 - ``mask``:      [1, n]                 1=真实节点，0=填充（仅当 ``pad_to`` 补齐时出现）
 
@@ -102,19 +107,27 @@ def _shared_counts(units: List[Unit], n: int) -> Dict[Tuple[int, int], int]:
 
 
 def encode_gnn_inputs(scenario: Scenario, pad_to: Optional[int] = None,
-                      return_meta: bool = False):
+                      return_meta: bool = False, with_degree: bool = False):
     """返回 (node_feat, adj, mask, degree_label)[, meta]。
 
     :param pad_to: None = 不补齐（**推理**，shape 随实例变化）；
                    K = 补齐/截断到 K 个节点（**训练**，便于 batch 拼接）。
     :param return_meta: 附带 ``nodeCount`` / ``totalUnits`` / ``dropped`` / ``maxSharedAthletes``。
+    :param with_degree: 是否附加第 17 维「归一化度数」。
+        **默认 False（16 维通用特征）**；只有冲突着色模型需要它 ——
+        它的预测目标就是度数中心度，而对称归一化的消息传递 D^-1/2 A D^-1/2
+        会把度数幅度抹平，所以必须显式给出。
+        ⚠️ 与 Java 侧的分工一致：``ConflictGraphEncoder.encode()`` 产出 16 维通用特征，
+        ``conflictModelFeat(enc)`` 再扩展出第 17 维。
+        两边都不允许「无条件多一维」—— 那会把共用同一份特征的其他模型全部打挂。
     """
     units: List[Unit] = scenario.units
     total = len(units)
     n = min(total, MAX_NODES)
     size = n if pad_to is None else max(n, int(pad_to))
 
-    node_feat = np.zeros((size, CONFLICT_FEAT_DIM), dtype=np.float32)
+    dim = CONFLICT_FEAT_DIM if with_degree else NODE_FEAT_DIM
+    node_feat = np.zeros((size, dim), dtype=np.float32)
     adj = np.zeros((size, size), dtype=np.float32)
     mask = np.zeros((size,), dtype=np.float32)
 
@@ -178,9 +191,12 @@ def encode_gnn_inputs(scenario: Scenario, pad_to: Optional[int] = None,
         node_feat[i, 13] = pool_size.get(u.pool_label, 0) / n_total
         node_feat[i, 14] = 1.0 if dur >= LARGE_UNIT_MINUTES else 0.0
         node_feat[i, 15] = (i / max(1, n - 1)) if n > 1 else 0.0
-        # 第 16 维：归一化度数 —— **与标签同源**（标签就是 degree/(n-1)）。
+        # 第 16 维（0 基）：归一化度数 —— **与标签同源**（标签就是 degree/(n-1)）。
         # 对称归一化的消息传递会把度数幅度抹平，所以必须显式给出。
-        node_feat[i, 16] = degree[i] / max(1, n - 1)
+        # ⚠️ 只在 with_degree=True 时写：其余消费方（生成式/forecast/curriculum）
+        #    的模型第一层是 Linear(16, H)，多一维就直接形状不匹配。
+        if with_degree:
+            node_feat[i, 16] = degree[i] / max(1, n - 1)
         mask[i] = 1.0
 
     # ---- 标签：归一化度数中心度（着色优先级，落在 [0,1]）----

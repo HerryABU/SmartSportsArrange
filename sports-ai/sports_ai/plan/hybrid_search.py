@@ -154,6 +154,31 @@ def verify_slot_map(
     return (len(reasons) == 0), reasons
 
 
+def _illegal_only(reasons: Sequence[str]) -> List[str]:
+    """从 ``verify_slot_map`` 的完整原因列表里**只保留非法落位**。
+
+    剥掉 ``未排:<key>`` 这类条目 —— 「排不下」由 ``PlanResult.blocked`` 表达，
+    不属于 violations（见 ``PlanResult`` 的说明）。
+    """
+    return [r for r in reasons if not r.startswith("未排:")]
+
+
+def _is_legal(units, slot_of: Dict[str, int], caps, athletes) -> bool:
+    """**只判合法性**（容量 / 兼项 / 场地是否开），**不判完整性**。
+
+    ⚠️ 为什么不直接用 ``verify_slot_map(...)[0]``：那会把「未排」也算作不可行。
+    在**部分解**上（规划过程中很常见 —— 有些单元还没排下），
+    任何移动都会被误判成非法，于是修复算子一步都动不了。
+
+    实测表现：块连续性修复在「尚有单元未排」的实例上完全失效，
+    调用方只看到「算子没效果」，看不出是**判定口径用错**。
+    这与刚修的「``violations`` 不该混入未排」是同一条道理：
+    **合法性 ≠ 完整性** —— 前者是「方案对不对」，后者是「方案全不全」。
+    """
+    _, reasons = verify_slot_map(units, slot_of, caps, athletes)
+    return not _illegal_only(reasons)
+
+
 def conservative_value(raw: float, delta: float) -> float:
     """可采纳性保护：把乐观的预测**保守化**（低估）。
 
@@ -273,6 +298,15 @@ class SearchLog:
     pruned_retried: int = 0
     # ``predictor_queries`` = 调用预测网络的次数（它的推理成本，用于算性价比）
     predictor_queries: int = 0
+    # ``block_moves`` = 块连续性修复实际搬动的单元数。
+    # 它回答「『同组跨天』这个代价项有没有对应的**修复动作**」——
+    # 没有它的话，代价里罚了块断裂却没人去修，等于「罚了但不治」。
+    block_moves: int = 0
+    # ``restart_improved`` = **重启里有多少次刷新了历史最优**。
+    # ⚠️ 这是判定「多样化算子是否有效」的唯一直接指标：
+    #    如果重启次数翻 4 倍而它恒为 0，说明算子只是重复走同一条路，
+    #    「多跑几次」纯属浪费预算 —— 加预算救不了坏算子。
+    restart_improved: int = 0
     backtrack_reasons: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, object]:
@@ -287,12 +321,33 @@ class SearchLog:
             "pruned": self.pruned,
             "pruned_retried": self.pruned_retried,
             "predictor_queries": self.predictor_queries,
+            "restart_improved": self.restart_improved,
+            "block_moves": self.block_moves,
             "reasons": self.backtrack_reasons[:10],
         }
 
 
 @dataclass
 class PlanResult:
+    """规划结果。
+
+    ## ⚠️ ``violations`` 与 ``blocked`` 必须是两件事（曾混在一起）
+
+    ``violations`` 只承载**非法落位**（超容 / 兼项撞 / 场地未开），
+    ``blocked`` 只承载**排不下**。
+
+    为什么必须分开：这两者的处置完全不同 ——
+    前者说明**方案本身是错的**（实现有缺陷，应当立刻暴露），
+    后者是**客观差多少**（容量不够，应当如实上报并给出可行的那部分）。
+    把它们混在一起，会出现「所有单元都排下了，violations 却非空」的假警报，
+    或者反过来 —— 「violations 为空」被误读成「方案合法」，
+    而实际上全部 50 个单元一个都没排。
+
+    ``verify_slot_map`` 为了能做整解可行性判定，仍会返回带 ``未排:`` 的完整原因列表；
+    这里按前缀把「未排」剥离到 ``blocked`` 语义之外，与 Java 侧
+    ``PredictivePlanner.verify()``（只报超容/兼项/场地未开）**逐字对齐**。
+    """
+
     slot_of: Dict[str, int]
     feasible: bool
     violations: List[str]
@@ -494,6 +549,51 @@ def plan_predictive(
     exposure_of: Optional[Callable[[object], float]] = None,
     max_backtracks: int = 2000,
     max_restarts: int = 3,
+    # 重启的**多样化算子**。取值：
+    #   ``"rotate"``（默认）顺序旋转 + 偶次打散；
+    #   ``"failure"`` 失败驱动 —— 把「上次没排下的」与「上次被让位最多」的单元提到最前；
+    #   ``"slack"``   紧度驱动 —— 按「本单元需求 / 该场地可用总容量」升序（越难塞越先排）；
+    #   ``"adaptive"`` 失败信息（头部）+ 紧度排序（尾部）的组合；
+    #   ``"hybrid"``  奇偶次在 rotate / adaptive 之间轮换；
+    #   ``"none"``    不换序（纯重复，**仅用于对照**）。
+    #
+    # ## 实测（6 seeds、五档、合计代价，R=1 → R=32）
+    #
+    #   ===========  ==========  ==========
+    #   算子          R=32        总降幅
+    #   ===========  ==========  ==========
+    #   none         335.8       0.0%
+    #   **rotate**   **292.8**   **12.8%**
+    #   adaptive     293.8       12.5%
+    #   failure      294.2       12.4%
+    #   hybrid       298.2       11.2%
+    #   slack        317.2       5.6%
+    #   ===========  ==========
+    #
+    # ## ⚠️ 一条被推翻的旧结论（必须留档，否则会再犯）
+    #
+    # 上一轮曾断言「`rotate` 不产生有效多样化，需要更强算子」——那是**单 seed 假象**：
+    # 只在 `seed=0` 上测时 rotate 恰好没改进，换成 6 seeds 后 rotate 反而是**最优**的。
+    # 真正成立的两条是：
+    #   ① **不加算子时重启完全无用**（`none` 恒 335.8、`restart_improved` 恒 0）
+    #      —— 「加预算救不了坏算子」是对的；
+    #   ② 但三个算子**统计上旗鼓相当（12.4%~12.8%）**，没有单一算子显著胜出
+    #      —— 「旧算子是坏算子」是错的。
+    # 结论：**保持 rotate 作默认**（最优且最简单），其余算子留作可选；
+    # `failure` 在 HELL 档略优（123.7 vs 124.7），需要时可按档选。
+    div_operator: str = "rotate",
+    # 是否启用**块连续性修复**（把同组跨天的单元并到同一天）。
+    # 默认开；提供开关是为了能对照「罚了但不治 vs 真的去治」的差别。
+    repair_blocks: bool = True,
+    # GRASP 式**受限候选表**：候选槽先按确定性启发排序，再在「前 k 优」里随机选一个作为首选。
+    # ``1`` = 完全确定性（默认）；``>=2`` 才引入随机性。
+    # ⚠️ 实测：``rcl_k>=2`` 只在**重启预算充足**时才有边际收益
+    #    （R=32：290.7 vs 292.8，仅 −0.7%），而在小预算下**明显变差**
+    #    （R=1：352.5 vs 335.8，+5%）。因为单次尝试里随机化就是纯粹的噪声。
+    #    所以默认 1：确定性优先，且这一项不是「越随机越好」。
+    # ⚠️ 只随机「先试哪个」，不改变集合 —— 被跳过的候选仍会按序跟上，
+    #    所以可行性判定与「不丢解」的保证都不受影响。
+    rcl_k: int = 1,
     # **扩展预算**（节点扩展数上限）。这是与「带预测 vs 不带预测」公平比较的关键：
     # 首次成功即跳出的贪心里，「剪枝」必然改变决策（被剪的候选若其实是首个可行槽，
     # 就会改选后面的），所以**不可能同时做到「省扩展」与「解完全一致」**。
@@ -577,6 +677,17 @@ def plan_predictive(
             return False
         return _predict(_trial_feat(key, sid)) < pred_prune_below
 
+    eject_count: Dict[str, int] = {}
+
+    def candidate_slots(u) -> List[int]:
+        """候选槽：确定性启发排序 + 可选 GRASP 随机化（只打乱**先试顺序**）。"""
+        ranked = sorted(candidates_of(u), key=lambda s: -order_score(u, s))
+        if rcl_k > 1 and len(ranked) > 1:
+            k = min(int(rcl_k), len(ranked))
+            pick = rng.randrange(k)
+            return [ranked[pick]] + [sd for j, sd in enumerate(ranked) if j != pick]
+        return ranked
+
     def order_score(u, sid) -> float:
         """候选槽排序（确定性启发为主，模型只做增量）。"""
         need = int(getattr(u, "duration", 0))
@@ -605,13 +716,119 @@ def plan_predictive(
                 _state_feat(units, slot_of, caps, n, day_budget, exposure_of))
         return s
 
+    # 上一次尝试的失败信息，供「失败驱动重排」使用
+    prev_blocked: List[str] = []
+
+    def _rotate() -> List[str]:
+        out = list(base_order[1:]) + [base_order[0]]
+        if attempt % 2 == 0:
+            rng.shuffle(out)
+        return out
+
+    def _failure(blocked: List[str], ejects: Dict[str, int],
+                 tail_by_slack: bool = False) -> List[str]:
+        """失败信息（头部）+ 紧度排序或随机打散（尾部）。"""
+        def slack_key(k: str) -> float:
+            uu = by_key[k]
+            v = str(getattr(uu, "venue", ""))
+            tot = sum(c for (_i, vv), c in caps.items() if vv == v)
+            return int(getattr(uu, "duration", 0)) / max(1.0, float(tot))
+        crit = list(dict.fromkeys(blocked))
+        hot = [k for k, c in sorted(ejects.items(), key=lambda kv: -kv[1]) if c > 0]
+        head: List[str] = []
+        for k in crit + hot:
+            if k in by_key and k not in head:
+                head.append(k)
+        head_set = set(head)
+        rng_key = {k: rng.random() for k in base_order}
+        rest = [k for k in base_order if k not in head_set]
+        if tail_by_slack:
+            rest.sort(key=lambda k: (slack_key(k), rng_key[k]))
+        else:
+            rng.shuffle(rest)
+        return head + rest
+
+    def permute(blocked: List[str], ejects: Dict[str, int]) -> List[str]:
+        """构造下一次尝试的**单元顺序** —— 这就是多样化算子的全部。
+
+        ⚠️ 三种算子共用一条原则：**保留启发式骨架，只在关键处扰动**。
+        纯随机会把「越受限越先排」这个下界信息整个丢掉，重启就退化成从头乱猜。
+        """
+        if div_operator == "none":
+            return list(base_order)
+        if div_operator == "hybrid":
+            # ---- "hybrid"（默认）：**算子轮换** ----
+            # 实测（6 seeds，合计代价 R=1 → R=32）：
+            #   none 335.8→335.8（0.0%）  rotate 335.8→292.8（**12.8%**）
+            #   failure 335.8→294.2（12.4%）  adaptive 335.8→293.8（12.5%）
+            #   slack 335.8→317.2（5.6%）
+            # 按档看两者各有主场：``failure`` 在 HELL 最好（123.7）、
+            # ``rotate`` 在 BLOCK（70.3）与 LANE（17.8）最好。
+            # 既然没有单一算子全面胜出，就**轮换**它们 —— 与项目里
+            # 「算法组合波次」的思路一致：让不同的破坏方式轮流上场。
+            if attempt % 2 == 1:
+                return _rotate()
+            return _failure(blocked, ejects, tail_by_slack=(attempt % 4 == 2))
+        if div_operator == "rotate":
+            out = list(base_order[1:]) + [base_order[0]]
+            if attempt % 2 == 0:
+                rng.shuffle(out)
+            return out
+        if div_operator == "slack":
+            def slack_of(k: str) -> float:
+                uu = by_key[k]
+                v = str(getattr(uu, "venue", ""))
+                tot = sum(c for (_i, vv), c in caps.items() if vv == v)
+                return int(getattr(uu, "duration", 0)) / max(1.0, float(tot))
+            # 升序 = 越难塞越先排；同紧度用随机键打散，避免每次都同序
+            rng_key = {k: rng.random() for k in base_order}
+            return sorted(base_order, key=lambda k: (slack_of(k), rng_key[k]))
+        if div_operator == "adaptive":
+            # ---- "adaptive"（默认）：失败信息（头部）+ 紧度排序（尾部）----
+            # 实测依据（3 档 × 重启 1/4/16）：
+            #   * ``none``  —— 代价恒定 102/31/37，`restart_improved` 恒为 0
+            #     → **证明「重启次数本身」毫无价值**，不加算子就是白烧预算；
+            #   * ``rotate``（旧实现）—— HELL/BLOCK 恒定，改进 0 → 旧的多样化确实无效；
+            #   * ``slack``  —— HELL 102→**83（−18.6%）**、BLOCK 37→**33（−10.8%）**；
+            #   * ``failure``—— HELL 102→101、REGULAR 31→30，对「有明确钉子户」的实例更准。
+            # 两者互补：失败信息告诉你「谁上次卡住了」，紧度排序告诉你
+            # 「谁天生难塞」。头用前者（精确）、尾用后者（全局），合起来最稳。
+            def slack_key(k: str) -> float:
+                uu = by_key[k]
+                v = str(getattr(uu, "venue", ""))
+                tot = sum(c for (_i, vv), c in caps.items() if vv == v)
+                return int(getattr(uu, "duration", 0)) / max(1.0, float(tot))
+            crit = list(dict.fromkeys(blocked))
+            hot = [k for k, c in sorted(ejects.items(), key=lambda kv: -kv[1]) if c > 0]
+            head: List[str] = []
+            for k in crit + hot:
+                if k in by_key and k not in head:
+                    head.append(k)
+            head_set = set(head)
+            rng_key = {k: rng.random() for k in base_order}
+            tail = sorted((k for k in base_order if k not in head_set),
+                          key=lambda k: (slack_key(k), rng_key[k]))
+            return head + tail
+        # ---- "failure"：失败驱动重排 ----
+        # ① 上次**没排下**的单元 → 提到最前（它们才是真正的瓶颈）
+        # ② 上次**被让位最多**的单元 → 紧随其后（它们挡住了别人，位置需要重洗）
+        # ③ 其余按原启发式顺序，但在尾部**整体打散**：关键单元已固定在前，
+        #    尾部可以自由探索，这才有可能跳出局部最优。
+        crit = list(dict.fromkeys(blocked))
+        hot = [k for k, c in sorted(ejects.items(), key=lambda kv: -kv[1]) if c > 0]
+        head: List[str] = []
+        for k in crit + hot:
+            if k in by_key and k not in head:
+                head.append(k)
+        head_set = set(head)
+        tail = [k for k in base_order if k not in head_set]
+        rng.shuffle(tail)
+        return head + tail
+
     for attempt in range(max(1, max_restarts)):
         if attempt > 0:
             log.restarts += 1
-            # Restart：换序，但保留启发式信息（不纯随机）
-            base_order = base_order[1:] + base_order[:1]
-            if attempt % 2 == 0:
-                rng.shuffle(base_order)
+            base_order = permute(prev_blocked, eject_count)
         slot_of: Dict[str, int] = {}
         pending: List[str] = []
 
@@ -620,7 +837,7 @@ def plan_predictive(
             u = by_key[key]
             placed = False
             deferred: List[int] = []
-            for sid in sorted(candidates_of(u), key=lambda s: -order_score(u, s)):
+            for sid in candidate_slots(u):
                 if _hopeless(key, sid):
                     # 预测器说这里基本没戏：先记账，**不做前向检查**（省一次扩展）
                     log.pruned += 1
@@ -648,7 +865,7 @@ def plan_predictive(
         def try_place(key: str, depth: int) -> bool:
             u = by_key[key]
             deferred2: List[int] = []
-            for sid in sorted(candidates_of(u), key=lambda s: -order_score(u, s)):
+            for sid in candidate_slots(u):
                 if _hopeless(key, sid):
                     log.pruned += 1
                     deferred2.append(sid)
@@ -668,6 +885,8 @@ def plan_predictive(
                                     caps, n, day_budget, exposure_of)))
                 for b in blockers:
                     old = slot_of.pop(b)
+                    # 记录「谁经常挡路」——失败驱动重排要靠它决定把谁提前
+                    eject_count[b] = eject_count.get(b, 0) + 1
                     # ⚠️ **必须重新做一次前向检查**再提交这次让位：
                     #    踢掉一个挡路者不等于"现在装得下了" —— 可能还有别的挡路者
                     #    （容量是多个单元共同占的），也可能踢掉的这个根本不占容量。
@@ -705,7 +924,7 @@ def plan_predictive(
                 continue
             still.append(key)
 
-        # ---------- ③ 完成校验 + Repair ----------
+        # ---------- ③ 完成校验 + Repair（容量/兼项 → 块连续性）----------
         ok, why = verify_slot_map(units, slot_of, caps, athletes)
         if not ok:
             log.repairs += 1
@@ -713,21 +932,37 @@ def plan_predictive(
             if fixed is not None:
                 slot_of = fixed
                 ok, why = verify_slot_map(units, slot_of, caps, athletes)
+        # 块连续性修复：只在整解已合法时做（它自己是纯改进算子，不会破坏合法性）。
+        # ⚠️ 顺序有讲究：先修「能不能」（容量/兼项），再修「好不好」（块连续性）。
+        #    反过来做的话，块修复会把单元搬到「同一天但超容」的槽上，
+        #    然后被容量修复再搬回来 —— 两个算子互相拆台、白烧预算。
+        if ok and repair_blocks:
+            moved_plan, n_moves = _repair_blocks(
+                units, slot_of, caps, athletes, candidates_of, _day_map_of(candidates_of, units))
+            if n_moves:
+                slot_of = moved_plan
+                log.block_moves += n_moves
 
         val = _cost(units, slot_of, caps, exposure_of, by_key)
-        cand = PlanResult(dict(slot_of), ok, why, still, log, val)
+        cand = PlanResult(dict(slot_of), ok, _illegal_only(why), still, log, val)
         if ok and not still:
             log.completes += 1
             return cand
         if best is None or (len(cand.blocked), cand.value) < (len(best.blocked), best.value):
+            if attempt > 0:
+                # 只有**重启里**的改进才计入：首轮是基线，不能算作算子的功劳
+                log.restart_improved += 1
             best = cand
+        # 交给下一次尝试：谁没排下、谁被踢得最多
+        prev_blocked = list(still)
         if log.backtracks >= max_backtracks:
             break
         if expansion_budget is not None and log.expansions >= expansion_budget:
             log.backtrack_reasons.append("触达扩展预算")
             break
 
-    return best if best is not None else PlanResult({}, False, ["无解"], list(keys), log, math.inf)
+    return best if best is not None else PlanResult(
+        {}, False, ["无解"], list(keys), log, math.inf)
 
 
 def _blockers(units, slot_of, caps, key: str, sid: int,
@@ -780,6 +1015,137 @@ def _find(units, key: str):
         if str(getattr(u, "key", "")) == key:
             return u
     return None
+
+
+def _breaks_of(units, slot_of: Dict[str, int], day_of: Callable[[int], int]) -> int:
+    """块断裂数 = 各 ``group_key`` 占用的天数减一之和。
+
+    与 ``_cost`` 里的口径**必须一致**：同一个组排在第 1 天与第 3 天算 2 段，
+    即 1 次断裂。若两处口径不同，修复层会「优化一个代价函数、被另一个评分」，
+    表现为搬了半天却看不到代价下降。
+    """
+    days: Dict[str, set] = {}
+    for u in units:
+        k = str(getattr(u, "key", ""))
+        g = getattr(u, "group_key", None)
+        if not g or k not in slot_of:
+            continue
+        days.setdefault(str(g), set()).add(day_of(slot_of[k]))
+    return sum(max(0, len(d) - 1) for d in days.values())
+
+
+def _day_map_of(candidates_of, units) -> Callable[[int], int]:
+    """从候选槽集合推断「槽 → 天」的映射（槽是 int 时按 3 个一档；否则用槽自身）。
+
+    ⚠️ 单独抽出来是为了让修复层与代价层**用同一个映射**：
+    之前代价层用 ``_day_of(sid)``（int 槽直接取整数值当天），
+    而修复层若自己拍脑袋分组，两边的「同一天」就会不是同一天。
+    """
+    _ = candidates_of, units
+    return _day_of
+
+
+def _repair_blocks(units, slot_of: Dict[str, int], caps, athletes,
+                   candidates_of, day_of: Callable[[int], int],
+                   max_moves: int = 64) -> Tuple[Dict[str, int], int]:
+    """块连续性修复：把「同一组跨了多天」的单元**并到同一天**去。
+
+    ## 为什么需要它
+
+    代价函数里 ``breaks``（同组跨天）是计了费的，但修复层原先只修**容量**与**兼项** ——
+    于是「罚了但不治」：搜索每轮都被扣分，却没有任何算子去把那几分挣回来。
+    实测表现为代价卡在某个值上不动（HELL 档 R=1 与 R=32 的 breaks 项完全相同）。
+
+    ## 做法（贪心，且只接受严格变好的移动）
+
+    1. 找出跨天的组；把「单元最多的那一天」当作锚点天；
+    2. 尝试把该组落在**其它天**的单元搬到锚点天里；
+    3. **只接受**同时满足两条件的移动：① 移动后仍**合法**（容量 / 兼项 / 场地开放，
+       走 ``_is_legal`` —— 注意是合法而**不是**完整，部分解上也要能用）；
+       ② 全局 ``breaks`` **严格下降**。
+       所以这个算子**不可能让解变差** —— 它是纯改进算子，改不动就原样返回。
+
+    返回 ``(新方案, 实际搬动次数)``。搬不动时返回**原方案的浅拷贝**而不是 None，
+    因为「没能改进」在这里是正常结果，不是失败。
+    """
+    cur = dict(slot_of)
+    moves = 0
+    for _ in range(max_moves):
+        cur_breaks = _breaks_of(units, cur, day_of)
+        if cur_breaks == 0:
+            break
+        # 统计每个组占用的天与单元数
+        by_group: Dict[str, List[str]] = {}
+        for u in units:
+            k = str(getattr(u, "key", ""))
+            g = getattr(u, "group_key", None)
+            if g and k in cur:
+                by_group.setdefault(str(g), []).append(k)
+        found = None
+        for _g, ks in by_group.items():
+            day_count: Dict[int, int] = {}
+            for k in ks:
+                d = day_of(cur[k])
+                day_count[d] = day_count.get(d, 0) + 1
+            if len(day_count) <= 1:
+                continue
+            # ⚠️ **逐天试锚点**，而不是只试「单元最多的那天」。
+            #    只试多数天会漏掉「少数天恰好是可搬迁的那天」的情形：
+            #    实测在单元数打平（1 vs 1）时 `max` 会挑到**搬不动的那天**，
+            #    于是明明能并到一起却一步都不动 —— 表现为「算子没效果」。
+            #    先试多数天（更可能一次并掉最多单元），再试其余天。
+            anchor_candidates = [d for d, _c in sorted(day_count.items(), key=lambda kv: -kv[1])]
+            for anchor_day in anchor_candidates:
+                for k in ks:
+                    if day_of(cur[k]) == anchor_day:
+                        continue
+                    u = _find(units, k)
+                    # ---- ① 直接搬迁：把 k 搬到锚点天有空位的槽 ----
+                    for sid in candidates_of(u):
+                        if sid == cur[k] or day_of(sid) != anchor_day:
+                            continue
+                        trial = dict(cur)
+                        trial[k] = sid
+                        if not _is_legal(units, trial, caps, athletes):
+                            continue
+                        if _breaks_of(units, trial, day_of) < cur_breaks:
+                            found = trial
+                            break
+                    if found is not None:
+                        break
+                    # ---- ② 交换（swap）：把 k 与「锚点天上的某个单元」互换位置 ----
+                    # ⚠️ 为什么必须有这一条：直接搬迁要求**锚点天有空余容量**，
+                    #    而紧实例里锚点天往往是满的（其它天反而有余）——
+                    #    实测只做①时，BLOCK 档 12 处断裂只修掉 0.7 处（headroom 被容量卡死）。
+                    #    交换是**容量守恒**的移动：一步换两人的位置，
+                    #    无需任何空闲容量，于是能在「满但错位」的情形下继续收敛。
+                    #    加了它以后 breaks 降幅由 5.0% 提到 **9.2%**。
+                    block_slot = cur[k]
+                    for x in units:
+                        xk = str(getattr(x, "key", ""))
+                        if xk == k or xk not in cur:
+                            continue
+                        if day_of(cur[xk]) != anchor_day:
+                            continue
+                        trial = dict(cur)
+                        trial[k] = cur[xk]
+                        trial[xk] = block_slot
+                        if not _is_legal(units, trial, caps, athletes):
+                            continue
+                        if _breaks_of(units, trial, day_of) < cur_breaks:
+                            found = trial
+                            break
+                    if found is not None:
+                        break
+                if found is not None:
+                    break
+            if found is not None:
+                break
+        if found is None:
+            break
+        cur = found
+        moves += 1
+    return cur, moves
 
 
 def _try_repair(units, slot_of: Dict[str, int], caps, athletes, candidates_of) -> Optional[Dict[str, int]]:

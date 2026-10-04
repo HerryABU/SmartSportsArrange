@@ -437,6 +437,63 @@ class MultiGateMoE(nn.Module):
         ent = -(g.clamp_min(1e-8).log() * g).sum(dim=-1).mean()   # [B]
         return self.n_experts * (frac * frac).sum() + ent
 
+    @torch.no_grad()
+    def expert_representations(self, h, adj, type_mask, mask) -> "torch.Tensor":
+        """各专家的**图级表征** ``[E, H]``：把该专家对全部节点的输出按 ``mask`` 池化。
+
+        用同一批输入让**每个专家各跑一遍**，取各自的输出，才能比较「它们是不是在算同一件事」。
+        注意不能用 MoE 融合后的表征 —— 那是**加权和**，会把差异平均掉。
+        """
+        outs = [self.experts[e](h, adj, type_mask, mask) for e in range(self.n_experts)]
+        eo = torch.stack(outs, dim=2)                       # [B, N, E, H]
+        m = mask.unsqueeze(-1).unsqueeze(-1)                # [B, N, 1, 1]
+        denom = m.sum().clamp(min=1.0)
+        return (eo * m).sum(dim=(0, 1)) / denom             # [E, H]
+
+    @torch.no_grad()
+    def expert_similarity(self, h, adj, type_mask, mask,
+                          graph_feat: "torch.Tensor" = None) -> Dict[str, object]:
+        """**专家表征两两余弦相似度** —— 直接度量「专家有没有学到不同东西」。
+
+        ## 为什么必须有这个诊断
+
+        ``route_entropy`` 只说明「门控分布均匀」：它高，可能意味着**真的分工**，
+        也可能意味着**每位专家算的东西一样、谁上都行**（门控只好随机撒）。
+        这两种情况在 loss 曲线、在 route_entropy 上**完全一样**，只能靠
+        「专家输出彼此像不像」来区分 —— 出处：C²GMoE（ICML 2026）指出
+        路由不确定性/专家同质化是 Graph-MoE 的主要隐性失效模式。
+
+        判读标准：
+        * ``mean`` 接近 1（如 >0.95）→ 专家**同质**，扩专家只是在摊薄容量，
+          增加参数量而不增加分工；
+        * ``mean`` 明显低（如 <0.8）→ 专家确实在做不同的事。
+        * 还要看 ``cap_max``：能力专家（下标 >= ``n_unit_tasks``）若与任务专家
+          相似度都很高，说明「图级路由」并没有把它们变成不同职能，
+          只是换了个输入来源罢了。
+        """
+        R = self.expert_representations(h, adj, type_mask, mask)   # [E, H]
+        Rn = torch.nn.functional.normalize(R, dim=-1)
+        S = (Rn @ Rn.t()).clamp(-1.0, 1.0)                        # [E, E]
+        e = int(S.shape[0])
+        iu = torch.triu_indices(e, e, offset=1)
+        off = S[iu[0], iu[1]]
+        out: Dict[str, object] = {
+            "n_experts": e,
+            "mean": round(float(off.mean()), 4),
+            "max": round(float(off.max()), 4),
+            "min": round(float(off.min()), 4),
+            "matrix": [[round(float(v), 4) for v in row] for row in S.tolist()],
+        }
+        # 任务专家 vs 能力专家 的跨组相似度：这是「异构门控有没有真产生分工」的直接判据
+        if 0 < self.n_unit_tasks < e:
+            cross = S[: self.n_unit_tasks, self.n_unit_tasks:]
+            out["cross_mean"] = round(float(cross.mean()), 4)
+            out["cross_max"] = round(float(cross.max()), 4)
+            within_cap = S[self.n_unit_tasks:, self.n_unit_tasks:]
+            cap_i = torch.triu_indices(within_cap.shape[0], within_cap.shape[0], offset=1)
+            out["cap_within_mean"] = round(float(within_cap[cap_i[0], cap_i[1]].mean()), 4)
+        return out
+
     def expert_usage(self) -> Dict[str, float]:
         """各专家的实际使用率（0~1）。**专家建了但从不被选中时这里会显示 0**。"""
         g = self._last_gate_probs
@@ -727,6 +784,34 @@ class SuperScheduleMoE(nn.Module):
             loss = loss + 0.3 * l_q
             parts["quality_mse"] = float(l_q.item())
         return loss, parts
+
+    @torch.no_grad()
+    def model_diagnostics(self, node_feat, adj_by_type, type_mask, mask,
+                          graph_feat=None) -> Dict[str, object]:
+        """一次性给出**专家分工**的三个正交指标（供 /api 或脚本诊断用）。
+
+        * ``expert_usage``  —— 谁在干活（有没有建了不用的专家）
+        * ``route_entropy`` —— 活得均不均
+        * ``expert_similarity`` —— 各位专家**算的是不是同一件事**（前两个看不出来）
+        """
+        # ⚠️ 必须复刻 forward 的前两行来拿 MoE 的输入 h ——
+        #    直接调 self.moe(node_feat, ...) 是错的：MoE 吃的是**投影 + 类型上下文**
+        #    之后的表征，不是原始 node_feat（维度虽同，语义完全不同，
+        #    会让相似度算在一个模型从没见过的分布上）。
+        h = torch.relu(self.in_norm(self.proj(node_feat))) * mask.unsqueeze(-1)
+        ctx = (type_mask.unsqueeze(-1) * self.type_emb.weight.unsqueeze(0)).sum(1)
+        h = h + self.ctx_proj(ctx).unsqueeze(1)
+        # ⚠️ 必须先真的跑一次 MoE forward：``expert_usage`` / ``route_entropy``
+        #    读的是 forward 里缓存下来的 ``_last_gate_probs``，
+        #    不跑就恒为空字典（调用方会拿到 ``{}`` 而不是报错 —— 又一个静默失效）。
+        #    ``expert_similarity`` 内部是逐个专家直调，不会覆盖这份缓存，所以顺序安全。
+        self.moe(h, adj_by_type, type_mask, mask, graph_feat=graph_feat)
+        return {
+            "expert_usage": self.moe.expert_usage(),
+            "route_entropy": round(self.moe.route_entropy(), 5),
+            "expert_similarity": self.moe.expert_similarity(
+                h, adj_by_type, type_mask, mask),
+        }
 
     def expert_usage(self) -> Dict[str, float]:
         return self.moe.expert_usage()

@@ -4,7 +4,7 @@ import numpy as np
 
 from sports_ai.data.features import MAX_NODES, N_FEATURES, NODE_FEAT_DIM, extract_features
 from sports_ai.data.generator import generate_scenario
-from sports_ai.data.gnn_io import encode_gnn_inputs
+from sports_ai.data.gnn_io import CONFLICT_FEAT_DIM, encode_gnn_inputs
 
 
 def test_feature_dim():
@@ -48,8 +48,12 @@ def test_gnn_padding_is_neutral():
     from sports_ai.models.gnn import ConflictGnn
 
     s = generate_scenario(seed=11, n_athletes=120)
-    nf0, adj0, mk0, _ = encode_gnn_inputs(s)                       # 动态（推理路径）
-    nf1, adj1, mk1, _ = encode_gnn_inputs(s, pad_to=256)           # 补齐（训练路径）
+    # ⚠️ 冲突着色模型的输入是 **17 维**（16 通用 + 归一化度数），
+    #    所以这里必须开 with_degree —— 与 Java 侧
+    #    `ConflictGraphEncoder.conflictModelFeat(enc)` 的口径一致。
+    #    默认 16 维是给生成式 / forecast / curriculum 用的。
+    nf0, adj0, mk0, _ = encode_gnn_inputs(s, with_degree=True)              # 动态（推理路径）
+    nf1, adj1, mk1, _ = encode_gnn_inputs(s, pad_to=256, with_degree=True)  # 补齐（训练路径）
     n = nf0.shape[1]
     assert nf1.shape[1] == 256 and adj1.shape[1] == 256
 
@@ -73,7 +77,9 @@ def test_gnn_accepts_arbitrary_scale():
     g = ConflictGnn()
     g.eval()
     for n in (1, 2, 37, 257):
-        nf = np.zeros((1, n, NODE_FEAT_DIM), dtype=np.float32)
+        # ⚠️ 冲突着色模型吃 **17 维**（CONFLICT_FEAT_DIM）；
+        #    默认 16 维是给生成式 / forecast / curriculum 用的。
+        nf = np.zeros((1, n, CONFLICT_FEAT_DIM), dtype=np.float32)
         adj = np.zeros((1, n, n), dtype=np.float32)
         mk = np.ones((1, n), dtype=np.float32)
         with torch.no_grad():

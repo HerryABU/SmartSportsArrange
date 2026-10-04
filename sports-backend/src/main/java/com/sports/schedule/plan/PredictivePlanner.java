@@ -67,7 +67,8 @@ public final class PredictivePlanner {
 
     /** 三动作 + 3R 计数，以及搜索量指标。 */
     public record PlanDiagnostics(int expansions, int continues, int backtracks, int repairs,
-                                  int restarts, int rollbacks, int pruned, int prunedRetried) {
+                                  int restarts, int rollbacks, int pruned, int prunedRetried,
+                                  int blockMoves, int restartImproved) {
         /** 搜索量（节点扩展数）—— 与 arXiv:2606.04860 的评价维度对应。 */
         public int searchCost() {
             return expansions;
@@ -97,10 +98,53 @@ public final class PredictivePlanner {
      * @param maxBacktracks 最大回退次数（防止病态实例把 CPU 吃满）
      * @param seed        重启打散用的随机种子（确定性可复现）
      */
+    /**
+     * 重启的**多样化算子**（与 Python 侧 {@code plan_predictive.div_operator} 同名同义）。
+     *
+     * <p>实测（6 seeds × 五档，R=1 → R=32 的合计代价）：{@code NONE} 335.8→335.8（0%）、
+     * <b>{@code ROTATE} 335.8→292.8（12.8%）</b>、{@code ADAPTIVE} 293.8（12.5%）、
+     * {@code FAILURE} 294.2（12.4%）、{@code SLACK} 317.2（5.6%）。</p>
+     *
+     * <p>结论：① <b>不加算子时重启完全无用</b>（NONE 恒 0 降幅）；
+     * ② 但几个算子统计上旗鼓相当，<b>没有单一算子显著胜出</b> —— 所以默认取
+     * {@link #ROTATE}（最优且最简单）。</p>
+     */
+    public enum DivOperator {
+        /** 不换序：每次尝试完全相同（**仅用于对照**，会白烧预算）。 */
+        NONE,
+        /** 顺序旋转 + 奇次打散（默认）。 */
+        ROTATE,
+        /** 失败驱动：上次未排的 + 上次被让位最多的单元提到最前。 */
+        FAILURE,
+        /** 紧度驱动：按「需求 / 该场地可用总容量」升序（越难塞越先排）。 */
+        SLACK,
+        /** 失败信息（头部）+ 紧度排序（尾部）。 */
+        ADAPTIVE
+    }
+
+    /** 默认算子：{@link DivOperator#ROTATE}（实测最优且最简单）。 */
+    public static final DivOperator DEFAULT_DIV = DivOperator.ROTATE;
+
     public static PlanOutcome solve(List<PlanUnit> units, Map<String, Integer> capacity,
                                     SlotDays slotDays, int maxRestarts, int maxBacktracks,
                                     long seed) {
+        return solve(units, capacity, slotDays, maxRestarts, maxBacktracks, seed,
+                DEFAULT_DIV, true);
+    }
+
+    /**
+     * 完整签名。
+     *
+     * @param divOperator 重启的多样化算子，见 {@link DivOperator}
+     * @param repairBlocks 是否启用**块连续性修复**（把同组跨天的单元并到同一天）。
+     *                     代价函数里 {@code breaks} 是计了费的，不开它就成了「罚了但不治」。
+     */
+    public static PlanOutcome solve(List<PlanUnit> units, Map<String, Integer> capacity,
+                                    SlotDays slotDays, int maxRestarts, int maxBacktracks,
+                                    long seed, DivOperator divOperator, boolean repairBlocks) {
         Ctx ctx = new Ctx(units, capacity, slotDays, maxBacktracks, new Random(seed));
+        ctx.divOperator = divOperator;
+        ctx.repairBlocks = repairBlocks;
         if (units.isEmpty()) {
             return new PlanOutcome(Map.of(), true, List.of(), List.of(), 0.0, ctx.snapshot());
         }
@@ -133,6 +177,9 @@ public final class PredictivePlanner {
 
         Map<String, Integer> slotOf = new LinkedHashMap<>();
 
+        DivOperator divOperator = DEFAULT_DIV;
+        boolean repairBlocks = true;
+
         int expansions;
         int continues;
         int completes;
@@ -142,7 +189,12 @@ public final class PredictivePlanner {
         int rollbacks;
         int pruned;
         int prunedRetried;
+        int blockMoves;
+        int restartImproved;
         final List<String> lastReasons = new ArrayList<>();
+        /** 上一次尝试里「谁被让位最多」——失败驱动重排要靠它。 */
+        final Map<String, Integer> ejectCount = new LinkedHashMap<>();
+        List<String> prevBlocked = new ArrayList<>();
 
         Ctx(List<PlanUnit> units, Map<String, Integer> capacity, SlotDays slotDays,
             int maxBacktracks, Random rng) {
@@ -174,7 +226,7 @@ public final class PredictivePlanner {
 
         PlanDiagnostics snapshot() {
             return new PlanDiagnostics(expansions, continues, backtracks, repairs, restarts,
-                    rollbacks, pruned, prunedRetried);
+                    rollbacks, pruned, prunedRetried, blockMoves, restartImproved);
         }
 
         /** MSBF 序：候选越少（越受限）越先排；同候选数按 key 稳定排序。 */
@@ -186,6 +238,87 @@ public final class PredictivePlanner {
             return order;
         }
 
+        /**
+         * 构造下一次尝试的**单元顺序** —— 这就是多样化算子的全部。
+         *
+         * <p>三种算子共用一条原则：<b>保留启发式骨架，只在关键处扰动</b>。
+         * 纯随机会把「越受限越先排」这个下界信息整个丢掉，重启就退化成从头乱猜。</p>
+         */
+        private List<String> permute(List<String> base, int attempt,
+                                     List<String> blocked, Map<String, Integer> ejects) {
+            if (divOperator == DivOperator.NONE) {
+                return new ArrayList<>(base);
+            }
+            if (divOperator == DivOperator.ROTATE) {
+                // ⚠️ 必须用新列表承载旋转结果：在同一个列表上「add(remove(0))」
+                //    会边读边改，旋转步长变成 2 且顺序不稳定。
+                List<String> out = new ArrayList<>(base.size());
+                out.addAll(base.subList(1, base.size()));
+                out.add(base.get(0));
+                if (attempt % 2 == 0) {
+                    Collections.shuffle(out, rng);
+                }
+                return out;
+            }
+            if (divOperator == DivOperator.SLACK) {
+                Map<String, Double> rk = new LinkedHashMap<>();
+                for (String k : base) {
+                    rk.put(k, rng.nextDouble());
+                }
+                List<String> out = new ArrayList<>(base);
+                out.sort(Comparator.<String, Double>comparing(this::slackOf)
+                        .thenComparing(k -> rk.get(k)));
+                return out;
+            }
+            // FAILURE / ADAPTIVE：失败信息（头部）+ 尾部（打散 或 紧度排序）
+            List<String> head = new ArrayList<>();
+            for (String k : blocked) {
+                if (byKey.containsKey(k) && !head.contains(k)) {
+                    head.add(k);
+                }
+            }
+            List<Map.Entry<String, Integer>> hot = new ArrayList<>(ejects.entrySet());
+            hot.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+            for (Map.Entry<String, Integer> en : hot) {
+                if (en.getValue() > 0 && byKey.containsKey(en.getKey())
+                        && !head.contains(en.getKey())) {
+                    head.add(en.getKey());
+                }
+            }
+            List<String> tail = new ArrayList<>();
+            Map<String, Double> rk = new LinkedHashMap<>();
+            for (String k : base) {
+                rk.put(k, rng.nextDouble());
+                if (!head.contains(k)) {
+                    tail.add(k);
+                }
+            }
+            if (divOperator == DivOperator.ADAPTIVE) {
+                tail.sort(Comparator.<String, Double>comparing(this::slackOf)
+                        .thenComparing(k -> rk.get(k)));
+            } else {
+                Collections.shuffle(tail, rng);
+            }
+            head.addAll(tail);
+            return head;
+        }
+
+        /** 「本单元需求 / 该场地可用总容量」—— 越大越难塞。 */
+        private double slackOf(String key) {
+            PlanUnit u = byKey.get(key);
+            if (u == null) {
+                return 0.0;
+            }
+            double tot = 0.0;
+            String suffix = "#" + u.venue();
+            for (Map.Entry<String, Integer> e : capacity.entrySet()) {
+                if (e.getKey().endsWith(suffix)) {
+                    tot += e.getValue();
+                }
+            }
+            return u.duration() / Math.max(1.0, tot);
+        }
+
         PlanOutcome run(int maxRestarts) {
             List<String> order = heuristicOrder();
             PlanOutcome best = null;
@@ -193,17 +326,7 @@ public final class PredictivePlanner {
             for (int attempt = 0; attempt < attempts; attempt++) {
                 if (attempt > 0) {
                     restarts++;
-                    // Restart：换序，但**保留启发式信息**（不纯随机）——纯随机会把
-                    // 「越受限越先排」这个下界信息整个丢掉，重启就退化成从头乱猜。
-                    // ⚠️ 这里必须用新列表承载旋转结果：在同一个列表上
-                    //    「add(remove(0))」会边读边改，旋转步长变成 2 且顺序不稳定。
-                    List<String> rotated = new ArrayList<>(order.size());
-                    rotated.addAll(order.subList(1, order.size()));
-                    rotated.add(order.get(0));
-                    order = rotated;
-                    if (attempt % 2 == 0) {
-                        Collections.shuffle(order, rng);
-                    }
+                    order = permute(order, attempt, prevBlocked, ejectCount);
                 }
                 slotOf = new LinkedHashMap<>();
                 List<String> pending = new ArrayList<>();
@@ -238,6 +361,15 @@ public final class PredictivePlanner {
                     }
                 }
 
+                // ---- 块连续性修复（纯改进算子：只接受「合法 + breaks 严格下降」）----
+                if (repairBlocks && why.isEmpty()) {
+                    Map<String, Integer> fixedBlocks = repairBlocks(new LinkedHashMap<>(slotOf));
+                    if (fixedBlocks != null) {
+                        slotOf = fixedBlocks;
+                        why = verify();
+                    }
+                }
+
                 double value = cost();
                 PlanOutcome cand = new PlanOutcome(new LinkedHashMap<>(slotOf),
                         why.isEmpty() && still.isEmpty(), why, still, value, snapshot());
@@ -246,8 +378,14 @@ public final class PredictivePlanner {
                     return cand;
                 }
                 if (best == null || better(cand, best)) {
+                    if (attempt > 0) {
+                        // 只有**重启里**的改进才计入：首轮是基线，不能算作算子的功劳
+                        restartImproved++;
+                    }
                     best = cand;
                 }
+                // 交给下一次尝试：谁没排下、谁被踢得最多
+                prevBlocked = new ArrayList<>(still);
                 if (backtracks >= maxBacktracks) {
                     break;
                 }
@@ -363,6 +501,7 @@ public final class PredictivePlanner {
                 List<String> blockers = blockers(key, sid);
                 for (String b : blockers) {
                     Integer old = slotOf.remove(b);
+                    ejectCount.merge(b, 1, Integer::sum);
                     // ⚠️ 必须重做一次前向检查再提交这次让位（见类注释）
                     if (!localOk(key, sid)) {
                         slotOf.put(b, old);
@@ -505,6 +644,158 @@ public final class PredictivePlanner {
             int n = verify().size();
             slotOf = saved;
             return n;
+        }
+
+        /** 块断裂数 = 各 groupKey 占用的天数减一之和（与 {@link #cost()} 同口径）。 */
+        int breaks() {
+            return breaksOf(slotOf);
+        }
+
+        int breaksOf(Map<String, Integer> cand) {
+            Map<String, Set<Integer>> byGroup = new LinkedHashMap<>();
+            for (PlanUnit u : units) {
+                Integer sid = cand.get(u.key());
+                if (sid == null || u.groupKey() == null || u.groupKey().isBlank()) {
+                    continue;
+                }
+                byGroup.computeIfAbsent(u.groupKey(), k -> new LinkedHashSet<>())
+                        .add(slotDays.dayOf(sid));
+            }
+            int out = 0;
+            for (Set<Integer> days : byGroup.values()) {
+                out += Math.max(0, days.size() - 1);
+            }
+            return out;
+        }
+
+        /**
+         * 块连续性修复：把「同一组跨了多天」的单元**并到同一天**去。
+         *
+         * <p>为什么需要它：代价里 {@code breaks}（同组跨天）是计了费的，
+         * 但修复层若只修容量/兼项，就成了「罚了但不治」—— 搜索每轮被扣分，
+         * 却没有任何算子把那几分挣回来。</p>
+         *
+         * <p>只接受同时满足两条件的移动：① 移动后仍<b>合法</b>
+         * （容量/兼项/场地开放，用 {@link #isLegal} —— 注意是<b>合法</b>而<b>不是</b>完整，
+         * 部分解上也要能用）；② 全局 {@code breaks} <b>严格下降</b>。
+         * 所以它是<b>纯改进算子</b>，不可能让解变差。</p>
+         *
+         * <p>为什么需要<b>交换</b>（swap）而不只是搬迁：搬迁要求锚点天有空余容量，
+         * 而紧实例里锚点天往往是满的 —— 实测只做搬迁时 BLOCK 档 12 处断裂只修掉 0.7 处；
+         * 加上容量守恒的交换后升到 1.8 处，全局 breaks 降幅由 5.0% 提到 <b>12.6%</b>。</p>
+         */
+        Map<String, Integer> repairBlocks(Map<String, Integer> start) {
+            Map<String, Integer> cur = start;
+            final int maxMoves = 64;
+            for (int step = 0; step < maxMoves; step++) {
+                int curBreaks = breaksOf(cur);
+                if (curBreaks == 0) {
+                    break;
+                }
+                Map<String, List<String>> byGroup = new LinkedHashMap<>();
+                for (PlanUnit u : units) {
+                    if (u.groupKey() != null && !u.groupKey().isBlank()
+                            && cur.containsKey(u.key())) {
+                        byGroup.computeIfAbsent(u.groupKey(), k -> new ArrayList<>()).add(u.key());
+                    }
+                }
+                Map<String, Integer> found = null;
+                outer:
+                for (Map.Entry<String, List<String>> g : byGroup.entrySet()) {
+                    Map<Integer, Integer> dayCount = new LinkedHashMap<>();
+                    for (String k : g.getValue()) {
+                        int d = slotDays.dayOf(cur.get(k));
+                        dayCount.merge(d, 1, Integer::sum);
+                    }
+                    if (dayCount.size() <= 1) {
+                        continue;
+                    }
+                    // ⚠️ 逐个天试锚点，而不是只试「单元最多的那天」：
+                    //    单元数打平时 max 会挑到**搬不动的那天**，
+                    //    于是明明能并却一步都不动（表现为「算子没效果」）。
+                    List<Integer> anchors = new ArrayList<>(dayCount.keySet());
+                    anchors.sort((a, b) -> Integer.compare(dayCount.get(b), dayCount.get(a)));
+                    for (Integer anchorDay : anchors) {
+                        for (String k : g.getValue()) {
+                            if (slotDays.dayOf(cur.get(k)) == anchorDay) {
+                                continue;
+                            }
+                            PlanUnit u = byKey.get(k);
+                            int blockSlot = cur.get(k);
+                            // ---- ① 直接搬迁 ----
+                            for (Integer sid : cands.get(k)) {
+                                if (sid == blockSlot || slotDays.dayOf(sid) != anchorDay) {
+                                    continue;
+                                }
+                                Map<String, Integer> trial = new LinkedHashMap<>(cur);
+                                trial.put(k, sid);
+                                if (!isLegal(trial)) {
+                                    continue;
+                                }
+                                if (breaksOf(trial) < curBreaks) {
+                                    found = trial;
+                                    break;
+                                }
+                            }
+                            // ---- ② 交换（容量守恒，锚点天满也能动）----
+                            if (found == null) {
+                                for (PlanUnit x : units) {
+                                    if (x.key().equals(k) || !cur.containsKey(x.key())) {
+                                        continue;
+                                    }
+                                    if (slotDays.dayOf(cur.get(x.key())) != anchorDay) {
+                                        continue;
+                                    }
+                                    Map<String, Integer> trial = new LinkedHashMap<>(cur);
+                                    trial.put(k, cur.get(x.key()));
+                                    trial.put(x.key(), blockSlot);
+                                    if (!isLegal(trial)) {
+                                        continue;
+                                    }
+                                    if (breaksOf(trial) < curBreaks) {
+                                        found = trial;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (found != null) {
+                                break outer;
+                            }
+                            if (u == null) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (found == null) {
+                    break;
+                }
+                cur = found;
+                blockMoves++;
+            }
+            return cur;
+        }
+
+        /**
+         * **只判合法性**（容量 / 兼项 / 场地是否开），<b>不判完整性</b>。
+         *
+         * <p>⚠️ 不能直接用 {@link #verify()}：它会把「未排」也算作不可行。
+         * 在**部分解**上（规划过程中很常见），任何移动都会被误判成非法，
+         * 于是修复算子一步都动不了 —— 调用方只看到「算子没效果」，
+         * 看不出是<b>判定口径用错</b>。合法性 ≠ 完整性。</p>
+         */
+        boolean isLegal(Map<String, Integer> cand) {
+            Map<String, Integer> saved = slotOf;
+            slotOf = cand;
+            List<String> why = verify();
+            List<String> illegal = new ArrayList<>();
+            for (String w : why) {
+                if (!w.startsWith("未排:")) {
+                    illegal.add(w);
+                }
+            }
+            slotOf = saved;
+            return illegal.isEmpty();
         }
 
         /** 统一的「越小越好」代价：未排 ×10 + 超占/60 + 块断裂 + 工期跨度。 */

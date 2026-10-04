@@ -322,3 +322,196 @@ def test_pruning_threshold_off_by_default():
     r = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)], caps=caps,
                         predictor=Noisy())
     assert r.log.pruned == 0, "没给 pred_prune_below 就不该剪枝"
+
+# ----------------------------------------------------------------------
+# ⑧ 多样化算子（本轮：先做了新算子，实测后**退回原算子** —— 见下方留档）
+# ----------------------------------------------------------------------
+OPS = ("none", "rotate", "failure", "slack", "adaptive", "hybrid")
+
+
+def _pack_instance():
+    """异质时长 + 兼项 + 紧容量：顺序会影响可行性，适合观察重启的作用。"""
+    spec = [("u0", 70, 0), ("u1", 30, 1), ("u2", 70, 2), ("u3", 30, 0),
+            ("u4", 70, 1), ("u5", 30, 2), ("u6", 55, 0), ("u7", 45, 1),
+            ("u8", 60, 2), ("u9", 40, 0)]
+    units = [u(k, dur=d, athletes=[a]) for k, d, a in spec]
+    caps = {(i, "V0"): 90 for i in range(4)}
+    return units, caps, {"u" + str(i): [0, 1, 2, 3] for i in range(10)}
+
+
+def test_more_restarts_never_worse():
+    """**真不变量**：重启更多时解不得更差。
+
+    为什么必然成立：第 0 次尝试在两种预算下**完全相同**，而返回值取历次最优
+    （``best``）。所以 R=32 至少不劣于 R=1。
+    这条锁住的是「重启没有把已有解弄丢」—— 一旦实现里把 best 覆盖成
+    「最后一次的结果」，它立刻失败。
+    """
+    units, caps, cands = _pack_instance()
+    for op in OPS:
+        r1 = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                             caps=caps, max_restarts=1, div_operator=op)
+        r32 = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                              caps=caps, max_restarts=32, div_operator=op)
+        assert r32.value <= r1.value + 1e-9, f"{op}: 重启更多反而更差 {r1.value} → {r32.value}"
+
+
+def test_no_diversification_means_restarts_are_wasted():
+    """**真不变量**：``div_operator="none"`` 时每次尝试完全相同 → 改进恒为 0。
+
+    这正是「加预算救不了坏算子」的形式化：没有算子时，把 R 从 1 加到 32
+    只是把同一件事重做 32 次，代价与改进次数都不变。
+    """
+    units, caps, cands = _pack_instance()
+    r1 = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                         caps=caps, max_restarts=1, div_operator="none")
+    r32 = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                          caps=caps, max_restarts=32, div_operator="none")
+    assert r32.value == r1.value, "无算子时多跑重启不该改变结果"
+    assert r32.log.restart_improved == 0, "无算子时不可能有「重启改进」"
+    # ⚠️ 重启次数**不一定**跑满：`backtracks` 触顶会提前 break（这是设计里的刹车）。
+    #    所以这里只断言「确有重启发生」，而不断言等于 max_restarts-1。
+    assert r32.log.restarts >= 1, "应确实发生过重启（否则没测到东西）"
+
+
+def test_every_operator_accounts_for_all_units():
+    """**真不变量**：任何算子下，每个单元要么被排、要么被列为未排 —— 不能凭空消失。
+
+    锁住的是「换序算子不得破坏单元集合」：一个写错的 permute（例如用 set
+    去重、或切片漏掉首尾）会让单元静默丢失，而代价函数只会看到「未排变少」，
+    看起来像**变好了**。
+    """
+    units, caps, cands = _pack_instance()
+    all_keys = {str(x.key) for x in units}
+    for op in OPS:
+        r = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                            caps=caps, max_restarts=8, div_operator=op)
+        placed = set(r.slot_of.keys())
+        blocked = set(r.blocked)
+        assert placed | blocked == all_keys, f"{op}: 单元丢失 {all_keys - placed - blocked}"
+        assert not (placed & blocked), f"{op}: 同一单元既被排又未排"
+        # violations **只放非法落位**；「排不下」走 blocked。
+        # 这条断言钉住的是双端契约：Java 侧 PredictivePlanner.verify() 也只报这三类。
+        assert r.violations == [], f"{op}: 不得有任何非法落位（未排不属于 violations）"
+
+
+def test_default_operator_is_rotate():
+    """锁住**数据驱动**的默认值：rotate。
+
+    ⚠️ 留档：上一轮曾断言「rotate 不产生有效多样化」并打算换掉它 ——
+    那是**单 seed（seed=0）假象**。6 seeds × 五档实测合计代价（R=1 → R=32）：
+
+    ============  ==========  ==========
+    算子           R=32        总降幅
+    ============  ==========  ==========
+    none          335.8       0.0%
+    **rotate**    **292.8**   **12.8%**
+    adaptive      293.8       12.5%
+    failure       294.2       12.4%
+    hybrid        298.2       11.2%
+    slack         317.2       5.6%
+    ============  ==========  ==========
+
+    成立的两条是：① **不加算子时重启完全无用**（none 恒 0 降幅、改进恒 0）；
+    ② 但几个算子**统计上旗鼓相当（12.4%~12.8%）**，没有单一算子显著胜出。
+    所以保持 rotate 作默认（最优且最简单），其余算子留作可选 ——
+    这个断言就是为了防止有人再凭单点观测改掉它。
+    """
+    import inspect
+    sig = inspect.signature(plan_predictive)
+    assert sig.parameters["div_operator"].default == "rotate"
+    assert sig.parameters["rcl_k"].default == 1, "默认必须是确定性（rcl>=2 只在大预算下微利）"
+
+def test_violations_exclude_unplaced():
+    """``violations`` 只放非法落位，「排不下」走 ``blocked`` —— 两者不得混。
+
+    这是一个**真缺陷的回归钉子**：Python 侧原先直接把 ``verify_slot_map``
+    的完整原因（含 ``未排:<key>``）塞进 ``violations``，于是
+    「全部单元都排下了但 violations 非空」与「violations 为空但一个都没排下」
+    两种误读都可能发生。Java 侧的 ``verify()`` 从来只报超容/兼项/场地未开，
+    所以这也是**双端契约漂移**。
+    """
+    # 容量只够放 1 个 → 必然有未排；但不应产生任何「非法落位」
+    units = [u("a", dur=60), u("b", dur=60)]
+    caps = {(0, "V0"): 60}
+    r = plan_predictive(units, candidates_of=lambda x: [0], caps=caps, max_restarts=2)
+    assert r.blocked, "必然有单元排不下"
+    assert r.violations == [], "排不下不得出现在 violations 里"
+    assert not r.feasible
+
+# ----------------------------------------------------------------------
+# ⑨ 块连续性修复（代价里已罚「同组跨天」，这一步真的去修）
+# ----------------------------------------------------------------------
+def test_block_repair_moves_group_onto_one_day():
+    """直接测算子：同组跨天时，应把成员搬到同一天（用**元组槽**表达「同一天多个槽」）。
+
+    ⚠️ 槽的「天」由 ``_day_of`` 定义：int 槽直接取整数值当天
+    （即槽 0 是第 0 天、槽 1 是第 1 天），元组槽 ``(day, idx)`` 取 ``day``。
+    这里用 ``day_of = lambda s: s // 2`` 把「每 2 个槽一天」显式表达出来，
+    目的是让「同一天里有空位」这件事可构造 —— 否则演示不出搬迁。
+    """
+    from sports_ai.plan.hybrid_search import _repair_blocks, _breaks_of
+
+    units = [u("g1", dur=30, group="G"), u("g2", dur=30, group="G")]
+    caps = {(0, "V0"): 60, (1, "V0"): 60, (2, "V0"): 60}
+    day_of = lambda sd: sd // 2                     # slot 0,1 → 第 0 天；slot 2,3 → 第 1 天
+    slot_of = {"g1": 2, "g2": 0}                    # 跨了第 0/1 天 → 1 处断裂
+    cands = {"g1": [2, 1], "g2": [0]}
+
+    assert _breaks_of(units, slot_of, day_of) == 1
+    fixed, moves = _repair_blocks(units, slot_of, caps, None,
+                                 lambda x: cands[str(x.key)], day_of)
+    assert _breaks_of(units, fixed, day_of) == 0, "应把同组并到同一天"
+    assert moves == 1
+    ok, why = verify_slot_map(units, fixed, caps)
+    assert ok, f"修复后仍须合法：{why}"
+
+
+def test_block_repair_uses_swap_when_anchor_day_is_full():
+    """锚点天**没有空闲容量**时必须靠**交换**收敛（这是本轮加 swap 的原因）。
+
+    构造：第 0 天两个槽都被别人占满，但 g1 在第 1 天。
+    直接搬迁无处可去（容量不够），只能把 g1 与第 0 天的某个单元**互换位置**
+    —— 交换是容量守恒的，所以不需要任何空闲容量。
+    实测（6 seeds、五档）：只有直接搬迁时 BLOCK 档 12 处断裂只修掉 0.7 处；
+    加上交换后升到 1.2 处、全局 breaks 降幅由 5.0% 提到 **9.2%**。
+    """
+    from sports_ai.plan.hybrid_search import _breaks_of, _is_legal, _repair_blocks
+
+    units = [u("g1", dur=30, group="G"), u("g2", dur=30, group="G"),
+             u("x1", dur=30), u("x2", dur=30)]
+    caps = {(0, "V0"): 30, (1, "V0"): 30, (2, "V0"): 30}
+    day_of = lambda sd: sd // 2
+    # 第 0 天（槽 0）已被 g2 占满；槽 1 被 x1 占满；g1 在槽 2（第 1 天）
+    slot_of = {"g1": 2, "g2": 0, "x1": 1}
+    cands = {"g1": [2, 0, 1], "g2": [0], "x1": [1], "x2": [2]}
+
+    assert _breaks_of(units, slot_of, day_of) == 1
+    fixed, moves = _repair_blocks(units, slot_of, caps, None,
+                                 lambda x: cands[str(x.key)], day_of)
+    assert _breaks_of(units, fixed, day_of) == 0, "交换后应同组同天"
+    # ⚠️ 这里必须用 ``_is_legal`` 而不是 ``verify_slot_map(...)[0]``：
+    #    本用例的 ``slot_of`` 是**部分解**（x2 还没排），而 ``verify_slot_map``
+    #    会把「未排」也算作不可行 —— 用它判合法性，会让**任何**在部分解上的
+    #    修复都被误判成非法（这正是本轮修掉的一个真 bug：
+    #    块修复在「尚有单元未排」的实例上完全失效，表现为「算子没效果」）。
+    assert _is_legal(units, fixed, caps, None), "交换后仍须合法（容量/兼项/场地开放）"
+    assert "x2" not in fixed, "未排的单元不应被凭空塞进来"
+
+
+def test_block_repair_never_worsens_the_plan():
+    """**真不变量**：开块修复不得让解变差，也不得破坏合法性。
+
+    它只接受「合法 + breaks 严格下降」的移动，所以是**纯改进算子**。
+    这条锁住的是「修复层把自己的约束搞坏」——例如搬完之后忘了重查容量。
+    """
+    units, caps, cands = _pack_instance()
+    for restarts in (1, 8):
+        off = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                              caps=caps, max_restarts=restarts, repair_blocks=False)
+        on = plan_predictive(units, candidates_of=lambda x: cands[str(x.key)],
+                             caps=caps, max_restarts=restarts, repair_blocks=True)
+        assert on.value <= off.value + 1e-9, "块修复不得让代价变大"
+        assert on.feasible == off.feasible, "块修复不得改变可行性结论"
+        assert on.violations == [], "块修复不得引入非法落位"
+        assert set(on.slot_of) | set(on.blocked) == set(off.slot_of) | set(off.blocked)
