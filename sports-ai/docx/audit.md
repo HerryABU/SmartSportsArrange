@@ -66,7 +66,7 @@
 |---|---|---|---|
 | E1 | 场地 / 时段 / 天数 / 并发位 / 时长 / 间隔 | ✅ | 前端「运动会日程配置」全可录；后端 `ScheduleService` 白名单解析 |
 | E2 | 田赛分组 / 出场顺序 / 项目级并发 / 捆绑组 | ✅ | `Schedule.vue` fieldGroups；`Events.vue` concurrency/groupSize/bundleGroup |
-| E3 | 款型（`ArrangeStyle`） | ✅ | `/api/arrange/styles` 下发；CLASS / SNAKE / SNAKE_SEEDED / AI |
+| E3 | 款型（`ArrangeStyle`） | ✅ | `/api/arrange/styles` 下发；CLASS / SNAKE / SNAKE_SEEDED / AI / **PLAN（规划层，第 5 款）** |
 | E4 | 球类全部参数（赛制/组数/晋级/单场分/双回合/时间目标） | ✅ | `BallTournament.vue` → `/ball/arrange` |
 | E5 | 规避时间（全校/班主任/裁判） | ✅ | `ProtectionManage.vue` → `/api/protections` |
 | E6 | 规则注入 / DSL | ✅ | `RuleScripts.vue`（积木 + 代码双模式，builtin/groovy/javascript） |
@@ -115,7 +115,7 @@
 | 常量不同步 | ✅ 修复 | Java `N_TASKS` 写死 9（9→11 时漏改），Python `super_moe.py` 也写死过 `N_TASKS=9`。现已双向收敛到 17 / N_UNIT_TASKS=11 |
 | `export_onnx` 缺 `dynamo=False` | ✅ 修复 | PyTorch ≥2.6 默认走 dynamo 导出器，依赖未安装的 `onnxscript` → 导出直接崩；且与 `dynamic_axes` 冲突。4 个导出脚本补齐 |
 | 13 个模型深层化 | ✅ | 见 A1 |
-| ONNX 严格全面超 GA | 🟡 | 魔鬼档 HELL 严格胜出（9.0 vs 10.0，seeds=3 时 9.67 vs 10.33）；其余四档持平——已定位为**接近 0 下界**（未排 1.0/1.33）而非搜索不足，要出差异须换「兼项撞/道次撞/碎块/工期」加权代价口径 |
+| ONNX 严格全面超 GA | ✅ 定性完成 | 判定口径已从「单纯未排数」换成**加权代价**（`metrics.py` / `PlanCost`，含 兼项撞/道次撞/碎块/工期）。换口径后 HELL 档差距放大且可分解（AI 10040 vs GA 10380），**AI ≤ GA 五档全 ✅**；其余四档 GA 与 AI 仍持平，但已定位为**结构性原因**（L4 取「搜索最优 ∪ 种子」，而种子含 GA → 只可能 ≤ 必然相等），属**搜索能力**问题而非口径问题。另：默认生成器使「工期」分量恒为 0（窗口天数恰好 = days_limit），已加 `--extra-days` 口径实测其真正触发（每档 ≈ 27 分）。详见 `frontier-2026.md` §6.3 |
 
 ### 附三：本轮挖出的三处**真缺陷**（静默类，不是新功能）
 

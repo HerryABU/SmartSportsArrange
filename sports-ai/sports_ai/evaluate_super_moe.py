@@ -16,8 +16,17 @@
 * **块完整性**：同 ``group_key`` 的单元占据的时间桶必须是**一段连续区间**，
   且区间内不得混入其它块的单元 —— 这就是「禁止见缝插针」的形式化定义。
 * **未排单元**：任何可行时段都放不下的单元（硬失败）。
-* **工期**：实际占用天数（对比 ``days_limit`` 三态）。
+* **工期**：实际占用天数（对比 ``days_limit`` 三态）；**超限天数**进加权代价。
 * **道次冲突**：同批（同项目+同年级）单元被排进同一时间桶。
+
+### ⚠️ 判定口径已从「未排数」换成**加权代价**（``sports_ai/metrics.py``）
+
+魔鬼档之外的四个场景里，四档编排模式的**未排数已经贴近下界**（1.0 / 1.33）——
+它们落在同一个数上，**未排数对这些实例没有分辨率**，持平只说明指标不够细。
+所以四档对比与 AI≤GA 的验收判定改用加权代价（未排 / 兼项撞 / 超占 / 道次撞 / 碎块 / 工期）。
+
+⚠️ 默认生成器把窗口天数设成**恰好等于** ``days_limit``，于是「工期超限」恒为 0
+（分量接好了，但一次都没触发）。要测量它请用 ``--extra-days N``。
 
 ## 三个基线（用来证明模型真的学到了东西）
 
@@ -51,6 +60,7 @@ from sports_ai.data.super_scenarios import (
     SuperUnit,
     generate_super_scenario,
 )
+from sports_ai.metrics import WEIGHTS, days_over, weighted_cost
 from sports_ai.models.super_moe import SuperScheduleMoE
 from sports_ai.plan import CompletionPredictor, collect_training_pairs, plan_predictive
 from sports_ai.solve.repair import repair_assignment
@@ -329,7 +339,7 @@ def decode(
     days_used = len({buckets[b][0] for b in assign.values() if b is not None})
     unplaced = sum(1 for v in assign.values() if v is None)
 
-    return {
+    out = {
         "n_units": n,
         "placed": n - unplaced,
         "unplaced": unplaced,
@@ -343,20 +353,22 @@ def decode(
         "repairs": int(n_repair),
         "blocked": int(n_blocked),
     }
+    # 工期超限：三态口径（x 天 / 0 不限 / -1 尽可能减少）由 metrics.days_over 统一裁决。
+    # ⚠️ 这里必须**算进**加权代价：早期口径漏了工期项，
+    #    于是「压得住工期」的档位拿不到任何分数优势（见 metrics.py 的说明）。
+    out["days_over"] = days_over(days_used, scen.days_limit)
+    out["weighted"] = weighted_cost(out)
+    return out
 
 
 # ------------------------------------------------- 遗传算法一条龙（基线）
 def cost_of(out: Dict[str, object]) -> float:
-    """GA 适应度：与评测同口径的加权代价（越小越好）。
+    """GA 适应度：与评测**同一个**加权代价口径（越小越好）。
 
-    权重刻意让「能不能排」远重于「排得好不好」：未排 / 兼项撞 / 超占
-    属于不可接受的硬伤，碎块只是观感与公平体验问题。
+    权重表在 ``sports_ai/metrics.py`` 里单一维护，双端共用 —— 这里只是取用，
+    绝不再写第二份数字（否则「两边都在优化，却拿着两把尺子」）。
     """
-    return (1000.0 * float(out.get("unplaced", 0) or 0)
-            + 500.0 * float(out.get("athlete_clash", 0) or 0)
-            + 500.0 * float(out.get("capacity_overflow", 0) or 0)
-            + 50.0 * float(out.get("lane_clash", 0) or 0)
-            + 10.0 * float(out.get("frag_blocks", 0) or 0))
+    return weighted_cost(out)
 
 
 def order_crossover(a: List[int], b: List[int], rng) -> List[int]:
@@ -583,7 +595,8 @@ def scen_to_plan_inputs(scen: SuperScenario):
 
 
 def train_predictor(tier: str, seeds: Sequence[int], *, epochs: int = 300,
-                    hidden: int = 32, max_states: int = 1200) -> CompletionPredictor:
+                    hidden: int = 32, max_states: int = 1200,
+                    extra_days: int = 0) -> CompletionPredictor:
     """在**该档位**的场景分布上训练完成性预测器。
 
     ⚠️ 必须按档位分训而不是训一个通用预测器：不同档位的单元数、槽数、
@@ -593,7 +606,7 @@ def train_predictor(tier: str, seeds: Sequence[int], *, epochs: int = 300,
     feats_all: List[np.ndarray] = []
     labels_all: List[np.ndarray] = []
     for sd in seeds:
-        scen = generate_super_scenario(tier, seed=sd)
+        scen = generate_super_scenario(tier, seed=sd, extra_days=extra_days)
         units, caps, ath, cands, db = scen_to_plan_inputs(scen)
         # ⚠️ 必须用**完整单元集**打标签，不能只取前 18 个：
         #    早期为了压成本只取子集，结果子问题在满容量下**总能排完**，
@@ -690,12 +703,13 @@ def predictor_ablation(scen: SuperScenario, pred: Optional[CompletionPredictor],
 
 def evaluate(model: SuperScheduleMoE, tier: str, seeds: Sequence[int],
              device: str = "cpu",
-             predictors: Optional[Dict[str, CompletionPredictor]] = None
+             predictors: Optional[Dict[str, CompletionPredictor]] = None,
+             extra_days: int = 0
              ) -> List[Dict[str, object]]:
     model.eval()
     rows: List[Dict[str, object]] = []
     for sd in seeds:
-        scen = generate_super_scenario(tier, seed=sd)
+        scen = generate_super_scenario(tier, seed=sd, extra_days=extra_days)
         data = encode_super_graph(scen)
         if data is None:
             continue
@@ -815,6 +829,11 @@ def main() -> None:
     # 评测用 range(seeds)（0..n-1），预测器用 1000+ 起，两组不相交。
     ap.add_argument("--pred-seeds", type=int, default=4)
     ap.add_argument("--pred-offset", type=int, default=1000)
+    # 工期分量的压力口径：在原本的窗口天数上**多加几天时段**，让 days_limit 真正成为
+    # 要压的目标。默认 0 = 与历史数据分布完全一致（结论可比）；
+    # 传正数时工期超限才会非 0（见 super_scenarios.generate_super_scenario 的说明）。
+    ap.add_argument("--extra-days", type=int, default=0,
+                    help="在窗口天数上额外增加的天数（0=不增加；>0 用于测量工期分量）")
     args = ap.parse_args()
 
     if not os.path.exists(args.ckpt):
@@ -849,16 +868,19 @@ def main() -> None:
         pred_seeds = [args.pred_offset + i for i in range(max(1, args.pred_seeds))]
         for tier in TIERS:
             try:
-                pr = train_predictor(tier, pred_seeds)
+                pr = train_predictor(tier, pred_seeds, extra_days=args.extra_days)
                 predictors[tier] = pr
                 print(f"[predictor] {tier:<8} 训练集 {len(pred_seeds)} 个场景 → 已校准")
             except SystemExit as ex:
                 print(f"[predictor] {tier:<8} 跳过：{ex}")
 
+    if args.extra_days:
+        print(f"[口径] 工期压力模式：窗口天数 +{args.extra_days}（days_limit 不变）"
+              f" → 「工期超限」分量本次会真正触发")
     all_rows: List[Dict[str, object]] = []
     for tier in TIERS:
         rows = evaluate(model, tier, range(args.seeds), args.device,
-                        predictors=predictors)
+                        predictors=predictors, extra_days=args.extra_days)
         s = summarize(rows)
         all_rows.extend(rows)
         r = s["model"]
@@ -871,23 +893,37 @@ def main() -> None:
               f"未排 {r['unplaced']:<5.1f} 兼项撞 {r['athlete_clash']:<5.1f} "
               f"超占 {r['capacity_overflow']:<6.1f} 碎块 {r['frag_blocks']:<4.1f} "
               f"道次撞 {r['lane_clash']:<4.1f} 工期 {r['days_used']}/{r['days_limit']} "
+              f"（超 {r.get('days_over', 0):<3.1f}）"
               f"修复 {s['model'].get('repairs', 0):<4.0f} 修不了 {s['model'].get('blocked', 0):<3.0f}")
-        print(f"{'':<8} 对比 greedy → 未排 {r['unplaced']}-{g['unplaced']:<5.1f} "
+        # ⚠️ **主判据已换成加权代价**（未排仍列出但只作参考）。
+        #    原因：非魔鬼档的未排数已贴近下界（1.0/1.33），四个档位落在同一个数上，
+        #    「未排」这个指标对它们**没有分辨率** —— 持平是「指标不够细」，不是「一样好」。
+        #    换口径后，碎块 / 道次撞 / 工期这些「排得好不好」的量才会显出差异。
+        print(f"{'':<8} 加权代价 {r.get('weighted', 0):>8.1f} ="
+              f" 未排{WEIGHTS['unplaced'] * float(r['unplaced']):>7.0f}"
+              f" + 兼项{WEIGHTS['athlete_clash'] * float(r['athlete_clash']):>7.0f}"
+              f" + 超占{WEIGHTS['capacity_overflow'] * float(r['capacity_overflow']):>7.0f}"
+              f" + 道次{WEIGHTS['lane_clash'] * float(r['lane_clash']):>6.0f}"
+              f" + 碎块{WEIGHTS['frag_blocks'] * float(r['frag_blocks']):>6.0f}"
+              f" + 工期{WEIGHTS['days_over'] * float(r.get('days_over', 0)):>6.0f}")
+        print(f"{'':<8} 对比 greedy → 加权 {r.get('weighted', 0):<8.1f}-{g.get('weighted', 0):<8.1f} "
+              f"未排 {r['unplaced']}-{g['unplaced']:<5.1f} "
               f"兼项撞 {r['athlete_clash']}-{g['athlete_clash']:<5.1f} "
-              f"超占 {r['capacity_overflow']}-{g['capacity_overflow']:<6.1f} "
               f"碎块 {r['frag_blocks']}-{g['frag_blocks']}")
         ai = s.get("ai", {})
         ga = s.get("ga", {})
-        print(f"{'':<8} 对比 GA一条龙 → 未排 {r['unplaced']}-{ga.get('unplaced', 0):<5.1f} "
+        ai_w, ga_w = ai.get("weighted", 0), ga.get("weighted", 0)
+        print(f"{'':<8} 对比 GA一条龙 → 加权 {r.get('weighted', 0):<8.1f}-{ga_w:<8.1f} "
+              f"未排 {r['unplaced']}-{ga.get('unplaced', 0):<5.1f} "
               f"兼项撞 {r['athlete_clash']}-{ga.get('athlete_clash', 0):<5.1f} "
-              f"超占 {r['capacity_overflow']}-{ga.get('capacity_overflow', 0):<6.1f} "
               f"碎块 {r['frag_blocks']}-{ga.get('frag_blocks', 0):<4.1f}")
-        print(f"{'':<8} 对比 AI混合 → 未排 {ai.get('unplaced', 0):<5.1f} "
+        print(f"{'':<8} 对比 AI混合 → 加权 {ai_w:<8.1f} 未排 {ai.get('unplaced', 0):<5.1f} "
               f"兼项撞 {ai.get('athlete_clash', 0):<5.1f} "
               f"超占 {ai.get('capacity_overflow', 0):<6.1f} "
               f"碎块 {ai.get('frag_blocks', 0):<4.1f} "
-              f"（AI 需 ≤ GA：{ai.get('unplaced', 0)} vs {ga.get('unplaced', 0)} "
-              f"{'✅ 通过' if ai.get('unplaced', 0) <= ga.get('unplaced', 0) else '❌ 未通过'}）")
+              f"（AI 需 ≤ GA：加权 {ai_w:.1f} vs {ga_w:.1f} "
+              f"{'✅ 通过' if ai_w <= ga_w + 1e-9 else '❌ 未通过'}"
+              f"；未排 {ai.get('unplaced', 0)} vs {ga.get('unplaced', 0)} 仅作参考）")
 
     # ---- 规划层消融：节点扩展数（arXiv:2606.04860 的核心指标）----
     if predictors:

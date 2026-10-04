@@ -176,13 +176,22 @@ public class ScheduleBuildComponent {
             List<Map<String, Object>> slots = castList(dc.get("slots"));
             if (slots.isEmpty()) continue;
 
+            // 「给某天多配容量」：该天可显式追加额外容量（分钟），加到**该天每个时段**上。
+            // ⚠️ 为什么不改时段的起止时间：起止时间决定「现场几点到几点」，
+            //    是可以打印到秩序册上的事实；额外容量表达的是「这一天还留了余量/加了场地」，
+            //    两者语义不同 —— 混在一起会让导出的时间表与容量对不上。
+            // 这一项也是把「结构性断裂」变成用户决策的落点：规划预演会给出
+            // 「建议给第 X 天 +N 分钟」，用户在这里填进去即可。
+            int extra = Math.max(0, intVal(dc.get("extraMinutes"), 0));
+
             for (Map<String, Object> sl : slots) {
                 String start = str(sl.get("start"), "08:00");
                 String end = str(sl.get("end"), "11:30");
                 int s = parseHhMm(start);
                 int e = parseHhMm(end);
                 if (e <= s) continue;
-                windows.add(new Window(day, date, str(sl.get("name"), str(sl.get("key"), "上午")), s, e - s));
+                windows.add(new Window(day, date,
+                        str(sl.get("name"), str(sl.get("key"), "上午")), s, (e - s) + extra));
             }
         }
         windows.sort(Comparator.comparingInt(w -> w.day));

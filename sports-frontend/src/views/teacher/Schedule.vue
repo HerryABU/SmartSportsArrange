@@ -123,6 +123,56 @@
           <el-descriptions-item label="剪后重试">{{ planResult.diagnostics?.prunedRetried }}</el-descriptions-item>
         </el-descriptions>
 
+        <!-- 加权代价口径：四档在魔鬼档之外的未排数已贴近下界（1.0/1.33），
+             只看未排数它们会全部「持平」—— 那是指标分辨率不够。
+             把 兼项撞/道次撞/碎块/工期 一并计价，差异才看得见。 -->
+        <el-descriptions v-if="planResult.weightedCost != null" :column="3" border size="small"
+                         style="margin-bottom: 12px">
+          <el-descriptions-item label="加权代价">
+            <b>{{ planResult.weightedCost }}</b>
+          </el-descriptions-item>
+          <el-descriptions-item label="工期">
+            {{ planResult.costComponents?.daysUsed }} 天
+            {{ Number(planResult.costComponents?.daysLimit) > 0
+              ? `（限 ${planResult.costComponents?.daysLimit} 天，超 ${planResult.costComponents?.daysOver} 天）`
+              : '（未限天数）' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="分项">
+            未排 {{ planResult.costComponents?.unplaced }} ·
+            兼项 {{ planResult.costComponents?.athleteClash }} ·
+            超占 {{ planResult.costComponents?.capacityOverflow }} ·
+            碎块 {{ planResult.costComponents?.fragBlocks }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <!-- 结构性断裂：容量布局问题，不是搜索问题 —— 给出「给哪天加多少」的可执行建议 -->
+        <el-alert v-if="(planResult.groupBreaks || []).length" type="warning" show-icon :closable="false"
+                  style="margin-bottom: 12px">
+          <template #title>
+            结构性断裂 {{ planResult.groupBreaks.length }} 处：同组跨天，且当天容量腾不出空间
+          </template>
+          <template #default>
+            <div style="line-height: 1.9; font-size: 13px">
+              <div v-for="(b, i) in planResult.groupBreaks.slice(0, 3)" :key="i">
+                · 组 {{ b.groupKey }}：{{ b.offDayUnits }} 个单元不在第 {{ b.anchorDay + 1 }} 天
+                <template v-if="b.shortfallMinutes > 0">
+                  ，第 {{ b.anchorDay + 1 }} 天的「{{ b.venue }}」还差 <b>{{ b.shortfallMinutes }}</b> 分钟
+                </template>
+                <template v-else>（当天容量并非瓶颈，更可能是兼项 / 场地约束）</template>
+              </div>
+              <div v-if="Object.keys(planResult.extraMinutesByDay || {}).length" style="margin-top: 6px">
+                <b>建议：</b>
+                <el-button v-for="(mins, day) in planResult.extraMinutesByDay" :key="day"
+                           size="small" type="primary" plain style="margin-right: 6px"
+                           @click="applyExtraMinutes(day, mins)">
+                  给第 {{ Number(day) + 1 }} 天 +{{ mins }} 分钟
+                </el-button>
+                <span class="hint">（填入日程配置，保存后重新预演即生效）</span>
+              </div>
+            </div>
+          </template>
+        </el-alert>
+
         <div v-if="(planResult.unplacedKeys || []).length" style="margin-bottom: 12px">
           <b style="color: #b88230">排不下的单元：</b>
           <el-tag v-for="k in planResult.unplacedKeys.slice(0, 12)" :key="k" size="small" type="warning"
@@ -548,6 +598,14 @@
                 <el-button link type="danger" :icon="Delete" @click="removeSlot(dc, si)" />
               </div>
               <el-button size="small" type="primary" plain :icon="Plus" @click="addSlot(dc)">添加时段</el-button>
+              <!-- 给某天多配容量：把「结构性断裂」变成用户看得见、改得动的决策。
+                   时段起止时间仍是现场真实时间（会打印到秩序册），额外容量只表示
+                   「这天还留了余量」，所以单独一个旋钮，不去改时间。 -->
+              <div class="day-extra-row">
+                <span class="hint">额外容量</span>
+                <el-input-number v-model="dc.extraMinutes" :min="0" :max="600" :step="15" size="small" />
+                <span class="hint">分钟 · 加到该天每个时段；规划预演报「结构性断裂」时会给出建议值</span>
+              </div>
             </div>
           </div>
         </el-form-item>
@@ -973,6 +1031,24 @@ async function doPlanPreview () {
   }
 }
 
+/**
+ * 一键采纳「给某天多配容量」的建议。
+ *
+ * ⚠️ 只改本地表单，**不自动保存**：日程配置里还有别的字段（时段、场地、项目顺序…），
+ * 静默落库会覆盖用户正在编辑的内容。保存必须是用户显式动作。
+ * 用「追加」而不是「赋值」：用户可能已经手工加过，再点一次应当是累加。
+ */
+function applyExtraMinutes(day, minutes) {
+  const idx = Number(day)
+  const dc = meetForm.dayConfigs[idx]
+  if (!dc) {
+    ElMessage.warning(`日程配置里没有第 ${idx + 1} 天，请先打开配置新增该天`)
+    return
+  }
+  dc.extraMinutes = Number(dc.extraMinutes || 0) + Number(minutes || 0)
+  ElMessage.success(`已给第 ${idx + 1} 天追加 ${minutes} 分钟容量，保存配置后重新预演即生效`)
+}
+
 function arrangePayload() {
   return {
     mode: arrangeMode.value,
@@ -1019,8 +1095,8 @@ const meetForm = reactive({
   aiAdversarialRounds: 3,
   gradeOrder: [],
   dayConfigs: [
-    { day: 1, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
-    { day: 2, date: '', slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] }
+    { day: 1, date: '', extraMinutes: 0, slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] },
+    { day: 2, date: '', extraMinutes: 0, slots: [{ ...emptySlot }, { key: 'PM', name: '下午', start: '14:00', end: '17:30' }] }
   ],
   trackSlots: 1,
   fieldSlots: 2,
@@ -1260,6 +1336,8 @@ async function openMeetConfig() {
     meetForm.dayConfigs = (res.dayConfigs || []).map((dc, i) => ({
       day: dc.day || i + 1,
       date: dc.date || '',
+      // 「给某天多配容量」：额外分钟数，默认 0（历史配置无此键也兼容）
+      extraMinutes: Number(dc.extraMinutes) > 0 ? Number(dc.extraMinutes) : 0,
       slots: (dc.slots && dc.slots.length ? dc.slots : blankSlots()).map(s => ({
         key: s.key || s.name, name: s.name || '上午', start: s.start || '08:00', end: s.end || '11:30'
       }))
@@ -1321,7 +1399,7 @@ function syncDays() {
   const n = Number(meetForm.days) || 2
   while (meetForm.dayConfigs.length < n) {
     meetForm.dayConfigs.push({
-      day: meetForm.dayConfigs.length + 1, date: '', slots: blankSlots()
+      day: meetForm.dayConfigs.length + 1, date: '', extraMinutes: 0, slots: blankSlots()
     })
   }
   meetForm.dayConfigs = meetForm.dayConfigs.slice(0, n)
@@ -1833,6 +1911,10 @@ watch(coKeyword, () => { coPage.value = 1 })
 .grade-order-row .go-name { flex: 1; font-size: 14px; color: #303133; }
 .day-config-title { font-weight: 600; margin-bottom: 8px; color: #303133; }
 .slot-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.day-extra-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed #e4e7ed; flex-wrap: wrap;
+}
 .order-list {
   display: flex; flex-direction: column; gap: 6px;
   max-height: 260px; overflow-y: auto; padding: 6px; margin-bottom: 8px;

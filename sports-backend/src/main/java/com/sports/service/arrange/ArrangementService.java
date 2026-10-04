@@ -1484,6 +1484,13 @@ public class ArrangementService {
             return allocateSnake(event, athletes, lanes, locks, warnings, styleRule, seedRank);
         }
 
+        // 「规划层」款型：贪心打底 + 显式代价的局部搜索。
+        // ⚠️ 它**强制「同组不同班」**（与班级均衡同口径），所以必须走这条分支，
+        //    不能混进蛇形家族 —— 蛇形有意放开「同组不同班」，两者的硬约束不同。
+        if (ArrangeStyle.of(styleRule).isPlan()) {
+            return allocatePlan(event, athletes, lanes, locks, warnings);
+        }
+
         // 按班级分组（班级缺失归为 0）
         Map<Long, List<Athlete>> byClass = athletes.stream()
                 .collect(Collectors.groupingBy(
@@ -1620,7 +1627,34 @@ public class ArrangementService {
             }
         }
 
-        // 阶段二：组内分道
+        // 阶段二：组内分道（抽签 / 匈牙利精确分道 —— 见 assignLanes 的说明）
+        assignLanes(matrix, heats, lanes, laneTaken, classLaneUse, lottery, rnd);
+
+        Placement placement = new Placement();
+        placement.heats = heats;
+        placement.warnings = warnings;
+        placement.heatsMatrix = new ArrayList<>(heats);
+        for (int h = 0; h < heats; h++) {
+            placement.heatsMatrix.add(matrix[h]);
+        }
+        return placement;
+    }
+
+    /**
+     * 组内分道（抽签 / 匈牙利精确分道）—— 从 {@link #allocate} 抽出，供各款型复用。
+     *
+     * <p><b>为什么必须抽出来</b>：分道口径若在各款型里各写一份，就会出现
+     * 「同一份报名用不同款型排，道次公平性却不一样」这种说不清的问题。
+     * 分道只认「该班已用该道的次数」这一个代价，与选哪款入组规则无关，
+     * 所以它属于<b>公共下游</b>，不该跟着入组款型一起分叉。</p>
+     *
+     * @param matrix       组 → 单元列表（已落位者的 lane 可能已被锁定占位，只处理 lane == null 的）
+     * @param laneTaken    已占用的 (组, 道) 标记
+     * @param classLaneUse 班级 → 各道已用次数（软约束「同班道次错开」的累积口径）
+     */
+    private void assignLanes(List<Arrangement>[] matrix, int heats, int lanes,
+                             boolean[][] laneTaken, Map<Long, int[]> classLaneUse,
+                             boolean lottery, Random rnd) {
         for (int h = 0; h < heats; h++) {
             List<Arrangement> inHeat = matrix[h];
             if (inHeat.isEmpty()) continue;
@@ -1683,15 +1717,298 @@ public class ArrangementService {
                 }
             }
         }
+    }
+
+    /**
+     * 「规划层」款型（{@link ArrangeStyle#PLAN}）：贪心打底 + **显式代价的局部搜索**。
+     *
+     * <h2>为什么要单独一款</h2>
+     *
+     * <p>「班级均衡」只有一条贪心规则「放进人最少的组」。它在**人数分布均匀**时够用，
+     * 但在「少数大班 + 多数小班」这类真实报名结构下会走歪：大班被硬性摊到各组后，
+     * 小班再填进去就只剩「塞哪个组」这一问，而贪心只认当前最空的那个 ——
+     * 前几步一旦把分布走歪，后面再也纠不回来（空道次与人数不均衡被固化）。</p>
+     *
+     * <p>规划层把这件事写成**代价**并用局部搜索去压：</p>
+     *
+     * <pre>
+     * 代价 = 3 × 组人数不均衡            （max 组人数 − min 组人数；越小越公平）
+     *      +  2 × 同班相邻组配对数        （同班两人连着两趟上场 = 连轴转；越小越好）
+     * </pre>
+     *
+     * <p>先与班级均衡同款的贪心打底（保证一开始就有一份合法解），
+     * 再反复尝试**搬迁**（一个人换组）与**交换**（两人互换组）——
+     * <b>只接受代价严格下降且不破坏硬约束</b>的移动。
+     * 于是它同「班级均衡」一样必定合法，但分组更均衡、更不会让学生连轴转。</p>
+     *
+     * <p>⚠️ 两条硬约束在每次试移动时都要重查，不能只看「人数」：
+     * ① 同组不同班（同班两人不得同组）；② 组人数不得超过道次数。
+     * 只查其一会出现「换完更均衡，但把同班凑到一组」这种非法解 ——
+     * 而校验在外部（{@code validatePlacement}）才做的话，表现为「重排多轮仍违反」。</p>
+     *
+     * <p>确定性：无随机、无抽签，同报名必得同分组（与「班级均衡」一致）。</p>
+     */
+    private Placement allocatePlan(Event event, List<Athlete> athletes, int lanes,
+                                   List<Arrangement> locks, List<String> warnings) {
+        int n = athletes.size();
+        List<Arrangement> lockList = locks == null ? List.of() : locks;
+
+        Map<Long, List<Athlete>> byClass = athletes.stream()
+                .collect(Collectors.groupingBy(
+                        a -> classIdOf(a),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        Map<Long, Integer> lockedPerClass = new HashMap<>();
+        int maxLockedHeat = 0;
+        for (Arrangement lock : lockList) {
+            if (lock.getAthlete() != null) {
+                lockedPerClass.merge(classIdOf(lock.getAthlete()), 1, Integer::sum);
+            }
+            maxLockedHeat = Math.max(maxLockedHeat, lock.getHeat() == null ? 0 : lock.getHeat());
+        }
+        Set<Long> allClasses = new LinkedHashSet<>(byClass.keySet());
+        allClasses.addAll(lockedPerClass.keySet());
+
+        int maxClassSize = 0;
+        for (Long cid : allClasses) {
+            maxClassSize = Math.max(maxClassSize,
+                    byClass.getOrDefault(cid, List.of()).size() + lockedPerClass.getOrDefault(cid, 0));
+        }
+
+        int total = n + lockList.size();
+        int minHeats = (int) Math.ceil((double) total / Math.max(1, lanes));
+        // heats 与「班级均衡」同口径：既要装得下（按道次），又要满足「同组不同班」（按最大班）
+        int heats = Math.max(Math.max(minHeats, maxClassSize), maxLockedHeat);
+        if (heats > Math.max(12, minHeats * 2)) {
+            warnings.add(String.format("班级人数差异过大（最大班%d人），为满足「同组不同班」需排%d组，建议减少该班报名人数",
+                    maxClassSize, heats));
+        }
+        if (heats <= 0) heats = 1;
+        // lambda 里要用 heats：必须先固化（heats 上面被重新赋值过，不是 effectively final）
+        final int nHeats = heats;
+
+        int[] occupancy = new int[heats];
+        Map<Long, boolean[]> classHeatFlags = new HashMap<>();
+        for (Long cid : allClasses) classHeatFlags.put(cid, new boolean[heats]);
+        boolean[][] laneTaken = new boolean[heats][lanes];
+        Map<Long, int[]> classLaneUse = new HashMap<>();
+        for (Long cid : allClasses) classLaneUse.put(cid, new int[lanes]);
+
+        @SuppressWarnings("unchecked")
+        List<Arrangement>[] matrix = new List[heats];
+        for (int h = 0; h < heats; h++) matrix[h] = new ArrayList<>();
+
+        // 阶段零：预置人工锁定项（占位；自动分配必须避开）
+        for (Arrangement lock : lockList) {
+            int hIdx = lock.getHeat() != null ? lock.getHeat() - 1 : 0;
+            if (hIdx < 0 || hIdx >= heats) {
+                warnings.add("人工锁定项组号越界（第" + lock.getHeat() + "组），已跳过占位");
+                continue;
+            }
+            int lane = lock.getLane() != null ? lock.getLane() : 0;
+            if (lane >= 1 && lane <= lanes && laneTaken[hIdx][lane - 1]) {
+                warnings.add(String.format("人工锁定项道次冲突：第%d组第%d道被两条锁定项同时占用",
+                        hIdx + 1, lane));
+            }
+            matrix[hIdx].add(lock);
+            occupancy[hIdx]++;
+            Long cid = lock.getAthlete() != null ? classIdOf(lock.getAthlete()) : 0L;
+            classHeatFlags.computeIfAbsent(cid, k -> new boolean[nHeats])[hIdx] = true;
+            if (lane >= 1 && lane <= lanes) {
+                laneTaken[hIdx][lane - 1] = true;
+                classLaneUse.computeIfAbsent(cid, k -> new int[lanes])[lane - 1]++;
+            }
+        }
+
+        // 阶段一：贪心打底（与「班级均衡」同口径：大类先排 → 放进人最少且未出现该班的组）
+        List<Map.Entry<Long, List<Athlete>>> sortedClasses = byClass.entrySet().stream()
+                .sorted((e1, e2) -> Integer.compare(e2.getValue().size(), e1.getValue().size()))
+                .collect(Collectors.toList());
+        for (Map.Entry<Long, List<Athlete>> entry : sortedClasses) {
+            Long classId = entry.getKey();
+            boolean[] usedHeat = classHeatFlags.get(classId);
+            for (Athlete athlete : entry.getValue()) {
+                int bestHeat = -1;
+                int minOcc = Integer.MAX_VALUE;
+                for (int h = 0; h < heats; h++) {
+                    if (usedHeat[h] || occupancy[h] >= lanes) continue;
+                    if (occupancy[h] < minOcc) {
+                        minOcc = occupancy[h];
+                        bestHeat = h;
+                    }
+                }
+                if (bestHeat < 0) {
+                    for (int h = 0; h < heats; h++) {
+                        if (occupancy[h] < lanes && (bestHeat < 0 || occupancy[h] < occupancy[bestHeat])) {
+                            bestHeat = h;
+                        }
+                    }
+                }
+                if (bestHeat < 0) {
+                    warnings.add("无法为运动员 " + athlete.getName() + " 分配合适的组");
+                    continue;
+                }
+                Arrangement arr = new Arrangement();
+                arr.setAthlete(athlete);
+                matrix[bestHeat].add(arr);
+                occupancy[bestHeat]++;
+                usedHeat[bestHeat] = true;
+            }
+        }
+
+        // 阶段二：**显式代价的局部搜索**（搬迁 / 交换，只接受严格变好且合法的移动）
+        localSearchHeats(matrix, heats, lanes, occupancy, classHeatFlags);
+
+        // 阶段三：分道（与「班级均衡」同一套公共下游 —— 匈牙利精确分道）
+        assignLanes(matrix, heats, lanes, laneTaken, classLaneUse, false, null);
 
         Placement placement = new Placement();
         placement.heats = heats;
         placement.warnings = warnings;
         placement.heatsMatrix = new ArrayList<>(heats);
-        for (int h = 0; h < heats; h++) {
-            placement.heatsMatrix.add(matrix[h]);
-        }
+        for (int h = 0; h < heats; h++) placement.heatsMatrix.add(matrix[h]);
         return placement;
+    }
+
+    /**
+     * 规划层的**局部搜索**：搬迁（一人换组）+ 交换（两人换组），只接受代价严格下降的移动。
+     *
+     * <h2>代价（为什么是这两项）</h2>
+     *
+     * <pre>
+     * 代价 = 3 × 组人数不均衡  +  2 × 同班相邻组配对数
+     * </pre>
+     *
+     * <ul>
+     *   <li><b>不均衡</b>：贪心只认「当前人最少的组」，是个**近视**规则 ——
+     *       真实报名结构（少数大班 + 多数小班）下前几步走歪就再也纠不回来；</li>
+     *   <li><b>同班相邻组</b>：同班两人落在第 1、2 组 = 连着两趟上场，学生要连轴转。
+     *       这一项**交换才动得了**（人数守恒、不均衡不变），
+     *       所以它是「为什么必须有交换」的理由 —— 只做搬迁的话这一项永远优化不到。</li>
+     * </ul>
+     *
+     * <p>⚠️ 刻意没有「空道次浪费」这一项：本款的组数是**推导出来的常量**
+     * （{@code max(⌈总人数/道次⌉, 最大班人数)}），所有能排下的运动员都会被排下，
+     * 于是「占用道次总数」在任何布局下都相等 —— 把它写进代价是个**恒为常数的项**，
+     * 看起来在优化，实际什么都没优化。</p>
+     *
+     * <p>确定性：不做任何随机化。同一份报名重排两次必须得到同一分组
+     * （AI 派遣款型之所以要传种子，正是因为它随机；规划层不需要）。</p>
+     *
+     * <p>⚠️ 每次试移动都**重查两条硬约束**（同班不得同组 / 组不超道次），
+     * 而不是「先移动、再交给外部校验」—— 后者会把非法解留在中间状态里，
+     * 一旦循环因为别的原因提前退出，就交付了一个非法分组。</p>
+     */
+    private void localSearchHeats(List<Arrangement>[] matrix, int heats, int lanes,
+                                  int[] occupancy, Map<Long, boolean[]> classHeatFlags) {
+        int adjTotal = 0;
+        for (boolean[] f : classHeatFlags.values()) {
+            adjTotal += adjacentPairs(f);
+        }
+        final int maxRounds = 100;
+        for (int round = 0; round < maxRounds; round++) {
+            final int base = 3 * spread(occupancy) + 2 * adjTotal;
+            boolean moved = false;
+
+            // ---- ① 搬迁：把一人从组 a 挪到组 b（只改一个人，代价增量可精确算）----
+            outer:
+            for (int a = 0; a < heats; a++) {
+                if (occupancy[a] <= 0) continue;
+                for (Arrangement arr : new ArrayList<>(matrix[a])) {
+                    Long cid = classIdOf(arr.getAthlete());
+                    boolean[] f = classHeatFlags.get(cid);
+                    if (f == null) continue;                       // 没有班级标记 → 不冒风险动它
+                    for (int b = 0; b < heats; b++) {
+                        if (b == a || occupancy[b] >= lanes) continue;
+                        if (f[b]) continue;                        // 硬约束：同班不得同组
+                        int oldAdj = adjacentPairs(f);
+                        f[a] = false;
+                        f[b] = true;
+                        occupancy[a]--;
+                        occupancy[b]++;
+                        int cost = 3 * spread(occupancy) + 2 * (adjTotal - oldAdj + adjacentPairs(f));
+                        if (cost < base) {
+                            matrix[a].remove(arr);
+                            matrix[b].add(arr);
+                            adjTotal += adjacentPairs(f) - oldAdj;
+                            moved = true;
+                            break outer;
+                        }
+                        // 回滚（试移动失败必须还原所有共享状态，否则搜索会「漂移」）
+                        f[a] = true;
+                        f[b] = false;
+                        occupancy[a]++;
+                        occupancy[b]--;
+                    }
+                }
+            }
+            if (moved) continue;
+
+            // ---- ② 交换：两人互换组（人数守恒 → 不均衡不变；只能靠「相邻组」这一项获益）----
+            outer2:
+            for (int a = 0; a < heats; a++) {
+                for (Arrangement xa : new ArrayList<>(matrix[a])) {
+                    Long ca = classIdOf(xa.getAthlete());
+                    boolean[] fa = classHeatFlags.get(ca);
+                    if (fa == null) continue;
+                    for (int b = a + 1; b < heats; b++) {
+                        for (Arrangement xb : new ArrayList<>(matrix[b])) {
+                            Long cb = classIdOf(xb.getAthlete());
+                            if (ca.equals(cb)) continue;           // 同班互换：分布不变，无意义
+                            boolean[] fb = classHeatFlags.get(cb);
+                            if (fb == null) continue;
+                            if (fa[b] || fb[a]) continue;          // 换过去会「同班同组」，硬约束
+                            int oa = adjacentPairs(fa);
+                            int ob = adjacentPairs(fb);
+                            fa[a] = false;
+                            fa[b] = true;
+                            fb[b] = false;
+                            fb[a] = true;
+                            int na = adjacentPairs(fa);
+                            int nb = adjacentPairs(fb);
+                            int cost = 3 * spread(occupancy)
+                                    + 2 * (adjTotal - oa - ob + na + nb);   // 人数守恒 → 不均衡项不变
+                            if (cost < base) {
+                                matrix[a].remove(xa);
+                                matrix[b].remove(xb);
+                                matrix[a].add(xb);
+                                matrix[b].add(xa);
+                                adjTotal += (na - oa) + (nb - ob);
+                                moved = true;
+                                break outer2;
+                            }
+                            // 回滚
+                            fa[a] = true;
+                            fa[b] = false;
+                            fb[b] = true;
+                            fb[a] = false;
+                        }
+                    }
+                }
+            }
+            if (!moved) break;                                     // 收敛：搬迁与交换都动不了
+        }
+    }
+
+    /** 组人数极差（越小越均衡）。 */
+    private static int spread(int[] occupancy) {
+        int maxOcc = 0;
+        int minOcc = Integer.MAX_VALUE;
+        for (int occ : occupancy) {
+            maxOcc = Math.max(maxOcc, occ);
+            minOcc = Math.min(minOcc, occ);
+        }
+        return maxOcc - (minOcc == Integer.MAX_VALUE ? 0 : minOcc);
+    }
+
+    /** 某班落在**相邻两组**的配对数（越小越不会「连轴转」）。 */
+    private static int adjacentPairs(boolean[] presentInHeat) {
+        int n = 0;
+        for (int h = 0; h + 1 < presentInHeat.length; h++) {
+            if (presentInHeat[h] && presentInHeat[h + 1]) n++;
+        }
+        return n;
     }
 
     /**

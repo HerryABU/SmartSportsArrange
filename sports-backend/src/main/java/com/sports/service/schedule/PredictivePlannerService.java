@@ -12,6 +12,8 @@ import com.sports.repository.event.EventRepository;
 import com.sports.repository.registration.RegistrationRepository;
 import com.sports.schedule.core.primitive.Unit;
 import com.sports.schedule.core.primitive.Window;
+import com.sports.schedule.plan.PlanAdvice;
+import com.sports.schedule.plan.PlanCost;
 import com.sports.schedule.plan.PredictivePlanner;
 import com.sports.schedule.plan.PredictivePlanner.PlanOutcome;
 import com.sports.schedule.plan.PredictivePlanner.PlanUnit;
@@ -141,6 +143,42 @@ public class PredictivePlannerService {
         out.put("violations", r.violations());
         out.put("diagnostics", diagMap(r));
 
+        // ---- 加权代价口径（比较/上报用，见 PlanCost 的类注释）----
+        // ⚠️ 它不是搜索目标，而是**同一把尺子**：四档编排模式在魔鬼档之外的未排数
+        //    已经贴近下界（1.0/1.33），只看未排数会让它们全部「持平」——
+        //    那是**指标分辨率不够**，不是「一样好」。把 兼项撞/道次撞/碎块/工期
+        //    一并计价，差异才会显出来。
+        int daysLimit = dayLimitOf(cfg);
+        PredictivePlanner.SlotDays slotDays = slot -> slotDay.getOrDefault(slot, 0);
+        PlanCost pc = PlanCost.of(planUnits, r.slotOf(), capacity, slotDays, daysLimit);
+        out.put("weightedCost", round(pc.weighted()));
+        out.put("costBreakdown", pc.breakdown());
+        Map<String, Object> comp = new LinkedHashMap<>();
+        comp.put("unplaced", pc.unplaced());
+        comp.put("athleteClash", pc.athleteClash());
+        comp.put("capacityOverflow", pc.capacityOverflow());
+        comp.put("laneClash", pc.laneClash());
+        comp.put("fragBlocks", pc.fragBlocks());
+        comp.put("daysOver", pc.daysOver());
+        comp.put("daysUsed", slotOfDaysUsed(slotDay, r.slotOf()));
+        comp.put("daysLimit", daysLimit);
+        out.put("costComponents", comp);
+
+        // ---- 结构性断裂的归因 + 「给某天多配容量」的建议 ----
+        PlanAdvice.Result advice = PlanAdvice.analyze(planUnits, r.slotOf(), capacity, slotDays);
+        out.put("extraMinutesByDay", advice.extraMinutesByDay());
+        List<Map<String, Object>> groupBreaks = new ArrayList<>();
+        for (PlanAdvice.GroupBreak b : advice.breaks()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("groupKey", b.groupKey());
+            row.put("anchorDay", b.anchorDay());
+            row.put("offDayUnits", b.offDayUnits());
+            row.put("venue", b.venue());
+            row.put("shortfallMinutes", b.shortfallMinutes());
+            groupBreaks.add(row);
+        }
+        out.put("groupBreaks", groupBreaks);
+
         // ---- 方案明细（按 天 → 槽 → 单元 排序，便于人读） ----
         List<Map<String, Object>> assignment = new ArrayList<>();
         Map<String, Unit> byKey = new LinkedHashMap<>();
@@ -189,6 +227,31 @@ public class PredictivePlannerService {
         d.put("pruned", r.diagnostics().pruned());
         d.put("prunedRetried", r.diagnostics().prunedRetried());
         return d;
+    }
+
+    /**
+     * 从日程配置解析**限定天数**（加权代价里「工期超限」分量的口径）。
+     *
+     * <p>三态判定本身在 {@link PlanCost#dayLimitOf(String, int)} 里单一维护 ——
+     * 它是「工期算不算超限」的唯一裁决点，散在各处就会出现
+     * 「预演说没超、编排说超了」这种两套口径。</p>
+     */
+    private static int dayLimitOf(Map<String, Object> cfg) {
+        if (cfg == null) {
+            return 0;
+        }
+        Object mode = cfg.get("dayMode");
+        return PlanCost.dayLimitOf(mode == null ? null : String.valueOf(mode),
+                intVal(cfg.get("days"), 0));
+    }
+
+    /** 实际占用的天数（去重）—— 工期超限分量的被减数。 */
+    private static int slotOfDaysUsed(Map<Integer, Integer> slotDay, Map<String, Integer> slotOf) {
+        java.util.Set<Integer> days = new java.util.LinkedHashSet<>();
+        for (Integer slot : slotOf.values()) {
+            days.add(slotDay.getOrDefault(slot, 0));
+        }
+        return days.size();
     }
 
     private static List<String> venuesOf(List<Unit> units) {

@@ -818,8 +818,9 @@ const numberPreview = ref('')
 
 // 编排规则
 const arrangeRuleForm = reactive({
-  // 「自定义规则」款型（class/snake/snakeSeed）：此处仅做整份回写时的保留，避免保存其它规则时被清掉；
-  // 款型的选择入口在「道次编排」页（选择后自动持久化到本配置）
+  // 「自定义规则」款型（class / snake / snakeSeed / ai / plan）：此处仅做整份回写时的保留，
+  // 避免保存其它规则时被清掉；款型的选择入口在「道次编排」页（那里从 /api/arrange/styles
+  // 动态拉取目录，新增款型无需改前端），选择后自动持久化到本配置。
   styleRule: 'class',
   soft: {
     prefer_diff_heat: true,

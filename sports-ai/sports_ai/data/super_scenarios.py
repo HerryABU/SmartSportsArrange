@@ -1,4 +1,4 @@
-"""超级编排统一场景：项目 / 道次 / 球类（小组·淘汰·循环·混合）/ 二次编排。
+r"""超级编排统一场景：项目 / 道次 / 球类（小组·淘汰·循环·混合）/ 二次编排。
 
 本模块把系统里**全部编排维度**收敛成一种统一表示，供
 {@code models/super_moe.SuperScheduleMoE} 单一模型消费——这是「一个超级模型
@@ -307,7 +307,8 @@ def add_shadow_tasks(scen: "SuperScenario", rng) -> None:
                                         venue="V0", pool="REF"))
 
 
-def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:
+def generate_super_scenario(tier: str = "HELL", seed: int = 0,
+                            extra_days: int = 0) -> SuperScenario:
     """按档位生成统一编排场景。
 
     档位（对齐用户点名的魔鬼条件）：
@@ -319,6 +320,15 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:
     LANE            200~320 人 / 8 项目 / 多档道次容量
     TEAM            160~400 人 / 球类 + 四种赛制 + **淘汰赛晋级 + 二次编排**
     ==============  ==========================================
+
+    ``extra_days``（默认 0）：在原本的窗口天数之上**多加几天时段**，
+    使「可用时段跨度 > ``days_limit``」——于是 `days_limit` 才真正成为**要压的目标**。
+
+    ⚠️ 为什么需要它（一个被实测暴露的口径盲区）：默认生成器把窗口天数**恰好**设成
+    ``days_limit``，于是「实际占用天数」永远 ≤ 上限 —— **工期超限恒为 0**，
+    加权代价里的工期分量成了死项（看起来接好了，其实一次都没触发）。
+    默认 0 保持既有数据分布不变（历史权重与结论仍然可比）；
+    需要测量工期分量时才传正数，例如 ``extra_days=2``。
     """
     rng = random.Random(seed)
     cfg = {
@@ -371,7 +381,9 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0) -> SuperScenario:
     #    改成每时段并行开 2~4 个场地，总容量再由单元需求反推（见下），
     #    才是「既排得下、又逼得出装箱压力」的可行域。
     windows: List[SuperWindow] = []
-    for d in range(1, max(2, days_limit if days_limit > 0 else days) + 1):
+    # ⚠️ extra_days 只加「可用时段」，**不改 days_limit** —— 加的正是「必须压掉的那几天」。
+    span_days = max(2, days_limit if days_limit > 0 else days) + max(0, int(extra_days))
+    for d in range(1, span_days + 1):
         for w in range(rng.choice([3, 4, 5])):
             k = rng.choice([2, 3, 3, 4])
             for v in rng.sample(venues, min(k, len(venues))):

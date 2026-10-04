@@ -550,6 +550,10 @@ public class SystemService {
         dayCfg.put("day", day);
         dayCfg.put("date", null);
         dayCfg.put("slots", defaultSlots());
+        // 「给某天多配容量」：默认 0 —— 时段起止时间只说明现场几点到几点，
+        // 额外容量表达「这天还留了余量」，两者语义不同，所以单独一个键。
+        // 规划预演会给出「建议给第 X 天 +N 分钟」，用户在此填进去即可。
+        dayCfg.put("extraMinutes", 0);
         return dayCfg;
     }
 

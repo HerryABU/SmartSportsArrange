@@ -256,13 +256,118 @@ class ArrangementServiceTest {
             assertNotNull(m.get("label"));
             assertNotNull(m.get("description"));
         }
+        assertTrue(cat.stream().anyMatch(m -> "plan".equals(m.get("id"))),
+                "「规划层」必须出现在款型目录里（前端据此渲染，无需改前端）");
         // 未知款型回退默认；大小写不敏感；含种子蛇形
         assertEquals(ArrangeStyle.CLASS, ArrangeStyle.of("不存在"));
         assertEquals(ArrangeStyle.SNAKE, ArrangeStyle.of("SNAKE"));
         assertEquals(ArrangeStyle.SNAKE_SEEDED, ArrangeStyle.of("snakeSeed"));
+        assertEquals(ArrangeStyle.PLAN, ArrangeStyle.of("plan"));
         assertTrue(ArrangeStyle.SNAKE.isSnake());
         assertTrue(ArrangeStyle.SNAKE_SEEDED.isSnake());
         assertFalse(ArrangeStyle.CLASS.isSnake());
+        // 规划层与蛇形是**互斥**的两类：蛇形有意放开「同组不同班」，规划层强制它。
+        assertTrue(ArrangeStyle.PLAN.isPlan());
+        assertFalse(ArrangeStyle.PLAN.isSnake(), "规划层不属于蛇形家族（硬约束不同）");
+        assertFalse(ArrangeStyle.CLASS.isPlan());
+    }
+
+    /** 读取编排视图里「组 → 各班占用」的分布，用于比较两款型的分组质量。 */
+    private List<Set<String>> classPerHeat(Map<String, Object> result) {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> heats = (List<Map<String, Object>>) result.get("heats");
+        List<Set<String>> out = new ArrayList<>();
+        for (Map<String, Object> heat : heats) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lanes = (List<Map<String, Object>>) heat.get("lanes");
+            Set<String> classes = new LinkedHashSet<>();
+            for (Map<String, Object> lane : lanes) {
+                if (lane.get("athleteId") == null) continue;
+                Object cn = lane.get("className");
+                classes.add(cn == null ? "" : String.valueOf(cn));
+            }
+            out.add(classes);
+        }
+        return out;
+    }
+
+    /** 规划层局部搜索的代价口径：3×组人数极差 + 2×同班相邻组配对数（与 allocatePlan 一致）。 */
+    private int planObjective(List<Set<String>> perHeat) {
+        int max = 0;
+        int min = Integer.MAX_VALUE;
+        for (Set<String> s : perHeat) {
+            max = Math.max(max, s.size());
+            min = Math.min(min, s.size());
+        }
+        if (min == Integer.MAX_VALUE) min = 0;
+        int adj = 0;
+        Set<String> allClasses = new LinkedHashSet<>();
+        perHeat.forEach(allClasses::addAll);
+        for (String c : allClasses) {
+            for (int h = 0; h + 1 < perHeat.size(); h++) {
+                if (perHeat.get(h).contains(c) && perHeat.get(h + 1).contains(c)) adj++;
+            }
+        }
+        return 3 * (max - min) + 2 * adj;
+    }
+
+    /**
+     * 「规划层」款型：结果必须合法（同组不同班 + 每人恰一次），且分组**不得比班级均衡更差**。
+     *
+     * <p>后者是**结构保证**而非期望值：规划层从与班级均衡**同一个贪心解**出发，
+     * 只接受代价严格下降的搬迁/交换，所以它的目标函数值只会 ≤ 起点。
+     * 这条不变量一旦被破坏，说明局部搜索接受了「变差」的移动（试移动回滚漏了字段）。</p>
+     */
+    @Test
+    void arrange_planMode_isLegalAndNoWorseThanClass() {
+        Event event = Event.builder().id(100L).name("100m").defaultLanes(3).build();
+        List<Registration> regs = new ArrayList<>();
+        // 1 班 4 人 + 2 班 2 人 + 3 班 2 人 + 4 班 1 人 = 9 人，道次 3
+        // → 组数 = max(ceil(9/3)=3, 最大班4) = 4
+        for (int i = 1; i <= 4; i++) regs.add(reg(athlete((long) i, "A" + i, 1L, "高一1班")));
+        for (int i = 5; i <= 6; i++) regs.add(reg(athlete((long) i, "B" + i, 2L, "高一2班")));
+        for (int i = 7; i <= 8; i++) regs.add(reg(athlete((long) i, "C" + i, 3L, "高一3班")));
+        regs.add(reg(athlete(9L, "D1", 4L, "高一4班")));
+        stubDirectArrange(event, regs);
+
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("styleRule", "plan");
+        Map<String, Object> planResult = arrangementService.arrange(100L, "高一年级", "男", 3, rule);
+        assertEquals("plan", planResult.get("styleRule"));
+
+        List<Set<String>> planHeats = classPerHeat(planResult);
+        // ① 合法性：同组不同班（视图里就是每个组内班名不重复）——由 classPerHeat 的 Set 天然表达
+        int placed = 0;
+        Set<Object> seen = new HashSet<>();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> heats = (List<Map<String, Object>>) planResult.get("heats");
+        for (Map<String, Object> heat : heats) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lanes = (List<Map<String, Object>>) heat.get("lanes");
+            Set<String> classes = new HashSet<>();
+            for (Map<String, Object> lane : lanes) {
+                if (lane.get("athleteId") == null) continue;
+                placed++;
+                assertTrue(seen.add(lane.get("athleteId")), "同一运动员被重复分配");
+                assertTrue(classes.add(String.valueOf(lane.get("className"))),
+                        "同一组出现同班：" + lane.get("className"));
+            }
+            assertTrue(lanes.size() <= 3, "组内人数不得超过道次数");
+        }
+        assertEquals(9, placed, "每人恰好排一次");
+
+        // ② 不得比班级均衡更差（同一份报名，同一套贪心起点）
+        Map<String, Object> classResult = arrangementService.arrange(100L, "高一年级", "男", 3,
+                Map.of("styleRule", "class"));
+        int planObj = planObjective(planHeats);
+        int classObj = planObjective(classPerHeat(classResult));
+        assertTrue(planObj <= classObj,
+                "规划层不得比班级均衡更差：plan=" + planObj + " class=" + classObj
+                        + " planHeats=" + planHeats);
+
+        // ③ 确定性：同一份报名重排两次结果必须一致
+        Map<String, Object> again = arrangementService.arrange(100L, "高一年级", "男", 3, rule);
+        assertEquals(planHeats, classPerHeat(again), "规划层必须确定性（无随机）");
     }
 
     /** 向后兼容：旧布尔 snakeGrouping=true 仍解析为 snake 款型。 */
