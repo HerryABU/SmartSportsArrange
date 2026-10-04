@@ -14,6 +14,7 @@
 - 🏐 **球赛赛制生成**：循环赛（圆桌轮转，**连续主/客场 ≤ 2**）/ 淘汰赛（轮空 + 种子 + **同单位回避** + 真实双淘汰）/ 混合赛制（小组循环 → 交叉淘汰，同组出线队首轮必不相遇）/ **排球赛**，可适配为可排任务进时间槽编排
 - 🔍 **可解性诊断（不可解冲突输出给程序）**：拆批 + 下界分析（容量缺口 / 最少天数 / 冲突图团 / 超大单元）+ 结构化 JSON 冲突报告与可执行建议（延长天数 / 加并发位 / 取消报名），**「排不下」不再是终点**
 - 📊 **编排进度可见**：长链路编排走「异步提交 + 进度轮询」，前端展示阶段文案与百分比进度条，不再干等转圈
+- 🧭 **规划层预演（秒级回答「排不排得下、卡在哪」）**：确定性启发打底 + 前向剪枝 + 局部回退，**只读不落库**，返回加权代价分解、排不下的单元清单与节点扩展/回退/修复/重启诊断。对**结构性断裂**（同组跨天且当天容量腾不出空间）直接给出「**给第 X 天 +N 分钟**」建议并可一键填进日程配置 —— 把「排不出来」变成可执行决策。比较口径是**加权代价**（未排 / 兼项撞 / 超占 / 道次撞 / 碎块 / 工期），不再只看未排数
 - 🌐 **反向代理 / 内网穿透友好**：前端采用 hash 路由（`/#/...`），服务器永远只收到 `/` 或 `/sportmg/`，**cpolar / ngrok 子域隧道、nginx 子路径帽子均开箱即用**，无需任何重写规则，彻底规避深链刷新白屏
 - 📥 **多表导入可视化重解析**：一次选中多张表（一个工作簿多 Sheet，或一次多个 .xlsx）后，**逐表指定类型、逐列把 Excel 表头点选到目标字段、逐表勾选是否导入**，改完即按这份指定**重新解析**（不再沿用首次的自动猜测结果），并可展开**原始网格数据**逐格核对（列名 / 样例值 / 类型判定一目了然），确认无误再落库
 - 📊 **全流程 Excel 化**：名单 / 项目 / 报名 / 成绩 全部支持模板导入导出，秩序册 / 成绩册 / 报表一键生成
@@ -33,7 +34,7 @@
 - [API 接口完整参考](#-api-接口完整参考)（**独立编号 §1–§26**：认证 / 班级 / 运动员 / 项目 / 报名 / 班主任端 / 智能编排 / 赛程编排 / 成绩 / 排名 / 统计 / 学生端 / 系统设置 / 用户与裁判管理 / Excel / 备份 / 迁移 / 建站向导 / 入场式评分 / 届运动会 / 行政时间保护 / 通知 / 审计日志 / 场地管理 / 自定义项目 / 实时协作 / 秩序册 / 多表重解析）
 - [数据库设计](#-数据库设计)
 - [部署指南](#-部署指南)
-- [AI 编排核心](#-ai-编排核心)（训练侧 `sports-ai/` / ONNX 模型契约 / GAN 自对抗 / 可解性诊断 / 球赛赛制 / 道次 AI）
+- [AI 编排核心](#-ai-编排核心)（训练侧 `sports-ai/` / ONNX 模型契约 / 统一超级模型 MoE / GAN 自对抗 / 可解性诊断 / 球赛赛制 / 道次 AI / **规划层与加权代价口径**）
 - [技术架构](#-技术架构)
 - [项目脚本](#-项目脚本)
 - [开发指南](#-开发指南)
@@ -307,6 +308,32 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 **裁判编排开关** 🧑‍⚖️：可在「设置 → 编排规则 → 裁判编排」一键**启用/关闭裁判编排**（配置键 `arrange.referee_enabled`，默认**开启**）。关闭后编排**照常进行但不分配裁判**（项目「组次裁判数量」被忽略，并清理该切片旧分配）；**裁判池为空时同样自动跳过**，绝不阻断分组/分道等其它编排。编排页在关闭状态会显示「🧑‍⚖️ 裁判编排已关闭」提示。接口：`GET/PUT /api/arrange/referee-arrange-enabled`。
 
+#### 8.2 「自定义规则」分组款型目录（`ArrangeStyle`，5 款）🎛
+
+单项目内部的**入组 / 分道口径**是一层可选的「款型」目录（与 §9 的**赛会级编排模式**是两个正交的轴：
+后者决定「整个赛会用哪套求解引擎」，前者决定「单个项目里谁和谁一组、占哪条道」）。
+
+| `id` | 款型 | 行为（确定性均指「同报名必得同结果」） |
+|:--|:--|:--|
+| `class` | 班级均衡（默认） | **同组不同班** + 组内**匈牙利精确分道**（最小化「同班重复占同一道」） |
+| `snake` | 蛇形排布 | 按「年级 → 班级 → id」排序后 S 形分散到各组（确定性）；**有意放开**「同组不同班」 |
+| `snakeSeed` | 种子蛇形 | 按成绩 / 预赛名次（无成绩退回报名序）S 形分散，使**各组种子强度均衡** |
+| `ai` | AI 派遣 | 模型给出**派遣优先级**再走蛇形分散（兼顾同班分散与实力均衡）；模型不可用自动回退成绩种子 |
+| **`plan`** | **规划层**（新增） | **贪心打底 + 显式代价的局部搜索**：代价 = `3 × 组人数极差 + 2 × 同班相邻组配对数`，反复尝试**搬迁**（一人换组）与**交换**（两人互换组），**只接受代价严格下降且不破坏硬约束**的移动；**强制**「同组不同班」，确定性 |
+
+关键点：
+
+- **目录由 `GET /api/arrange/styles` 下发、前端动态渲染**（教师「项目编排」页的下拉）——
+  **新增款型无需改前端**。选择经 `ruleConfig.styleRule` 传入（兼容旧的布尔键 `snakeGrouping=true`）。
+- **分道是公共下游**：所有款型复用同一套组内分道（匈牙利，代价 = 「该班已用该道的次数」）——
+  分道口径与「选哪款入组规则」无关，各款型各写一份会出现「同一份报名换个款型、道次公平性却不一样」
+  这种说不清的问题。
+- **规划层与蛇形家族互斥**：蛇形有意放开「同组不同班」，规划层**强制**它 —— 硬约束不同，故单开判定。
+- **规划层为什么不会比班级均衡差**：它从**与班级均衡同一个贪心解**出发、只接受严格变好的移动，
+  所以目标函数 ≤ 起点，这是**结构保证**而非期望值（单测钉住这条不变量）。
+- ⚠️ 代价里**刻意没有「空道次浪费」**：组数是推导出来的常量（`max(⌈总人数/道次⌉, 最大班人数)`），
+  能排下的都会被排下 ⇒ 该项在任何布局下都相等（恒为常数，看着在优化其实什么都没优化）。
+
 ### 9. 项目编排（赛程编排）
 
 将比赛项目自动调度到「天 × 时段 × 场地」时间表，**模型为「1~n 并发位」**（已废弃早期「串行/并行」开关）：
@@ -327,6 +354,7 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 | 并行捆绑组 | `event.bundleGroup` | 项目级字母分组（如 `A` / `B` / `C`）：**填相同字母的田赛自动安排在同一时段并行**，优先级高于「田赛分组」配置；留空则由算法自动安排。**支持 Excel 导入**（「并行捆绑组」列） |
 | 兼项冲突规避轮数 | `conflictAvoidancePasses` | 自动编排时为压低运动员「兼项赶场」冲突而进行的多策略重试轮数。**填 `0` = 无限轮**：逐趟换排序策略（原始序 → 按报名人数降序 → 按兼项度降序 → 确定性洗牌）重试，直到连续 **16 趟无改进**（判定已收敛到兼项最低）或触达 **150 趟硬上限**；非零值夹在 **1–64** 之间。返回 `algorithmPortfolio` 会带上实际 `passesRun` / `winningStrategy` / `unlimitedMode` / `converged`，前端可直观看到跑的是哪套策略、是否收敛 |
 | 自动推算天数 | `autoDays` | 运动会日程可不写死天数：开启后（或 `days≤0`），系统按「每天时段总容量 × 并发位」反推需要排多少天（首日时段作模板复制），结果返回 `estimatedDays`。前端「运动会日程配置」提供「自动推算」开关 |
+| **某天额外容量** | `dayConfigs[i].extraMinutes` | 「**给某天多配容量**」：把额外分钟数加到**该天每个时段**的容量上（默认 `0`，缺失/非法按 `0`）。⚠️ **不改时段的起止时间**——起止时间是「现场几点到几点」、会打印进秩序册的事实；额外容量表达的是「这天还留了余量」，两者语义不同。规划预演（§9.6）会给出「建议给第 X 天 +N 分钟」，在此填进去即可；前端输入框在「运动会日程配置 → 每天时段」每天一块内 |
 
 - 并发位与场地对应：径赛用第 1 个场地；田赛的 n 个并发位依次占用其余场地，场地不足时复用同一场地并给出 warning
 - 场地录入：每个场地含**名称 + 编码**（如「田赛A区 / `FIELD_A`」），编码用于标识与展示；第 1 个场地为径赛主场地，其余供田赛并行，**并数上限取决于场地数量**，请先录全场地
@@ -378,6 +406,55 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 「内通知」通道：`entity/notification/Notification`（定向用户 / 角色广播 + 已读标记），接口 `GET /api/notifications`（`unread-count` / `{id}/read` / `read-all`）。教师 / 班主任 / 裁判三端布局顶部均挂载 `NotificationBell` 铃铛组件，未读角标实时提示，点击展开可逐条查看或一键全部已读。取消项目、冲突消解、裁判被避让等事件均可触发站内信。
 
 > 外通知（Excel 统计表）见 §9.4 的 `class-export`，与内通知互补，满足「通知班主任」的两种落地形态。
+
+#### 9.6 规划层预演（秒级回答「排不排得下、卡在哪」）🧭
+
+赛程页工具栏「**规划预演**」按钮 → `POST /api/schedule/plan`。它**只读、不落库、不覆盖现有赛程**，
+走的是「确定性启发打底 + 前向剪枝 + 局部回退（ejection chain）+ 3R 恢复」，
+**秒级**给出一个无非法落位的方案与诊断——先看清可行性，再决定要不要花时间跑优化/AI 档。
+
+请求体与 `/api/schedule/auto` 同构，另可带两个规划器参数（都是**刹车**，不是「越大约好」的旋钮）：
+
+| 参数 | 默认 | 含义 |
+|------|:--:|------|
+| `maxBacktracks` | `20000` | 回退上限：病态实例的刹车，超限即停止并**如实报未排** |
+| `maxRestarts` | `3` | 换序重来次数（带启发信息的多样化算子，非纯随机） |
+
+响应要点：
+
+| 字段 | 含义 |
+|------|------|
+| `feasible` / `unplaced` / `unplacedKeys` | 是否全部排下；排不下的单元清单 |
+| `violations` | **非法落位**（超容 / 兼项撞）。设计上**恒为空** —— 一旦非空即说明规划器产出了非法方案，属缺陷。「排不下」一律走 `unplaced`，两者**绝不混用** |
+| `weightedCost` / `costBreakdown` / `costComponents` | **加权代价**与分项（未排 / 兼项撞 / 超占 / 道次撞 / 碎块 / 工期超限） |
+| `diagnostics` | 节点扩展数 / 落位次数 / 回退 / 修复 / 重启 / 让位回滚 / 剪枝 / 剪后重试 |
+| `groupBreaks` / `extraMinutesByDay` | **结构性断裂**归因（组 / 锚点天 / 缺口分钟）+「给第 X 天 +N 分钟」建议 |
+| `assignment` | 方案明细（天 / 时段 / 项目 / 年级 / 场地），便于人读 |
+
+**为什么要有「加权代价」这套口径**：四个编排档位在魔鬼档之外的场景里，**未排数已经贴近下界**
+（1.0 / 1.33），四档落在同一个数上 —— 未排是个位数小整数，对这些实例**没有分辨率**，
+「持平」只说明指标不够细。所以比较与验收改用加权代价：
+
+| 分量 | 含义 | 权重 |
+|------|------|:--:|
+| 未排 | 任何可行时段都放不下（硬失败） | 1000 |
+| 兼项撞 | 同一运动员落进重叠时段（方案本身是错的） | 500 |
+| 容量超占 | 同段同场地已排时长 > 容量（**按分钟**计，方案本身是错的） | 500 |
+| 道次撞 | 同批（同项目+同年级）落进同一时段 | 50 |
+| 碎块 | 同组跨天的处数 | 10 |
+| 工期超限 | 占用天数超时间目标的天数（三态：`x` 天 / `0` 不限 / `-1` 尽快） | 20 |
+
+> ⚠️ 两条口径纪律：① **「能不能排」远重于「排得好不好」**；② 超占按**分钟**计价，
+> 因此「1 个未排 > 任意非法量」**不成立** —— 这是刻意的：非法方案**不可交付**，
+> 而少排一个单元至少还能交付一个合法的部分方案。
+
+**结构性断裂 = 用户决策，而不是继续搜**。块连续性修复能把同组跨天的单元并到同一天，
+但在装得很紧的实例里**锚点天真的一格不剩**（连容量守恒的交换都找不到合法且能降断裂的组合）——
+这时剩下的断裂是**容量布局**问题。规划层因此把「改不动的地方」翻译成人能做的动作：
+对每个跨天的组找出**锚点天**（成员最多的那天），算出「把其余天的成员并过去还缺多少分钟」，
+按天汇总成 `extraMinutesByDay`（同一天多个组时取**最大**缺口 —— 新增容量是可共用的，
+求和会把结论说满）。前端把它渲染成「**给第 X 天 +N 分钟**」按钮，点一下填进日程配置
+（**只填不自动保存**：配置里还有时段/场地/项目顺序，静默落库会覆盖用户正在编辑的内容）。
 
 ### 10. 成绩 & 排名
 
@@ -718,7 +795,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 3. 运动员 Athletes
 
-前缀 `/api/athletes`，10 个端点。
+前缀 `/api/athletes`，**12 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -737,7 +814,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 4. 项目 Events
 
-前缀 `/api/events`，14 个端点。
+前缀 `/api/events`，**16 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -767,7 +844,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 5. 报名 Registrations
 
-前缀 `/api/registrations`，11 个端点。
+前缀 `/api/registrations`，**14 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -787,7 +864,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 6. 班主任端 ClassTeacher
 
-前缀 `/api/class-teacher`，10 个端点，均要求 **CT/T/SA**，业务层再按当前用户绑定班级做数据隔离。
+前缀 `/api/class-teacher`，**11 个端点**（按映射方法数计），均要求 **CT/T/SA**，业务层再按当前用户绑定班级做数据隔离。
 
 | 方法 | 端点 | 参数 | 说明 |
 |------|------|------|------|
@@ -806,12 +883,16 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 7. 智能编排 Arrange
 
-前缀 `/api/arrange`，26 个端点。
+前缀 `/api/arrange`，**38 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
 | POST | `/api/arrange/events/{eventId}` | Path eventId, Body config | T/SA | 对指定项目执行自动编排（返回含 `selfCheck` 自检报告） |
 | POST | `/api/arrange/preview` | Body config | T/SA | 预览编排（不落库） |
+| **GET** | **`/api/arrange/styles`** | — | S/CT/T/SA | **分组款型目录**（`class` / `snake` / `snakeSeed` / `ai` / **`plan` 规划层**，含 `label` / `description`）。前端下拉**动态渲染**，新增款型无需改前端；详见 §8.2 |
+| GET | `/api/arrange/rule-scripts` | — | T/SA | 读取「自定义规则脚本」列表（形态一：规则注入 / DSL） |
+| PUT | `/api/arrange/rule-scripts` | Body scripts | T/SA | 保存规则脚本列表 |
+| POST | `/api/arrange/rule-scripts/test` | Body script | T/SA | 试运行一条规则脚本（返回命中的增量与错误） |
 | GET | `/api/arrange/events/{eventId}` | Path eventId | S/CT/T/SA | 查看项目编排结果（含各组次裁判、预留空位） |
 | PUT | `/api/arrange/events/{eventId}` | Path eventId, Body adjustments[] | T/SA | 手动调整编排 |
 | PUT | `/api/arrange/{arrangementId}/lock` | Path id, Query locked | T/SA | 锁定/解锁单条编排（锁定后自动重排不覆盖） |
@@ -835,6 +916,9 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | PUT | `/api/arrange/events/{eventId}/referees/heat` | Path eventId, Body `{grade, gender, round, heat, refereeIds[]}` | T/SA | 手工调整某组次裁判（重新自动编排会覆盖） |
 | GET | `/api/arrange/events/{eventId}/export` | Path eventId | S/CT/T/SA | 导出道次表（Excel，含裁判列） |
 | GET | `/api/arrange/export-all` | — | T/SA | 全量编排导出（JSON，含决赛，供 `arrange_result.json`） |
+| **GET** | **`/api/arrange/referee-board`** | — | S/CT/T/SA | **裁判看板**：按裁判汇总其全部执裁安排（项目 / 时间 / 组次） |
+| **GET** | **`/api/arrange/multi-event`** | Query `limit`（默认 200） | S/CT/T/SA | **一人多项**（兼项运动员）清单，供现场调度与班主任核对 |
+| **GET** | **`/api/arrange/multi-event/export`** | Query `limit` | S/CT/T/SA | 一人多项清单导出（Excel） |
 | GET | `/api/arrange/conflicts` | — | T/SA | 兼项冲突检测（清单 + 建议） |
 | GET | `/api/arrange/conflicts/export` | — | T/SA | 兼项冲突清单导出（Excel） |
 | **GET** | **`/api/arrange/co-occurrence`** | — | T/SA | **兼项统计（自动）**：`total` 运动员数 / `multiEventCount` 兼项人数 / `distribution`（1项…N项分布）/ `pairs`（项目对共现排行）/ `athletes[]`（**兼项运动员明细**：姓名、号码布、性别、班级、年级、兼项数量、项目对、报名项目）/ 可解性相关信息。教师端页面**打开即自动加载**，无按钮点击 |
@@ -858,7 +942,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 8. 赛程编排 Schedule
 
-前缀 `/api/schedule`，5 个端点。
+前缀 `/api/schedule`，**11 个端点**（按映射方法数计）。
 
 > ⚠️ 注意：`/api/schedule/**` 在 SecurityConfig 中无专属角色规则，落入兜底 `anyRequest().authenticated()`，即**任何已登录角色（含学生）均可访问**（含写操作）。如需收紧请补充角色规则。
 
@@ -866,7 +950,13 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 |------|------|------|------|------|
 | GET | `/api/schedule` | — | 已认证 | 查看当前赛程 |
 | POST | `/api/schedule/auto` | Body config?（可覆盖 trackSlots/fieldSlots/eventOrder/fieldGroups 等，不落库）；**`mode`**：`"rule"` 规则模式 / `"optimize"` 优化模式 / `"ai"` AI 模式 / 缺省 `"optimize"` 优化模式；规则模式可选 `ruleLanePolicy` / `ruleAdvanceCount` / `ruleConflictBufferMinutes` / `ruleConflictCheckEnabled`；AI 模式可选 `aiAdversarialRounds` / `aiLaneStyle` | 已认证 | 按「并发位」模型自动编排赛程（三模式详见 [9. 项目编排（赛程编排）](#9-项目编排赛程编排)）；响应含 `mode`（实际使用的模式）、`aiReport`（AI 模式自对抗汇总）与 `algorithmPortfolio.rule` / `algorithmPortfolio.aiReport`（观测信息） |
+| **POST** | **`/api/schedule/plan`** | Body config?（与 `/auto` 同构）+ `maxBacktracks`（默认 20000）/ `maxRestarts`（默认 3） | 已认证 | **规划层预演（只读、不落库）**：秒级返回 `feasible` / `unplaced` / `unplacedKeys` / `violations`（恒为空）/ `weightedCost` + `costBreakdown` / `diagnostics` / `groupBreaks` / `extraMinutesByDay` / `assignment`。详见 [9.6 规划层预演](#96-规划层预演秒级回答排不排得下卡在哪) |
+| POST | `/api/schedule/auto/async` | Body config?（同 `/auto`） | 已认证 | **异步编排**：立即返回 `{taskId, progressUrl}`，前端轮询进度（规避网关/代理 30s 超时） |
+| GET | `/api/schedule/progress/{taskId}` | Path taskId | 已认证 | 查询异步任务进度与阶段文案（`stage` / `percent` / `message` / `done` / `failed` / `result`） |
+| GET | `/api/schedule/progress` | — | 已认证 | 最近编排任务列表（新的在前），便于排障 |
+| POST | `/api/schedule/resolve-conflicts` | Body config? | 已认证 | **自动消解兼项冲突**：强制无限轮重排，目标为真实兼项冲突归零 |
 | POST | `/api/schedule/save` | Body items[] | 已认证 | 手动保存赛程（整体替换） |
+| **GET** | **`/api/schedule/verify`** | — | 已认证 | **赛程自检**（内置裁判）：按真实场地查重叠、按运动员查赶场、查时间自洽与时长被压过头；附「最忙的运动员 / 最紧张的场地」 |
 | DELETE | `/api/schedule` | — | 已认证 | 清空赛程 |
 | GET | `/api/schedule/export` | — | 已认证 | 导出赛程（Excel，含「项目内并发」列） |
 
@@ -876,7 +966,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 9. 成绩 Results
 
-前缀 `/api/results`，8 个端点。
+前缀 `/api/results`，**10 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -893,7 +983,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 10. 排名积分 Ranking
 
-前缀 `/api/ranking`，8 个端点，均为 GET，要求 **S/CT/T/SA**。
+前缀 `/api/ranking`，**9 个端点**（按映射方法数计），均为 GET，要求 **S/CT/T/SA**。
 
 | 方法 | 端点 | 参数 | 说明 |
 |------|------|------|------|
@@ -910,7 +1000,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 11. 统计报表 Statistics
 
-前缀 `/api/statistics`，8 个端点。
+前缀 `/api/statistics`，**9 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -942,7 +1032,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 13. 系统设置 System
 
-前缀 `/api/system`，33 个端点。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 裁判管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
+前缀 `/api/system`，**26 个端点**（按映射方法数计）。`/api/system/config/**`、`grades/**`、`meet-schedule/**`、`grade-order/**`、`arrange-rule/**` 为 T/SA（体育老师可调运动会配置）；`number-rule/**` 及用户管理 / 裁判管理 / 数据库 / 备份相关为 SA（号码规则全局唯一，仅超级管理员可改）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -1025,7 +1115,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 ### 15. Excel 导入导出 Excel
 
-前缀 `/api/excel`，15 个端点。
+前缀 `/api/excel`，**18 个端点**（按映射方法数计）。
 
 | 方法 | 端点 | 参数 | 权限 | 说明 |
 |------|------|------|------|------|
@@ -1382,6 +1472,9 @@ java -jar sports-2.8.5.jar --app.port=8899 --app.host=::
 # 等价的 Spring 标准写法
 java -jar sports-2.8.5.jar --server.port=9090
 
+# 内置帮助页（端口 / 网口 / 数据库选型 / .env 说明）：只打印并退出，不启动 Web 服务
+java -jar sports-2.8.5.jar -h        # 亦可 --help / -? / /?
+
 # 后台运行
 nohup java -jar sports-2.8.5.jar --app.port=8899 > app.log 2>&1 &
 ```
@@ -1518,26 +1611,39 @@ netstat -ano | findstr :8080                                                    
 ```
 sports-ai/（Python 3.12 + venv）            sports-backend/（Java 21 + Spring Boot）
   data/  合成数据与特征契约                    com.sports.schedule.ai
-  models/ 选择器 + 冲突簇 GNN                    ├─ ModelSource         模型加载（classpath / file）
-  generative/ GAN + 精修器                       ├─ OnnxInferenceService   选择器 + GNN
+  models/ 超级 MoE + 选择器 + 各类 GNN           ├─ ModelSource         模型加载（classpath / file）
+  generative/ GAN + 精修器 + diffusion           ├─ OnnxInferenceService   选择器 + 冲突簇 GNN
   forecast/ 多步预测                             ├─ SchemeGeneratorService GAN 生成器
   curriculum/ 自步学习                           ├─ AdversarialSchemeService 推理时自对抗
-  solve/ 拆批 + 分批装箱 + 可解性                 ├─ LaneAdvisorService     道次 AI
-  tournament/ 球赛赛制 + 适配层                   └─ AiController  /api/ai/status
+  plan/ 规划层（启发式+神经搜索+预测+回退）        ├─ LaneAdvisorService     道次 AI
+  solve/ 拆批 + 分批装箱 + 可解性                 ├─ SuperMoeService       统一超级模型
+  tournament/ 球赛赛制 + 适配层                   ├─ AiController  /api/ai/status
   models/*.onnx ──导出──► src/main/resources/models/ ──打包──► jar（单包交付）
+                                                com.sports.schedule.plan
+                                                 ├─ PredictivePlanner     规划层（搜索 + 3R 恢复）
+                                                 ├─ PlanCost              加权代价口径
+                                                 └─ PlanAdvice            结构性断裂 → 加容量建议
 ```
 
-### 一、模型清单（随 jar 交付，共 8 个 / ≈1.3 MB）
+### 一、模型清单（随 jar 交付，共 13 个 / ≈69 MB）
 
 | 模型 | 文件 | 类型 | 作用 |
 |:--|:--|:--|:--|
+| **统一超级模型（MoE）** | `super_moe.onnx` | GNN + CNN + Diffusion，**异构门控** | **十七类编排能力统一决策**：11 位「任务专家」按**节点**路由（项目/道次/球类/淘汰赛/块完整性/兼项/容量/工期/二次编排/裁判/教师），6 位「能力专家」按**实例（图级）**路由（生成/精修/扩散/派遣/判别）。合并了此前独立服役的 GAN、refiner、diffusion、lane_advisor、forecast 等模型 |
 | 算法选择器 | `algorithm_selector.onnx` | 残差 MLP | 16 维实例特征 → **硬解** vs **取消报名**路径（标签 = 真实可解性，含团下界）|
 | 冲突簇 GNN | `conflict_gnn.onnx` | 4 层 GNN | 冲突图 → 各单元**着色优先级**，中心冲突簇先着色（构造启发式初始顺序）|
+| 约束满足 GNN | `constraint_gnn.onnx` | 图神经网络 | 约束满足度评估与节点打分（编码器就绪）|
 | GAN 生成器 | `scheme_generator.onnx` | GNN + Gumbel-Softmax | 冲突图 + 噪声 → 时间槽着色方案（**直接学习着色**）|
 | GAN 判别器 | `scheme_discriminator.onnx` | 神经网络 | 方案 → 真/假（**推理时自对抗**用它给候选打分）|
 | 对抗精修器 | `scheme_refiner.onnx` | 残差 GNN | 初始方案 → 精修方案（把推理时迭代自对抗**蒸馏成一次前向**）|
-| 多步预测 | `forecast_mimo.onnx` / `forecast_direct.onnx` | 序列模型 | 预测未来 H 步时间槽，让**回溯提前发生**（Direct / Recursive / MIMO 三策略）|
+| 扩散去噪生成 | `scheme_diffusion.onnx` | Diffusion | 扩散去噪生成候选方案（与 GAN 并存，线上可切换）|
+| 多步预测 | `forecast_mimo.onnx` / `forecast_direct.onnx` | 序列模型 | 预测未来 H 步时间槽，让**回溯提前发生**（Direct / MIMO 策略；另有训练侧的 Recursive）|
 | 道次 AI | `lane_advisor.onnx` | Learning-to-Rank | 运动员特征 → **派遣优先级**（输出排序而非分组，与现有管线零阻抗）|
+| 球赛赛制 GNN | `tournament_gnn.onnx` | 图神经网络 | 球类**赛制选择 + 种子排序 + 公平性** |
+| 裁判派遣 GNN | `referee_gnn.onnx` | 图神经网络 | 裁判派遣优先级（专长匹配 + 负载均衡）|
+
+> ⚠️ 模型文件 **不进 git**（每次重训都变、总量约 69 MB），随 jar 交付；
+> 分发方式见 `docs/MODELS.md`（清单 + sha256 校验 + 同步脚本）。缺失时各模型按登记的降级行为运行，**不会崩**。
 
 ### 二、关键设计
 
@@ -1611,6 +1717,43 @@ sports:
 ```
 
 > 改外部模型目录即可**不重新打包**热替换模型；模型缺失时编排静默回退规则路径——因此 `GET /api/ai/status` 会逐个模型报告「来自 jar 还是外部、是否加载」，避免「AI 其实没跑」被误认为正常。
+
+### 八、规划层（启发式 + 神经搜索 + 预测 + 可回退）🧭
+
+面向「**先预测后面的、发现不行就回退**」的搜索层。Python 侧 `sports_ai/plan/`（`hybrid_search.py`），
+Java 侧与之**逐条对齐**的 `com.sports.schedule.plan.PredictivePlanner`（语义同源，不是两套只有名字相同的实现）：
+
+```
+启发式序（紧度/MSBF，确定性）
+  → 候选按 神经策略 prior × 启发式分 排序        ← 「搜索网络」只负责排序
+    → 预测器判断「当前状态能否完成」             ← 「预测网络」只负责提示
+      → 校验器裁决可行性（容量/兼项）            ← 唯一有裁决权的是它
+        → 不通过则回溯（撤销上一步，试其余候选）
+```
+
+**三条设计原则**（每一条都对应一个踩过的坑）：
+
+1. **状态局部化**：预测器只吃**当前状态**的紧凑特征（8 维：填充率/余量/兼项暴露/块断裂/工期占比/
+   剩余比例/负载离散度/仍可能可行），**绝不喂「走了哪条路」的历史轨迹** —— 两个到达同一状态的不同路径
+   必然给出同一预测。
+2. **可行性判定必须确定性且尽早；模型与预测只影响顺序**。早期把兼项检查只放在「候选排序」里打负无穷、
+   没在落子时剪枝，结果搜索反复生成「同槽同人」的完整方案：校验失败 → 修复也修不动 → 回溯后
+   确定性顺序**又走同一条路**，空转两万次一个单元都没排下。
+3. **可采纳性保护**：预测值经**保守化**（低估 + 偏移）后**只用于排序**；可行性**只由确定性校验器裁决**。
+   缺一条，高估就会以「剪掉了可行解」的形式出现，且极难定位。
+
+**3R 恢复**：Repair（换槽修复）/ Restart（换序重来）/ Rollback（撤销）。重启带**多样化算子**
+（顺序旋转 / 失败驱动 / 紧度驱动 / 自适应，默认「旋转 + 奇次打散」），实测「不加算子时重启纯粹浪费预算」、
+加上算子合计代价可降一成余。**块连续性修复**（同组跨天的搬回同一天，含容量守恒的交换移动）
+是纯改进算子；剩余无法消除的断裂属**结构性**（容量布局）问题，走 §9.6 的「给某天多配容量」。
+
+**加权代价口径**（`sports_ai/metrics.py` ↔ Java `PlanCost`，**双端权值逐位一致**）：见 §9.6 的权重表。
+它同时是四档编排模式的**比较/验收口径** —— 换口径才看得出魔鬼档的差距（并**证否了**「四档持平 =
+指标太粗」这个假说：其余四档的并列是结构性的，因为 L4 的最终解取「搜索最优 ∪ 全部种子」，
+而 GA 就是它的种子之一，只可能 ≤）。
+
+> 训练侧单测：`cd sports-ai && python -m pytest tests/`（⚠️ 用**带 pytest 的**解释器，
+> `sports-ai/venv` 只有 torch 没有 pytest）；诊断入口 `python -m sports_ai.diagnose_moe`。
 
 ### 🚀 GPU 加速与 Windows ARM64
 
@@ -1950,7 +2093,7 @@ curl -s -H "Authorization: Bearer <token>" http://localhost:8080/api/ai/status
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.5.jar`**（内含前端静态资源 + 8 个 ONNX 模型），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.5.jar`**（内含前端静态资源 + 13 个 ONNX 模型，约 69 MB），部署无需额外目录。
 ```
 
 ---
