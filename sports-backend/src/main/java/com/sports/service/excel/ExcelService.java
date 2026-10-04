@@ -116,14 +116,31 @@ public class ExcelService {
      */
     public void getMultiWorkbookTemplate(HttpServletResponse response) {
         setExcelResponse(response, "多表导入模板.xlsx");
+        try (OutputStream out = response.getOutputStream()) {
+            writeMultiWorkbook(out);
+        } catch (IOException e) {
+            throw new RuntimeException("多表模板下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 把「多表导入模板」工作簿写进任意输出流 —— <b>下载与单测共用这一份实现</b>。
+     *
+     * <p>抽出来是刻意的：单测要校验「可视化预览能不能解析这份模板」，
+     * 夹具就必须是<b>生产模板本身</b>。此前单测读的是 {@code _trash/} 下一个**手工生成**的
+     * 工作簿（依赖一个开发者的私人脚本、且与产品模板的列序已经漂移），
+     * 结果既会因清理工作区而整片变红，又只能证明「夹具和自己的解析器一致」，
+     * 证明不了「用户下载到的模板能被正确解析」。改成直接调用本方法后，
+     * 模板列序一改，单测立刻跟着红 —— 这正是我们要的信号。</p>
+     */
+    static void writeMultiWorkbook(OutputStream out) {
         // 成绩表内置（仅表头、不附示例行）：成绩在编排/比赛之后录入，示例行必然因引用不存在的号码/学号而失败；
         // 故只给表头，由用户自行填写。多表导入按「Sheet 名 + 表头」自动识别为 score 类型。
         String[][] sheets = {
                 {"grade", "年级表"}, {"class", "班级表"}, {"roster", "全名单表"},
                 {"venue", "场地表"}, {"eventsimple", "运动项目表"}, {"event", "项目表（表格2）"},
                 {"signup", "报名表"}, {"score", "成绩表"}};
-        try (OutputStream out = response.getOutputStream();
-             com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
+        try (com.alibaba.excel.ExcelWriter writer = EasyExcel.write(out).build()) {
             int idx = 0;
             for (String[] pair : sheets) {
                 // 直接复用单表模板的行定义，避免「单表模板」与「多表模板」两份口径漂移
@@ -149,20 +166,22 @@ public class ExcelService {
                     + "运动员号码可填号码布编号或学号；成绩支持 12.34 / 2:35.67 及 DNF/DNS/DSQ。"));
             writer.write(notes, EasyExcel.writerSheet(idx, "填写说明")
                     .head(List.of(List.of("字段"), List.of("填写说明"))).build());
-        } catch (IOException e) {
-            throw new RuntimeException("多表模板下载失败: " + e.getMessage());
+        } catch (Exception e) {
+            // 本方法只往传入的流里写：调用方（HTTP 响应 / 单测的 ByteArrayOutputStream）
+            // 负责流本身的异常，这里只把底层失败包成一条能看懂的运行期异常。
+            throw new RuntimeException("多表模板生成失败: " + e.getMessage(), e);
         }
     }
 
-    /** 模板规格：文件名 + 行（第 0 行为表头）。 */
-    private record TemplateSpec(String fileName, List<List<String>> rows) {
+    /** 模板规格：文件名 + 行（第 0 行为表头）。包级可见以便单测直接校验模板结构。 */
+    record TemplateSpec(String fileName, List<List<String>> rows) {
     }
 
     /**
      * 各类型的模板行定义（<b>唯一来源</b>）：单表下载与多表工作簿模板都从这里取，
      * 保证两种模板的列序/示例永远一致——否则「照多表模板填的」会按单表模板的列序被读错。
      */
-    private TemplateSpec buildTemplate(String t) {
+    static TemplateSpec buildTemplate(String t) {
         String fileName;
         List<List<String>> sheet = new ArrayList<>();
 
@@ -262,8 +281,8 @@ public class ExcelService {
         return new TemplateSpec(fileName, sheet);
     }
 
-    /** 各模板的「填写说明」（B14/U19）：解释字段取值与系统自动生成项 */
-    private List<List<String>> templateNotes(String type) {
+    /** 各模板的「填写说明」（B14/U19）：解释字段取值与系统自动生成项（纯函数，不依赖服务状态） */
+    static List<List<String>> templateNotes(String type) {
         List<List<String>> notes = new ArrayList<>();
         switch (type == null ? "" : type.toLowerCase()) {
             case "athlete" -> {

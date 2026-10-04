@@ -55,14 +55,30 @@ public class SportsApplication {
 
     /** 打印使用帮助页（端口 / 网口 / 数据库选型），不启动服务 */
     private static void printHelp() {
+        for (String l : helpLines()) {
+            System.out.println(l);
+        }
+    }
+
+    /**
+     * 帮助页内容（**包级可见以便测试**）。
+     *
+     * <p>抽成独立方法而不是直接在 {@code printHelp} 里打印，是为了能用测试钉住一条契约：
+     * <b>帮助页里的版本号与 jar 名必须由 {@link #detectVersion()} 推导</b>，
+     * 不得再手写一份 —— 曾经这里写死过 {@code sports-2.7.3.jar}，
+     * 而横幅同时显示 {@code v2.8.5}，同一个程序在两处自报不同版本。</p>
+     */
+    static String[] helpLines() {
         String v = detectVersion();
+        // ⚠️ jar 名**由版本推导**，不写死：帮助页里再抄一份版本号，就是又一个会忘记同步的副本。
+        String jar = "sports-" + v + ".jar";
         String[] lines = {
             "==============================================================",
             " 运动会智能编排系统 (SmartSportsArrange)  v" + v,
             "==============================================================",
             "",
             "用法：",
-            "  java -jar sports-2.7.3.jar [选项]",
+            "  java -jar " + jar + " [选项]",
             "",
             "说明：传入 -h / --help 时，仅打印本帮助并立即退出，不会启动 Web 服务。",
             "",
@@ -92,15 +108,15 @@ public class SportsApplication {
             "二、数据库（三选一，默认 SQLite 零配置）",
             "--------------------------------------------------------------",
             "  ① SQLite（默认，零配置，文件 ./sports_meet.db）",
-            "        java -jar sports-2.7.3.jar",
+            "        java -jar " + jar,
             "        纯文件库，无需安装数据库服务，适合单机 / 演示。",
             "",
             "  ② H2（Java 原生嵌入式数据库，文件模式 ./data/sports_meet）",
-            "        java -jar sports-2.7.3.jar --spring.profiles.active=h2",
+            "        java -jar " + jar + " --spring.profiles.active=h2",
             "        随 JVM 启动、无需外部服务，兼容 MySQL 模式（MODE=MySQL）。",
             "",
             "  ③ MySQL（生产环境，需先建库）",
-            "        java -jar sports-2.7.3.jar --spring.profiles.active=mysql",
+            "        java -jar " + jar + " --spring.profiles.active=mysql",
             "",
             "  ▶ 通过 .env 文件配置（推荐部署方式）：",
             "        在 jar 同目录放置 .env，启动自动读取，例如切换 MySQL：",
@@ -126,20 +142,25 @@ public class SportsApplication {
             "",
             "==============================================================",
         };
-        for (String l : lines) {
-            System.out.println(l);
-        }
+        return lines;
     }
 
-    /** 读取应用版本（优先取 jar 清单 Implementation-Version，回退常量） */
+    /**
+     * 读取应用版本 —— **委派给 {@link ExportNaming#appVersion()}**，全应用只有那一处
+     * 解析版本（清单 {@code Implementation-Version} → Maven 自动生成的
+     * {@code pom.properties} → 最后兜底常量）。
+     *
+     * <p>⚠️ 这里原来自己抄了一份解析逻辑，还写死了 {@code "2.7.3"}：于是帮助页出现
+     * 「横幅说 v2.8.5、用法行写 {@code sports-2.7.3.jar}」的自相矛盾 ——
+     * 同一个程序在两处自报不同版本，用户照着敲的命令还找不到文件。
+     * 多一个副本就多一个会忘记同步的地方，所以直接复用已有实现。</p>
+     *
+     * <p>{@code pom.properties} 在 boot 重打包后位于 **jar 根**（不在 BOOT-INF/classes
+     * 这个运行期 classpath 上），因此**发行 jar 走的是清单那条路**；IDE 内直接运行
+     * 取不到清单，落到兜底常量（见 {@code ExportNaming} 的说明）。</p>
+     */
     private static String detectVersion() {
-        try {
-            String v = SportsApplication.class.getPackage().getImplementationVersion();
-            if (v != null && !v.isBlank()) return v;
-        } catch (Exception ignored) {
-            // 非 jar 运行（如 IDE 内）取不到清单，回退常量
-        }
-        return "2.7.3";
+        return com.sports.common.util.ExportNaming.appVersion();
     }
 
     /**
