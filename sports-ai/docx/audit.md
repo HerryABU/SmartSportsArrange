@@ -207,7 +207,8 @@ HELL 未排 5、REGULAR 未排 1，且**零容量/兼项违规**。
 | 非对称训练 | ✅ | `asymmetric_mse(beta=3.0)` 接在 `days_head` / `quality_head`；需重训生效 |
 | 规划层接进 Java | ✅ | `PredictivePlanner`（8 项单测）+ `PredictivePlannerService` + `POST /api/schedule/plan`（只读预演） |
 | 前端接入 | ✅ | 赛程页「规划预演」按钮 + 诊断弹窗（8 个诊断数字 + 排不下清单 + 方案明细） |
-| 17 专家模型预算跑满 | ✅ | 补训至 ≥30 轮并把 `epochs_run/budget_epochs/budget_satisfied` 写入 meta |
+| 17 专家模型预算跑满 | ✅ | 补训达标：`epochs_run=22 / budget_epochs=30 / budget_satisfied=true`；`val_loss 1.2444 / pri_mse 0.00432`，`route_entropy 0.991`（17 专家全激活）；ONNX 已重导 42.04 MB（5 入 7 出，动态 N 全过）|
+| 主链路评测（2 seeds） | ✅ | **AI 五档全部 ≤ GA**；兼项撞 0 / 超占 0 / 修复 0 / 修不了 0 |
 
 ### ⚠️ 附九：本轮最贵的缺陷 —— 「预算耗尽」被当成「结论为否」
 
