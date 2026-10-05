@@ -12,25 +12,41 @@
 这就是「主 MoE 是其他 MoE 的混合体」的可落地形态 —— 而不是把一堆
 互不兼容的输入契约硬拼在一起。
 
-## 两类小模型，两种接法（判据来自权重本身，不靠人记）
+## 三类小模型，三种接法（判据来自权重本身，不靠人记）
 
 ======================================  ===================================
-``UpgradedMoE``（多数）                  有 ``predictor.*``（后续步骤头）
+``UpgradedMoE``                          有 ``predictor.*``（后续步骤头）
   主体 = experts + router + trunk        bridge 投到该模型的 ``hidden``
   原 ``legacy`` 吃**它自己的原始特征**，    → 只跑「专家池 + 主干」这一支
   主 MoE 给不出来 → 不接
+  （lane_advisor / conflict_gnn / referee_gnn / teacher_gnn /
+    constraint_gnn / algorithm_selector / forecast_* /
+    heat_stagger / slot_split 属此类）
 
-``MoEEncoder``（heat_stagger / slot_split / scheme_*）
+``MoEEncoder``                           无 ``predictor.*``，但**有 ``legacy.*``**
   主体 = legacy + experts + router + trunk  bridge 投到该模型的 **in_dim**
   ``forward(node_feat, adj, mask)`` 是       → 整条编码器（含 legacy）都能跑，
   完整可复用的编码器                          继承得更满
+  （scheme_generator / discriminator / refiner / diffusion 属此类）
+
+``MoERepr``                              **两者都无**（只有 experts/router/trunk）
+  主体 = experts + router + trunk + norm    bridge 投到 ``hidden``
+  ``forward(h, adj, mask)`` **直接吃        → 与 ``UpgradedMoE`` 同目标，
+  hidden 维**，本来就不含 legacy            但主体按 MoERepr 自己的结构建
+  （tournament_gnn 属此类）
 ======================================  ===================================
+
+⚠️ 判据**必须三分类**。曾按 ``predictor.*`` 二分类，于是 ``MoERepr`` 落到
+``MoEEncoder`` 分支 → 去要 ``in_proj.weight``/``legacy.*`` → 该模型**静默缺席**专家池
+（``build_ensemble`` 只打印一行 ``[skip]``，不看日志就发现不了）。
 
 ## 结构不靠猜，靠推导
 
 旧 ckpt 里只有 `state_dict`，所以要重建结构必须能**唯一推导**：
 
-- ``hidden`` / ``in_dim``：``in_proj.weight`` 的两个维度
+- ``hidden``：``router.coarse.weight`` 的第 1 维（**不是**从 ``in_proj`` 取 ——
+  ``MoERepr`` 根本没有 ``in_proj``）
+- ``in_dim``：``in_proj.weight`` 的第 1 维；MoERepr 没有 → 记 ``-1``（对它无意义）
 - ``n_experts`` / ``n_groups``：``router.fine`` / ``router.coarse`` 的第 0 维
 - ``n_layers``：``trunk.<i>.`` 的最大下标 + 1
 - 每个专家的架构：``EXPERT_CYCLE[i % len(EXPERT_CYCLE)]``（轮转规则）
@@ -130,11 +146,15 @@ def infer_layout(sd: Dict[str, torch.Tensor]) -> Tuple[int, int, int, int, int]:
     ⚠️ 一律从**形状**推导：形状是权重自带的客观事实，而任何「约定值」都会随
     代码改动漂移 —— 那正是「结构对不上却没人发现」的来源。
     """
-    if "in_proj.weight" not in sd:
-        raise ValueError("缺少 in_proj.weight")
     if "router.fine.weight" not in sd or "router.coarse.weight" not in sd:
         raise ValueError("缺少 router.fine / router.coarse")
-    hidden, in_dim = (int(x) for x in sd["in_proj.weight"].shape)
+    # hidden 一律取 router 的第 1 维 —— 它比 in_proj 更基本：``MoERepr``（就地增强表征）
+    # **根本没有 in_proj**（它直接吃 hidden 维输入）。把 in_proj 当必要条件会把它
+    # 判成「损坏权重」而**静默跳过**（`build_ensemble` 只打印 [skip]）。
+    hidden = int(sd["router.coarse.weight"].shape[1])
+    # in_proj 只有「吃原始特征」的那两类才有（UpgradedMoE / MoEEncoder）；
+    # MoERepr 没有 → in_dim 对它无意义，置 -1 以便调用方据此分流。
+    in_dim = int(sd["in_proj.weight"].shape[1]) if "in_proj.weight" in sd else -1
     n_experts = int(sd["router.fine.weight"].shape[0])
     n_groups = int(sd["router.coarse.weight"].shape[0])
     idx = [int(k.split(".")[1]) for k in sd if k.startswith("trunk.")]
@@ -164,9 +184,17 @@ class TrainedMoEExpert(nn.Module):
         super().__init__()
         sd, prefix = load_sd(spec.name)
         in_dim, hidden, n_experts, n_groups, n_layers = infer_layout(sd)
-        # 判据取自权重本身：有 predictor 头的是 UpgradedMoE 适配器，
-        # 没有的是就地换编码器的 MoEEncoder（整条编码器都可复用）。
-        self.kind = "upgraded" if any(k.startswith("predictor.") for k in sd) else "encoder"
+        # 判据取自权重本身 —— **三类**必须分清，二分类会把第三类悄悄归错：
+        #   ① 有 `predictor.*`          → UpgradedMoE 适配器（body = 专家池+主干）
+        #   ② 无 predictor、有 `legacy.*` → MoEEncoder（整条编码器，含 legacy 共享专家）
+        #   ③ 两者都无                    → **MoERepr**（就地增强表征，如 tournament_gnn）
+        # ⚠️ 曾只按 `predictor.*` 二分类，于是 MoERepr 被当成 MoEEncoder →
+        # 去要 `in_proj.weight`/`legacy.*` → 判失败 → 该模型**静默缺席**专家池。
+        self.kind = ("upgraded" if any(k.startswith("predictor.") for k in sd)
+                     else "encoder" if any(k.startswith("legacy.") for k in sd)
+                     else "repr")
+        #: kind 为 encoder / repr 时主体是**整块子模块**，直接用它的 forward。
+        self._body_delegates = self.kind in ("encoder", "repr")
 
         self.name = spec.name
         self.role = spec.role
@@ -175,7 +203,21 @@ class TrainedMoEExpert(nn.Module):
         self.n_experts = n_experts
         self.prefix = prefix
 
-        if self.kind == "encoder":
+        if self.kind == "repr":
+            # MoERepr.forward(h, adj, mask) 直接吃 hidden 维 → bridge 投到 hidden，
+            # 与 "upgraded" 目标一致，但主体要按 MoERepr 自己的结构建
+            # （注意它的 LayerNorm 叫 `norm`，不是 `in_norm`/`out_norm`）。
+            from sports_ai.nn.moe_encoder import MoERepr
+            self.bridge = nn.Linear(dst_hidden, hidden)
+            self.body = MoERepr(hidden, n_layers=n_layers, n_experts=n_experts,
+                                n_groups=n_groups, dropout=dropout)
+            miss, unexp = self.body.load_state_dict(sd, strict=False)
+            body_missing = [k for k in miss if not k.startswith("predictor.")]
+            if body_missing:
+                raise RuntimeError(f"{spec.name}: MoERepr 权重缺失 {body_missing[:5]}")
+            if unexp:
+                raise RuntimeError(f"{spec.name}: 出现权重里没有的层 {unexp[:5]}")
+        elif self.kind == "encoder":
             # 整条编码器（含 legacy 共享专家）都能吃 hidden 维特征 → 继承得最满
             from sports_ai.nn.moe_encoder import MoEEncoder
             self.bridge = nn.Linear(dst_hidden, in_dim)
@@ -212,7 +254,7 @@ class TrainedMoEExpert(nn.Module):
         self.total = int(sum(p.numel() for p in self.parameters()))
 
         if freeze:
-            for mod in ([self.body] if self.kind == "encoder"
+            for mod in ([self.body] if self._body_delegates
                         else [self.experts, self.router, self.trunk,
                               self.in_norm, self.out_norm]):
                 for p in mod.parameters():
@@ -222,8 +264,9 @@ class TrainedMoEExpert(nn.Module):
     def forward(self, h: torch.Tensor, adj: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """``h[B,N,dst_hidden]`` + ``adj[B,N,N]`` + ``mask[B,N]`` → ``[B,N,dst_hidden]``。"""
         feat = self.bridge(h)
-        if self.kind == "encoder":
-            # MoEEncoder.forward(node_feat, adj, mask) → [B,N,hidden]
+        if self._body_delegates:
+            # MoEEncoder.forward(node_feat, adj, mask) / MoERepr.forward(h, adj, mask)
+            # → 两者都返回 [B,N,hidden]
             x = self.body(feat, adj, mask)
         else:
             # 对照 UpgradedMoE.forward 的中间段：没有 legacy（它吃的是该小模型
@@ -241,19 +284,19 @@ class TrainedMoEExpert(nn.Module):
 
     @property
     def depth(self) -> int:
-        return (getattr(self.body, "depth", lambda: 0)() + 1 if self.kind == "encoder"
+        return (getattr(self.body, "depth", lambda: 0)() + 1 if self._body_delegates
                 else len(self.trunk) + 2)
 
     def load_balance_loss(self) -> torch.Tensor:
-        target = self.body if self.kind == "encoder" else self
+        target = self.body if self._body_delegates else self
         return target.router.load_balance_loss()
 
     def update_router_bias(self, rate: float = 0.02):
-        target = self.body if self.kind == "encoder" else self
+        target = self.body if self._body_delegates else self
         target.router.update_bias(rate)
 
     def expert_usage(self) -> dict:
-        target = self.body if self.kind == "encoder" else self
+        target = self.body if self._body_delegates else self
         return target.router.expert_usage()
 
     def describe(self) -> str:
