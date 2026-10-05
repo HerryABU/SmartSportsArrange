@@ -254,4 +254,7 @@ def generate_tier_scenario(tier: str, seed: int = 0) -> ScenarioEx:
                 u.raw_duration = max(1, (len(u.athletes) + u.heat_capacity - 1)
                                      // u.heat_capacity) * u.batch_minutes
 
-    return ScenarioEx(units=units, placements=placements, tier=tier, n_days=n_days)
+    sc = ScenarioEx(units=units, placements=placements, tier=tier, n_days=n_days)
+    from sports_ai.data.scenario_hook import record as _record_scenario
+    _record_scenario(sc)
+    return sc

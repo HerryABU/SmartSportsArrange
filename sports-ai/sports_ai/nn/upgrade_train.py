@@ -39,7 +39,9 @@ from sports_ai.referee_advisor import N_REF_FEAT, N_TYPES as N_REF_TYPES
 from sports_ai.teacher_advisor import N_TCH_FEAT, N_TYPES as N_TCH_TYPES
 from sports_ai.models.tournament_gnn import N_TYPES as N_TMT_TYPES
 from sports_ai.data.constraint_gnn_io import N_TYPES as N_CON_TYPES
-from sports_ai.forecast.dataset import H_OUT as FC_H_OUT, IN_DIM as FC_IN_DIM, L_IN as FC_L_IN
+from sports_ai.data import scenario_hook
+from sports_ai.forecast.dataset import (H_OUT as FC_H_OUT, IN_DIM as FC_IN_DIM,
+                                        L_IN as FC_L_IN, build_sequence)
 from sports_ai.data.features import N_FEATURES
 from sports_ai.nn.upgrade import UpgradedMoE
 
@@ -101,6 +103,10 @@ class Spec:
     #: 保留原名才能「零改动替换」——将来真接线到 Java 时，
     #: 按旧名字读输出的代码一行都不用改。
     onnx_output: str = "out"
+    #: >0 时给该模型加「未来 H 步时间槽序列」预测头（H 即此值）。监督信号来自
+    #: **同一批场景**的真实序列标签（见 `data/scenario_hook.py`）。
+    #: 0 = 不加（保持旧 ckpt 原样可载）。这是「给需要预测的小模型嵌入预测」的落点。
+    forecast_steps: int = 0
     extra: dict = field(default_factory=dict)
 
 
@@ -230,6 +236,38 @@ def make_forecast_batch(items: tuple, spec: "Spec"):
     return x, mask, y
 
 
+#: 辅助预测损失的权重。取小值：它是**表示学习**的辅助信号（逼 hidden 编码
+#: 「未来会排到哪」），主任务仍是各自的原目标 —— 权重过大会把主能力带偏。
+AUX_FORECAST_W = 0.1
+
+
+def forecast_targets(scenarios: list, n_samples: int):
+    """把「本步刚生成的场景」转成 ``[n_samples, H]`` 的未来时间槽真值。
+
+    ⚠️ **必须先校验 ``len(scenarios) == n_samples``**。数据源里普遍存在
+    「不合格样本 continue 掉」的过滤，那时场景数 > 样本数；按下标配
+    等于给样本配了**别人的标签** —— 形状全对、监督全错，是最难查的一类 bug。
+    不等则返回 None，调用方跳过本步辅助损失（宁可少训，不可训错）。
+
+    另一个前提是场景得够长：`build_sequence` 需要单元数 ≥ ``L_IN + H_OUT``，
+    短场景（单年级、项目少）构不成「给前 12 步预测后 8 步」这个任务，
+    同样返回 None。所以**不是所有小模型都能吃上这个辅助任务** —— 这是
+    数据本身的限制，不要在调用侧硬凑。
+    """
+    if not scenarios or len(scenarios) != n_samples:
+        return None
+    rows = []
+    for sc in scenarios:
+        try:
+            _x, y, ln = build_sequence(sc)
+        except Exception:                                          # noqa: BLE001
+            return None
+        if ln < FC_L_IN + FC_H_OUT:
+            return None
+        rows.append(y[FC_L_IN:FC_L_IN + FC_H_OUT])
+    return torch.from_numpy(np.asarray(rows, dtype=np.float32))
+
+
 # ---------------------------------------------------------------------------
 # 登记：确有 Python 训练代码的小模型
 # ---------------------------------------------------------------------------
@@ -249,6 +287,11 @@ def registry() -> dict:
         "lane_advisor": Spec("lane_advisor", "sports_ai.lane_advisor", "LaneAdvisor",
                              LANE_FEAT_DIM, loss="mse", make_batch="make_batch",
                              pad_to=64, takes_pad_to=True, layout="xmL",
+                             # ⚠️ 这里**刻意不挂** forecast_steps：实测该数据源是
+                             # 纯合成特征（make_sample），根本不生成场景对象 →
+                             # 拿不到「未来时间槽」真值，挂上只会每步白算一遍并报未对齐。
+                             # 要用这个能力得先改数据源走 generate_scenario（会改变
+                             # 训练数据分布，属于另一件事）。
                              onnx_inputs=("athlete_feat", "mask")),
         "conflict_gnn": Spec("conflict_gnn", "sports_ai.train_gnn", "ConflictGnn",
                              17, loss="mse", make_batch="make_batch",
@@ -287,6 +330,9 @@ def registry() -> dict:
                                    make_batch="make_dataset",
                                    data_module="sports_ai.train_selector",
                                    layout="xL", batch_fn=make_selector_batch,
+                                   # 实测该数据源基于 generate_scenario 且逐场景 1 样本、
+                                   # 场景长度足够 → 三条对齐条件全过，可吃上预测嵌入。
+                                   forecast_steps=FC_H_OUT,
                                    onnx_inputs=("features",)),
         "ai": Spec("ai", "sports_ai.models.selector", "AlgorithmSelector", N_FEATURES,
                    pool=True, flat_input=True, loss="ce", out_dim=2,
@@ -343,7 +389,8 @@ def build(spec: Spec, args) -> UpgradedMoE:
                        n_experts=args.n_experts, n_groups=args.n_groups,
                        pool=spec.pool, dropout=0.1,
                        warmup_steps=args.warmup, legacy_mode=spec.legacy_mode,
-                       n_types=spec.n_types, flat_input=spec.flat_input)
+                       n_types=spec.n_types, flat_input=spec.flat_input,
+                       forecast_steps=spec.forecast_steps)
 
 
 def data_source(spec: Spec):
@@ -469,11 +516,20 @@ def train_one(spec: Spec, args, device) -> str:
           f"（{','.join(sorted(set(type(e.inner).__name__ for e in model.experts)))}）"
           f"  参数={sum(p.numel() for p in model.parameters()):,}")
 
+    # 辅助预测任务（「给需要预测的小模型嵌入预测」）：监督信号来自**本步刚生成的
+    # 那批场景**，所以只在数据源生成期间打开钩子（默认零开销，见 scenario_hook）。
+    aux_on = spec.forecast_steps > 0
+    aux_miss = 0
+    if aux_on:
+        scenario_hook.start()
     for it in range(args.iters):
+        if aux_on:
+            scenario_hook.clear()
         if spec.takes_pad_to:
             batch = src(args.batch, seed=args.seed + it, pad_to=spec.pad_to)
         else:
             batch = src(args.batch, seed=args.seed + it)
+        scenarios = scenario_hook.collect() if aux_on else []
         if spec.batch_fn is not None:
             batch = spec.batch_fn(batch, spec)
         batch = tuple(b.to(device) if hasattr(b, "to") else b for b in batch)
@@ -514,8 +570,19 @@ def train_one(spec: Spec, args, device) -> str:
                 tmask = torch.ones(b2, 1, dtype=x.dtype)
         elif spec.legacy_mode != "gnn":
             adj, tmask = None, None
-        pred, nxt = model(x, mask, adj, tmask)
+        if aux_on:
+            pred, nxt, fc = model(x, mask, adj, tmask, return_forecast=True)
+        else:
+            pred, nxt = model(x, mask, adj, tmask)
+            fc = None
         loss, metric = compute_loss(spec, pred, batch, mask, target)
+        if aux_on and fc is not None:
+            tgt = forecast_targets(scenarios, int(x.shape[0]))
+            if tgt is None:
+                aux_miss += 1
+            else:
+                loss = loss + AUX_FORECAST_W * F.mse_loss(
+                    fc, tgt.to(device=fc.device, dtype=fc.dtype))
         # MoE 特有的两件事：**必须**都做，否则等于白装 MoE
         loss = loss + args.w_lb * model.load_balance_loss()
         opt.zero_grad()
@@ -528,6 +595,12 @@ def train_one(spec: Spec, args, device) -> str:
             print(f"  第 {it+1:5d} 步  loss={float(loss):.5f}  指标={metric:.4f}  "
                   f"激活专家={used}/{len(u)}")
 
+    if aux_on:
+        scenario_hook.stop()
+        if aux_miss:
+            print(f"  ⚠️ {spec.name}: 辅助预测任务有 {aux_miss}/{args.iters} 步未能对齐"
+                  f"（场景数 ≠ 样本数，或场景太短构不成 L_IN+H_OUT）—— 这些步只训主任务；"
+                  f"若全步数都如此，说明该模型的数据源场景不足，别硬凑")
     os.makedirs(MODEL_DIR, exist_ok=True)
     path = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
     backup_before_overwrite(path, f"moe-{args.iters}")

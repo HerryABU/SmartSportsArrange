@@ -237,4 +237,10 @@ def generate_scenario(
                                    window_idx=window_idx, day=day, window_capacity=cap)
                     )
 
-    return Scenario(units=units, placements=placements)
+    sc = Scenario(units=units, placements=placements)
+    # 唯一出口处记一笔，供训练循环取「本步刚生成的那批场景」（默认零开销，
+    # 见 data/scenario_hook.py：没 start() 时 record 立即返回）。
+    # 延迟导入：避免 data 包 __init__ 与 generator 之间的循环导入。
+    from sports_ai.data.scenario_hook import record as _record_scenario
+    _record_scenario(sc)
+    return sc

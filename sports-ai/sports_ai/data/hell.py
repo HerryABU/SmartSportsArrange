@@ -265,6 +265,8 @@ def generate_hell(seed: int = 20260918, days: Optional[int] = None,
         "tension": round(demand / supply, 3) if supply else 0.0,
     })
     scenario = Scenario(units=units, placements=placements)
+    from sports_ai.data.scenario_hook import record as _record_scenario
+    _record_scenario(scenario)          # 记录其中的 scenario（HellMeet 的编排主体）
     return HellMeet(athletes=athletes, scenario=scenario, days=days,
                     estimated_days=estimated, daily_capacity=supply // max(1, use_days),
                     stats=stats)

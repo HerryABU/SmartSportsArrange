@@ -58,7 +58,7 @@ class UpgradedMoE(nn.Module):
                  n_groups: int = 3, n_shared: int = 2, n_steps: int = 3,
                  pool: bool = False, dropout: float = 0.1, warmup_steps: int = 200,
                  legacy_mode: str = "pair", n_types: int = 1,
-                 flat_input: bool = False):
+                 flat_input: bool = False, forecast_steps: int = 0):
         super().__init__()
         self.flat_input = flat_input
         # legacy_mode 决定怎么调原模型。实测小模型有**两种前向签名**：
@@ -110,6 +110,14 @@ class UpgradedMoE(nn.Module):
                 nn.Dropout(dropout), nn.Linear(hidden, out_dim))
         # 后续步骤预测头
         self.predictor = NextStepHead(hidden, n_steps=n_steps)
+        # 「未来 H 步时间槽序列」预测头。与 predictor 的分工是**目标不同**：
+        #   predictor     → 「下一步该做什么」（离散动作，4 类）
+        #   forecast_head → 「未来 H 步分别排在哪个时间槽」（连续序列）
+        # 后者即 forecast_* 模型的任务定义，把它接进来就是「让每个专项模型
+        # 都看远一点」。0 = 不建（保持旧 ckpt 原样可载）。
+        self.forecast_steps = forecast_steps
+        self.forecast_head = (nn.Linear(hidden, forecast_steps)
+                              if forecast_steps > 0 else None)
 
     @staticmethod
     def _probe_flat_out_dim(legacy: nn.Module, in_dim: int) -> int:
@@ -285,8 +293,14 @@ class UpgradedMoE(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor,
                 adj: Optional[torch.Tensor] = None,
-                type_mask: Optional[torch.Tensor] = None):
-        """返回 (主输出, 后续步骤预测 ``[B,n_steps]``)。
+                type_mask: Optional[torch.Tensor] = None,
+                return_forecast: bool = False):
+        """返回 (主输出, 后续步骤预测 ``[B,n_steps]``)，``return_forecast=True`` 时
+        再追加第三项「未来 H 步时间槽预测 ``[B,forecast_steps]``」。
+
+        ⚠️ 用**可选第三项**而不是固定三元组：现有调用点（导出、ensemble、各训练脚本）
+        都按两元组解包，改成固定三元组会全线炸；而多出来的这一项只在
+        启用 ``forecast_head`` 的训练里才需要。
 
         ``pool=True`` 时主输出是 ``[B,out_dim]``；否则 ``[B,N,out_dim]``（out_dim=1 时给 ``[B,N]``）。
         GNN 类原模型还需传 ``adj`` / ``type_mask``（``legacy_mode="gnn"``）。
@@ -344,6 +358,11 @@ class UpgradedMoE(nn.Module):
             nxt = self.predictor(pooled)
         if not self.pool and self.out_dim == 1:
             out = out.squeeze(-1)                                # [B,N] 与原模型一致
+        # 预测头走的是**池化后**的实例表征：未来 H 步的排程是实例级判断，
+        # 不是逐节点判断（逐节点版本会退化成「每个节点各预测一份序列」）。
+        fc = self.forecast_head(pooled) if self.forecast_head is not None else None
+        if return_forecast:
+            return out, nxt, fc
         return out, nxt
 
     # ------------------------------------------------------------------

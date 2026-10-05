@@ -726,6 +726,8 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0,
     scen.n_multi_athletes, scen.max_multi = n_multi, mx
     scen.n_blocks = len(scen.blocks())
     annotate_heat_refine_dims(scen, rng)
+    from sports_ai.data.scenario_hook import record as _record_scenario
+    _record_scenario(scen)
     return scen
 
 
