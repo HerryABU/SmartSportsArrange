@@ -115,6 +115,20 @@ def main() -> int:
                 break
 
         notes = []
+        # ⓪ 遮蔽检查：`.moe.pt` 与 `.pt` 同时存在时，`.moe.pt` 会被优先选中
+        #    —— 若它其实是某次冒烟/实验的残留，就会**静默顶掉真实权重**。
+        #    已踩两次：constraint_gnn（3 步冒烟）、tournament_gnn（5 步冒烟，
+        #    且因为形态「恰好可加载」而伪装成接入成功）。
+        cand_moe = os.path.join(AI_DIR, f"{stem}.moe.pt")
+        cand_raw = os.path.join(AI_DIR, f"{stem}.pt")
+        if os.path.exists(cand_moe) and os.path.exists(cand_raw):
+            dm, dr = os.path.getmtime(cand_moe), os.path.getmtime(cand_raw)
+            if dm < dr - 60:
+                notes.append(f"❌ .moe.pt({hhmm(cand_moe)}) 早于 .pt({hhmm(cand_raw)}) 却优先被取")
+                problems.append(
+                    f"{name}: 同时存在 .moe.pt({hhmm(cand_moe)}) 与 .pt({hhmm(cand_raw)})，"
+                    f"前者更旧但会被优先加载 —— 疑似冒烟/实验残留遮蔽真实权重，请核实并隔离")
+
         # ① 时间戳：训了有没有导出
         if weight is None:
             notes.append("⚠️ 无权重可比")
