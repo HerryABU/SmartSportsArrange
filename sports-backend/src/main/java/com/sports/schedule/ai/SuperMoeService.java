@@ -37,8 +37,46 @@ public class SuperMoeService {
                          double daysEstimate,        // 预计工期（天）
                          double[][] laneLogits,      // [N][K] 道次派遣 logits（替代 lane_advisor）
                          double qualityScore,        // [0,1] 方案质量分（替代 GAN 判别器）
+                         double[] nextStepLogits,    // [n_steps] 后续步骤 logits（编排行程自我调度）
                          int n,
                          java.util.Map<String, Double> expertUsage) {
+
+        /**
+         * 后续步骤的语义位（与 Python 侧 next_step_head 逐位对应）。
+         *
+         * <p>模型回答的是「**按当前编排状态，下一步该做什么**」，而不是「下一个时刻的赛程」。
+         * 编排链本身是一条多阶段流水线（贪心 → GA → LNS → MNSA → ALNS → 精修 → 微调），
+         * 过去每一步都按固定顺序跑；有了这个头，编排器可以据此<b>建议跳过哪一步</b>。</p>
+         */
+        public static final int STEP_REFINE = 0;       // 继续精修
+        public static final int STEP_HEAT_STAGGER = 1; // 建议做组次顺序错开
+        public static final int STEP_SLOT_SPLIT = 2;   // 建议做跨时段拆分
+        public static final int STEP_FINISH = 3;       // 可以收尾
+
+        /** 后续步骤的 argmax 建议；旧版模型无此输出时返回 -1（= 无建议）。 */
+        public int nextStep() {
+            if (nextStepLogits == null || nextStepLogits.length == 0) {
+                return -1;
+            }
+            int best = 0;
+            for (int k = 1; k < nextStepLogits.length; k++) {
+                if (nextStepLogits[k] > nextStepLogits[best]) {
+                    best = k;
+                }
+            }
+            return best;
+        }
+
+        /** 后续步骤名（可观测 / 直接进日志与编排响应）。 */
+        public String nextStepName() {
+            return switch (nextStep()) {
+                case STEP_REFINE -> "继续精修";
+                case STEP_HEAT_STAGGER -> "组次错开";
+                case STEP_SLOT_SPLIT -> "跨时段拆分";
+                case STEP_FINISH -> "可收尾";
+                default -> "无建议";
+            };
+        }
 
         /** 每个单元的时间槽（argmax）。 */
         public int[] slots() {
@@ -238,11 +276,21 @@ public class SuperMoeService {
                         ? toMatrix(named(r, "lane_logits", 5)) : new double[0][];
                 double quality = r.get("quality_score").isPresent()
                         ? toScalar(named(r, "quality_score", 6)) : 0.0;
+                // 后续步骤（第 8 个输出）：旧版 onnx 没有该通道，
+                // 给空数组让 nextStep() 返回 -1 =「无建议」，调用方按原固定链跑。
+                double[] nextStep = r.get("next_step").isPresent()
+                        ? toVec(named(r, "next_step", 7)) : new double[0];
 
+                lastInferenceError = null;
                 return Optional.of(new Advice(priority, slot, taskProbs, fmt, days,
-                        lane, quality, n, Map.of()));
+                        lane, quality, nextStep, n, Map.of()));
             }
         } catch (Throwable t) {
+            // ⚠️ 推理失败必须**留下原因**：模型能加载 ≠ 推理能成功。
+            //    最常见的失败是「磁盘上的 onnx 是旧结构」（如 7 输出而新代码按 8 输出读），
+            //    此时 available() 为 true、loadError 为 null —— 不记这里的话，
+            //    调用方拿到的降级原因是 null，现场只见 degraded=true 却不知为何。
+            lastInferenceError = t.getClass().getSimpleName() + ": " + t.getMessage();
             log.warn("超级编排推理失败，回退规则编排: {}", t.toString());
             return Optional.empty();
         }

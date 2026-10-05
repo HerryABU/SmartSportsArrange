@@ -1,6 +1,9 @@
 package com.sports.service.schedule;
 
 import com.sports.schedule.ai.AdversarialSchemeService;
+import com.sports.schedule.ai.PrimaryMoeBridge;
+import com.sports.schedule.ai.SuperMoeService;
+import com.sports.schedule.ai.SuperScheduleEncoder;
 import com.sports.schedule.core.primitive.Pool;
 import com.sports.schedule.core.primitive.Unit;
 import com.sports.schedule.core.primitive.Window;
@@ -368,6 +371,68 @@ public class ScheduleSolveComponent {
             portfolioInfo.put("aiReport", adversarialSelfCheck(ruleConfig, optUnits));
         }
 
+        // ④-0c **第一次编排用主 MoE**（2026-10-05）。
+        //
+        //     为什么放在求解**之前**：Timefold 的构造启发式从「实体集合顺序」出发，
+        //     初始顺序直接决定它先给谁找位置 —— 冲突簇中心的单元越早被安排，
+        //     后续单元越容易在其剩余空间里落位。主 MoE 的 priority 就是学出来的
+        //     「谁该先排」，把它作为初始顺序，是「第一次编排用主模型」的落地。
+        //
+        //     与 ④-0b 的自对抗自检的区别：那个只输出观测报告、不改变求解；
+        //     这里的重排**真的改变求解起点**。所以必须显式写进 portfolioInfo，
+        //     否则「AI 到底有没有影响结果」在编排响应里看不出来。
+        //
+        //     ⚠️ 三条边界：
+        //     ① 只**重排**，不增删单元（`optUnits` 集合不变）—— 否则会改变可解性结论；
+        //     ② 顺序按 priority 降序、等值时保持原相对顺序（稳定排序），
+        //        避免「同样好的两个单元每次跑出来顺序都不同」这种不可复现；
+        //     ③ 模型不可用/推理失败 → 原样返回，求解照常进行。
+        if (portfolioInfo != null) {
+            try {
+                List<SuperScheduleEncoder.Unit> encUnits = toEncoderUnits(units);
+                SuperScheduleEncoder.Encoded enc = PRIMARY_ENCODER.encode(
+                        encUnits, toEncoderWindows(windows, units), 0, units.size());
+                java.util.Optional<SuperMoeService.Advice> adv =
+                        PrimaryMoeBridge.advise(enc);
+                if (adv.isPresent()) {
+                    double[] priority = adv.get().priority();
+                    Map<String, Object> info = new LinkedHashMap<>();
+                    info.put("model", "super_moe");
+                    info.put("mode", "主 MoE 优先级作为求解初始顺序");
+                    info.put("n", priority == null ? 0 : priority.length);
+                    info.put("style", adv.get().nextStepName());
+                    if (priority != null && priority.length > 0) {
+                        int before = optUnits.size();
+                        List<ScheduleUnit> reordered = new ArrayList<>(optUnits);
+                        // id 形如 "u<i>"，i 就是 units 的下标 —— 用它取对应优先级。
+                        // 稳定排序：Java 的 List.sort 是归并排序（稳定），等值保持原序。
+                        reordered.sort(java.util.Comparator.comparingDouble(
+                                (ScheduleUnit u) -> -priorityOf(u, priority)));
+                        optUnits = reordered;
+                        info.put("applied", true);
+                        info.put("units", before);
+                        log.info("第一次编排: 应用主 MoE 优先级重排 {} 个单元的求解初始顺序"
+                                + "（模型建议下一步: {}）", before, adv.get().nextStepName());
+                    } else {
+                        info.put("applied", false);
+                        info.put("reason", "主 MoE 未给出优先级");
+                    }
+                    portfolioInfo.put("primaryMoe", info);
+                } else {
+                    portfolioInfo.put("primaryMoe", Map.of(
+                            "applied", false,
+                            "reason", PrimaryMoeBridge.bound()
+                                    ? "主 MoE 不可用或推理失败（已回退原顺序）"
+                                    : "主 MoE 未装配（静态桥未绑定）"));
+                }
+            } catch (Exception ex) {
+                // 主 MoE 是增强项：失败必须只降级、不影响求解
+                log.warn("主 MoE 初始顺序建议失败（不影响求解）: {}", ex.toString());
+                portfolioInfo.put("primaryMoe", Map.of("applied", false,
+                        "reason", ex.getClass().getSimpleName()));
+            }
+        }
+
         AlgorithmPortfolio.Features features = AlgorithmPortfolio.extract(optUnits, allPlacements);
         if (portfolioInfo != null) {
             portfolioInfo.put("features", features.toMap());
@@ -561,5 +626,127 @@ public class ScheduleSolveComponent {
         m.put("venueCode", e.getDefaultVenueCode());
         m.put("gradeGroup", e.getGradeGroup());
         return m;
+    }
+
+    // ==================== 主 MoE（第一次编排）====================
+
+    /**
+     * 主 MoE 编码器。
+     *
+     * <p>无状态、无外部依赖（不读库、不注容器），字段直持有即可 ——
+     * 刻意<b>不进构造签名</b>：本组件是手工 assembly 的，
+     * 加构造参数会连带改 4 个 {@code @InjectMocks} 测试类，收益不抵风险。
+     * 与 {@code ScheduleFeasibilityService} 同一处理方式。</p>
+     */
+    private static final SuperScheduleEncoder PRIMARY_ENCODER = new SuperScheduleEncoder();
+
+    /**
+     * 取某单元对应的主 MoE 优先级。
+     *
+     * <p>{@code ScheduleUnit.id} 形如 {@code "u<i>"}（见 ③ 处的组装），
+     * {@code i} 就是 {@code units} 的下标，而主 MoE 的 {@code priority[]}
+     * 与 {@code units} <b>同序</b> —— 所以按下标直接取，不需要额外映射表。</p>
+     *
+     * <p>越界（单元数超过 {@code MAX_NODES} 被编码器截断）时返回
+     * {@code -INFINITY}，让这些单元**稳定地排在末尾**，
+     * 而不是抛异常或随机插入（后者会让同一份输入每次跑出不同顺序，不可复现）。</p>
+     */
+    private static double priorityOf(ScheduleUnit u, double[] priority) {
+        String id = u.getKey();
+        int i = -1;
+        if (id != null && id.length() > 1 && id.charAt(0) == 'u') {
+            try {
+                i = Integer.parseInt(id.substring(1));
+            } catch (NumberFormatException ignored) {
+                i = -1;
+            }
+        }
+        return (i >= 0 && i < priority.length) ? priority[i] : Double.NEGATIVE_INFINITY;
+    }
+
+    /**
+     * 把编排原语 {@code core.primitive.Unit} 转成主 MoE 编码器要的
+     * {@link SuperScheduleEncoder.Unit}。
+     *
+     * <p>⚠️ 两个类**同名不同类**，直接传会报
+     * 「List&lt;core.primitive.Unit&gt; 无法转换为 List&lt;SuperScheduleEncoder.Unit&gt;」——
+     * 这类编译错误还算友好，真正危险的是「名字像就以为能混用」。</p>
+     *
+     * <p>字段映射原则：<b>只搬编码器真正读的那些</b>，不臆造。
+     * {@code task} 取「有无并道/组次语义」推得的三档（与数据侧 TASK_* 的
+     * 前几位语义一致）；{@code athletes} 用 {@code athleteIds}（兼项边的依据）。</p>
+     */
+    private static List<SuperScheduleEncoder.Unit> toEncoderUnits(List<Unit> units) {
+        List<SuperScheduleEncoder.Unit> out = new ArrayList<>(units.size());
+        for (int i = 0; i < units.size(); i++) {
+            Unit u = units.get(i);
+            out.add(new SuperScheduleEncoder.Unit(
+                    "u" + i,
+                    u.event == null ? "" : u.event.getName(),
+                    taskOf(u),
+                    u.track,
+                    u.event != null && Boolean.TRUE.equals(u.event.getTeam()),
+                    null,
+                    null,
+                    u.event == null ? null : u.event.getDefaultVenueCode(),
+                    null,
+                    u.grade,
+                    Math.max(1, u.duration),
+                    0,
+                    u.heats,
+                    new ArrayList<>(u.athleteIds),
+                    null,
+                    null,
+                    "main"));
+        }
+        return out;
+    }
+
+    /** 由单元语义推出任务位（与 {@code super_scenarios.TASK_*} 的前几位对齐）。 */
+    private static int taskOf(Unit u) {
+        if (u.event != null && Boolean.TRUE.equals(u.event.getTeam())) {
+            return 2;      // TASK_BALL：球类赛制
+        }
+        return u.track ? 1 : 0;   // 径赛 → 道次编排；其余 → 项目编排
+    }
+
+    /**
+     * 把编排窗口转成编码器窗口。
+     *
+     * <p>⚠️ 两个 {@code Window} **同名不同类**，且字段集不同：
+     * 编排原语的 {@code core.primitive.Window} 是
+     * {@code (day, date, slotName, startMinute, capacity)}——<b>没有场地</b>
+     * （场地信息在 {@code Pool.venueOf} 里，按并发位给）；
+     * 而编码器的 {@code Window} 是 {@code (day, windowIdx, capacity, venue, pool)}。</p>
+     *
+     * <p>场地不能瞎填：编码器拿 {@code w.venue()} 与 {@code u.venue()} 配对算
+     * 「该场地在该时段的容量」，并对不上就退回默认容量 1 —— 那会让
+     * {@code E_TIME} 边全按容量 1 计算，AI 看到的装箱压力完全失真。
+     * 所以这里按「**核心窗口 × 单元场地**」展开：同一时段每个场地各开一条窗口、
+     * 容量取核心窗口的值。语义上也对 —— 某时段的容量本就对该时段的每个场地成立。</p>
+     */
+    private static List<SuperScheduleEncoder.Window> toEncoderWindows(
+            List<Window> windows, List<Unit> units) {
+        List<SuperScheduleEncoder.Window> out = new ArrayList<>();
+        if (windows == null || windows.isEmpty()) {
+            return out;
+        }
+        // 场地集合取自单元（编码器就是这样与 u.venue() 配对的）
+        java.util.LinkedHashSet<String> venues = new java.util.LinkedHashSet<>();
+        for (Unit u : units) {
+            if (u.event != null && u.event.getDefaultVenueCode() != null) {
+                venues.add(u.event.getDefaultVenueCode());
+            }
+        }
+        if (venues.isEmpty()) {
+            venues.add(null);          // 无场地信息时保留单条，交由编码器走默认容量
+        }
+        int idx = 0;
+        for (Window w : windows) {
+            for (String v : venues) {
+                out.add(new SuperScheduleEncoder.Window(w.day, idx++, w.capacity, v, null));
+            }
+        }
+        return out;
     }
 }

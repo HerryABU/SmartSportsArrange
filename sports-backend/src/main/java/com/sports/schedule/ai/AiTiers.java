@@ -48,6 +48,10 @@ public class AiTiers {
         this.superMoe = superMoe;
         this.heatStagger = heatStagger;
         this.slotSplit = slotSplit;
+        // 把自己的引用绑到静态桥上，供**手工装配、不在容器里**的编排组件取用
+        // （ScheduleSolveComponent 是 new 出来的，改它的构造签名会连带改 4 个测试类）。
+        // 只绑主 MoE 这一环：专项 MoE 的调用方都是 Spring Bean，直接注入即可。
+        PrimaryMoeBridge.bind(this);
         calls.put("primary", new long[1]);
         calls.put("heatStagger", new long[1]);
         calls.put("slotSplit", new long[1]);
