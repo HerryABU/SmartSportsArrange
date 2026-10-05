@@ -51,12 +51,12 @@
     },
     "scheme_discriminator.onnx": {
       "bytes": 14310064,
-      "sha256": "4be83fa595f18fd520fd7d9cf7baf60c8bf3fa837dc704269022b24660a4bf11",
+      "sha256": "b271d24e04f0f9db2afabcb90b9a42f47526bdf91db24c8aaf29e3f16d2f2f70",
       "usage": "方案评判器；缺失 → 跳过择优"
     },
     "scheme_generator.onnx": {
       "bytes": 14409321,
-      "sha256": "0e1f6c5f5d983c9959c3ffb58ee4e0f923c6989aa02fc9a39f4cc21692766c9d",
+      "sha256": "50cc088d178c0b5aa27babe92709e36b288dae7b3fb5e020dd2b56bc5711d45b",
       "usage": "自对抗方案生成器；缺失 → 跳过生成式增强"
     },
     "scheme_refiner.onnx": {
@@ -66,7 +66,7 @@
     },
     "slot_split_advisor.onnx": {
       "bytes": 7981751,
-      "sha256": "de7f02fac03cc0b0be8d8cf45f62c1e6e15a74bf6eff5f69f22966c236eeff65",
+      "sha256": "bb454c9396aa3ed74afb580eb106b252d0755dae1d36c12a40497501c45ef292",
       "usage": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆"
     },
     "super_moe.onnx": {
