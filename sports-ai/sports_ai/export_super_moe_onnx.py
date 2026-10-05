@@ -78,9 +78,23 @@ def main() -> None:
     print(f"[export] 从权重读取结构 hidden={hidden} steps={steps} "
           f"expert_depth={edepth} n_global={nglo} n_nested={nnest} "
           f"nest_layers={nlay} nest_experts={nex} n_steps={nstp}")
+    # 外部专家：必须按 ckpt 里记录的**数量**重建（expert_embed 的行数由它决定）。
+    # 少一个就是形状不匹配 → 加载失败；所以宁可这里直接终止，
+    # 也不要产出一个「结构不对但文件存在」的 onnx（那会让服务端静默回退规则）。
+    n_extra = int(meta.get("n_extra", 0))
+    extra = None
+    if n_extra:
+        from sports_ai.nn.ensemble import build_ensemble
+        extra = build_ensemble(dst_hidden=hidden, freeze=True)
+        if len(extra) != n_extra:
+            raise SystemExit(
+                f"权重需要 {n_extra} 个外部专家，实际只构造出 {len(extra)} 个"
+                f"（缺权重或结构不符）—— 导出中止。权重里记录的是：{meta.get('extra_names')}")
+        print(f"[export] 接入 {len(extra)} 个专项模型专家（{meta.get('extra_names')}）")
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=hidden, steps=steps,
                              expert_depth=edepth, n_global=nglo, n_nested=nnest,
-                             nest_layers=nlay, nest_experts=nex, n_steps=nstp)
+                             nest_layers=nlay, nest_experts=nex, n_steps=nstp,
+                             extra_experts=extra)
     model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.eval()
 

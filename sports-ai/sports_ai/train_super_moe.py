@@ -235,6 +235,8 @@ def main() -> None:
                     help="嵌套专家内部 SpecialistMoE 的多架构专家数")
     ap.add_argument("--expert-depth", type=int, default=6,
                     help="每个专家内部堆叠的消息传递层数（1=旧版单层）")
+    ap.add_argument("--ensemble", action="store_true",
+                    help="把全部专项 MoE 小模型作为专家接入（主 MoE = 其他 MoE 的混合体）")
     ap.add_argument("--n-global", type=int, default=3,
                     help="MoE 之后的主干深层推理块数")
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -277,11 +279,20 @@ def main() -> None:
         tiers[d["tier"]] = tiers.get(d["tier"], 0) + 1
     print(f"[data] 训练 {len(tr)} / 验证 {len(va)}，档位分布 {tiers}")
 
+    # 把全部专项 MoE 小模型作为「能力专家」接入 —— 主 MoE 因而是**其他 MoE 的混合体**。
+    # 主体权重继承、只新训 bridge/out，所以接入本身几乎不增加训练成本。
+    from sports_ai.nn.ensemble import build_ensemble
+    extra = build_ensemble(dst_hidden=args.hidden, freeze=True) if args.ensemble else []
+    if args.ensemble:
+        print(f"[ensemble] 接入 {len(extra)} 个专项模型作为专家：")
+        for e in extra:
+            print("  " + e.describe())
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=args.hidden,
                              steps=args.steps, expert_depth=args.expert_depth,
                              n_global=args.n_global, n_nested=args.n_nested,
                              nest_layers=args.nest_layers,
-                             nest_experts=args.nest_experts).to(device)
+                             nest_experts=args.nest_experts,
+                             extra_experts=extra or None).to(device)
     print(f"[model] 参数量 {sum(q.numel() for q in model.parameters()):,}")
     print(f"[model] 专家池构成 {model.moe.expert_kinds()}")
     if args.resume and os.path.exists(MODEL_DIR + "/super_moe.pt"):
@@ -364,6 +375,11 @@ def main() -> None:
                 #    漏掉就会 load_state_dict 形状不匹配 → 服务端静默回退规则。
                 "n_nested": args.n_nested, "nest_layers": args.nest_layers,
                 "nest_experts": args.nest_experts, "n_steps": model.n_steps,
+                # 外部专家数量与名单：导出脚本必须按**同样的数量**重建模型
+                # （expert_embed 的行数由它决定）—— 不写进 meta 就会
+                # 「训出来了但导不出」，或更糟：导出成 19 专家的旧结构而静默不匹配。
+                "n_extra": len(model.moe.extra_experts),
+                "extra_names": model.extra_names,
                 # 预算可诊断性：只看到 val_loss 时无法判断「训够了没有」，
                 # 把实际轮数与建议预算一并写进 meta，一眼就能看出是不是没训够。
                 "epochs_run": epoch + 1, "budget_epochs": want_epochs,
