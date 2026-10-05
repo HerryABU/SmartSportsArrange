@@ -291,6 +291,14 @@ class UpgradedMoE(nn.Module):
         ``pool=True`` 时主输出是 ``[B,out_dim]``；否则 ``[B,N,out_dim]``（out_dim=1 时给 ``[B,N]``）。
         GNN 类原模型还需传 ``adj`` / ``type_mask``（``legacy_mode="gnn"``）。
         """
+        if self.flat_input and x.dim() == 2:
+            # 实例级原模型吃的是 **2 维** ``[B,F]``（没有节点维）。这里统一补成
+            # ``N=1`` 的节点序列，让后续（专家池 / 主干 / 池化）走同一条路径 ——
+            # 与导出侧 ``_Main.forward`` 的处理逐位一致。
+            # ⚠️ 掩码必须**重建**为 ``[B,1]``：批次里传进来的占位掩码长度未必是 1，
+            #    直接沿用会与补出的 N=1 广播成错的形状（形状对、结果错）。
+            x = x.unsqueeze(1)
+            mask = torch.ones(x.shape[0], 1, dtype=x.dtype, device=x.device)
         b, n, _ = x.shape
         h0 = self.in_norm(self.in_proj(x))                     # [B,N,H]
 

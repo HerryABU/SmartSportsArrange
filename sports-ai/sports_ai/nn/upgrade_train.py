@@ -38,8 +38,13 @@ from sports_ai.lane_advisor import LANE_FEAT_DIM
 from sports_ai.referee_advisor import N_REF_FEAT, N_TYPES as N_REF_TYPES
 from sports_ai.teacher_advisor import N_TCH_FEAT, N_TYPES as N_TCH_TYPES
 from sports_ai.models.tournament_gnn import N_TYPES as N_TMT_TYPES
+from sports_ai.data.constraint_gnn_io import N_TYPES as N_CON_TYPES
 from sports_ai.data.features import N_FEATURES
 from sports_ai.nn.upgrade import UpgradedMoE
+
+#: ``ConstraintGnn`` 的节点特征维（模型模块 docstring 写明 ``node_feat[B,N,16]``，
+#: 与 Java 侧 ``ConstraintGnnService`` 的 feed 维度对应）。
+N_CON_FEAT = 16
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "models")
@@ -170,11 +175,42 @@ def make_torch_batch(items: list, spec: "Spec"):
     return T(xs), T(ms), T(as_), T(tms), T(ys)
 
 
+def make_constraint_batch(items: list, spec: "Spec"):
+    """``ConstraintGnn`` 的 ``make_dataset`` 返回**扁平**样本（与 referee/teacher 的 ``enc`` 包装不同）。
+
+    样本形如::
+
+        {node_feat[1,N,16], adj_by_type[1,T,N,N], type_mask[1,T], mask[1,N], rank[N]}
+
+    ⚠️ 两处必须显式处理，否则形状对、结果错：
+
+    1. 样本自带 batch 维（``[1,N,F]``）→ 先去掉再 pad，否则补在第 0 轴（长度 1）上；
+    2. 标签字段叫 ``rank``（不是 ``y``），且长度恰为 N —— pad 到批宽后
+       padding 区标签必须是 0（掩码已置 0，加权后不参与 loss）。
+    """
+    width = max(int(d["n"]) for d in items)
+    xs, ms, as_, tms, ys = [], [], [], [], []
+    for d in items:
+        n, pad = int(d["n"]), width - int(d["n"])
+        x = np.asarray(d["node_feat"], dtype=np.float32)[0]            # [N,F]
+        m = np.asarray(d["mask"], dtype=np.float32).reshape(-1)        # [N]
+        a = np.asarray(d["adj_by_type"], dtype=np.float32)[0]          # [T,N,N]
+        t = np.asarray(d["type_mask"], dtype=np.float32).reshape(-1)   # [T]
+        y = np.asarray(d["rank"], dtype=np.float32).reshape(-1)[:n]
+        xs.append(np.pad(x, ((0, pad), (0, 0))))
+        ms.append(np.pad(m, (0, pad)))
+        as_.append(np.pad(a, ((0, 0), (0, pad), (0, pad))))
+        tms.append(t)
+        ys.append(np.pad(y, (0, pad)))
+    T = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32))
+    return T(xs), T(ms), T(as_), T(tms), T(ys)
+
+
 # ---------------------------------------------------------------------------
 # 登记：确有 Python 训练代码的小模型
 # ---------------------------------------------------------------------------
 def registry() -> dict:
-    """11 个在役小模型的升级登记。
+    """在役小模型的升级登记（用**外部适配器**路线的那些）。
 
     ⚠️ **只登记确实存在 Python 训练代码的模型**。清点时发现：
     ``scheme_generator / scheme_refiner / scheme_discriminator / scheme_diffusion``
@@ -203,8 +239,15 @@ def registry() -> dict:
                             N_TCH_FEAT, loss="listwise", make_batch="make_dataset",
                             legacy_mode="gnn", batch_fn=make_torch_batch,
                             layout="xmatL", n_types=N_TCH_TYPES,
-                            ctor={"node_feat": N_TCH_FEAT},
-                            onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
+                             ctor={"node_feat": N_TCH_FEAT},
+                             onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
+        "constraint_gnn": Spec("constraint_gnn", "sports_ai.models.constraint_gnn",
+                               "ConstraintGnn", N_CON_FEAT, loss="listwise",
+                               make_batch="make_dataset",
+                               data_module="sports_ai.train_constraint_gnn",
+                               batch_fn=make_constraint_batch,
+                               legacy_mode="gnn", layout="xmatL", n_types=N_CON_TYPES,
+                               onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
         # ── 算法选择器（实例级，输入是 [B,F] 无节点维）──
         "algorithm_selector": Spec("algorithm_selector", "sports_ai.models.selector_v2",
                                    "AlgorithmSelectorV2", N_FEATURES, pool=True,
