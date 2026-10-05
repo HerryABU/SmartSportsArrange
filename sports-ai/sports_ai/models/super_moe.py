@@ -1,7 +1,9 @@
 """SuperScheduleMoE —— 统一编排超级模型（多门混合专家 + 异构消息传递 + 扩散解码）。
 
 一个模型覆盖：**项目编排 / 道次编排 / 球类赛制（小组·循环·淘汰·混合）/
-淘汰赛晋级 / 项目块完整性 / 兼项避让 / 装箱容量 / 工期压缩 / 二次编排**。
+淘汰赛晋级 / 项目块完整性 / 兼项避让 / 装箱容量 / 工期压缩 / 二次编排 /
+裁判编排 / 教师规避**，以及 8 类**能力专家**（方案生成·精修·扩散去噪·道次派遣·
+工期预测·方案判别 + **组次顺序错开 / 跨时段拆分**）。
 
 ## 架构依据（四篇前沿，各自贡献一块）
 
@@ -39,16 +41,17 @@
 
 输入::
 
-    node_feat   [B, N, 20]
-    adj_by_type [B, E=8, N, N]
+    node_feat   [B, N, 24]
+    adj_by_type [B, E=10, N, N]
     type_mask   [B, E]
     mask        [B, N]
+    graph_feat  [B, 10]         实例级结构（末两维 = 组次错开/跨时段拆分需求占比）
 
 输出::
 
     priority       [B, N]        单元调度优先级
     slot_logits    [B, N, K]     时间槽分配 logits（扩散解码后的方案）
-    task_probs     [B, 9]        九类任务的存在概率（多门权重）
+    task_probs     [B, 19]       十九类任务的存在概率（多门权重）
     format_logits  [B, 4]        球类赛制 logits（group/rr/ko/hybrid）
     days_estimate  [B, 1]        预计所需天数（工期压缩专家读出）
 """
@@ -70,11 +73,20 @@ TASK_BLOCK, TASK_CONFLICT, TASK_CAPACITY, TASK_MAKESPAN, TASK_RESECOND = 4, 5, 6
 #    症状是「参数量一模一样、expert_usage 里只出现 9 个专家」，排查时毫无线索。
 #    所以改成直接导入，让两处不可能再漂移。
 from sports_ai.data.super_scenarios import N_TASKS, N_UNIT_TASKS  # noqa: E402
+# 统一算子库：多架构专家 + 层次两级门控 + 后续步骤预测（2026-10-05）。
+# 主 MoE 与两个专项 MoE 都从这里取积木 —— 架构同源、深度一致、可共享演进。
+from sports_ai.nn.blocks import (CrossExpert, HierarchicalRouter,  # noqa: E402
+                                 NextStepHead, ResidualMLPBlock,
+                                 SpecialistMoE, build_expert, EXPERT_CYCLE)
 
 # ---- 边类型（与 super_scenarios.E_* 严格一致）----
-N_EDGES = 8
+# 2026-10-05 从 8 扩到 10：新增 E_HEAT_STAGGER（组次级撞车）与
+# E_SLOT_NEIGHBOR（跨时段相邻）—— 两条微调专属边，与既有 8 类语义正交。
+# ⚠️ N_EDGES 变了必须连着重训：adj_by_type 形状 [B,E,N,N] 随 E 变化。
+N_EDGES = 10
 
-NODE_FEAT_DIM = 20
+# 节点特征 20 → 24：末尾追加 4 维微调信号（组次撞车强度 / 组次数 / 换组最优间隔 / 可拆性）
+NODE_FEAT_DIM = 24
 MAX_SLOTS = 16          # 时间槽数上限（与 generative/scheme.MAX_SLOTS 对齐）
 N_FORMATS = 4           # group / round_robin / knockout / hybrid
 
@@ -83,9 +95,12 @@ TYPE_EMBED_DIM = 8
 # ---- 图级（实例级）特征 —— 路由器的「问题结构」感知（GPINN / Router-experts 思路）----
 # 过去路由器只看节点表征，等于「不管赛会多大、多挤，都走同一套专家组合」。
 # 编排里真正决定该用哪种专家的是**实例结构**：冲突面广不广、几天、时间目标
-# （x 天硬约束 / 0 不限 / -1 尽量压缩）、并行度高低。这八维就是它。
-GRAPH_FEAT_DIM = 8
-G_CONFLICT, G_UNITS, G_VENUES, G_DAYS, G_TIME_GOAL, G_PARALLEL, G_FILL, G_BLOCK = range(8)
+# （x 天硬约束 / 0 不限 / -1 尽量压缩）、并行度高低。
+# 2026-10-05 追加两维**微调需求占比**：这场赛会里有多少单元真的需要组次错开 /
+# 跨时段拆分 —— 路由器据此决定这两位新专家该不该上场（而不是建了从不使用）。
+GRAPH_FEAT_DIM = 10
+G_CONFLICT, G_UNITS, G_VENUES, G_DAYS, G_TIME_GOAL, G_PARALLEL, G_FILL, G_BLOCK, \
+    G_STAGGER_NEED, G_SPLIT_NEED = range(10)
 
 
 class HeadAttention(nn.Module):
@@ -192,6 +207,52 @@ class _ExpertStep(nn.Module):
         h = self.norm2(h + a2)
         h = h + self.ffn(h)
         return h * mask.unsqueeze(-1)
+
+
+class NestMoEExpert(nn.Module):
+    """**嵌套 MoE 专家**：内含一个完整的 :class:`SpecialistMoE`（多架构 + 层次门控）。
+
+    ## 为什么要嵌套
+
+    主 MoE 与专项 MoE 若只是「两个独立模型」，它们之间没有任何结构联系，
+    主模型也就学不到专项模型里的能力。嵌套后，**专项能力成为主 MoE 的一个专家**，
+    由主路由器按图级结构（微调需求占比等）决定何时召唤 ——
+    这就是「主 MoE 是其它 MoE 的混合体」的落地。
+
+    与普通 :class:`Expert` 的差别：普通专家是**同构**的固定消息传递栈；
+    嵌套专家内部**自带多架构**（残差/图卷积/卷积/自注意力/交叉）与两级门控，
+    表达力更强但更贵 —— 所以只给部分专家用（见 ``n_nested``）。
+    """
+
+    def __init__(self, hidden: int, n_edges: int = N_EDGES, dropout: float = 0.1,
+                 n_layers: int = 6, n_experts: int = 4, n_groups: int = 2,
+                 n_shared: int = 2, n_steps: int = 3):
+        super().__init__()
+        self.specialist = SpecialistMoE(
+            in_dim=hidden, hidden=hidden, n_layers=n_layers, n_experts=n_experts,
+            n_groups=n_groups, n_shared=n_shared, n_edges=n_edges,
+            dropout=dropout, n_steps=n_steps)
+
+    @property
+    def depth(self) -> int:
+        """嵌套专家的深度 = 内部主干层数 + 输入/输出投影。"""
+        return self.specialist.depth()
+
+    def forward(self, h: torch.Tensor, adj: torch.Tensor,
+                type_mask: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """``adj`` 允许是 [B,E,N,N]（未压平）或 [B,N,N] / [E,N,N] / [N,N]（已压平）。
+
+        ⚠️ **只在该压的时候才压**：早前无条件 ``sum(dim=1)``，可 3 维邻接
+        （[E,N,N] 或 [B,N,N]）再压一次就把 N 维一起吃掉，得到 [E,N] / [B,N]，
+        报 "邻接压平后形状 (1, 10, 8) 与节点数 8 不符"。
+        与 GraphConvExpert.forward 的归一化口径保持一致：压平只在 4 维时做。
+        """
+        a = adj
+        if a.dim() == 4:
+            # type_mask [B,E] → [B,E,1,1] 才能逐边型相乘；
+            # 直接 adj * type_mask 会按尾维广播成 [B,E,N,E]，形状不报错但语义全错。
+            a = (a * type_mask.unsqueeze(-1).unsqueeze(-1)).sum(dim=1)   # [B,N,N]
+        return self.specialist.encode(h, mask, adj=a)
 
 
 class Expert(nn.Module):
@@ -326,14 +387,31 @@ class MultiGateMoE(nn.Module):
                  dropout: float = 0.1, expert_depth: int = 2,
                  use_graph: bool = True, graph_dim: int = GRAPH_FEAT_DIM,
                  use_cnn: bool = True, n_views: int = 3,
-                 n_unit_tasks: int = N_UNIT_TASKS):
+                 n_unit_tasks: int = N_UNIT_TASKS,
+                 n_nested: int = 0, nest_layers: int = 6, nest_experts: int = 4):
         super().__init__()
         self.n_experts = n_experts
         self.n_unit_tasks = min(n_unit_tasks, n_experts)
         self.use_graph = use_graph
         self.use_cnn = use_cnn
-        self.experts = nn.ModuleList(
-            [Expert(hidden, n_edges, dropout, depth=expert_depth) for _ in range(n_experts)])
+        # 专家池**异构**：前 n_nested 个是嵌套 MoE 专家（内含多架构 + 层次门控 +
+        # 6 层主干），其余是同构消息传递栈。
+        # 为什么只给一部分：嵌套专家的参数量约为同构专家的 3~4 倍（实测 hidden=64 时
+        # 0.32M vs 0.06M），19 个全换会让 CPU 训练预算直接爆掉；
+        # 而「主 MoE 是其它 MoE 的混合体」这个诉求只需要**存在**即可满足 ——
+        # 路由器会按图级结构（含末两维微调需求占比）决定何时把权重给它们。
+        # ⚠️ 嵌套专家放在**能力专家区**（下标 >= n_unit_tasks）：它们的输入依赖
+        #    与任务专家不同（走压平邻接 + 专项多架构），语义上属于「能力」而非「任务」。
+        self.n_nested = max(0, min(n_nested, max(0, n_experts - self.n_unit_tasks)))
+        self.experts = nn.ModuleList()
+        for e in range(n_experts):
+            if e >= self.n_unit_tasks and e < self.n_unit_tasks + self.n_nested:
+                self.experts.append(NestMoEExpert(
+                    hidden, n_edges, dropout, n_layers=nest_layers,
+                    n_experts=nest_experts))
+            else:
+                self.experts.append(
+                    Expert(hidden, n_edges, dropout, depth=expert_depth))
         # 多门：每门一个 Linear(hidden → n_unit_tasks)。
         # ⚠️ 只对**任务专家**建门：能力专家的门控完全由图级上下文给出（见 forward），
         #    给它们配门等于白建一组永不被读的参数。
@@ -494,6 +572,23 @@ class MultiGateMoE(nn.Module):
             out["cap_within_mean"] = round(float(within_cap[cap_i[0], cap_i[1]].mean()), 4)
         return out
 
+    def expert_kinds(self) -> Dict[str, object]:
+        """专家池构成（可观测）：哪些是嵌套 MoE、深度多少。
+
+        嵌套专家的深度是其**内部主干**层数 + 投影，与同构专家的 ``depth`` 语义不同，
+        混在一个列表里报「深度」会误导 —— 故分开列。
+        """
+        nested = [i for i, e in enumerate(self.experts)
+                  if isinstance(e, NestMoEExpert)]
+        return {
+            "n_experts": len(self.experts),
+            "n_nested": len(nested),
+            "nested_indices": nested,
+            "nested_depth": [self.experts[i].depth for i in nested],
+            "plain_depth": [getattr(self.experts[i], "depth", 0)
+                            for i in range(len(self.experts)) if i not in nested],
+        }
+
     def expert_usage(self) -> Dict[str, float]:
         """各专家的实际使用率（0~1）。**专家建了但从不被选中时这里会显示 0**。"""
         g = self._last_gate_probs
@@ -649,11 +744,17 @@ class SuperScheduleMoE(nn.Module):
                  n_experts: int = N_TASKS, n_edges: int = N_EDGES,
                  n_slots: int = MAX_SLOTS, steps: int = 8, dropout: float = 0.1,
                  expert_depth: int = 2, n_global: int = 3,
-                 use_graph: bool = True, use_cnn: bool = True):
+                 use_graph: bool = True, use_cnn: bool = True,
+                 n_nested: int = 4, nest_layers: int = 6, nest_experts: int = 4,
+                 n_steps: int = 4):
         super().__init__()
         self.hidden = hidden
         self.expert_depth = expert_depth
         self.n_global = n_global
+        self.n_nested = n_nested
+        self.nest_layers = nest_layers
+        self.nest_experts = nest_experts
+        self.n_steps = n_steps
         self.proj = nn.Linear(node_feat, hidden)
         self.in_norm = nn.LayerNorm(hidden)
         self.type_emb = nn.Embedding(n_edges, TYPE_EMBED_DIM)
@@ -661,7 +762,9 @@ class SuperScheduleMoE(nn.Module):
 
         self.moe = MultiGateMoE(hidden, n_experts, n_edges, dropout,
                                 expert_depth=expert_depth,
-                                use_graph=use_graph, use_cnn=use_cnn)
+                                use_graph=use_graph, use_cnn=use_cnn,
+                                n_nested=n_nested, nest_layers=nest_layers,
+                                nest_experts=nest_experts)
         # 主干深层推理栈
         self.globals = nn.ModuleList(
             [GlobalBlock(hidden, dropout) for _ in range(n_global)])
@@ -693,6 +796,20 @@ class SuperScheduleMoE(nn.Module):
             nn.Linear(hidden * 2, hidden), nn.GELU(), nn.LayerNorm(hidden),
             nn.GELU(), nn.Linear(hidden, 1), nn.Sigmoid())
 
+        # ---- 后续步骤预测头（Next-Step Head）----
+        # 回答「**按当前编排状态，下一步该做什么**」：再跑一轮精修？做组次错开？
+        # 做跨时段拆分？还是已经够好可以收尾？
+        # 这不是「预测下一个时刻的赛程」，而是**编排流程的自我调度**——
+        # 编排链本身就是一条多阶段流水线（贪心 → GA → LNS → MNSA → ALNS → 精修 → 微调），
+        # 过去这条链的每一步都按固定顺序跑；有了这个头，模型可以建议「跳过哪一步」。
+        # 4 维语义（与 Java 侧 NextStepAdvice 逐位对应）：
+        #   0 继续精修 / 1 建议组次错开 / 2 建议跨时段拆分 / 3 可以收尾
+        self.next_step_head = nn.Sequential(
+            nn.Linear(hidden * 2, hidden), nn.LayerNorm(hidden), nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2), nn.GELU(),
+            nn.Linear(hidden // 2, n_steps))
+
         self.decoder = DiffusionDecoder(hidden, n_slots, steps, dropout)
 
     def forward(self, node_feat: torch.Tensor, adj_by_type: torch.Tensor,
@@ -720,13 +837,16 @@ class SuperScheduleMoE(nn.Module):
         slot_logits = self.decoder(fused, mask)                   # [B,N,K]
         lane_logits = self.lane_head(zg)                          # [B,N,K]
         quality_score = self.quality_head(gc)                     # [B,1] ∈ (0,1)
+        # 后续步骤预测：与 days/quality 同源（都吃 [pooled, struct_ctx]），
+        # 但**语义是「流程调度」而非「数值预测」，所以不套 Sigmoid。
+        next_step = self.next_step_head(gc)                       # [B,n_steps]
         # 返回顺序即 ONNX 输出顺序（export_super_moe_onnx 的 output_names 必须同步）：
         #   0 priority / 1 slot_logits / 2 task_probs / 3 format_logits
-        #   4 days_estimate / 5 lane_logits / 6 quality_score
+        #   4 days_estimate / 5 lane_logits / 6 quality_score / 7 next_step
         # ⚠️ **新输出只能往尾部追加**：Java 侧按名读取（见 SuperMoeService），
         #    但历史版本是按索引读的，插在中间会让老代码静默读错张量。
         return (priority, slot_logits, gate_probs, format_logits,
-                days_estimate, lane_logits, quality_score)
+                days_estimate, lane_logits, quality_score, next_step)
 
     def training_loss(self, priority_target: torch.Tensor, slot_target: torch.Tensor,
                       node_feat: torch.Tensor, adj_by_type: torch.Tensor,
@@ -736,7 +856,8 @@ class SuperScheduleMoE(nn.Module):
                       graph_feat: Optional[torch.Tensor] = None,
                       lane_mask: Optional[torch.Tensor] = None,
                       days_target: Optional[torch.Tensor] = None,
-                      quality_target: Optional[torch.Tensor] = None
+                      quality_target: Optional[torch.Tensor] = None,
+                      next_step_target: Optional[torch.Tensor] = None
                       ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """自监督损失：优先级回归 + 槽位分配去噪 + 负载均衡。
 
@@ -745,7 +866,7 @@ class SuperScheduleMoE(nn.Module):
         等于花了一倍参数买了个恒不激活的模块。
         """
         (priority, slot_logits, _, format_logits, days_estimate,
-         lane_logits, quality_score) = self(
+         lane_logits, quality_score, _next_step) = self(
             node_feat, adj_by_type, type_mask, mask, graph_feat=graph_feat)
         m = mask.unsqueeze(-1)
         l_pri = (((priority - priority_target) ** 2) * mask).sum() / mask.sum().clamp(min=1.0)
@@ -783,6 +904,16 @@ class SuperScheduleMoE(nn.Module):
             l_q = asymmetric_mse(quality_score.squeeze(-1), quality_target.squeeze(-1))
             loss = loss + 0.3 * l_q
             parts["quality_mse"] = float(l_q.item())
+        if next_step_target is not None:
+            # 后续步骤是**分类**语义（下一步该做什么），用软目标 CE。
+            # ⚠️ 与 format 同样的坑：target 必须是概率分布或 Long 索引，
+            #    给 Float 索引会报 "Expected floating point type for class probabilities"。
+            tgt = next_step_target.float()
+            tgt = tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+            logp = F.log_softmax(_next_step, dim=-1)
+            l_ns = -(tgt * logp).sum(dim=-1).mean()
+            loss = loss + 0.2 * l_ns
+            parts["next_step_ce"] = float(l_ns.item())
         return loss, parts
 
     @torch.no_grad()

@@ -40,12 +40,23 @@ class HeatStaggerServiceTest {
 
     @Mock private ArrangementRepository arrangementRepository;
     @Mock private EventScheduleRepository eventScheduleRepository;
+    /**
+     * 分层调度门面（2026-10-05 新依赖）。服务层<b>经门面</b>调专项模型，
+     * 不再直接持有 Advisor —— 门面是「哪一环用哪个模型」的唯一答案，
+     * 也是调用次数的唯一统计点（直接持有会让 /api/ai/status 的 calls 恒为 0，
+     * 于是「接线正确但从未通电」失去唯一的可观测信号）。
+     *
+     * <p>mock 的 {@code adviseHeatStagger} 默认返回 {@link java.util.Optional#empty()}，
+     * 算法内部自动走**规则兜底**，所以本类断言测的仍是纯规则行为 ——
+     * 这正是我们要的：缺模型不能影响功能可用性。</p>
+     */
+    @Mock private com.sports.schedule.ai.AiTiers aiTiers;
 
     private HeatStaggerService service;
 
     @BeforeEach
     void setUp() {
-        service = new HeatStaggerService(arrangementRepository, eventScheduleRepository);
+        service = new HeatStaggerService(arrangementRepository, eventScheduleRepository, aiTiers);
     }
 
     private Event event(long id, String name) {

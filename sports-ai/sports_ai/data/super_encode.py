@@ -1,8 +1,8 @@
-"""SuperScenario → 模型输入的编码器（8 类约束边 + 20 维节点特征）。
+"""SuperScenario → 模型输入的编码器（10 类约束边 + 24 维节点特征）。
 
 与 Java 端 ``SuperScheduleEncoder`` 逐位对齐。
 
-## 20 维节点特征（顺序即契约，**Java 端 SuperScheduleEncoder 逐位一致**）
+## 24 维节点特征（顺序即契约，**Java 端 SuperScheduleEncoder 逐位一致**）
 
 =====  ==================================================================================
  0-4   规模：单元数占比 / 人数 / 相对最挤单元 / 时长占比 / 场地数
@@ -10,7 +10,19 @@
  9-12  约束：是否项目块 / 块内单元占比 / 是否道次(heat>0) / heat 容量占比
  13-15 时间：时间目标三态 / 天数占比 / stage 编码
  16-19 赛制：group / round_robin / knockout / hybrid 四种球类赛制的 one-hot
+ 19-22 微调：组次撞车强度 / 组次数 / 换组最优间隔 / 跨时段拆分可行
 =====  ==================================================================================
+
+.. note::
+
+   19 维被两组特征共用是**故意的**，不是笔误：赛制 one-hot 只有 4 位，
+   而 16~19 早已被赛制占满（见下方「曾出现互相矛盾的特征表」那段）。
+   因此微调信号从**第 19 位之后**接着排，即 19-22 这四维。
+
+   ⚠️ 更正：本段初稿写成 16-19 赛制 + 19-22 微调，**维度 19 重复**。
+   代码里实际写入顺序是 fmt_oh(4) 之后接 4 维微调，故
+   **赛制实际落在 15-18、微调落在 19-22**。改这份表时务必以
+   ``feat[i] = [...]`` 那一条列表的**实际下标顺序**为准，别信文档。
 
 =====  ==========================================================================
  0-4   规模：单元数占比 / 人数 / 相对最挤单元 / 时长占比 / 场地数
@@ -44,8 +56,10 @@ from sports_ai.data.super_scenarios import (
     E_ATHLETE,
     E_BLOCK,
     E_BRACKET,
+    E_HEAT_STAGGER,
     E_LANE,
     E_POOL,
+    E_SLOT_NEIGHBOR,
     E_TEAM,
     E_TIME,
     E_VENUE,
@@ -61,7 +75,8 @@ from sports_ai.data.super_scenarios import (
     SuperUnit,
 )
 
-NODE_FEAT_DIM = 20
+# 24 维节点特征：原 20 维 + 4 维微调信号（2026-10-05）
+NODE_FEAT_DIM = 24
 MAX_SLOTS = 16
 
 
@@ -171,7 +186,35 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
                 adj[E_TIME, j, i] = adj[E_TIME, i, j]
         tmask[E_TIME] = 1.0
 
-    # ---- 20 维节点特征 ----
+    # ---- E_HEAT_STAGGER：组次级撞车（项目行可能不重叠，但某两组真实撞上）----
+    # 权重 = 撞车的组次对数归一化。**不能用 E_ATHLETE 顶替**：兼项边只说
+    # 「两人同报两项」，这条边说的是「那两个组次在时间上真的撞了」——
+    # 后者才是组次错开能消解的直接信号。
+    for i, u in enumerate(units):
+        if u.heat_clashes <= 0 or not u.is_heat_unit():
+            continue
+        w = min(1.0, u.heat_clashes / 4.0)
+        for j, v in enumerate(units):
+            if i == j or v.heat_clashes <= 0 or not v.is_heat_unit():
+                continue
+            if u.venue == v.venue or set(u.athletes) & set(v.athletes):
+                adj[E_HEAT_STAGGER, i, j] = adj[E_HEAT_STAGGER, j, i] = w
+        tmask[E_HEAT_STAGGER] = 1.0
+
+    # ---- E_SLOT_NEIGHBOR：跨时段相邻（同一天且窗口前后相接）----
+    # 拆分只在「同一天相邻两个时段」之间发生，所以这条边直接编码可拆性。
+    # 权重 = 容量比（越接近越容易凑齐一段完整组次）。
+    for i, u in enumerate(units):
+        for j, v in enumerate(units):
+            if i >= j:
+                continue
+            if u.venue != v.venue:
+                continue
+            w = min(1.0, min(u.duration, v.duration) / max(1.0, float(max(u.duration, v.duration))))
+            adj[E_SLOT_NEIGHBOR, i, j] = adj[E_SLOT_NEIGHBOR, j, i] = w
+            tmask[E_SLOT_NEIGHBOR] = 1.0
+
+    # ---- 24 维节点特征 ----
     feat = np.zeros((n, NODE_FEAT_DIM), dtype=np.float32)
     total_dur = float(sum(u.duration for u in units)) or 1.0
     max_people = max((len(u.athletes) for u in units), default=1) or 1
@@ -224,6 +267,13 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
             {"main": 0.0, "prelim": 0.33, "final": 0.66, "resecond": 1.0}.get(u.stage, 0.0),  # 14 stage
             # 15-18：赛制 onehot（group/rr/knockout/hybrid），无赛制则全 0
             fmt_oh[0], fmt_oh[1], fmt_oh[2], fmt_oh[3],
+            # ---- 19-22：微调信号（2026-10-05 新增）----
+            # 只回答两个问题：「要不要错开组次」与「能不能跨时段拆」。
+            # 全部归一化到 [0,1]，缺数据即 0（无组次语义 = 不参与微调）。
+            min(1.0, u.heat_clashes / 4.0),             # 19 组次级撞车强度
+            min(1.0, u.heat_count / 12.0) if u.heat_count else 0.0,   # 20 组次数
+            min(1.0, u.best_stagger_gap / 60.0),        # 21 换组可拿到的最优间隔
+            1.0 if u.can_split_slot() else 0.0,         # 22 跨时段拆分可行
         ]
         # ⚠️ 这里**曾经**有一行 `feat[i, 19] = 1.0 if u.task in (TASK_KNOCKOUT, TASK_RESECOND)`
         #    把第 19 维（本该是「混合赛制」one-hot 的第 4 位）覆盖成「淘汰赛/二次编排标记」。
@@ -241,7 +291,8 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
     # 节点特征告诉模型「这一个单元长什么样」，但编排里真正决定**派哪位专家上场**
     # 的是整场赛会的结构：500 人 15 项目 1~3 兼项 vs 300 人 10 项目限 2~3 天，
     # 这是两个完全不同的问题，却过去走同一套专家组合。
-    # 八维分别是：冲突密度 / 单元规模 / 场地数 / 天数 / 时间目标 / 并行度 / 填充率 / 块压力。
+    # **十维**：冲突密度 / 单元规模 / 场地数 / 天数 / 时间目标 / 并行度 / 填充率 /
+    # 块压力 / **组次错开需求** / **跨时段拆分需求**。
     # ------------------------------------------------------------------
     # ⚠️ 场地数口径 = **有窗口的场地数**（窗口 = 真正能排的时段场地），必须与
     #    Java SuperScheduleEncoder 的 nActiveVenues 一致。
@@ -258,6 +309,9 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
     total_cap = float(sum(int(w.capacity) for w in scen.windows))
     fill = demand / max(1.0, total_cap)
     days_eff = max(1, int(max_days))
+    # 微调需求占比：这两个专家该不该上场，取决于「有多少单元真的需要它们」
+    n_stagger = sum(1 for u in units if u.needs_heat_stagger())
+    n_split = sum(1 for u in units if u.can_split_slot())
     graph_feat = np.array([
         min(1.0, conf_density * 8.0),            # 0 冲突密度（兼项边占比）
         min(1.0, n / 128.0),                     # 1 单元规模
@@ -267,6 +321,8 @@ def encode_super_graph(scen: SuperScenario) -> Optional[Dict[str, np.ndarray]]:
         min(1.0, max_par / 4.0),                 # 5 每时段并行场地数
         min(1.0, fill),                          # 6 填充率（需求/容量）
         min(1.0, (scen.n_blocks / float(days_eff)) / 4.0),   # 7 块压力
+        min(1.0, n_stagger / max(1.0, n / 8.0)),  # 8 组次错开需求占比
+        min(1.0, n_split / max(1.0, n / 8.0)),    # 9 跨时段拆分需求占比
     ], dtype=np.float32)
 
     return {"node_feat": feat[None], "adj_by_type": adj[None],

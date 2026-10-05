@@ -32,7 +32,7 @@ public class SuperMoeService {
     /** 一次超级模型推理的结果。 */
     public record Advice(double[] priority,          // [N] 调度优先级，越高越先排
                          double[][] slotLogits,      // [N][K] 时间槽 logits
-                         double[] taskProbs,         // [N_TASKS] 任务/能力权重（17 维）
+                         double[] taskProbs,         // [N_TASKS] 任务/能力权重（19 维）
                          double[] formatLogits,      // [4] 球类赛制
                          double daysEstimate,        // 预计工期（天）
                          double[][] laneLogits,      // [N][K] 道次派遣 logits（替代 lane_advisor）
@@ -124,6 +124,15 @@ public class SuperMoeService {
 
     private volatile ai.onnxruntime.OrtSession session;
     private volatile String loadError;
+    /**
+     * 最近一次**推理**失败的原因（与 {@link #loadError} 分开）。
+     *
+     * <p>两者必须分开：模型能加载 ≠ 推理能成功。最常见的失败是
+     * 「磁盘上的 onnx 是旧结构」（例如 7 输出而新代码按 8 输出读）——
+     * 这种情况 {@code available()} 为 true、{@code loadError} 为 null，
+     * 于是降级原因彻底消失，现场只看到 {@code degraded=true} 却没有 why。</p>
+     */
+    private volatile String lastInferenceError;
 
     public SuperMoeService(
             @Value("${sports.schedule.ai.enabled:true}") boolean enabled,

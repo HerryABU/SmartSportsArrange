@@ -50,7 +50,7 @@ class SuperScheduleEncoderTest {
                 unit(2, 0, "blkB", "田径场", 60, 0));
         var e = enc.encode(us, windows(), 2, 100);
         float[] g = e.graphFeat();
-        assertEquals(8, g.length, "图级特征必须是八维");
+        assertEquals(10, g.length, "图级特征必须是十维（8 维基础 + 2 维微调需求占比）");
         // 0 冲突密度：三人运动员互不重叠 → 0
         assertEquals(0f, g[0], 1e-6);
         // 1 单元规模 3/128
@@ -99,15 +99,19 @@ class SuperScheduleEncoderTest {
         assertEquals(5, SuperScheduleEncoder.E_TIME);
         assertEquals(6, SuperScheduleEncoder.E_BRACKET);
         assertEquals(7, SuperScheduleEncoder.E_TEAM);
-        assertEquals(8, SuperScheduleEncoder.N_EDGES);
-        assertEquals(20, SuperScheduleEncoder.NODE_FEAT_DIM);
-        assertEquals(17, SuperScheduleEncoder.N_TASKS);
+        // 2026-10-05 新增两条微调专属边（组次撞车 / 跨时段相邻）
+        assertEquals(8, SuperScheduleEncoder.E_HEAT_STAGGER);
+        assertEquals(9, SuperScheduleEncoder.E_SLOT_NEIGHBOR);
+        assertEquals(10, SuperScheduleEncoder.N_EDGES);
+        assertEquals(24, SuperScheduleEncoder.NODE_FEAT_DIM);
+        assertEquals(19, SuperScheduleEncoder.N_TASKS);
         assertEquals(11, SuperScheduleEncoder.N_UNIT_TASKS);
         assertEquals(4, SuperScheduleEncoder.N_FORMATS);
         // 任务数演进：9（初版）→ 11（合并裁判编排 / 教师规避）
-        //            → 17（本轮合并 GAN 生成/判别 + refiner + diffusion + lane_advisor + forecast）
+        //            → 17（合并 GAN 生成/判别 + refiner + diffusion + lane_advisor + forecast）
+        //            → 19（2026-10-05 追加微调专属专家：组次顺序错开 / 跨时段拆分）
         // 顺序即 ONNX 输出通道号，**只允许在尾部追加**。
-        assertEquals(17, SuperScheduleEncoder.taskNames().length);
+        assertEquals(19, SuperScheduleEncoder.taskNames().length);
         assertEquals(SuperScheduleEncoder.N_TASKS, SuperScheduleEncoder.taskNames().length,
                 "任务名个数与 N_TASKS 必须一致（双端契约）");
         // 末 6 位是能力专家，名称必须逐字对得上 Python 侧 TASK_NAMES

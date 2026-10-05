@@ -82,7 +82,14 @@ public final class HeatStaggerMath {
 
     /** 一次换组建议：把该占位从当前组次移到目标组次 */
     public record Move(long athleteId, String athleteName, String classId,
-                       HeatSlot from, HeatSlot to, int gapBefore, int gapAfter) {
+                       HeatSlot from, HeatSlot to, int gapBefore, int gapAfter,
+                       boolean aiAdvised) {
+
+        /** 兼容旧构造（规则择优） */
+        public Move(long athleteId, String athleteName, String classId,
+                    HeatSlot from, HeatSlot to, int gapBefore, int gapAfter) {
+            this(athleteId, athleteName, classId, from, to, gapBefore, gapAfter, false);
+        }
 
         public String describe() {
             return String.format("运动员「%s」在「%s」（%s %s）的第%d组 → 第%d组（间隔 %d → %d 分钟）",
@@ -118,6 +125,41 @@ public final class HeatStaggerMath {
      * @return 换组建议（按运动员顺序）；无可消解的冲突时返回空列表
      */
     public static List<Move> resolve(List<SlotRef> slots, Map<Long, Integer> lanesOf, int bufferMin) {
+        return resolve(slots, lanesOf, bufferMin, null);
+    }
+
+    /**
+     * 建议提供者（可选）：给定合法候选组次，返回「换到第几组」的建议。
+     *
+     * <p>刻意做成接口而不是直接依赖 Spring Bean：本类是<b>纯函数核心</b>
+     * （不读库、不依赖容器），单测里用 lambda 就能喂建议。
+     * 模型不可用时传 null 或返回 empty，规则择优（间隔最大）自动兜底。</p>
+     */
+    @FunctionalInterface
+    public interface HeatSuggester {
+        /**
+         * @param heatCount 组次数
+         * @param perRound  每组用时
+         * @param legal     合法候选组次（1-based）
+         * @param curHeat   当前组次（1-based）
+         * @param gapOf     逐组间隔（分钟），长度 ≥ heatCount
+         * @param fillOf    逐组填充率，长度 ≥ heatCount
+         * @return 建议目标组次（1-based）；无建议返回 empty
+         */
+        java.util.Optional<Integer> suggest(int heatCount, int perRound, List<Integer> legal,
+                                            int curHeat, int[] gapOf, double[] fillOf);
+    }
+
+    /**
+     * 求解（可挂模型建议）。
+     *
+     * <p><b>模型只在「规则已判定合法」的候选里重排</b>，绝不参与合法性判断：
+     * 三条红线（同班/容量/锁定）永远由本类裁定。理由见训练侧的消融记录 ——
+     * 把判据喂进特征会让模型只是把判据读一遍（命中率 1.000 却什么都没学），
+     * 所以「判合法」与「挑更好」必须分给两方。</p>
+     */
+    public static List<Move> resolve(List<SlotRef> slots, Map<Long, Integer> lanesOf, int bufferMin,
+                                     HeatSuggester suggester) {
         // ① 运动员 → 其全部占位（保持录入顺序，便于结果可复现）
         Map<Long, List<SlotRef>> byAthlete = new LinkedHashMap<>();
         for (SlotRef s : slots) {
@@ -144,7 +186,7 @@ public final class HeatStaggerMath {
                 List<SlotRef> pair = firstClashingPair(mine, bufferMin);
                 if (pair == null) break;
                 SlotRef a = pair.get(0), b = pair.get(1);
-                Move best = bestMove(a, b, mine, heatSize, heatClasses, lanesOf, bufferMin);
+                Move best = bestMove(a, b, mine, heatSize, heatClasses, lanesOf, bufferMin, suggester);
                 if (best == null) break;   // 无合法换法 → 留给告警，不硬改
                 applyMove(best, a, b, heatSize, heatClasses);
                 moves.add(best);
@@ -186,50 +228,127 @@ public final class HeatStaggerMath {
     private static Move bestMove(SlotRef a, SlotRef b, List<SlotRef> mine,
                                  Map<String, Integer> heatSize, Map<String, Set<String>> heatClasses,
                                  Map<Long, Integer> lanesOf, int bufferMin) {
+        return bestMove(a, b, mine, heatSize, heatClasses, lanesOf, bufferMin, null);
+    }
+
+    private static Move bestMove(SlotRef a, SlotRef b, List<SlotRef> mine,
+                                 Map<String, Integer> heatSize, Map<String, Set<String>> heatClasses,
+                                 Map<Long, Integer> lanesOf, int bufferMin,
+                                 HeatSuggester suggester) {
         Move best = null;
-        Move viaA = bestFor(a, b, mine, heatSize, heatClasses, lanesOf, bufferMin);
+        Move viaA = bestFor(a, b, mine, heatSize, heatClasses, lanesOf, bufferMin, suggester);
         if (viaA != null) best = viaA;
-        Move viaB = bestFor(b, a, mine, heatSize, heatClasses, lanesOf, bufferMin);
-        if (viaB != null && (best == null || viaB.gapAfter() > best.gapAfter())) best = viaB;
+        Move viaB = bestFor(b, a, mine, heatSize, heatClasses, lanesOf, bufferMin, suggester);
+        if (viaB != null && (best == null || betterMove(viaB, best))) best = viaB;
         return best;
+    }
+
+    /**
+     * 比较两个都合法的换法：模型建议优先，其次间隔最大。
+     *
+     * <p>「模型优先」是刻意的：它编码了规则看不到的全局权衡
+     * （给后续留余量、班级分散的长期代价）。但只有当模型建议也<b>确实解开了冲突</b>时才采纳 ——
+     * 见 {@code bestFor} 里的 {@code gapAfter >= bufferMin} 闸门。</p>
+     */
+    private static boolean betterMove(Move candidate, Move current) {
+        if (candidate.aiAdvised() != current.aiAdvised()) {
+            return candidate.aiAdvised();
+        }
+        return candidate.gapAfter() > current.gapAfter();
     }
 
     private static Move bestFor(SlotRef moving, SlotRef fixed, List<SlotRef> mine,
                                 Map<String, Integer> heatSize, Map<String, Set<String>> heatClasses,
                                 Map<Long, Integer> lanesOf, int bufferMin) {
+        return bestFor(moving, fixed, mine, heatSize, heatClasses, lanesOf, bufferMin, null);
+    }
+
+    private static Move bestFor(SlotRef moving, SlotRef fixed, List<SlotRef> mine,
+                                Map<String, Integer> heatSize, Map<String, Set<String>> heatClasses,
+                                Map<Long, Integer> lanesOf, int bufferMin,
+                                HeatSuggester suggester) {
         // 红线③：人工锁定的项不动
         if (moving.manual()) return null;
         HeatSlot from = moving.slot();
         Integer lanes = lanesOf.get(from.eventId());
         String cid = moving.classId() == null ? "" : moving.classId();
         int gapBefore = Math.max(fixed.slot().start() - from.end(), from.start() - fixed.slot().end());
-        Move best = null;
-        for (int h = 1; h <= from.heatCount(); h++) {
-            if (h == from.heat()) continue;
+
+        int heatCount = from.heatCount();
+        int[] gapOf = new int[heatCount];
+        double[] fillOf = new double[heatCount];
+        List<Integer> legal = new ArrayList<>();
+        java.util.Map<Integer, Integer> legalGap = new LinkedHashMap<>();
+
+        for (int h = 1; h <= heatCount; h++) {
             HeatSlot to = new HeatSlot(from.eventId(), from.eventName(), from.grade(), from.gender(),
-                    from.round(), h, from.heatCount(), from.day(), from.startMinute(), from.perRoundMinutes());
+                    from.round(), h, heatCount, from.day(), from.startMinute(), from.perRoundMinutes());
             String key = heatSizeKey(to);
+            Integer lanesCap = lanesOf.get(from.eventId());
+            Integer size = heatSize.get(key);
+            int fill = size == null ? 0 : size;
+            fillOf[h - 1] = (lanesCap == null || lanesCap <= 0) ? 0d : (double) fill / lanesCap;
+            int g = gapToFixed(to, fixed.slot());
+            gapOf[h - 1] = g;
+            if (h == from.heat()) continue;
             // 红线②：组容量（并道数上限；缺配置视为不限）
-            if (lanes != null && heatSize.getOrDefault(key, 0) >= lanes) continue;
+            if (lanes != null && fill >= lanes) continue;
             // 红线①：同组不同班 —— 必须查<b>目标组次</b>的班级构成。
             // ⚠️ 早前误取「来源组」的班级集合，等于这条红线从未真正生效：
             //    换组恰恰是为了离开来源组，查它的同班构成毫无意义。
             if (heatClasses.getOrDefault(key, Set.of()).contains(cid)) continue;
             // 换后必须与「该运动员其余全部项目」都错开（不只是刚冲突的那一个）
             if (stillClashesWithOthers(to, moving, fixed, mine, bufferMin)) continue;
-            int gapAfter = Math.max(fixed.slot().start() - to.end(), to.start() - fixed.slot().end());
             // ⚠️ 必须<b>真的消解</b>冲突：只检查「与 others 不撞」是不够的——
             // 若目标组次与 fixed 仍差着不到 buffer，本质上冲突还在，
             // 而这次换组已经改动了组次顺序，等于白白消耗一次机会、
             // 还可能把下游依赖「组次已定」的环节搅乱。
             // （实测：错开一格 10 分钟 < 缓冲 15 分钟时，不做这道闸门就会采纳无效换组。）
-            if (gapAfter < bufferMin) continue;
-            if (best == null || gapAfter > best.gapAfter()) {
+            if (g < bufferMin) continue;
+            legal.add(h);
+            legalGap.put(h, g);
+        }
+        if (legal.isEmpty()) return null;
+
+        // ① 模型建议优先（只在已判定合法的候选里挑 —— 判合法永远是规则的事）
+        if (suggester != null && legal.size() > 1) {
+            try {
+                java.util.Optional<Integer> hinted = suggester.suggest(
+                        heatCount, from.perRoundMinutes(), legal, from.heat(), gapOf, fillOf);
+                if (hinted.isPresent()) {
+                    int h = hinted.get();
+                    Integer g = legalGap.get(h);
+                    // 二次校验：模型给的组次必须仍在合法集合内（模型不可信，红线不可越）
+                    if (g != null && g >= bufferMin) {
+                        HeatSlot to = new HeatSlot(from.eventId(), from.eventName(), from.grade(),
+                                from.gender(), from.round(), h, heatCount, from.day(),
+                                from.startMinute(), from.perRoundMinutes());
+                        return new Move(moving.athleteId(), moving.athleteName(), moving.classId(),
+                                from, to, gapBefore, g, true);
+                    }
+                }
+            } catch (Exception ignored) {
+                // 模型异常一律回退规则，不影响主流程
+            }
+        }
+
+        // ② 规则兜底：间隔最大者
+        Move best = null;
+        for (int h : legal) {
+            int g = legalGap.get(h);
+            if (best == null || g > best.gapAfter()) {
+                HeatSlot to = new HeatSlot(from.eventId(), from.eventName(), from.grade(), from.gender(),
+                        from.round(), h, heatCount, from.day(), from.startMinute(), from.perRoundMinutes());
                 best = new Move(moving.athleteId(), moving.athleteName(), moving.classId(),
-                        from, to, gapBefore, gapAfter);
+                        from, to, gapBefore, g, false);
             }
         }
         return best;
+    }
+
+    /** 目标组次与固定占位之间的对称间隔（分钟） */
+    private static int gapToFixed(HeatSlot to, HeatSlot fixed) {
+        return Math.max(fixed.start() - to.end(), to.start() - fixed.end());
     }
 
     /** 换到目标组次后，是否仍与其余项目（除 fixed 外）撞车 */

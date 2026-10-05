@@ -227,7 +227,13 @@ def main() -> None:
     #    服务端「模型加载失败 → 静默回退规则」。所以它们全部焊进 checkpoint。
     ap.add_argument("--hidden", type=int, default=192)
     ap.add_argument("--steps", type=int, default=8)
-    ap.add_argument("--expert-depth", type=int, default=2,
+    ap.add_argument("--n-nested", type=int, default=4,
+                    help="嵌套 MoE 专家个数（放在能力专家区；0 = 全同构）")
+    ap.add_argument("--nest-layers", type=int, default=6,
+                    help="嵌套专家内部 SpecialistMoE 的主干层数")
+    ap.add_argument("--nest-experts", type=int, default=4,
+                    help="嵌套专家内部 SpecialistMoE 的多架构专家数")
+    ap.add_argument("--expert-depth", type=int, default=6,
                     help="每个专家内部堆叠的消息传递层数（1=旧版单层）")
     ap.add_argument("--n-global", type=int, default=3,
                     help="MoE 之后的主干深层推理块数")
@@ -273,8 +279,11 @@ def main() -> None:
 
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=args.hidden,
                              steps=args.steps, expert_depth=args.expert_depth,
-                             n_global=args.n_global).to(device)
+                             n_global=args.n_global, n_nested=args.n_nested,
+                             nest_layers=args.nest_layers,
+                             nest_experts=args.nest_experts).to(device)
     print(f"[model] 参数量 {sum(q.numel() for q in model.parameters()):,}")
+    print(f"[model] 专家池构成 {model.moe.expert_kinds()}")
     if args.resume and os.path.exists(MODEL_DIR + "/super_moe.pt"):
         raw = torch.load(MODEL_DIR + "/super_moe.pt", map_location=device)
         # 兼容两种落盘格式：新格式 {"state_dict":…, "meta":…}，旧格式即裸 state_dict
@@ -351,6 +360,10 @@ def main() -> None:
             save_best(model, best_stats, {
                 "hidden": args.hidden, "steps": args.steps, "samples": args.samples,
                 "expert_depth": args.expert_depth, "n_global": args.n_global,
+                # ⚠️ 嵌套结构参数必须一并写进 meta：导出脚本靠它重建模型，
+                #    漏掉就会 load_state_dict 形状不匹配 → 服务端静默回退规则。
+                "n_nested": args.n_nested, "nest_layers": args.nest_layers,
+                "nest_experts": args.nest_experts, "n_steps": model.n_steps,
                 # 预算可诊断性：只看到 val_loss 时无法判断「训够了没有」，
                 # 把实际轮数与建议预算一并写进 meta，一眼就能看出是不是没训够。
                 "epochs_run": epoch + 1, "budget_epochs": want_epochs,

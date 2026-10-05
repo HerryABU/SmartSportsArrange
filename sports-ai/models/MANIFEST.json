@@ -1,8 +1,8 @@
 {
   "schema": "sports-ai/models-manifest@1",
   "note": "模型不入 git，按本清单独立分发；重训后请重新生成本清单。",
-  "count": 14,
-  "totalBytes": 75470761,
+  "count": 16,
+  "totalBytes": 91433228,
   "models": {
     "algorithm_selector.onnx": {
       "bytes": 3062966,
@@ -28,6 +28,11 @@
       "bytes": 59501,
       "sha256": "2fe07f69feae8deb40ac4f78ea5d08a344b2ffd49eb817979e1217301b7a1b1b",
       "usage": "趋势预测（多入多出）；缺失 → 不使用"
+    },
+    "heat_stagger_advisor.onnx": {
+      "bytes": 7980716,
+      "sha256": "10e464cec8c407e10f394839c70aa29deca877bcb7a9cad5bb02bff884f678bc",
+      "usage": "组次错开专项 MoE（在已过滤的合法候选里建议换到第几组）；缺失 → 规则取间隔最大者"
     },
     "lane_advisor.onnx": {
       "bytes": 162158,
@@ -59,10 +64,15 @@
       "sha256": "6c0e67dfe594d94d3fa5b975955376ba6a8e5f24126b1729760c5fbdba89dee4",
       "usage": "方案精修器；缺失 → 跳过精修"
     },
+    "slot_split_advisor.onnx": {
+      "bytes": 7981751,
+      "sha256": "de7f02fac03cc0b0be8d8cf45f62c1e6e15a74bf6eff5f69f22966c236eeff65",
+      "usage": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆"
+    },
     "super_moe.onnx": {
       "bytes": 44077042,
       "sha256": "959c8bac043b9395c5590ce225db38aab1222b10c6f7cdc8d952f56a06862bd6",
-      "usage": "统一编排超级模型（11 类任务）；缺失 → L4 退化为 L3（优化链）"
+      "usage": "统一编排超级模型（19 类任务，19 专家含 4 个嵌套专项 MoE）；缺失 → L4 退化为 L3（优化链）"
     },
     "teacher_gnn.onnx": {
       "bytes": 3087492,

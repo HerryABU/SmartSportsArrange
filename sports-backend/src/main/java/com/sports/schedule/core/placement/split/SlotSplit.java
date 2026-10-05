@@ -129,6 +129,88 @@ public final class SlotSplit {
     }
 
     /**
+     * 拆分顺序建议器（可选）：给定「本趟里所有整块放不下的单元」，返回「先拆谁」的顺序。
+     *
+     * <p><b>为什么需要它</b>：上午的零头通常只够拆一个项目，而候选常有 3~5 个。
+     * 谁先拆会让<b>后面</b>的项目受益或受损 —— 这是真实的多解竞争，
+     * 纯规则只能贪心地看当前收益。模型（{@code slot_split_advisor.onnx}）学到的是
+     * 「给后续留余量」的全局权衡。</p>
+     *
+     * <p>返回 {@code null} 或空列表时，调用方按原始顺序逐个尝试（等价于无 AI）。</p>
+     */
+    @FunctionalInterface
+    public interface SplitOrderSuggester {
+        java.util.List<Integer> suggestOrder(List<Unit> units, int amFree, int pmFree);
+    }
+
+    /**
+     * 按建议顺序逐个尝试拆分：第一个成功的即采用。
+     *
+     * <p>⚠️ <b>仍然只接受「红线全过」的方案</b>：模型只决定「先试谁」，
+     * 能不能拆、切成几组，仍由 {@link #findSplit} 的三条红线裁定。
+     * 这是「判合法」与「挑更好」的分权，与组次错开侧同构。</p>
+     *
+     * @return 命中的方案与被采纳的单元；无一可拆返回 null
+     */
+    public static Object[] trySplitInOrder(List<Unit> units, Pool pool, List<Window> windows,
+                                            int interval, Map<Long, List<int[]>> busy,
+                                            List<int[]> blockedIntervals, SplitOrderSuggester suggester) {
+        if (units == null || units.isEmpty()) {
+            return null;
+        }
+        java.util.List<Integer> order = new java.util.ArrayList<>();
+        for (int i = 0; i < units.size(); i++) {
+            order.add(i);
+        }
+        if (suggester != null) {
+            try {
+                java.util.List<Integer> hinted = suggester.suggestOrder(
+                        units, freeOf(units, pool, windows), 0);
+                if (hinted != null && !hinted.isEmpty()) {
+                    java.util.List<Integer> valid = new java.util.ArrayList<>();
+                    for (int i : hinted) {
+                        if (i >= 0 && i < units.size() && !valid.contains(i)) {
+                            valid.add(i);
+                        }
+                    }
+                    for (int i = 0; i < order.size(); i++) {
+                        if (!valid.contains(i)) {
+                            valid.add(i);
+                        }
+                    }
+                    order = valid;
+                }
+            } catch (Exception ignored) {
+                // 模型异常一律回退原始顺序，不影响主流程
+            }
+        }
+        for (int idx : order) {
+            SplitCand cand = findSplit(units.get(idx), pool, windows, interval, busy, blockedIntervals);
+            if (cand != null && cand.durationConsistent(units.get(idx).duration)) {
+                return new Object[]{units.get(idx), cand};
+            }
+        }
+        return null;
+    }
+
+    /** 估算当前上午窗口的总剩余分钟（供建议器作上下文；估算值不当真值用） */
+    private static int freeOf(List<Unit> units, Pool pool, List<Window> windows) {
+        if (windows == null || windows.isEmpty() || pool == null || pool.cursors.isEmpty()) {
+            return 0;
+        }
+        Cursor c = pool.cursors.get(0);
+        int total = 0;
+        for (int wi = 0; wi < windows.size(); wi++) {
+            Window w = windows.get(wi);
+            total += Math.max(0, w.capacity - c.usedAt(wi));
+            if (total > 240) {
+                break;
+            }
+        }
+        return total;
+    }
+
+    /**
      * 拆分候选择优：冲突少 → 上午段组次多（越接近「整块放上午」越好，说明上午余量用得足）
      * → 上午窗口靠前 → 上午起点靠前 → 下午起点靠前。
      */

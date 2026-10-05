@@ -27,7 +27,11 @@ MANIFEST = os.path.join(MODELS, "MANIFEST.json")
 
 # 每个模型的用途说明：分发时让使用者知道「少了哪个会退化成什么」
 USAGE = {
-    "super_moe.onnx": "统一编排超级模型（11 类任务）；缺失 → L4 退化为 L3（优化链）",
+    # 2026-10-05：19 类任务 / 专家池含 4 个嵌套专项 MoE / 8 个输出（含后续步骤预测）
+    "super_moe.onnx": "统一编排超级模型（19 类任务，19 专家含 4 个嵌套专项 MoE）；缺失 → L4 退化为 L3（优化链）",
+    # 两个专项 MoE：多架构专家 + 层次两级门控 + 稠密融合 + 6 层主干
+    "heat_stagger_advisor.onnx": "组次错开专项 MoE（在已过滤的合法候选里建议换到第几组）；缺失 → 规则取间隔最大者",
+    "slot_split_advisor.onnx": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆",
     "constraint_gnn.onnx": "约束图神经网络；缺失 → 约束评估走规则",
     "tournament_gnn.onnx": "球类赛制 GNN（赛制/种子/公平性）；缺失 → 球类走规则赛制",
     "conflict_gnn.onnx": "冲突簇着色 GNN；缺失 → 兼项退化为贪心着色",

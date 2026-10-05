@@ -18,7 +18,7 @@ r"""超级编排统一场景：项目 / 道次 / 球类（小组·淘汰·循环
 并在 ``scenarios`` 里保留原始值供 Java 端解释——**模型只吃归一化值，
 决策含义要靠 Java 端那一侧翻译**，两边必须同步。
 
-## 十七类编排任务（MoE 的专家划分依据）
+## 十九类编排任务（MoE 的专家划分依据）
 
 ``TASK_*`` 常量与模型的专家一一对应：
 
@@ -34,11 +34,14 @@ r"""超级编排统一场景：项目 / 道次 / 球类（小组·淘汰·循环
 9 REFEREE  裁判编排
 10 TEACHER 教师（行政）规避
 -------- 以上 11 位是「任务专家」，按**节点**路由 --------
-11 GENERATE  方案生成    \ 16 QUALITY 方案判别
-12 REFINE    方案精修    /  这 6 位是「能力专家」，按**实例（图级）**路由，
+11 GENERATE  方案生成    \ 19 SPLIT 跨时段拆分
+12 REFINE    方案精修    /  这 8 位是「能力专家」，按**实例（图级）**路由，
 13 DIFFUSION 扩散去噪    \ 分别替代此前独立服役的
 14 DISPATCH  道次派遣    /  GAN(生成/判别) + refiner + diffusion +
 15 FORECAST  工期预测       lane_advisor + forecast 共 7 个模型
+16 QUALITY   方案判别       以及 2026-10-05 新增的两个微调小模型
+17 STAGGER   组次顺序错开
+-------- 以上 11 位是「任务专家」，按**节点**路由 --------
 """
 
 from __future__ import annotations
@@ -90,10 +93,29 @@ TASK_DISPATCH = 14
 TASK_FORECAST = 15
 TASK_QUALITY = 16
 
+# ---- 第 18、19 位：**微调专属专家**（2026-10-05）----
+# 这两位对应刚落地的两条**正交**微调维度，与前 17 位性质不同：
+# 精修链（GA/LNS/MNSA/ALNS/Fix-opt）全都只在「挪项目时间」这一维度找改进，
+# 受「同并发位不重叠 + 组次必须连续」约束，**总有挪不动的残余冲突**。
+# 这两位就是挪不动时的两条出路，各自都有独立的输入依赖，故同样是**能力专家**
+# （图级路由），而不是可排单元。
+#
+#   常量                语义        对应的独立小模型
+#   ------------------  ----------  ------------------------------
+#   TASK_HEAT_STAGGER   组次顺序错开  heat_stagger_advisor.onnx
+#   TASK_SLOT_SPLIT     跨时段拆分    slot_split_advisor.onnx
+#
+# 为什么单列而不并入 TASK_CONFLICT / TASK_CAPACITY：
+#   ① 前者**只改编排表的 heat、项目时间窗一分不动**，后者改的是赛程表；
+#   ② 后者决定「切在第几组次」，受组次边界硬约束，与装箱的容量语义正交。
+# 混进既有专家会让「该模型学到的权重」含义不明，**无法归因**。
+TASK_HEAT_STAGGER = 17
+TASK_SLOT_SPLIT = 18
+
 # 有真实输入单元的「任务专家」个数：0..N_UNIT_TASKS-1 走**节点级**路由；
 # 其余（能力专家）走**图级**路由。二者共享同一套专家池与负载均衡。
 N_UNIT_TASKS = 11
-N_TASKS = 17
+N_TASKS = 19
 
 TASK_NAMES = {
     TASK_PROJECT: "项目编排",
@@ -113,6 +135,8 @@ TASK_NAMES = {
     TASK_DISPATCH: "道次派遣",
     TASK_FORECAST: "工期预测",
     TASK_QUALITY: "方案判别",
+    TASK_HEAT_STAGGER: "组次顺序错开",
+    TASK_SLOT_SPLIT: "跨时段拆分",
 }
 
 # ---- 边类型（顺序即 ONNX 通道号，双端契约）----
@@ -124,12 +148,22 @@ E_TIME = 4      # 装箱/间隔耦合
 E_LANE = 5      # 同道次/同批次
 E_BRACKET = 6   # 淘汰赛晋级关系
 E_TEAM = 7      # 同队（球类）
-N_EDGES = 8
+# 2026-10-05 新增：两条微调专属边。它们与既有 8 类**语义正交**，不能用已有通道顶替：
+#   E_HEAT_STAGGER 组次级撞车：两个单元的**某两组**在时间上真实撞车（项目行可能并不重叠），
+#       权重 = 撞车的组次对数归一化。它是组次错开的直接信号。
+#   E_SLOT_NEIGHBOR 跨时段相邻：两个时段窗口**同一天且前后相邻**，
+#       权重 = 相邻程度（容量比）。它是跨时段拆分的可行性信号。
+# ⚠️ 通道号变了必须**同时**改 Java 侧 SuperScheduleEncoder.N_EDGES 与 E_* 常量，
+#    并重训（adj_by_type 的形状 [B,E,N,N] 随 E 变化）。
+E_HEAT_STAGGER = 8
+E_SLOT_NEIGHBOR = 9
+N_EDGES = 10
 
 EDGE_NAMES = {
     E_ATHLETE: "兼项", E_BLOCK: "项目块", E_VENUE: "场地",
     E_POOL: "并发池", E_TIME: "装箱间隔", E_LANE: "道次",
     E_BRACKET: "晋级", E_TEAM: "同队",
+    E_HEAT_STAGGER: "组次撞车", E_SLOT_NEIGHBOR: "跨时段相邻",
 }
 
 # ---- 球类赛制 ----
@@ -162,12 +196,46 @@ class SuperUnit:
     lanes: int = 0                   # 道数
     team_size: int = 0
     athletes: List[int] = field(default_factory=list)
+    # ---- 组次维度（2026-10-05 新增，支撑 TASK_HEAT_STAGGER）----
+    #: 单个组次用时（分钟）。组次时间窗 = [start + (h-1)*per_round, +per_round)
+    per_round: int = 0
+    #: 该单元的组次数（0 = 无组次语义）
+    heat_count: int = 0
+    #: 真实待错开的兼项冲突数（组次级判定；0 = 无需错开）
+    heat_clashes: int = 0
+    #: 换组次能拿到的最大间隔（分钟，组次时间轴上到最近一项的最优间隔）
+    best_stagger_gap: int = 0
+    # ---- 跨时段拆分维度（2026-10-05 新增，支撑 TASK_SLOT_SPLIT）----
+    #: 整块时长能否被「每组用时」整除（组次边界对不齐 → 一律不拆）
+    split_aligned: int = 0
+    #: 上午窗口剩余分钟（可容纳的组次空间）
+    morning_free: int = 0
+    #: 下午窗口剩余分钟
+    afternoon_free: int = 0
+    #: 拆分后的最优上午承载组次数（0 = 拆不了）
+    best_split_rounds: int = 0
     # 淘汰赛：晋级关系
     bracket_parent: Optional[str] = None
     bracket_round: int = 0
     # 二次编排：首轮道次已定，重排时要保兼容
     resecond_of: Optional[str] = None
     stage: str = "main"              # main / prelim / final / resecond
+
+    def is_heat_unit(self) -> bool:
+        """是否具备组次语义（组次数与每组用时都已确定）。"""
+        return self.heat_count >= 2 and self.per_round > 0
+
+    def needs_heat_stagger(self) -> bool:
+        """是否需要组次错开：存在组次级兼项冲突，且组次数足以换组。"""
+        return self.heat_clashes > 0 and self.heat_count >= 2
+
+    def can_split_slot(self) -> bool:
+        """是否可跨时段拆分：组次边界对得上，且上午有零头、下午能承接。"""
+        if self.heat_count < 2 or self.per_round <= 0:
+            return False
+        if not self.split_aligned:
+            return False
+        return self.best_split_rounds >= 1 and self.morning_free >= self.per_round
 
 
 @dataclass
@@ -657,7 +725,94 @@ def generate_super_scenario(tier: str = "HELL", seed: int = 0,
     n_multi, mx = scen.multi_event_athletes()
     scen.n_multi_athletes, scen.max_multi = n_multi, mx
     scen.n_blocks = len(scen.blocks())
+    annotate_heat_refine_dims(scen, rng)
     return scen
+
+
+def annotate_heat_refine_dims(scen: "SuperScenario", rng) -> None:
+    """标注两组微调维度：组次错开与跨时段拆分（2026-10-05）。
+
+    ⚠️ **为什么必须真的算，不能随机填**：这两个维度一旦恒为 0（或纯随机），
+    新专家就永远拿不到梯度 —— 那正是「接线正确但从未通电」：
+    代码、模型、ONNX 全套都在，唯独这个信号从没被触发过，而指标照样好看。
+    所以这里按**与 Java 端同口径的真实判定**算一遍。
+
+    判定口径（与 ``HeatStaggerMath`` / ``SlotSplit`` 逐位一致）：
+
+    * ``heat_clashes``  两个同场地单元各自有组次，且**某一组**的时间窗
+      真正撞上（对称间隔 < 15 分钟）。注意这比「项目行重叠」细得多 ——
+      项目行重叠只是**可能**冲突，组次撞车才是**真**冲突。
+    * ``best_stagger_gap`` 换组次能拿到的最优间隔（组次数越多、每组越短越好换）。
+    * ``best_split_rounds`` 上午窗口能吃下多少个完整组次（按每组用时整除）。
+    """
+    # 每组用时：径赛按 6 分钟、田赛按 3 分钟（与 Java 端 HeatStaggerService.perRoundOf 同源）
+    for u in scen.units:
+        if u.per_round <= 0:
+            u.per_round = 3 if (not u.track) else 6
+        if u.heat_count <= 0:
+            # 组次数由「人数 ÷ 并道数」决定（无并道配置时按 1 人 1 组兜底）
+            lanes = max(1, u.lanes or u.heat_capacity or 1)
+            u.heat_count = max(1, int(math.ceil(len(u.athletes) / lanes))) if u.athletes else 0
+
+    # 上午/下午窗口的剩余容量（按 (day, window_idx) 的第一个/第二个时段近似）
+    by_slot: Dict[Tuple[int, int], int] = {}
+    for w in scen.windows:
+        key = (int(w.day), int(w.window_idx))
+        by_slot[key] = by_slot.get(key, 0) + int(w.capacity)
+    day1 = sorted(k for k in by_slot if k[0] == min(x[0] for x in by_slot)) if by_slot else []
+    am_free = by_slot.get(day1[0], 0) if day1 else 0
+    pm_free = by_slot.get(day1[1], 0) if len(day1) > 1 else 0
+
+    # 预计算每个单元的「已用于其它单元的同池占用」，让 morning_free 有真实压力
+    used_am = 0
+    for u in scen.units:
+        if u.per_round <= 0 or u.heat_count < 2:
+            u.split_aligned = 1 if (u.per_round > 0 and u.heat_count >= 2) else 0
+            u.best_split_rounds = 0
+            u.morning_free = 0
+            u.afternoon_free = 0
+            continue
+        total = max(1, u.heat_count * u.per_round)
+        u.split_aligned = 1 if total % u.per_round == 0 else 0
+        # 上午剩余：随已排单元推进而递减（模拟「上午被前面的项目吃掉一部分」）
+        free = max(0, am_free - used_am)
+        u.morning_free = free
+        u.afternoon_free = max(0, pm_free)
+        if u.split_aligned:
+            head_rounds = min(free // u.per_round, u.heat_count - 1)
+            u.best_split_rounds = max(0, head_rounds)
+        else:
+            u.best_split_rounds = 0
+        used_am += total
+
+    # 组次级撞车：同场地 + 共享运动员 + 某一组时间窗真撞上
+    BUFFER = 15
+    heat_units = [u for u in scen.units if u.is_heat_unit()]
+    for u in heat_units:
+        u.heat_clashes = 0
+    for i in range(len(heat_units)):
+        a = heat_units[i]
+        for j in range(i + 1, len(heat_units)):
+            b = heat_units[j]
+            if a.venue != b.venue:
+                continue
+            if not (set(a.athletes) & set(b.athletes)):
+                continue
+            # 起点假设同窗（同一天同时段开赛），逐组比时间窗
+            for ha in range(1, a.heat_count + 1):
+                sa, ea = (ha - 1) * a.per_round, ha * a.per_round
+                for hb in range(1, b.heat_count + 1):
+                    sb, eb = (hb - 1) * b.per_round, hb * b.per_round
+                    gap = max(sb - ea, sa - eb)
+                    if gap < BUFFER:
+                        a.heat_clashes += 1
+                        b.heat_clashes += 1
+                        break
+    # 换组最优间隔：组次数越多、每组越短 → 换开后离别人越远
+    for u in heat_units:
+        span = (u.heat_count - 1) * u.per_round
+        u.best_stagger_gap = int(span // 2) if u.heat_count >= 2 else 0
+    _ = rng
 
 
 def validate_scenario(scen: "SuperScenario") -> Tuple[bool, str]:

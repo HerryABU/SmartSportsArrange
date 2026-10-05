@@ -31,6 +31,15 @@ public class AiController {
     private final SchemeGeneratorService schemeGenerator;
     private final AdversarialSchemeService adversarial;
     private final com.sports.schedule.ai.LaneAdvisorService laneAdvisor;
+    /** 组次错开建议模型（2026-10-05）：只排序，合法性仍由 HeatStaggerMath 裁定 */
+    private final com.sports.schedule.ai.HeatStaggerAdvisorService heatStaggerAdvisor;
+    /** 跨时段拆分优先级模型（2026-10-05）：只排序「先拆谁」，不判能否拆 */
+    private final com.sports.schedule.ai.SlotSplitAdvisorService slotSplitAdvisor;
+    /**
+     * AI 分层调度门面（2026-10-05）：第一次编排走主 MoE，微调环节走专项 MoE。
+     * 存在的意义是让「哪一环该用哪个模型」有唯一答案，并集中暴露调用次数。
+     */
+    private final com.sports.schedule.ai.AiTiers tiers;
 
     @GetMapping("/status")
     @Operation(summary = "查询 AI 模型加载状态")
@@ -40,10 +49,16 @@ public class AiController {
         out.put("schemeGeneratorAvailable", schemeGenerator.isAvailable());
         out.put("adversarialAvailable", adversarial.isAvailable());
         out.put("laneAdvisorAvailable", laneAdvisor.isAvailable());
+        out.put("heatStaggerAdvisorAvailable", heatStaggerAdvisor.isAvailable());
+        out.put("slotSplitAdvisorAvailable", slotSplitAdvisor.isAvailable());
         out.put("mode", inference.isAvailable() ? "AI 建议优先" : "规则编排（AI 未就绪）");
         out.put("adversarialMode", "推理时自对抗：G 生成 → 精修器精修 → D 评判 → 多轮择优");
         out.put("laneMode", laneAdvisor.isAvailable()
                 ? "道次 AI 派遣（款型 ai）可用" : "道次编排使用既有排序（AI 未就绪）");
+        // 分层调度：主 MoE（第一次编排）+ 两个专项 MoE（组次错开 / 跨时段拆分）。
+        // tiers 里带 calls 计数与 wiredButNeverCalled —— 「模型可用但一次没被调用」
+        // 是接线断了的唯一可观测信号，不报错、只是功能一直没生效。
+        out.put("tiers", tiers.status());
 
         // 模型来源与逐模型明细——运维最常问的两个问题：
         // 「模型到底打进去了吗」「我替换外部模型生效了吗」，这里直接给出答案。
@@ -52,6 +67,8 @@ public class AiController {
         models.put("schemeGenerator", schemeGenerator.modelInfo());
         models.put("adversarial", adversarial.modelInfo());
         models.put("laneAdvisor", laneAdvisor.modelInfo());
+        models.put("heatStaggerAdvisor", heatStaggerAdvisor.modelInfo());
+        models.put("slotSplitAdvisor", slotSplitAdvisor.modelInfo());
         out.put("models", models);
         out.put("modelSource", String.valueOf(inference.modelInfo().get("modelDir")));
 

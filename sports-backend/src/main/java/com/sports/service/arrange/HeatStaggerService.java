@@ -50,6 +50,16 @@ public class HeatStaggerService {
 
     private final ArrangementRepository arrangementRepository;
     private final EventScheduleRepository eventScheduleRepository;
+    /**
+     * 组次错开 AI（可选增强）走<b>分层调度门面</b>，不直接持有 Advisor：
+     * 门面是「哪一环该用哪个模型」的唯一答案，并统一统计调用次数
+     * （直接持有 Advisor 会让 /api/ai/status 里的 calls 永远是 0，
+     * 变成「接线正确但从未通电」这类故障的唯一可观测信号失效）。
+     *
+     * <p>模型只在<b>已判定合法</b>的候选里重排，不参与合法性判断；
+     * 模型缺失/推理失败时自动回退规则择优（间隔最大者）。</p>
+     */
+    private final com.sports.schedule.ai.AiTiers aiTiers;
 
     /**
      * 消解组次级兼项冲突。
@@ -100,8 +110,15 @@ public class HeatStaggerService {
             lanesOf.putIfAbsent(e.getId(), lanesOf(e));
         }
 
-        // ③ 纯函数求解
-        List<Move> moves = HeatStaggerMath.resolve(refs, lanesOf, bufferMin);
+        // ③ 纯函数求解（挂了模型建议；模型不可用时内部自动回退规则）
+        int[] aiHits = {0};
+        List<Move> moves = HeatStaggerMath.resolve(refs, lanesOf, bufferMin, suggester(aiHits));
+        int aiAdvised = 0;
+        for (Move m : moves) {
+            if (m.aiAdvised()) {
+                aiAdvised++;
+            }
+        }
         if (moves.isEmpty()) {
             report.put("resolved", 0);
             report.put("examined", refs.size());
@@ -143,6 +160,8 @@ public class HeatStaggerService {
 
         report.put("resolved", detail.size());
         report.put("examined", refs.size());
+        report.put("aiAdvised", aiAdvised);
+        report.put("aiAvailable", aiTiers != null);
         report.put("moves", detail);
         log.info("组次错开消解: 检查 {} 条编排记录，换组 {} 人次（项目时间窗未改动）", refs.size(), detail.size());
         for (Map<String, Object> row : detail) {
@@ -151,6 +170,24 @@ public class HeatStaggerService {
                     row.get("fromHeat"), row.get("toHeat"), row.get("gapBefore"), row.get("gapAfter"));
         }
         return report;
+    }
+
+    /**
+     * 把 AI 建议包成 {@link HeatStaggerMath.HeatSuggester}。
+     *
+     * <p>模型不可用时返回 null，算法内部走规则兜底 —— 这条链路上
+     * AI 是「锦上添花」而非交付前提，缺模型不能影响功能可用性。</p>
+     */
+    private HeatStaggerMath.HeatSuggester suggester(int[] aiHits) {
+        if (aiTiers == null) {
+            return null;
+        }
+        return (heatCount, perRound, legal, curHeat, gapOf, fillOf) -> {
+            java.util.Optional<Integer> r = aiTiers.adviseHeatStagger(
+                    heatCount, perRound, legal, curHeat, gapOf, fillOf);
+            r.ifPresent(x -> aiHits[0]++);
+            return r;
+        };
     }
 
     /** 兼项冲突消解报告（供编排响应与接口直接透出） */

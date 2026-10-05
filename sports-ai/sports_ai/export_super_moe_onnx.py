@@ -50,8 +50,13 @@ LAYERS_HINT = 3
 HIDDEN = 192
 STEPS = 8
 # 旧权重（单层专家版）没有这两个键，回退到与新模型一致的默认值
-EXPERT_DEPTH = 2
+EXPERT_DEPTH = 6
 N_GLOBAL = 3
+# 嵌套 MoE 专家（2026-10-05）：主 MoE 内嵌若干「专项 MoE」作为子专家
+N_NESTED = 4
+NEST_LAYERS = 6
+NEST_EXPERTS = 4
+N_STEPS_OUT = 4
 
 
 def main() -> None:
@@ -66,10 +71,16 @@ def main() -> None:
     steps = int(meta.get("steps", STEPS))
     edepth = int(meta.get("expert_depth", EXPERT_DEPTH))
     nglo = int(meta.get("n_global", N_GLOBAL))
+    nnest = int(meta.get("n_nested", N_NESTED))
+    nlay = int(meta.get("nest_layers", NEST_LAYERS))
+    nex = int(meta.get("nest_experts", NEST_EXPERTS))
+    nstp = int(meta.get("n_steps", N_STEPS_OUT))
     print(f"[export] 从权重读取结构 hidden={hidden} steps={steps} "
-          f"expert_depth={edepth} n_global={nglo}")
+          f"expert_depth={edepth} n_global={nglo} n_nested={nnest} "
+          f"nest_layers={nlay} nest_experts={nex} n_steps={nstp}")
     model = SuperScheduleMoE(node_feat=NODE_FEAT_DIM, hidden=hidden, steps=steps,
-                             expert_depth=edepth, n_global=nglo)
+                             expert_depth=edepth, n_global=nglo, n_nested=nnest,
+                             nest_layers=nlay, nest_experts=nex, n_steps=nstp)
     model.load_state_dict(ck["state_dict"] if isinstance(ck, dict) and "state_dict" in ck else ck)
     model.eval()
 
@@ -97,6 +108,8 @@ def main() -> None:
         # 否则导出时被常量折叠成 dummy 的形状，服务端喂别的 N 直接 Reshape 崩。
         "lane_logits": {0: "B", 1: "N"},
         "quality_score": {0: "B"},
+        # 后续步骤预测（2026-10-05）：[B, n_steps]，B 必须是动态轴
+        "next_step": {0: "B"},
     }
     torch.onnx.export(
         model,
@@ -105,7 +118,7 @@ def main() -> None:
         input_names=["node_feat", "adj_by_type", "type_mask", "mask", "graph_feat"],
         # ⚠️ 输出顺序 = SuperScheduleMoE.forward 的返回顺序，**新输出只能往后追加**。
         output_names=["priority", "slot_logits", "task_probs", "format_logits",
-                      "days_estimate", "lane_logits", "quality_score"],
+                      "days_estimate", "lane_logits", "quality_score", "next_step"],
         dynamic_axes=dynamic_axes,
         opset_version=17,
         do_constant_folding=True,
@@ -116,7 +129,8 @@ def main() -> None:
     print(f"  输入 {NODE_FEAT_DIM} 维节点特征 / {N_EDGES} 类约束边 / {MAX_SLOTS} 个时间槽 "
           f"/ {GRAPH_FEAT_DIM} 维图级特征")
     print(f"  输出 优先级[N] + 槽位logits[N,{MAX_SLOTS}] + 任务权重[{N_TASKS}] + 道次logits + 质量分 "
-          f"+ 赛制[{N_FORMATS}] + 天数[1]")
+          f"+ 赛制[{N_FORMATS}] + 天数[1] + 后续步骤[{nstp}]")
+    print(f"  专家池 {model.moe.expert_kinds()}")
 
 
 if __name__ == "__main__":
