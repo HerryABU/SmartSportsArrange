@@ -45,6 +45,11 @@ REGISTRY_MODELS = ["lane_advisor", "conflict_gnn", "constraint_gnn", "referee_gn
 
 #: 走各自导出脚本的模型 → 导出命令（模块 + 参数）
 CUSTOM_EXPORTERS = {
+    # ⚠️ 主 MoE 必须在这里登记：它**不在** `upgrade_train` 的登记表里
+    #    （不走统一训练器），漏登记就会被默认分支整段跳过 —— 表现是
+    #    「一切正常、核对也通过」，而 super_moe.onnx 其实从没被重导出。
+    #    它的导出要按权重 meta 里的 `n_extra` 重建那 15 个外部专家。
+    "super_moe": ("sports_ai.export_super_moe_onnx", []),
     "tournament_gnn": ("sports_ai.export_tournament_onnx", ["--verify"]),
     "heat_stagger_advisor": ("sports_ai.heat_stagger_advisor", ["--export-only", "--verify"]),
     "slot_split_advisor": ("sports_ai.slot_split_advisor", ["--export-only", "--verify"]),
@@ -102,7 +107,9 @@ def main() -> int:
             if mod in done_exporters:                      # 一个脚本管多个模型，只跑一次
                 continue
             src_ckpt = {"heat_stagger_advisor": "heat_stagger_advisor.pt",
-                        "slot_split_advisor": "slot_split_advisor.pt"}.get(name)
+                        "slot_split_advisor": "slot_split_advisor.pt",
+                        "super_moe": "super_moe.pt",
+                        "tournament_gnn": "tournament_gnn.pt"}.get(name)
             if src_ckpt and not os.path.exists(os.path.join(AI_MODELS, src_ckpt)):
                 print(f"[skip] {name}: 无权重")
                 continue
