@@ -12,16 +12,22 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from sports_ai.nn.moe_encoder import MoEEncoder, make_moe_encoder
 from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS, gumbel_scheme
 
 
 class SchemeGenerator(nn.Module):
     def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160, noise: int = 8,
-                 slots: int = MAX_SLOTS):
+                 slots: int = MAX_SLOTS, moe: bool = True, moe_layers: int = 6,
+                 moe_experts: int = 9):
         super().__init__()
         self.slots = slots
-        self.enc = GnnEncoder(node_feat, hidden)
+        # 编码器升级为多架构 MoE（接口与 GnnEncoder 完全一致，契约零改动）。
+        # 原 GnnEncoder 作为共享专家保留，因此旧权重可直接迁移、重训从原能力起步。
+        self.enc = (make_moe_encoder(node_feat, hidden, n_layers=moe_layers,
+                                     n_experts=moe_experts)
+                    if moe else GnnEncoder(node_feat, hidden))
         self.head = nn.Sequential(
             nn.Linear(hidden + noise, hidden),
             nn.ReLU(),

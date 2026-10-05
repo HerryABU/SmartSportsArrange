@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from sports_ai.nn.moe_encoder import MoEEncoder, make_moe_encoder
 from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS
 
@@ -34,11 +35,14 @@ class SchemeRefiner(nn.Module):
     """
 
     def __init__(self, node_feat: int = NODE_FEAT_DIM, slots: int = MAX_SLOTS,
-                 hidden: int = 160, delta_scale: float = 0.6):
+                 hidden: int = 160, delta_scale: float = 0.6, moe: bool = True,
+                 moe_layers: int = 6, moe_experts: int = 9):
         super().__init__()
         self.slots = slots
         self.delta_scale = delta_scale
-        self.enc = GnnEncoder(node_feat + slots, hidden)
+        self.enc = (make_moe_encoder(node_feat + slots, hidden, n_layers=moe_layers,
+                                     n_experts=moe_experts)
+                    if moe else GnnEncoder(node_feat + slots, hidden))
         # 输出「残差修正量」，在初始 logits 之上精修（初始方案已含大量正确信息）
         self.head = nn.Sequential(
             nn.Linear(hidden + slots, hidden),

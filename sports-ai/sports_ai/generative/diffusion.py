@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from sports_ai.nn.moe_encoder import MoEEncoder, make_moe_encoder
 from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS, gumbel_scheme
 
@@ -73,12 +74,15 @@ class SchemeDiffusion(nn.Module):
     """
 
     def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 192, noise: int = 8,
-                 slots: int = MAX_SLOTS, steps: int = 8, layers: int = 6):
+                 slots: int = MAX_SLOTS, steps: int = 8, layers: int = 6,
+                 moe: bool = True, moe_layers: int = 6, moe_experts: int = 9):
         super().__init__()
         self.slots = slots
         self.steps = steps
         # 条件编码：冲突图 → [B,N,H]
-        self.enc = GnnEncoder(node_feat, hidden)
+        self.enc = (make_moe_encoder(node_feat, hidden, n_layers=moe_layers,
+                                     n_experts=moe_experts)
+                    if moe else GnnEncoder(node_feat, hidden))
         # 噪声预测网络：吃 [去噪中的方案, 条件嵌入, 时间步嵌入]
         # ⚠️ 时间步嵌入的**第一层输入维度是 1**（一个标量 t），不是 steps。
         #    写 nn.Linear(steps, ...) 后传 [B,1] 会报

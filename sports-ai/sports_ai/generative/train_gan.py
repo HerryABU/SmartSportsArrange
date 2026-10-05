@@ -161,9 +161,22 @@ def train(args):
         loss_adv = bce(d_fake, torch.ones_like(d_fake))        # 骗过判别器
         loss_comb, parts = combination_loss(fake, adj, mask, forbid, capacity)
         loss_g = loss_adv + args.lambda_comb * loss_comb
+        # MoE 特有的两项：**必须都做**，否则等于装了 MoE 却没通电。
+        # ① 负载均衡正则：把「路由全押在 1~2 个专家」的退化推开；
+        # ② 路由偏置更新：无辅助损失均衡（DeepSeek-V3 式），按本批激活量调偏置。
+        # ⚠️ 漏掉它们不报错 —— 只是 MoE 静默退化成「一个贵一点的单体网络」。
+        lb = getattr(G.enc, "load_balance_loss", None)
+        if lb is not None:
+            loss_g = loss_g + 0.01 * lb()
         opt_g.zero_grad()
         loss_g.backward()
         opt_g.step()
+        u = getattr(G.enc, "update_router_bias", None)
+        if u is not None:
+            u()
+        ud = getattr(D.enc, "update_router_bias", None)
+        if ud is not None:
+            ud()
 
         if (it + 1) % args.log_every == 0:
             D.eval()

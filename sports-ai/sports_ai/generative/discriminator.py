@@ -13,16 +13,20 @@ import torch
 import torch.nn as nn
 
 from .encoder import GnnEncoder
+from sports_ai.nn.moe_encoder import MoEEncoder, make_moe_encoder
 from ..data.features import NODE_FEAT_DIM
 from .scheme import MAX_SLOTS
 
 
 class SchemeDiscriminator(nn.Module):
     def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160, slots: int = MAX_SLOTS,
-                 dropout: float = 0.2):
+                 dropout: float = 0.2, moe: bool = True, moe_layers: int = 6,
+                 moe_experts: int = 9):
         super().__init__()
         # 着色方案拼到节点特征后面
-        self.enc = GnnEncoder(node_feat + slots, hidden)
+        self.enc = (make_moe_encoder(node_feat + slots, hidden, n_layers=moe_layers,
+                                     n_experts=moe_experts)
+                    if moe else GnnEncoder(node_feat + slots, hidden))
         self.head = nn.Sequential(
             nn.Linear(hidden, hidden),
             nn.ReLU(),

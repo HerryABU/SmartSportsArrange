@@ -130,8 +130,16 @@ def train(args):
                 + args.guard_weight * loss_guard
                 + args.reg_weight * loss_reg)
         opt.zero_grad()
+        # MoE 两项（见 train_gan 的同段注释）：漏掉不报错，只是 MoE 静默失效。
+        # ⚠️ 本脚本的模型变量名是 R（不是 M/G）—— 名字写错会 NameError，不是静默失效。
+        _lb = getattr(R.enc, "load_balance_loss", None)
+        if _lb is not None:
+            loss = loss + 0.01 * _lb()
         loss.backward()
         opt.step()
+        _u = getattr(R.enc, "update_router_bias", None)
+        if _u is not None:
+            _u()
 
         if (it + 1) % args.log_every == 0:
             with torch.no_grad():
