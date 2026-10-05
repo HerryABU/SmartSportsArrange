@@ -34,6 +34,10 @@ USAGE = {
     "slot_split_advisor.onnx": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆",
     "constraint_gnn.onnx": "约束图神经网络；缺失 → 约束评估走规则",
     "tournament_gnn.onnx": "球类赛制 GNN（赛制/种子/公平性）；缺失 → 球类走规则赛制",
+    # ⚠️ 之前**漏登记**：它是 referee_gnn 的复用（骨架同构、只换特征维），
+    #    于是清单长期只有 15 条、而实际在役 16 个。白名单制下这种遗漏会直接
+    #    表现为「文件在、但不进分发」—— 静默少发一个模型。
+    "teacher_gnn.onnx": "班主任派遣独立模型；缺失 → 规则派遣",
     "conflict_gnn.onnx": "冲突簇着色 GNN；缺失 → 兼项退化为贪心着色",
     "algorithm_selector.onnx": "算法选择器（硬解/取消）；缺失 → 默认策略",
     "lane_advisor.onnx": "道次派遣优先级；缺失 → 规则分道",
@@ -56,16 +60,31 @@ def sha256_of(path: str) -> str:
 
 
 def build() -> dict:
+    """按 **USAGE 白名单**收集，而不是「目录里有什么就收什么」。
+
+    ⚠️ 踩过：`sports-ai/models/` 里除了正式产物，还会堆中间产物与备份
+    （`*.moe.onnx` 是早期导出名、`super_moe_prev_backup.onnx` 是权重备份、
+    `ai.onnx` 是已停用的选择器 v1）。用 `listdir` 无脑收集会把它们一并写进清单，
+    再顺着「按清单部署」流进 jar —— 清单从 **16 条悄悄涨到 23 条，而每一步都不报错**。
+    改成白名单后：新模型**必须先在 USAGE 里登记**才会进清单与分发；
+    未登记的文件会被如实列出来（提示但不纳入）。
+    """
     entries = {}
-    for name in sorted(os.listdir(MODELS)):
-        if not name.endswith(".onnx"):
-            continue
+    for name in sorted(USAGE):
         path = os.path.join(MODELS, name)
+        if not os.path.exists(path):
+            print(f"[warn] 清单登记了 {name}，但文件不存在 —— 跳过（请先训练/导出）")
+            continue
         entries[name] = {
             "bytes": os.path.getsize(path),
             "sha256": sha256_of(path),
-            "usage": USAGE.get(name, "(未登记用途)"),
+            "usage": USAGE[name],
         }
+    stray = [f for f in sorted(os.listdir(MODELS))
+             if f.endswith(".onnx") and f not in USAGE]
+    if stray:
+        print(f"[note] 目录里有 {len(stray)} 个未登记的 onnx"
+              f"（不计入清单、不参与分发）：{stray}")
     return {
         "schema": "sports-ai/models-manifest@1",
         "note": "模型不入 git，按本清单独立分发；重训后请重新生成本清单。",
