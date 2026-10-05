@@ -81,6 +81,9 @@ _trash/
 # 训练覆盖保护产生的自动备份（sports_ai.device.backup_before_overwrite）
 sports-ai/models/*.pt.bak.*
 sports-ai/models/*.pt.bak.smoke-*
+# 冒烟验证的临时备份/隔离产物（cp 出来的 .keep/.keep2、改名隔离的 .smoke*）
+sports-ai/models/*.keep*
+sports-ai/models/*.smoke*
 
 sports-ai/models/*.pt
 sports-ai/models/*.onnx

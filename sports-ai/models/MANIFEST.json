@@ -11,7 +11,7 @@
     },
     "conflict_gnn.onnx": {
       "bytes": 10146086,
-      "sha256": "1874b0bc2f0b6005222982570f6ed47af826adc5c3739f95c40713c122410b8a",
+      "sha256": "2f14367c7f62d40e9d0f8019cf147f9b41754a8743c60490501cc10b6997c6ba",
       "usage": "冲突簇着色 GNN；缺失 → 兼项退化为贪心着色"
     },
     "constraint_gnn.onnx": {
@@ -31,7 +31,7 @@
     },
     "heat_stagger_advisor.onnx": {
       "bytes": 7980716,
-      "sha256": "10e464cec8c407e10f394839c70aa29deca877bcb7a9cad5bb02bff884f678bc",
+      "sha256": "922a7367282f1cbf58f43c6db4c9592f4a65b4619fe7203f0c03225b6fc6f182",
       "usage": "组次错开专项 MoE（在已过滤的合法候选里建议换到第几组）；缺失 → 规则取间隔最大者"
     },
     "lane_advisor.onnx": {
@@ -41,12 +41,12 @@
     },
     "referee_gnn.onnx": {
       "bytes": 11832061,
-      "sha256": "4994e707841cba382343473a85a773023d78d95f3fd2df57b4d1dc7a2b2aed01",
+      "sha256": "d90113ce09eff40223c14a3ec131c60e3009f1d880ae43010622f5190dee0ee9",
       "usage": "裁判编排独立模型；缺失 → 规则派遣"
     },
     "scheme_diffusion.onnx": {
       "bytes": 10782054,
-      "sha256": "72cf0c9e1e265352c46d6a7af21f0996770a26d8687c9862688cb528b6f7ab4d",
+      "sha256": "c53f6cb1e1e38da6e11941843e489320daead854cb6218939431ae005e11120e",
       "usage": "扩散式方案生成；缺失 → 不使用"
     },
     "scheme_discriminator.onnx": {
