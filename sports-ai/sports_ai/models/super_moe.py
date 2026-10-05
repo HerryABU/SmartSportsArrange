@@ -388,9 +388,19 @@ class MultiGateMoE(nn.Module):
                  use_graph: bool = True, graph_dim: int = GRAPH_FEAT_DIM,
                  use_cnn: bool = True, n_views: int = 3,
                  n_unit_tasks: int = N_UNIT_TASKS,
-                 n_nested: int = 0, nest_layers: int = 6, nest_experts: int = 4):
+                 n_nested: int = 0, nest_layers: int = 6, nest_experts: int = 4,
+                 extra_experts: Optional[List[nn.Module]] = None):
         super().__init__()
         self.n_experts = n_experts
+        # 外部接进来的「真·专项模型专家」：每个是一个**已训练的 MoE 小模型**
+        # （见 ``nn/ensemble.py``），主体权重继承、只新训桥接层。
+        # 它们与内置能力专家同属「能力区」：门控只由图级上下文决定 ——
+        # 「这次赛会该听哪个专项模型」本就是实例级判断，不该逐节点变。
+        self.extra_experts = nn.ModuleList(extra_experts or [])
+        self.n_extra = len(self.extra_experts)
+        #: 池中专家总数（内置 + 外部）。路由嵌入、共享层都按它建。
+        #: ⚠️ ``n_extra=0`` 时 ``n_all == n_experts``，旧 ckpt 依然能原样加载。
+        self.n_all = n_experts + self.n_extra
         self.n_unit_tasks = min(n_unit_tasks, n_experts)
         self.use_graph = use_graph
         self.use_cnn = use_cnn
@@ -418,14 +428,14 @@ class MultiGateMoE(nn.Module):
         self.gates = nn.ModuleList(
             [nn.Linear(hidden, self.n_unit_tasks) for _ in range(self.n_unit_tasks)])
         # 路由器专家嵌入（MPI：让路由器「读懂」每位专家）
-        self.expert_embed = nn.Parameter(torch.randn(n_experts, hidden) * 0.02)
+        self.expert_embed = nn.Parameter(torch.randn(self.n_all, hidden) * 0.02)
         # 图级特征投影：把「赛会结构」翻译成与专家嵌入同一空间的向量，
         # 路由器据此判断「这种规模/这种紧迫度该派谁上」。
         self.graph_proj = nn.Linear(graph_dim, hidden)
         # CNN 分支：专家 consensus 表征 → 项目块局部结构（见 LocalConvBlock 注释）
         self.moe_cnn = LocalConvBlock(hidden, 5, dropout)
         # 知识共享层
-        self.shared = SharedKnowledge(hidden, n_experts, n_views, dropout)
+        self.shared = SharedKnowledge(hidden, self.n_all, n_views, dropout)
         self.norm = nn.LayerNorm(hidden)
         # 门控的负载均衡统计（供观测）
         self._last_gate_probs: Optional[torch.Tensor] = None
@@ -443,7 +453,15 @@ class MultiGateMoE(nn.Module):
         outs = []
         for e in range(self.n_experts):
             outs.append(self.experts[e](h, adj, type_mask, mask))
-        expert_out = torch.stack(outs, dim=2)                    # [B,N,E,H]
+        # 外部专项模型专家：签名是 (h, adj[B,N,N], mask) —— **没有 type_mask**，
+        # 它们内部把多边型邻接压成单张图（与 UpgradedMoE 的专家口径一致）。
+        # 不压平就把 4 维邻接传进去，报的是形状错（可见），但若边型数恰好等于 N
+        # 就会静默把「边型维」当成节点维算下去 —— 所以这里必须显式压平。
+        if self.n_extra:
+            adj_flat = adj.sum(dim=1) if adj.dim() == 4 else adj
+            for ex in self.extra_experts:
+                outs.append(ex(h, adj_flat, mask))
+        expert_out = torch.stack(outs, dim=2)                    # [B,N,E_all,H]
 
         # ---- CNN 分支：专家 consensus 上的局部块结构 ----
         if self.use_cnn:
@@ -746,7 +764,7 @@ class SuperScheduleMoE(nn.Module):
                  expert_depth: int = 2, n_global: int = 3,
                  use_graph: bool = True, use_cnn: bool = True,
                  n_nested: int = 4, nest_layers: int = 6, nest_experts: int = 4,
-                 n_steps: int = 4):
+                 n_steps: int = 4, extra_experts: Optional[List[nn.Module]] = None):
         super().__init__()
         self.hidden = hidden
         self.expert_depth = expert_depth
@@ -764,7 +782,11 @@ class SuperScheduleMoE(nn.Module):
                                 expert_depth=expert_depth,
                                 use_graph=use_graph, use_cnn=use_cnn,
                                 n_nested=n_nested, nest_layers=nest_layers,
-                                nest_experts=nest_experts)
+                                nest_experts=nest_experts,
+                                extra_experts=extra_experts)
+        #: 外部专项专家名（供日志/诊断：确认「到底接进来几个」）
+        self.extra_names = [getattr(e, "name", type(e).__name__)
+                            for e in self.moe.extra_experts]
         # 主干深层推理栈
         self.globals = nn.ModuleList(
             [GlobalBlock(hidden, dropout) for _ in range(n_global)])
