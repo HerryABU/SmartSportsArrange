@@ -142,6 +142,15 @@ def train(args):
     real_lbl, fake_lbl = args.label_smooth, 1.0 - args.label_smooth
     real = oracle_batch(adj, mask, forbid, MAX_SLOTS)          # 真实可行解（真样本）
 
+    # 预测分支（「未来 H 步时间槽」）：挂在**生成器 G** 上，共享它自己的 MoE 主干。
+    # 只加在 loss_g 上 —— 判别器 D 是「评判者」，它的表征不需要预测能力，
+    # 硬加反而干扰对抗平衡。动态挂载（不改编模型类）：
+    # 给 nn.Module 赋一个 nn.Module 属性，PyTorch 会自动把它注册进子模块。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    G.aux = ForecastAux(G.enc.hidden)
+    G_share = encoder_trunk(G.enc)
+
     for it in range(args.iters):
         # ============ ① 训练判别器 D ============
         z = torch.randn(node_feat.shape[0], node_feat.shape[1], args.noise)
@@ -169,6 +178,9 @@ def train(args):
         if lb is not None:
             loss_g = loss_g + 0.01 * lb()
         opt_g.zero_grad()
+        # 预测分支：未来 H 步时间槽（共享 G 自己的 MoE 主干，能力回流到表征）
+        sx, sy = aux_data.sample(args.batch)
+        loss_g = loss_g + aux_loss(G.aux, sx, sy, trunk_fn=G_share)
         loss_g.backward()
         opt_g.step()
         u = getattr(G.enc, "update_router_bias", None)

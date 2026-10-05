@@ -125,6 +125,29 @@ def specialist_trunk(moe) -> Callable[[torch.Tensor], torch.Tensor]:
     return fn
 
 
+def encoder_trunk(enc) -> Callable[[torch.Tensor], torch.Tensor]:
+    """从 ``MoEEncoder`` 里取出**只吃 hidden 维**的那段（router + experts + out_norm + trunk）。
+
+    ⚠️ 不能直接调 ``enc(h, adj, mask)``：它的 ``in_proj`` 与 ``legacy`` 都吃
+    **原始特征维**（生成式模型是 16 / 32），把 hidden 喂进去会直接形状不符。
+    与 :func:`specialist_trunk` 的区别：``MoEEncoder`` 的共享专家是 ``legacy``
+    （吃原始特征，接不了），结构里也没有 ``shared`` 列表。
+
+    邻接传 None：专家池对 None 有自环兜底。
+    """
+    def fn(h: torch.Tensor) -> torch.Tensor:
+        mask = torch.ones(h.shape[0], h.shape[1], device=h.device, dtype=h.dtype)
+        weights, top_i, _ = enc.router(h)
+        acc = torch.zeros_like(h)
+        for e, ex in enumerate(enc.experts):
+            acc = acc + weights[..., e].unsqueeze(-1) * ex(h, None, mask)
+        out = enc.out_norm(h + acc)
+        for blk in enc.trunk:
+            out = blk(out)
+        return out
+    return fn
+
+
 def aux_loss(aux: ForecastAux, x_seq: torch.Tensor, y: torch.Tensor,
              trunk_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
              mask: Optional[torch.Tensor] = None, w: float = AUX_W) -> torch.Tensor:
@@ -140,8 +163,12 @@ def load_with_aux(model: nn.Module, sd: dict) -> None:
     也不能简单用 `strict=False`：那会把真正的结构错误（少一层、维数不对）一起吞掉。
     """
     missing, unexpected = model.load_state_dict(sd, strict=False)
+    # 两侧都放行 aux.*：
+    #   ① ckpt 有、模型没建（导出时不挂预测分支）→ unexpected 里有 aux.*
+    #   ② ckpt 没带（旧权重）、模型挂了 → missing 里有 aux.*
     real_missing = [k for k in missing if not k.startswith("aux.")]
+    real_unexpected = [k for k in unexpected if not k.startswith("aux.")]
     if real_missing:
         raise SystemExit(f"权重缺失关键层 {real_missing[:5]} —— 结构不匹配，导出中止")
-    if unexpected:
-        raise SystemExit(f"出现权重里没有的层 {unexpected[:5]} —— 结构不匹配，导出中止")
+    if real_unexpected:
+        raise SystemExit(f"出现权重里没有的层 {real_unexpected[:5]} —— 结构不匹配，导出中止")

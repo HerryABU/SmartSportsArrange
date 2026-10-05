@@ -131,6 +131,12 @@ def main() -> None:
     best = float("inf")
     best_state = None
     best_stats = {}
+    # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    model.aux = ForecastAux(model.enc.hidden)
+    share = encoder_trunk(model.enc)
+
     for it in range(args.iters):
         idx = torch.randint(0, nf.shape[0], (args.batch,), device=device)
         b_nf, b_adj, b_mk, b_x0 = nf[idx], adj[idx], mk[idx], x0[idx]
@@ -168,6 +174,9 @@ def main() -> None:
         _lb = getattr(model.enc, "load_balance_loss", None)
         if _lb is not None:
             loss = loss + 0.01 * _lb()
+        # 预测分支：未来 H 步时间槽（共享主干，能力回流到表征）
+        sx, sy = aux_data.sample(args.batch)
+        loss = loss + aux_loss(model.aux, sx, sy, trunk_fn=share)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()

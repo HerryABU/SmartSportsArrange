@@ -103,6 +103,12 @@ def train(args):
         am = adj * mask.unsqueeze(-1) * mask.unsqueeze(1)
         return ((same * am).sum() / am.sum().clamp(min=1)).item()
 
+    # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    model.aux = ForecastAux(model.enc.hidden)
+    share = encoder_trunk(model.enc)
+
     for it in range(args.iters):
         # ⚠️ 初始解必须与**推理时一致**：推理端用 z=0（确定性），早期训练却用随机 z，
         # 于是精修器学到的是「修正一个推理时根本不会出现的初始解」——实测把好解改坏
@@ -135,6 +141,9 @@ def train(args):
         _lb = getattr(R.enc, "load_balance_loss", None)
         if _lb is not None:
             loss = loss + 0.01 * _lb()
+        # 预测分支：未来 H 步时间槽（共享主干，能力回流到表征）
+        sx, sy = aux_data.sample(args.batch)
+        loss = loss + aux_loss(model.aux, sx, sy, trunk_fn=share)
         loss.backward()
         opt.step()
         _u = getattr(R.enc, "update_router_bias", None)

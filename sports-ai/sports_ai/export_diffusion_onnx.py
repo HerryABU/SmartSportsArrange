@@ -49,7 +49,9 @@ def main() -> None:
     if not os.path.exists(ckpt):
         raise SystemExit(f"缺少权重 {ckpt}，请先跑 train_diffusion")
     model = SchemeDiffusion(hidden=HIDDEN, steps=TRAIN_STEPS, layers=LAYERS)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+    # ⚠️ load_with_aux：ckpt 带预测分支的 aux.*（部署契约只回主输出）
+    from sports_ai.nn.forecast_aux import load_with_aux
+    load_with_aux(model, torch.load(ckpt, map_location="cpu"))
     model.eval()
 
     wrapper = ExportWrapper(model, args.steps).eval()

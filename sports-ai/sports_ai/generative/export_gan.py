@@ -76,7 +76,10 @@ def _zeros(*shape):
 
 def export_generator(path: str) -> None:
     g = SchemeGenerator()
-    g.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
+    # ⚠️ load_with_aux：ckpt 里带预测分支的 aux.* 参数（部署契约只回主输出），
+    #    strict=True 会报 "Unexpected key(s): aux.*" 让导出失败（＝训了导不出）。
+    from sports_ai.nn.forecast_aux import load_with_aux
+    load_with_aux(g, torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
     g.eval()
     m = GenExport(g).eval()
     args = (
@@ -101,7 +104,8 @@ def export_generator(path: str) -> None:
 
 def export_discriminator(path: str) -> None:
     d = SchemeDiscriminator()
-    d.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
+    from sports_ai.nn.forecast_aux import load_with_aux as _lwa        # 同上：放行 aux.*
+    _lwa(d, torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
     d.eval()
     args = (
         _zeros(1, N_DUMMY, NODE_FEAT_DIM),
@@ -123,7 +127,8 @@ def export_discriminator(path: str) -> None:
 
 def export_refiner(path: str) -> None:
     r = SchemeRefiner()
-    r.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_refiner.pt"), map_location="cpu"))
+    from sports_ai.nn.forecast_aux import load_with_aux as _lwa_r      # 同上：放行 aux.*
+    _lwa_r(r, torch.load(os.path.join(MODEL_DIR, "scheme_refiner.pt"), map_location="cpu"))
     r.eval()
     args = (
         _zeros(1, N_DUMMY, NODE_FEAT_DIM),
