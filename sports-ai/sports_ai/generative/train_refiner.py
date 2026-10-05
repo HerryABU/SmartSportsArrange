@@ -79,9 +79,13 @@ def train(args):
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     G = SchemeGenerator()
-    G.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
+    # ⚠️ 用 load_with_aux：G 的 ckpt 现在带预测分支的 aux.*（那是训练侧产物、
+    #    不影响推理契约），strict=True 会报 "Unexpected key(s): aux.*" 直接炸。
+    #    连锁点：**凡是加载 G/D 的地方都要这么改**（本文件 + validate_refine）。
+    from sports_ai.nn.forecast_aux import load_with_aux as _lwa_g
+    _lwa_g(G, torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
     D = SchemeDiscriminator()
-    D.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
+    _lwa_g(D, torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
     G = G.to(device); D = D.to(device)
     for p in G.parameters():
         p.requires_grad_(False)
@@ -106,8 +110,10 @@ def train(args):
     # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干。
     from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
     aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
-    model.aux = ForecastAux(model.enc.hidden)
-    share = encoder_trunk(model.enc)
+    # ⚠️ 本文件里精修器叫 **R**（不是 model）—— 写错变量名会 NameError，
+    #    而 NameError 只在跑到这一行时才炸（训练脚本的「改完要立刻小步试跑」的原因）。
+    R.aux = ForecastAux(R.enc.hidden)
+    share = encoder_trunk(R.enc)
 
     for it in range(args.iters):
         # ⚠️ 初始解必须与**推理时一致**：推理端用 z=0（确定性），早期训练却用随机 z，
@@ -143,7 +149,7 @@ def train(args):
             loss = loss + 0.01 * _lb()
         # 预测分支：未来 H 步时间槽（共享主干，能力回流到表征）
         sx, sy = aux_data.sample(args.batch)
-        loss = loss + aux_loss(model.aux, sx, sy, trunk_fn=share)
+        loss = loss + aux_loss(R.aux, sx, sy, trunk_fn=share)
         loss.backward()
         opt.step()
         _u = getattr(R.enc, "update_router_bias", None)

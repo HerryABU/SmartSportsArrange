@@ -147,7 +147,9 @@ def train(args):
     # 硬加反而干扰对抗平衡。动态挂载（不改编模型类）：
     # 给 nn.Module 赋一个 nn.Module 属性，PyTorch 会自动把它注册进子模块。
     from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
-    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    # ⚠️ 本文件里模型就建在 CPU 上（没有 .to(device)）、也没有 device 变量，
+    #    所以 AuxData 用默认设备，别写 device=device（会 NameError）。
+    aux_data = AuxData(n=512, seed=args.seed + 4242)
     G.aux = ForecastAux(G.enc.hidden)
     G_share = encoder_trunk(G.enc)
 

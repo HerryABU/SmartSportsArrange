@@ -30,9 +30,10 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 def main(samples: int = 24, steps: int = 80, restarts: int = 3):
     torch.manual_seed(0)
     g = SchemeGenerator()
-    g.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
+    from sports_ai.nn.forecast_aux import load_with_aux as _lwa_v
+    _lwa_v(g, torch.load(os.path.join(MODEL_DIR, "scheme_generator.pt"), map_location="cpu"))
     d = SchemeDiscriminator()
-    d.load_state_dict(torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
+    _lwa_v(d, torch.load(os.path.join(MODEL_DIR, "scheme_discriminator.pt"), map_location="cpu"))
     refiner = AdversarialRefiner(g, d)
 
     rng = random.Random(20260918)
