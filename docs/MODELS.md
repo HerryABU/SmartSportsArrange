@@ -9,7 +9,7 @@
 
 | | 入库 | 独立分发（当前做法） |
 |---|---|---|
-| 仓库体积 | 26 个 onnx ≈ **90 MB**，且每次重训都变动 → 线性膨胀 | 0（只有一个小 JSON 清单） |
+| 仓库体积 | 16 个 onnx ≈ **470 MB**（其中 `super_moe` 单个 344 MB），每次重训都变动 → 线性膨胀 | 0（只有一个小 JSON 清单） |
 | 提交可读性 | 每次提交都是二进制巨块，无法 review | 清单可 diff，且能校验一致性 |
 | clone 速度 | 显著变慢 | 不受影响 |
 
@@ -20,17 +20,16 @@
 每个模型记录 **文件名 / 字节数 / sha256 / 用途**，并写明**缺失时会降级成什么**
 （例如 `super_moe.onnx` 缺失 → L4 退化为 L3 优化链；`referee_gnn.onnx` 缺失 → 裁判走规则派遣）。
 
-当前 16 个模型、合计约 **87.2 MB**（每次重训后以 `MANIFEST.json` 为准）：
+当前 16 个模型、合计约 **470 MB**（每次重训后以 `MANIFEST.json` 为准）：
 
 | 类别 | 模型 |
 |---|---|
-| 超级编排 | `super_moe.onnx`（**19 类任务**合并模型，专家池含 4 个嵌套专项 MoE） |
-| GNN | `constraint_gnn` / `tournament_gnn` / `conflict_gnn` / `referee_gnn` |
-| 辅助 | `algorithm_selector` / `lane_advisor` |
+| 超级编排 | `super_moe.onnx`（**19 类任务**合并模型，84.6M 参数，专家池含 4 个嵌套专项 MoE，8 个输出） |
+| GNN | `constraint_gnn` / `tournament_gnn` / `conflict_gnn` / `referee_gnn` / `teacher_gnn` |
+| 辅助 | `algorithm_selector`（v2）/ `ai`（v1，历史保留）/ `lane_advisor` |
 | 微调专项 | `heat_stagger_advisor`（组次错开）/ `slot_split_advisor`（跨时段拆分） |
 | 生成式 | `scheme_generator` / `scheme_discriminator` / `scheme_refiner` / `scheme_diffusion` |
-| 预测 | `forecast_direct` / `forecast_mimo` |
-| 旧版 | `ai`（算法选择器 v1）/ `teacher_gnn` |
+| 未升级（**刻意**） | `forecast_direct` / `forecast_mimo`（趋势预测，不做编排决策，保持轻量原架构） |
 
 ## 2.1 架构：所有模型已升级为专项 MoE（2026-10-05）
 
@@ -54,6 +53,28 @@
 根因是结构性的：「没被选中的专家拿不到梯度 → 学不动 → 更不被选」。
 DeepSeek 那套动态偏置需要**万卡级训练量**才撑得住。
 改稠密融合后主 MoE 的 19 个专家**全部有效激活**（最小使用率 1.6%、路由熵 0.96）。
+
+### ⚠️ 训练预算：主 MoE 目前**远未收敛**（2026-10-05 实测）
+
+主 MoE（84.6M 参数）在 CPU 上以 `--samples 700 --epochs 6` 训 6 轮耗时 **3 h 42 min**，
+best 出现在最后一轮，val_loss 从 8.08 降到 **1.499**，且**看不出平台期**；
+而脚本按「深度单位」给出的建议预算是 **135 轮 / patience 45** —— 当前约完成 **4%**。
+脚本会主动打这条警告：
+
+> ⚠️ 本次训练轮数明显低于该深度的建议预算（6 < 135）…极易被误读成「深层架构更差」
+
+所以**不要**拿当前 val 横向对比浅层旧模型（那是「没训够」，不是「架构更差」）。
+要真正收敛只有两条路：上 GPU，或把 `--samples/--epochs` 提上去并接受小时级训练。
+
+### ⚠️ 选择器（实例级模型）的两个契约点
+
+`algorithm_selector` / `ai` 是**实例级二分类**模型，与逐行打分的 GNN 走不同的适配路径：
+
+| 点 | 要求 | 写错的后果 |
+|---|---|---|
+| 输入 | `[B,F]`（**2 维**，无节点轴），ONNX 输入名 `features` | `UpgradedMoE.forward` 曾硬解包 3 维 → 一训就崩（说明该路径从登记起就没通电） |
+| 输出 | `[B,2]`（硬解 / 取消两条路径的 logits） | 漏写 `out_dim=2` → 导出 `[1,1]`；Java 读第二个值越界 → 异常被 catch → **静默回退规则** |
+| loss | `ce`（多类交叉熵） | 用 `bce` 会把 `[B,2]` 拉平成 `[2B]` 再与 `[B]` 的标签比 → 形状不符，或语义全错 |
 
 ### 三种升级方式的适用边界
 

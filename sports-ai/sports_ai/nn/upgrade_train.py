@@ -249,15 +249,23 @@ def registry() -> dict:
                                legacy_mode="gnn", layout="xmatL", n_types=N_CON_TYPES,
                                onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
         # ── 算法选择器（实例级，输入是 [B,F] 无节点维）──
+        # ⚠️ 两个选择器都是**二分类**：原模型 head 的最后一层是 `Linear(..., 2)`
+        #    （`AlgorithmSelectorV2.n_classes=2` / `AlgorithmSelector` 硬写 2），
+        #    Java 侧 `OnnxInferenceService.runSelector` 读的是 `r.get(0)` 的**全部**
+        #    浮点值（硬解 / 取消两条路径的 logits）。
+        #    所以 `out_dim=2` 是契约、不是可调项：写成默认的 1 会导出 [1,1]，
+        #    形状对得上「一个输出张量」、语义却少一类 → Java 读到单值后
+        #    取第二条路径越界 → 异常被 catch → **静默回退规则**。
+        #    标签 y ∈ {0,1}（见 train_selector.make_dataset）→ 用 CE。
         "algorithm_selector": Spec("algorithm_selector", "sports_ai.models.selector_v2",
                                    "AlgorithmSelectorV2", N_FEATURES, pool=True,
-                                   flat_input=True, loss="bce",
+                                   flat_input=True, loss="ce", out_dim=2,
                                    make_batch="make_dataset",
                                    data_module="sports_ai.train_selector",
                                    layout="xL", batch_fn=make_selector_batch,
                                    onnx_inputs=("features",)),
         "ai": Spec("ai", "sports_ai.models.selector", "AlgorithmSelector", N_FEATURES,
-                   pool=True, flat_input=True, loss="mse",
+                   pool=True, flat_input=True, loss="ce", out_dim=2,
                    make_batch="make_dataset", data_module="sports_ai.train_selector",
                    layout="xL", batch_fn=make_selector_batch,
                    onnx_inputs=("features",)),
@@ -369,7 +377,19 @@ def compute_loss(spec: Spec, pred, batch, mask, target=None):
         mm = m if pred.dim() == 2 else m.unsqueeze(-1)
         l = ((pred - t) ** 2 * mm).sum() / mm.sum().clamp(min=1.0)
         return l, float(l.detach())
+    if spec.loss == "ce":
+        # 多类 logits（选择器两个版本的原模型都输出 [B,2]：0=硬解 / 1=取消路径）。
+        # ⚠️ 这里**必须**用 CE 而不是 BCE：BCE 会把 [B,2] 直接拉平成 [2B] 再与
+        #    [B] 的标签比 —— 要么形状不匹配直接报错，要么（更坏）被当成
+        #    「两个独立的二分类样本」，loss 能降、语义全错。
+        t = target.long().reshape(-1)
+        l = F.cross_entropy(pred, t)
+        return l, float((pred.argmax(dim=-1) == t).float().mean())
     if spec.loss == "bce":
+        if spec.pool and pred.dim() == 2 and pred.shape[-1] > 1:
+            raise SystemExit(
+                f"{spec.name}: bce 只适用于**单** logits 输出，当前输出 "
+                f"{tuple(pred.shape)}；多类 logits 请登记 loss='ce'")
         p = pred.reshape(-1) if spec.pool else pred.reshape(pred.shape[0], -1)[:, 0]
         t = target.float().reshape(-1)
         l = F.binary_cross_entropy_with_logits(p, t)
