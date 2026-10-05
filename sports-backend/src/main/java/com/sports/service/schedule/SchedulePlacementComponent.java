@@ -21,6 +21,7 @@ import com.sports.schedule.core.primitive.Cursor;
 import com.sports.schedule.core.primitive.Pool;
 import com.sports.schedule.core.primitive.Probe;
 import com.sports.schedule.core.primitive.Slot;
+import com.sports.schedule.core.placement.split.SlotSplit;
 import com.sports.schedule.core.primitive.Unit;
 import com.sports.schedule.core.primitive.Window;
 import com.sports.service.arrange.ArrangementService;
@@ -83,6 +84,24 @@ public class SchedulePlacementComponent {
                           Map<Long, List<int[]>> busy, int[] conflictStat,
                           Map<Unit, Placement> solved, Map<Long, List<int[]>> eventBlocked,
                           String laneStyleRule) {
+        placeOne(u, pool, windows, defaultInterval, minInterval, compressionWarnRatio, saved, warnings,
+                orderCounter, autoArrangeFails, busy, conflictStat, solved, eventBlocked, laneStyleRule, true);
+    }
+
+    /**
+     * 单个单元的放置（{@code allowSplit} = 是否允许中午临界点跨时段拆分）。
+     *
+     * <p>拆分只在「<b>整块确实放不下</b>」时才尝试：能整块放下的一律整块放——
+     * 凭空多一条赛程行会让导出、秩序册、覆盖率统计都变复杂，不值得。
+     * 能整块放但上午只剩零头时也不拆：那种情况整块挪到下午更整齐，
+     * 拆两段反而让现场多一次集合、多一次转场。</p>
+     */
+    public void placeOne(Unit u, Pool pool, List<Window> windows, int defaultInterval, int minInterval,
+                          double compressionWarnRatio, List<EventSchedule> saved, List<String> warnings,
+                          int[] orderCounter, List<String> autoArrangeFails,
+                          Map<Long, List<int[]>> busy, int[] conflictStat,
+                          Map<Unit, Placement> solved, Map<Long, List<int[]>> eventBlocked,
+                          String laneStyleRule, boolean allowSplit) {
         int interval = Math.max(SchedulePlacementMath.intervalOf(u, defaultInterval), minInterval);
         List<int[]> blocked = eventBlocked == null ? null : eventBlocked.get(u.event.getId());
         // U28/B25：优先采用约束求解结果（求解器已联合决定「位置 + 时长」）。
@@ -97,6 +116,12 @@ public class SchedulePlacementComponent {
         }
         Cand best = SchedulePlacementMath.findBestSlot(u, pool, windows, interval, busy, blocked);
         if (best == null) {
+            // U26/B23：整块放置——放不下就试中午临界点跨时段拆分（上午末 + 下午初）。
+            // 拆不出合法方案才如实报「排不下」，由用户按建议调整并发位/天数。
+            if (allowSplit && placeSplit(u, pool, windows, interval, busy, blocked, saved, warnings,
+                    orderCounter, autoArrangeFails, compressionWarnRatio, conflictStat, laneStyleRule)) {
+                return;
+            }
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
             return;
@@ -107,6 +132,10 @@ public class SchedulePlacementComponent {
         Cursor cursor = pool.cursors.get(best.slotIdx);
         Probe probe = cursor.placeAt(windows, best.windowIdx, best.startMinute, u.duration);
         if (probe == null) {   // 理论上不会发生（findBestSlot 已校验容量）
+            if (allowSplit && placeSplit(u, pool, windows, interval, busy, blocked, saved, warnings,
+                    orderCounter, autoArrangeFails, compressionWarnRatio, conflictStat, laneStyleRule)) {
+                return;
+            }
             warnings.add(String.format("项目「%s」（%s）因时段已排满未能安排", u.event.getName(),
                     u.grade == null ? "不分年级" : u.grade));
             return;
@@ -115,6 +144,67 @@ public class SchedulePlacementComponent {
         else conflictStat[1] += best.conflicts;
         saveSchedule(u, probe.slot, pool.venueOf.get(best.slotIdx), saved, orderCounter, autoArrangeFails,
                 warnings, compressionWarnRatio, busy, laneStyleRule);
+    }
+
+    /**
+     * 中午临界点跨时段拆分落位：把一个项目按<b>组次边界</b>切成上午一段 + 下午一段，
+     * 落成<b>两条</b>赛程行（同 event 同 grade，remark 标注「跨时段第 N 段」）。
+     *
+     * <p>为什么落两条而不是一条：赛程行的 {@code timeSlot / startTime / endTime} 是现场要印在
+     * 秩序册上的事实，「上午 10:40–11:30」与「下午 14:00–14:30」是两个不同的时段，
+     * 硬塞进一行会得到一个 10:40–14:30 的荒谬时间窗。</p>
+     *
+     * <p>为什么只在整块放不下时调用：本方法产生的副作用是「多一条赛程行」，
+     * 能整块放就该整块放（见 {@link #placeOne} 的说明）。</p>
+     *
+     * @return 拆分落位成功返回 true
+     */
+    private boolean placeSplit(Unit u, Pool pool, List<Window> windows, int interval,
+                               Map<Long, List<int[]>> busy, List<int[]> blocked,
+                               List<EventSchedule> saved, List<String> warnings, int[] orderCounter,
+                               List<String> autoArrangeFails, double compressionWarnRatio,
+                               int[] conflictStat, String laneStyleRule) {
+        SlotSplit.SplitCand cand = SchedulePlacementMath.findSplit(u, pool, windows, interval, busy, blocked);
+        if (cand == null) return false;
+        // 时长守恒是拆分之一票否决项：切错了一个组次，后面全部字段都不可信
+        if (!cand.durationConsistent(u.duration)) return false;
+        if (cand.slotIdx() < 0 || cand.slotIdx() >= pool.cursors.size()) return false;
+
+        Cursor cursor = pool.cursors.get(cand.slotIdx());
+        Window head = windows.get(cand.headWindowIdx());
+        Window tail = windows.get(cand.tailWindowIdx());
+        int headRel = cand.headStart() - head.startMinute;
+        int tailRel = cand.tailStart() - tail.startMinute;
+        if (!cursor.reserveSplit(cand.headWindowIdx(), headRel, cand.headDuration(),
+                cand.tailWindowIdx(), tailRel, cand.tailDuration(), interval)) {
+            return false;   // 探测到、但落位时被占（并发趟内其他单元抢先）→ 如实回退「排不下」
+        }
+        String venue = pool.venueOf.get(cand.slotIdx());
+        int headRounds = cand.headDuration() / u.perRoundMinutes();
+        int tailRounds = u.rounds - headRounds;
+        if (cand.conflicts() == 0) conflictStat[0]++;
+        else conflictStat[1] += cand.conflicts();
+
+        List<String> splitWarnings = new ArrayList<>();
+        // 两段依次落库：head 段与 tail 段各自是一条赛程行，段序写进 remark 供现场按序集合
+        if (saveScheduleSegment(u, head, cand.headStart(), cand.headDuration(),
+                1, u.rounds, venue, saved, orderCounter, splitWarnings, busy) == null) {
+            return false;
+        }
+        if (saveScheduleSegment(u, tail, cand.tailStart(), cand.tailDuration(),
+                2, u.rounds, venue, saved, orderCounter, splitWarnings, busy) == null) {
+            return false;
+        }
+        warnings.addAll(splitWarnings);
+        // 道次编排只在两段都落库后做一次：编排表按 (项目,年级,性别,赛次) 唯一，
+        // 分两次调用会互相 delete 掉对方刚写的组次（autoArrangeFor 每次先清旧记录）。
+        if (u.participants > 0) {
+            u.arranged = autoArrangeFor(u, autoArrangeFails, laneStyleRule);
+        }
+        log.info("跨时段拆分落位: 「{}」（{}）上午 {}min/{} 组 + 下午 {}min/{} 组 @{}",
+                u.event.getName(), u.grade == null ? "不分年级" : u.grade,
+                cand.headDuration(), headRounds, cand.tailDuration(), tailRounds, venue);
+        return true;
     }
 
     /**
@@ -269,39 +359,95 @@ public class SchedulePlacementComponent {
         return false;
     }
 
+    /**
+     * 落一条赛程行（跨时段拆分复用；单段路径也统一走这里）。
+     *
+     * <p>与 {@code saveSchedule} 的差别：起止/时长由调用方给定（拆分时上午、下午是两段），
+     * remark 标注段序；{@code busy} 登记与压缩告警的口径保持一致。</p>
+     *
+     * @param roundIndex 本段是第几段（1-based）
+     * @param roundTotal 总段数
+     * @return 落库后的赛程行；落库失败返回 null
+     */
+    private EventSchedule saveScheduleSegment(Unit u, Window w, int startMinute, int duration,
+                                              int roundIndex, int roundTotal, String venue,
+                                              List<EventSchedule> saved, int[] orderCounter,
+                                              List<String> warnings, Map<Long, List<int[]>> busy) {
+        boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
+        List<String> local = new ArrayList<>();
+        EventSchedule s = buildScheduleRow(u, w, startMinute, duration, venue, orderCounter, local,
+                roundIndex, roundTotal, needPrelim);
+        warnings.addAll(local);
+        EventSchedule row = scheduleRepository.save(s);
+        saved.add(row);
+
+        // busy 登记：两段都登记，后续单元才能同时避开「上午段」与「下午段」
+        if (!u.athleteIds.isEmpty()) {
+            int absStart = w.day * 1440 + startMinute;
+            int[] span = {absStart, absStart + duration};
+            for (Long aid : u.athleteIds) {
+                busy.computeIfAbsent(aid, k -> new ArrayList<>()).add(span);
+            }
+        }
+        return row;
+    }
+
+    /**
+     * 组装一条赛程行（<b>不落库</b>）：字段装配的唯一出口。
+     *
+     * <p>抽出来的原因：跨时段拆分要落两行，若各写一份 builder 链，字段一旦漏改
+     * （比如新增一个业务字段只改了一处）就会两段行为不一致——而这种 bug 在赛程表里
+     * 表现为「上午那行有 remark、下午那行没有」，极难定位。</p>
+     */
+    private EventSchedule buildScheduleRow(Unit u, Window w, int startMinute, int duration, String venue,
+                                           int[] orderCounter, List<String> warnings,
+                                           int roundIndex, int roundTotal, boolean needPrelim) {
+        List<String> remark = new ArrayList<>();
+        if (roundTotal > 1) {
+            // 跨时段：段序 + 该段承载的组次数（现场按「第 N 段」集合，顺序必须可读）
+            remark.add(String.format("跨时段第%d/%d段（%d个组次）", roundIndex, roundTotal,
+                    duration / Math.max(1, u.perRoundMinutes())));
+        } else if (duration < u.rawDuration) {
+            remark.add(String.format("预计%d分钟，实给%d分钟（按可用时段容量适配）", u.rawDuration, duration));
+        }
+        return EventSchedule.builder()
+                .event(u.event)
+                .day(w.day)
+                .scheduleDate(w.date)
+                .grade(u.grade)
+                .timeSlot(w.slotName)
+                .startTime(fmt(startMinute))
+                .endTime(fmt(startMinute + duration))
+                .venue(venue)
+                .sortOrder(orderCounter[0]++)
+                .durationMinutes(duration)
+                .round(needPrelim ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL)
+                .remark(remark.isEmpty() ? null : String.join("；", remark))
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+    }
+
     /** 登记一条赛程：排入后立即复用编排引擎生成道次/组次（needHeats 项目=预赛，其余=决赛）。径赛与田赛都在此自动编排——田赛按「项目内并发/工位数」自动分组成次（X 人一组），不再因 u.track 判断而被跳过。 */
     public void saveSchedule(Unit u, Slot placed, String venue, List<EventSchedule> saved,
                               int[] orderCounter, List<String> autoArrangeFails,
                               List<String> warnings, double compressionWarnRatio,
                               Map<Long, List<int[]>> busy, String laneStyleRule) {
         boolean needPrelim = u.track && Boolean.TRUE.equals(u.event.getNeedHeats());
-        EventSchedule s = EventSchedule.builder()
-                .event(u.event)
-                .day(placed.window.day)
-                .scheduleDate(placed.window.date)
-                .grade(u.grade)
-                .timeSlot(placed.window.slotName)
-                .startTime(fmt(placed.startMinute))
-                .endTime(fmt(placed.startMinute + u.duration))
-                .venue(venue)
-                .sortOrder(orderCounter[0]++)
-                .durationMinutes(u.duration)
-                .round(needPrelim ? ArrangementService.ROUND_PRELIM : ArrangementService.ROUND_FINAL)
-                .remark(u.duration >= u.rawDuration ? null
-                        : String.format("预计%d分钟，实给%d分钟（按可用时段容量适配）", u.rawDuration, u.duration))
-                .createdAt(LocalDateTime.now())
-                .updatedAt(LocalDateTime.now())
-                .build();
+        List<String> local = new ArrayList<>();
+        EventSchedule s = buildScheduleRow(u, placed.window, placed.startMinute, u.duration, venue,
+                orderCounter, local, 1, 1, needPrelim);
         // B05/U07 + U24/B21：逐条压缩告警只保留「项目显式配了 maxDurationMinutes 而被压」的情形——
         // 那是用户自己设的上限，值得逐项确认；容量不足造成的等比压缩由 autoSchedule 汇总成
         // 「一池一条」的可执行告警，避免十几条重复文案把真正的业务问题淹没。
         if (u.explicitMaxDuration > 0 && u.rawDuration > u.explicitMaxDuration) {
-            warnings.add(String.format("⚠️ 项目时长上限告警：「%s」（%s）预计需 %d 分钟，受该项目显式上限 "
+            local.add(String.format("⚠️ 项目时长上限告警：「%s」（%s）预计需 %d 分钟，受该项目显式上限 "
                             + "maxDurationMinutes=%d 约束压缩为 %d 分钟（约 %.0f%%）；如现场时间充足可上调该上限",
                     u.event.getName(), u.grade == null ? "不分年级" : u.grade,
                     u.rawDuration, u.explicitMaxDuration, u.duration,
                     u.explicitMaxDuration * 100.0 / u.rawDuration));
         }
+        warnings.addAll(local);
         saved.add(scheduleRepository.save(s));
 
         // U23/B20：登记本单元占用的时间段，供后续单元做兼项冲突规避（绝对分钟便于跨天比较）

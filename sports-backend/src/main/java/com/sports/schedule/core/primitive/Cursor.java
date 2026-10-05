@@ -65,6 +65,27 @@ public class Cursor {
         return true;
     }
 
+    /**
+     * <b>跨时段双段预定</b>（中午临界点拆分）：同一个项目在两个相邻窗口各占一段
+     * （上午末 + 下午初），两段分别记账。
+     *
+     * <p>与 {@link #reserve} 的关系：{@code reserve} 是「一个窗口里的一段」，
+     * 本方法是「两个窗口里的各一段」，且必须<b>同时成功或同时失败</b>——
+     * 只占住上午段却放不下下午段，会留下一个永远占着跑道的空洞。</p>
+     *
+     * @return 两段都预定成功返回 true；任一段越界/重叠则<b>不改动任何状态</b>返回 false
+     */
+    public boolean reserveSplit(int headWi, int headStartRel, int headDuration,
+                                int tailWi, int tailStartRel, int tailDuration, int interval) {
+        if (headWi < 0 || tailWi < 0 || headStartRel < 0 || tailStartRel < 0) return false;
+        if (headDuration <= 0 || tailDuration <= 0) return false;
+        if (conflict(headWi, headStartRel, headStartRel + headDuration, interval)) return false;
+        if (conflict(tailWi, tailStartRel, tailStartRel + tailDuration, interval)) return false;
+        mark(headWi, headStartRel, headStartRel + headDuration);
+        mark(tailWi, tailStartRel, tailStartRel + tailDuration);
+        return true;
+    }
+
     /** 放进最早的「还放得下」窗口（回填允许）；都放不下返回 null */
     public Slot place(List<Window> windows, int duration, int interval) {
         return place(windows, duration, interval, 0);

@@ -33,6 +33,7 @@ public class ArrangementController {
     private final ConflictService conflictService;
     private final EventCooccurrenceService eventCooccurrenceService;
     private final ConflictResolutionService conflictResolutionService;
+    private final com.sports.service.arrange.HeatStaggerService heatStaggerService;
     private final AuditService auditService;
     private final com.sports.service.system.SystemService systemService;
     private final com.sports.schedule.rule.inject.RuleInjectionService ruleInjectionService;
@@ -387,6 +388,25 @@ public class ArrangementController {
         data.put("summary", conflictService.summary(list));
         data.put("list", list);
         return ApiResponse.success("兼项冲突检测完成", data);
+    }
+
+    /**
+     * 组次错开消解：<b>不改动任何项目的时间窗</b>，只改换运动员在项目内的组次顺序，
+     * 让两场错开赶场缓冲。
+     *
+     * <p>与 {@link #conflicts()} 的分工：那是「看」（项目级重叠清单），
+     * 这是「治」（组次级改换）。项目级报出来的冲突里，有相当一部分其实只是
+     * 「两个项目的赛程行重叠，但运动员分在错开的组次上」——这类用不着挪项目，
+     * 换一组就解决了。</p>
+     *
+     * <p>自动编排收尾时已自动跑过一次；本接口供编排者在<b>改过赛程或报名之后</b>再补一刀。</p>
+     */
+    @PostMapping("/heat-stagger")
+    public ApiResponse<?> heatStagger(@RequestParam(required = false) Integer bufferMinutes) {
+        int buffer = bufferMinutes != null && bufferMinutes > 0
+                ? bufferMinutes : com.sports.service.arrange.ConflictService.CONFLICT_BUFFER_MIN;
+        log.info("组次错开消解: buffer={}分钟", buffer);
+        return ApiResponse.success("组次错开消解完成", heatStaggerService.resolve(buffer));
     }
 
     /**

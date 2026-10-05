@@ -59,6 +59,7 @@ import com.sports.schedule.core.primitive.Unit;
 import com.sports.schedule.core.primitive.Window;
 import com.sports.service.arrange.ArrangementService;
 import com.sports.service.arrange.ConflictService;
+import com.sports.service.arrange.HeatStaggerService;
 import com.sports.service.audit.AuditService;
 import com.sports.service.protection.AdminTimeProtectionService;
 import com.sports.schedule.support.protection.ProtectionMath;
@@ -112,7 +113,8 @@ public class ScheduleService {
                             ScheduleCollaborationService collaborationService,
                             RuleBasedScheduler ruleBasedScheduler,
                             AuditService auditService,
-                            AdminTimeProtectionService protectionService) {
+                            AdminTimeProtectionService protectionService,
+                            HeatStaggerService heatStaggerService) {
         this.scheduleRepository = scheduleRepository;
         this.eventRepository = eventRepository;
         this.registrationRepository = registrationRepository;
@@ -135,6 +137,7 @@ public class ScheduleService {
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.auditService = auditService;
         this.protectionService = protectionService;
+        this.heatStaggerService = heatStaggerService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
         // AI 自对抗是「AI 模式」的可选增强：静态入口拿不到（单测 / 未启用 AI）时传 null，
@@ -206,6 +209,13 @@ public class ScheduleService {
     private final AuditService auditService;
     /** 行政时间保护：GLOBAL 避让时段切分时间窗、TEACHER 个人时段按项目阻挡（对编排率先影响） */
     private final AdminTimeProtectionService protectionService;
+    /**
+     * 组次错开消解：精修链挪不动项目时间时，改换运动员在项目内的组次顺序来错开兼项冲突。
+     *
+     * <p>与上面几个依赖正交——它<b>只改编排表的 heat 字段，绝不动赛程表</b>，
+     * 因此不会与「多趟放置择优」互相污染：赛程在它之前就已定型。</p>
+     */
+    private final HeatStaggerService heatStaggerService;
 
     private final ScheduleBuildComponent buildComponent;
 
@@ -685,6 +695,31 @@ public class ScheduleService {
             log.warn("补回决赛赛程条目异常", ex);
         }
 
+        // ===== 组次维度错开（微调算法的最后一招）=====
+        // 精修链（GA/LNS/MNSA/ALNS/Fix-opt）都在「挪项目时间」这一维度上找改进，
+        // 受「同并发位不重叠 + 组次必须连续」约束，总有一些顽固冲突挪不动。
+        // 这一招换维度：不碰任何项目的时间窗，只改换运动员在项目内的组次顺序，
+        // 让两场错开 ≥ 缓冲——这是唯一不动时段容量的自由度。
+        // 放在精修之后：先让重排手段用尽，再用组次错开收尾（反过来做会浪费重排机会）。
+        Map<String, Object> heatStagger = null;
+        try {
+            boolean allowHeatStagger = !Boolean.FALSE.equals(cfg.get("heatStagger"));
+            if (allowHeatStagger) {
+                heatStagger = heatStaggerService.resolve(ConflictService.CONFLICT_BUFFER_MIN);
+                Object resolved = heatStagger == null ? null : heatStagger.get("resolved");
+                if (resolved instanceof Number n && n.intValue() > 0) {
+                    log.info("组次错开: 换组 {} 人次以消解兼项冲突（项目时间窗未改动）", n.intValue());
+                }
+            } else {
+                heatStagger = Map.of("resolved", 0, "disabled", true,
+                        "note", "本次编排显式关闭了组次错开（heatStagger=false）");
+            }
+        } catch (Exception ex) {
+            // 组次错开是「锦上添花」而非交付前提：失败不能拖垮整次编排，如实告警即可
+            log.warn("组次错开消解失败（不影响已生成的赛程）: {}", ex.getMessage());
+            heatStagger = Map.of("resolved", 0, "error", String.valueOf(ex.getMessage()));
+        }
+
         // B06/U05：赛程生成后做兼项冲突检测。
         // 冲突清单本身可能上百条，逐条塞进 warnings 会把 warnings 变成噪声、现场反而看不见
         // （旧实现一次编排产生 552 条告警）。这里改为「一条汇总告警 + 完整清单走 conflicts 字段」。
@@ -776,6 +811,8 @@ public class ScheduleService {
         }
         // B06/U05：完整兼项冲突清单（warnings 里只放汇总，避免上百条告警淹没现场）
         result.put("conflicts", conflicts);
+        // 组次错开报告：换组了几个人次、每人从第几组换到第几组、间隔改善多少
+        result.put("heatStagger", heatStagger);
         // B05/U06：新增「可行性预检」与「压缩亏损明细」两个结构化字段，让现场能算清缺口
         result.put("feasibility", feasibility);
         result.put("compressionReport", compressionReport);

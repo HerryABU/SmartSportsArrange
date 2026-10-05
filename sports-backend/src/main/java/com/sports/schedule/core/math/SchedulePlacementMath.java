@@ -6,6 +6,7 @@ import com.sports.schedule.core.placement.conflict.ClashCounter;
 import com.sports.schedule.core.placement.duration.DurationTier;
 import com.sports.schedule.core.placement.label.TimeLabels;
 import com.sports.schedule.core.placement.slot.SlotSearch;
+import com.sports.schedule.core.placement.split.SlotSplit;
 import com.sports.schedule.opt.solver.Placement;
 
 import java.util.List;
@@ -124,6 +125,24 @@ public final class SchedulePlacementMath {
 
     public static String roundKey(Long eventId, String grade, String startTime, String venue) {
         return TimeLabels.roundKey(eventId, grade, startTime, venue);
+    }
+
+    // ── 跨时段拆分（core.placement.split） ───────────────────────────────────
+
+    /**
+     * 中午临界点拆分：在池内寻找「上午一段 + 下午一段」的落位方案；
+     * 不存在合法拆分（如整块其实放得下、时长无法按组次整除、跨天）时返回 null。
+     *
+     * @see SlotSplit
+     */
+    public static SlotSplit.SplitCand findSplit(Unit u, Pool pool, List<Window> windows, int interval,
+                                                Map<Long, List<int[]>> busy, List<int[]> blockedIntervals) {
+        return SlotSplit.findSplit(u, pool, windows, interval, busy, blockedIntervals);
+    }
+
+    /** 拆分候选择优（冲突少 → 上午段承载组次多 → 窗口/起点靠前） */
+    public static boolean splitBeats(SlotSplit.SplitCand a, SlotSplit.SplitCand b) {
+        return SlotSplit.beats(a, b);
     }
 
     // ── 容量与装箱（core.placement.capacity） ─────────────────────────────────

@@ -44,4 +44,28 @@ public class Unit {
         this.event = event;
         this.grade = grade;
     }
+
+    /**
+     * 单个组次（径赛的一组 / 田赛的一批）的用时（分钟）。
+     *
+     * <p>由「整块时长 ÷ 组次数」推导，是本项目里<b>唯一</b>的组次粒度口径：
+     * 道次编排把项目切成 {@code rounds} 个组次依次开赛，跨时段拆分也必须按它对齐——
+     * 否则一个组次会被拦腰截成「上午半组 + 下午半组」，现场既没法检录也没法记成绩。
+     *
+     * <p>下限 1 分钟：{@code rounds} 大于 {@code duration}（人数极少而组数被硬约束撑高）时
+     * 不能算出 0，否则按组次切分会出现长度为 0 的段。
+     */
+    public int perRoundMinutes() {
+        return Math.max(1, duration / Math.max(1, rounds));
+    }
+
+    /**
+     * 本单元能否被组次边界整除地切分：{@code duration} 是否为组次用时的整数倍。
+     *
+     * <p>用于判定「跨时段拆分后，两段各自是否仍是若干个完整组次」。
+     */
+    public boolean splittableByRound() {
+        int per = perRoundMinutes();
+        return rounds <= 1 || duration % per == 0;
+    }
 }

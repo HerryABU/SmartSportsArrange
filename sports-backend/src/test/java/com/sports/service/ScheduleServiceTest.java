@@ -91,6 +91,8 @@ class ScheduleServiceTest {
     /** 协作中心的桩：本测试验证编排主流程，实时协作逻辑由 ScheduleCollaborationServiceTest 覆盖 */
     @Mock private ScheduleCollaborationService collaborationService;
     @Mock private AdminTimeProtectionService protectionService;
+    /** 组次错开消解：新依赖，缺 @Mock 会注入 null */
+    @Mock private com.sports.service.arrange.HeatStaggerService heatStaggerService;
 
     @InjectMocks private ScheduleService scheduleService;
 

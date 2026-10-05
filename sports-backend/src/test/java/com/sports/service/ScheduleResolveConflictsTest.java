@@ -87,6 +87,8 @@ class ScheduleResolveConflictsTest {
     @Mock private ScheduleCollaborationService collaborationService;
     @Mock private AuditService auditService;
     @Mock private AdminTimeProtectionService protectionService;
+    /** 组次错开消解：新依赖，缺 @Mock 会注入 null */
+    @Mock private com.sports.service.arrange.HeatStaggerService heatStaggerService;
 
     @InjectMocks private ScheduleService scheduleService;
 
