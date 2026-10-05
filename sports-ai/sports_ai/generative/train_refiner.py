@@ -94,6 +94,16 @@ def train(args):
     G.eval(); D.eval()
 
     R = SchemeRefiner().to(device)
+    # ⚠️ 预测分支必须在**建优化器之前**挂 —— `Adam(R.parameters())` 在构造时就把参数
+    #    列表固化了，之后挂上来的 `aux.*` **永远不会被更新**（实测 200 步变化 0.000000）。
+    #    「接线正确但从未通电」的又一实例：loss 里算得到、梯度也回传进 enc，
+    #    唯独 aux 自己的头一直是随机初始化。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    # ⚠️ 本文件里精修器叫 **R**（不是 model）—— 写错变量名会 NameError，
+    #    而 NameError 只在跑到这一行时才炸（训练脚本的「改完要立刻小步试跑」的原因）。
+    R.aux = ForecastAux(R.enc.hidden)
+    share = encoder_trunk(R.enc)
     opt = torch.optim.Adam(R.parameters(), lr=3e-4, weight_decay=1e-4)
 
     node_feat, adj, mask = make_batch(args.batch, seed=args.seed)
@@ -107,13 +117,8 @@ def train(args):
         am = adj * mask.unsqueeze(-1) * mask.unsqueeze(1)
         return ((same * am).sum() / am.sum().clamp(min=1)).item()
 
-    # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干。
-    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
-    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
-    # ⚠️ 本文件里精修器叫 **R**（不是 model）—— 写错变量名会 NameError，
-    #    而 NameError 只在跑到这一行时才炸（训练脚本的「改完要立刻小步试跑」的原因）。
-    R.aux = ForecastAux(R.enc.hidden)
-    share = encoder_trunk(R.enc)
+    # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干
+    # （aux 的挂载与优化器创建已在上面合并，顺序不可颠倒 —— 见那里的注释）。
 
     for it in range(args.iters):
         # ⚠️ 初始解必须与**推理时一致**：推理端用 z=0（确定性），早期训练却用随机 z，

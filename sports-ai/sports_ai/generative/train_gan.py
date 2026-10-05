@@ -133,6 +133,16 @@ def train(args):
 
     G = SchemeGenerator()
     D = SchemeDiscriminator()
+    # ⚠️ 预测分支必须在**建优化器之前**挂 —— `Adam(G.parameters())` 在构造时就把参数
+    #    列表固化了，之后挂上来的 `aux.*` **永远不会被更新**（实测 200 步变化 0.000000）。
+    #    这是「接线正确但从未通电」的又一实例：loss 里算得到、梯度也回传进 enc，
+    #    唯独 aux 自己的头一直是随机初始化。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    # ⚠️ 本文件里模型就建在 CPU 上（没有 .to(device)）、也没有 device 变量，
+    #    所以 AuxData 用默认设备，别写 device=device（会 NameError）。
+    aux_data = AuxData(n=512, seed=args.seed + 4242)
+    G.aux = ForecastAux(G.enc.hidden)
+    G_share = encoder_trunk(G.enc)
     opt_g = torch.optim.Adam(G.parameters(), lr=args.lr, betas=(0.5, 0.999))
     # 判别器学习率略低（d_lr_scale），配合标签平滑，避免 D 过快碾压 G 导致对抗梯度消失
     opt_d = torch.optim.Adam(D.parameters(), lr=args.lr * args.d_lr_scale, betas=(0.5, 0.999))
@@ -142,16 +152,9 @@ def train(args):
     real_lbl, fake_lbl = args.label_smooth, 1.0 - args.label_smooth
     real = oracle_batch(adj, mask, forbid, MAX_SLOTS)          # 真实可行解（真样本）
 
-    # 预测分支（「未来 H 步时间槽」）：挂在**生成器 G** 上，共享它自己的 MoE 主干。
-    # 只加在 loss_g 上 —— 判别器 D 是「评判者」，它的表征不需要预测能力，
+    # 预测分支只加在 loss_g 上 —— 判别器 D 是「评判者」，它的表征不需要预测能力，
     # 硬加反而干扰对抗平衡。动态挂载（不改编模型类）：
     # 给 nn.Module 赋一个 nn.Module 属性，PyTorch 会自动把它注册进子模块。
-    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
-    # ⚠️ 本文件里模型就建在 CPU 上（没有 .to(device)）、也没有 device 变量，
-    #    所以 AuxData 用默认设备，别写 device=device（会 NameError）。
-    aux_data = AuxData(n=512, seed=args.seed + 4242)
-    G.aux = ForecastAux(G.enc.hidden)
-    G_share = encoder_trunk(G.enc)
 
     for it in range(args.iters):
         # ============ ① 训练判别器 D ============

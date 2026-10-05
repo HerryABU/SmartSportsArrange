@@ -125,17 +125,19 @@ def main() -> None:
 
     model = SchemeDiffusion(hidden=args.hidden, steps=args.steps, layers=args.layers).to(device)
     print(f"[model] 参数量 {sum(q.numel() for q in model.parameters()):,}")
+    # ⚠️ 预测分支必须在**建优化器之前**挂 —— `Adam(model.parameters())` 在构造时
+    #    就把参数列表固化了，之后挂上来的 `aux.*` **永远不会被更新**（实测 200 步
+    #    变化 0.000000）。「接线正确但从未通电」的又一实例。
+    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    model.aux = ForecastAux(model.enc.hidden)
+    share = encoder_trunk(model.enc)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
 
     best = float("inf")
     best_state = None
     best_stats = {}
-    # 预测分支（未来 H 步时间槽）：动态挂在模型上，共享它自己的 MoE 主干。
-    from sports_ai.nn.forecast_aux import AuxData, ForecastAux, aux_loss, encoder_trunk
-    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
-    model.aux = ForecastAux(model.enc.hidden)
-    share = encoder_trunk(model.enc)
 
     for it in range(args.iters):
         idx = torch.randint(0, nf.shape[0], (args.batch,), device=device)
