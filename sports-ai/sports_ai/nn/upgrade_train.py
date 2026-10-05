@@ -240,6 +240,10 @@ def make_forecast_batch(items: tuple, spec: "Spec"):
 #: 「未来会排到哪」），主任务仍是各自的原目标 —— 权重过大会把主能力带偏。
 AUX_FORECAST_W = 0.1
 
+#: 预测分支预生成的序列样本数。一次生成、训练期循环采样：
+#: 既保证 X/Y 同源，又不必每步重跑场景生成 + 贪心着色（那是主要开销）。
+AUX_SAMPLES = 512
+
 
 def forecast_targets(scenarios: list, n_samples: int):
     """把「本步刚生成的场景」转成 ``[n_samples, H]`` 的未来时间槽真值。
@@ -282,7 +286,7 @@ def registry() -> dict:
 
     维数一律取自**各模型自己的常量**（而不是抄一遍），改维度时不会漂移。
     """
-    return {
+    reg = {
         # ── 高频：每次编排都会走 ──
         "lane_advisor": Spec("lane_advisor", "sports_ai.lane_advisor", "LaneAdvisor",
                              LANE_FEAT_DIM, loss="mse", make_batch="make_batch",
@@ -371,6 +375,13 @@ def registry() -> dict:
         # 它已改为在 `models/tournament_gnn.py` 里就地插 `MoERepr` 增强表征，
         # 训练/导出仍走它自己的 `train_tournament_gnn.py` / `export_tournament_onnx.py`。
     }
+    # 统一给**全部**专项模型挂上「未来 H 步时间槽」预测分支：用户明确要求
+    # 「能力最好的」，不是覆盖最少的。这条分支自带序列输入（不依赖各模型自己的
+    # 数据源是否生成场景），所以能 **100% 覆盖**；先前靠场景钩子的做法只对 4/9 生效，
+    # 而且「需要预测」的那几个恰好都用不上。
+    for _spec in reg.values():
+        _spec.forecast_steps = FC_H_OUT
+    return reg
 
 
 # ---------------------------------------------------------------------------
@@ -516,20 +527,26 @@ def train_one(spec: Spec, args, device) -> str:
           f"（{','.join(sorted(set(type(e.inner).__name__ for e in model.experts)))}）"
           f"  参数={sum(p.numel() for p in model.parameters()):,}")
 
-    # 辅助预测任务（「给需要预测的小模型嵌入预测」）：监督信号来自**本步刚生成的
-    # 那批场景**，所以只在数据源生成期间打开钩子（默认零开销，见 scenario_hook）。
+    # 辅助预测任务（「给需要预测的小模型嵌入预测」）：走**独立的序列数据源**。
+    # 一次预生成整批再循环采样，有两个好处：
+    #   ① 标签与输入**严格同源**（同一份 make_dataset 的 X/Y，不存在错配）；
+    #   ② 不必每步都跑一遍场景生成 + 贪心着色（那会吃掉大半个训练时间）。
+    # 这条分支自带序列输入，所以**不依赖各模型自己的数据源** —— 覆盖 100%，
+    # 而先前靠场景钩子的做法只对 4/9 生效。
     aux_on = spec.forecast_steps > 0
-    aux_miss = 0
+    aux_X = aux_Y = None
     if aux_on:
-        scenario_hook.start()
+        from sports_ai.forecast.dataset import make_dataset as _fc_dataset
+        _ax, _ay, _ = _fc_dataset(AUX_SAMPLES, seed=args.seed + 4242)
+        aux_X = torch.from_numpy(np.asarray(_ax, dtype=np.float32))
+        aux_Y = torch.from_numpy(np.asarray(_ay, dtype=np.float32))
+        print(f"[{spec.name}] 预测分支已挂：{aux_X.shape[0]} 条序列样本 "
+              f"{tuple(aux_X.shape[1:])} → {tuple(aux_Y.shape[1:])}")
     for it in range(args.iters):
-        if aux_on:
-            scenario_hook.clear()
         if spec.takes_pad_to:
             batch = src(args.batch, seed=args.seed + it, pad_to=spec.pad_to)
         else:
             batch = src(args.batch, seed=args.seed + it)
-        scenarios = scenario_hook.collect() if aux_on else []
         if spec.batch_fn is not None:
             batch = spec.batch_fn(batch, spec)
         batch = tuple(b.to(device) if hasattr(b, "to") else b for b in batch)
@@ -570,19 +587,15 @@ def train_one(spec: Spec, args, device) -> str:
                 tmask = torch.ones(b2, 1, dtype=x.dtype)
         elif spec.legacy_mode != "gnn":
             adj, tmask = None, None
-        if aux_on:
-            pred, nxt, fc = model(x, mask, adj, tmask, return_forecast=True)
-        else:
-            pred, nxt = model(x, mask, adj, tmask)
-            fc = None
+        pred, nxt = model(x, mask, adj, tmask)
         loss, metric = compute_loss(spec, pred, batch, mask, target)
-        if aux_on and fc is not None:
-            tgt = forecast_targets(scenarios, int(x.shape[0]))
-            if tgt is None:
-                aux_miss += 1
-            else:
-                loss = loss + AUX_FORECAST_W * F.mse_loss(
-                    fc, tgt.to(device=fc.device, dtype=fc.dtype))
+        if aux_on:
+            # 从预生成池里随机采一批序列，走共享专家池 + 主干 → 未来 H 步
+            k = min(args.batch, aux_X.shape[0])
+            idx = torch.randint(0, aux_X.shape[0], (k,))
+            fc = model.forward_seq(aux_X[idx].to(device))
+            if fc is not None:
+                loss = loss + AUX_FORECAST_W * F.mse_loss(fc, aux_Y[idx].to(device))
         # MoE 特有的两件事：**必须**都做，否则等于白装 MoE
         loss = loss + args.w_lb * model.load_balance_loss()
         opt.zero_grad()
@@ -595,12 +608,6 @@ def train_one(spec: Spec, args, device) -> str:
             print(f"  第 {it+1:5d} 步  loss={float(loss):.5f}  指标={metric:.4f}  "
                   f"激活专家={used}/{len(u)}")
 
-    if aux_on:
-        scenario_hook.stop()
-        if aux_miss:
-            print(f"  ⚠️ {spec.name}: 辅助预测任务有 {aux_miss}/{args.iters} 步未能对齐"
-                  f"（场景数 ≠ 样本数，或场景太短构不成 L_IN+H_OUT）—— 这些步只训主任务；"
-                  f"若全步数都如此，说明该模型的数据源场景不足，别硬凑")
     os.makedirs(MODEL_DIR, exist_ok=True)
     path = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
     backup_before_overwrite(path, f"moe-{args.iters}")
@@ -629,7 +636,12 @@ def export_one(spec: Spec, args) -> str:
                         n_experts=args.n_experts, n_groups=args.n_groups,
                         pool=spec.pool, dropout=0.0, warmup_steps=0,
                         legacy_mode=spec.legacy_mode, n_types=spec.n_types,
-                        flat_input=spec.flat_input)
+                        # ⚠️ 必须与训练时**逐字一致**：漏了它，加载 ckpt 会报
+                        # "Missing key(s): seq_proj.weight, forecast_head.weight" ——
+                        # 也就是「训了导不出」。预测分支不进部署契约（导出只回主输出），
+                        # 但它的参数在 ckpt 里，结构就必须对得上。
+                        flat_input=spec.flat_input,
+                        forecast_steps=spec.forecast_steps)
     ck = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
     if not os.path.exists(ck):
         raise SystemExit(f"缺少 {ck}，请先训练（去掉 --export-only）")

@@ -118,6 +118,15 @@ class UpgradedMoE(nn.Module):
         self.forecast_steps = forecast_steps
         self.forecast_head = (nn.Linear(hidden, forecast_steps)
                               if forecast_steps > 0 else None)
+        # 序列分支的输入投影：把 forecast 那套「时间步序列」``[B,L,4]`` 投到 hidden。
+        # ⚠️ 这是「能力最好」的那条路，不是可有可无的装饰：主任务的特征里**没有
+        #    时间步语义**（节点特征描述的是单元属性，不是「第几步」），拿它去预测
+        #    未来 H 步排程等于让模型猜（信息不足）—— 那只会训出一个常数输出。
+        #    给一条**真序列输入**，再复用同一套专家池与主干，才是真的学会预测，
+        #    而且学到的表征是**共享**的（不是外挂一个不相干的网络）。
+        from sports_ai.forecast.dataset import IN_DIM as _FC_IN_DIM
+        self.seq_proj = (nn.Linear(_FC_IN_DIM, hidden)
+                         if forecast_steps > 0 else None)
 
     @staticmethod
     def _probe_flat_out_dim(legacy: nn.Module, in_dim: int) -> int:
@@ -364,6 +373,34 @@ class UpgradedMoE(nn.Module):
         if return_forecast:
             return out, nxt, fc
         return out, nxt
+
+    def forward_seq(self, x_seq: torch.Tensor) -> Optional[torch.Tensor]:
+        """序列分支：``[B,L,4]``（时间步序列）→ 未来 H 步时间槽预测 ``[B,H]``。
+
+        复用同一套专家池与主干（不是外挂子网络），所以预测能力会**回流到共享表征**，
+        主任务的 hidden 也会因此更懂「未来会怎么排」。
+
+        序列上没有图结构，给**单位邻接**让图卷积退化为自环 —— 不能传 None，
+        部分专家会直接解引用 adj。
+        """
+        if self.seq_proj is None or self.forecast_head is None:
+            return None
+        b, l, _ = x_seq.shape
+        ones = torch.ones(b, l, device=x_seq.device, dtype=x_seq.dtype)
+        eye = torch.eye(l, device=x_seq.device, dtype=x_seq.dtype).expand(b, l, l)
+        h = self.in_norm(self.seq_proj(x_seq))                   # [B,L,H]
+        w, top_i, _ = self.router(h)
+        acc = torch.zeros_like(h)
+        for i, ex in enumerate(self.experts):
+            acc = acc + w[..., i].unsqueeze(-1) * ex(h, eye, ones)
+        h = self.in_norm(h + acc)
+        for blk in self.trunk:
+            h = blk(h)
+        h = self.out_norm(h)
+        if self.training:
+            self._last_idx = top_i.detach()
+        # 池化后出预测：未来 H 步排程是**实例级**判断，不是逐时间步判断
+        return self.forecast_head(h.mean(dim=1))
 
     # ------------------------------------------------------------------
     def load_legacy_state(self, state: dict) -> tuple:
