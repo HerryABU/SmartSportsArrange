@@ -39,6 +39,7 @@ from sports_ai.referee_advisor import N_REF_FEAT, N_TYPES as N_REF_TYPES
 from sports_ai.teacher_advisor import N_TCH_FEAT, N_TYPES as N_TCH_TYPES
 from sports_ai.models.tournament_gnn import N_TYPES as N_TMT_TYPES
 from sports_ai.data.constraint_gnn_io import N_TYPES as N_CON_TYPES
+from sports_ai.forecast.dataset import H_OUT as FC_H_OUT, IN_DIM as FC_IN_DIM, L_IN as FC_L_IN
 from sports_ai.data.features import N_FEATURES
 from sports_ai.nn.upgrade import UpgradedMoE
 
@@ -96,6 +97,10 @@ class Spec:
     #:   referee/teacher/tournament   → node_feat, adj_by_type, type_mask, mask
     #:   algorithm_selector / ai      → features                  （单个 [1,F]，无 N 轴）
     onnx_inputs: tuple = ()
+    #: 主输出的 ONNX 名字。默认 ``out``；``forecast_*`` 的历史契约叫 ``y``，
+    #: 保留原名才能「零改动替换」——将来真接线到 Java 时，
+    #: 按旧名字读输出的代码一行都不用改。
+    onnx_output: str = "out"
     extra: dict = field(default_factory=dict)
 
 
@@ -206,6 +211,25 @@ def make_constraint_batch(items: list, spec: "Spec"):
     return T(xs), T(ms), T(as_), T(tms), T(ys)
 
 
+def make_forecast_batch(items: tuple, spec: "Spec"):
+    """``forecast_*`` 的数据源返回 ``(X[B,L,F], Y[B,H], lengths)``。
+
+    与其它模型的两点不同：
+
+    1. **没有 padding** —— ``make_dataset`` 已按 ``L_IN`` / ``H_OUT`` 切好定长窗口，
+       每个时间步都是真实样本，所以掩码直接给全 1；
+    2. 标签是 ``[B,H]``（未来 H 步的时间槽序列），配 ``pool=True`` 的输出 ``[B,H]``。
+
+    返回三元组 ``(x, mask, y)``，与 ``layout="xmL"`` **逐位对应**
+    （``train_one`` 是按 layout 的字符顺序去 batch 里取元素的，
+    多塞一个 ``None`` 占位会把 mask 与标签错位）。
+    """
+    x = torch.from_numpy(np.asarray(items[0], dtype=np.float32))    # [B,L,F]
+    y = torch.from_numpy(np.asarray(items[1], dtype=np.float32))    # [B,H]
+    mask = torch.ones(x.shape[0], x.shape[1], dtype=torch.float32)
+    return x, mask, y
+
+
 # ---------------------------------------------------------------------------
 # 登记：确有 Python 训练代码的小模型
 # ---------------------------------------------------------------------------
@@ -269,6 +293,30 @@ def registry() -> dict:
                    make_batch="make_dataset", data_module="sports_ai.train_selector",
                    layout="xL", batch_fn=make_selector_batch,
                    onnx_inputs=("features",)),
+        # ── 序列型：多步预测（把「时间步」当节点序列，长度固定 L_IN）──
+        # ⚠️ 三处必须照抄旧契约，漏一处就是「模型换了但读不出来」：
+        #    ① 输入名 `x`、输出名 `y`（不是其它模型的 node_feat / out）；
+        #    ② 原模型只有一个 `forward(x)` 参数、**没有 mask 输入**；
+        #    ③ `hidden=64` —— 训练脚本用的是 64，而模型类默认 160，
+        #       不显式传会 load_state_dict 形状不匹配。
+        "forecast_direct": Spec("forecast_direct", "sports_ai.forecast.model",
+                                "DirectForecaster", FC_IN_DIM, out_dim=FC_H_OUT,
+                                pool=True, loss="mse",
+                                make_batch="make_dataset",
+                                data_module="sports_ai.forecast.dataset",
+                                batch_fn=make_forecast_batch, layout="xmL",
+                                pad_to=FC_L_IN,
+                                ctor={"in_dim": FC_IN_DIM, "hidden": 64, "h": FC_H_OUT},
+                                onnx_inputs=("x",), onnx_output="y"),
+        "forecast_mimo": Spec("forecast_mimo", "sports_ai.forecast.model",
+                              "MimoForecaster", FC_IN_DIM, out_dim=FC_H_OUT,
+                              pool=True, loss="mse",
+                              make_batch="make_dataset",
+                              data_module="sports_ai.forecast.dataset",
+                              batch_fn=make_forecast_batch, layout="xmL",
+                              pad_to=FC_L_IN,
+                              ctor={"in_dim": FC_IN_DIM, "hidden": 64, "h": FC_H_OUT},
+                              onnx_inputs=("x",), onnx_output="y"),
         # ⚠️ tournament_gnn **不在这里登记**：它有三个输出头
         # （赛制/种子分/公平性），而 Java 的 TournamentAiService 读 r.get(0..2)
         # 三个输出 —— 外部适配器只回主输出，少两个会被 catch 后静默回退规则
@@ -531,7 +579,7 @@ def export_one(spec: Spec, args) -> str:
     tmask = torch.ones(1, spec.n_types, dtype=torch.float32)
 
     def tensor_of(nm: str):
-        if nm in ("node_feat", "athlete_feat", "features"):
+        if nm in ("node_feat", "athlete_feat", "features", "x"):
             return main
         if nm == "mask":
             return mask
@@ -557,13 +605,15 @@ def export_one(spec: Spec, args) -> str:
 
         def forward(self, *a):
             d = {nm: t for nm, t in zip(self.nms, a)}
-            x = d.get("node_feat", d.get("athlete_feat", d.get("features")))
+            x = d.get("node_feat", d.get("athlete_feat", d.get("features", d.get("x"))))
             if self.flat:
                 # 选择器：Java 喂 [1,F]，模型内部要 [1,1,F] + mask=[1,1]
                 x = x.unsqueeze(1)
                 mk = torch.ones(x.shape[0], 1, device=x.device, dtype=x.dtype)
             else:
-                mk = d["mask"]
+                # 序列型模型（forecast_*）的输入就是 [B,L,F]，**没有 mask 输入**
+                # → 传 None，由 UpgradedMoE.forward 补一张全 1 掩码。
+                mk = d.get("mask")
             # ⚠️ UpgradedMoE.forward 只吃 4 个参数 (x, mask, adj, type_mask)：
             #    「3 维压平邻接」与「4 维多边型邻接」是**同一个位置**的两种形态，
             #    同时传会报 "takes 5 positional arguments but 6 were given"。
@@ -573,7 +623,9 @@ def export_one(spec: Spec, args) -> str:
     w = _Main(model, names, spec.flat_input).to(device).eval()
     axes = {}
     for nm in names:
-        if nm in ("node_feat", "athlete_feat"):
+        if nm in ("node_feat", "athlete_feat", "x"):
+            # 序列模型的轴 1 是序列长度，同样是动态轴（GRU 对长度无要求）；
+            # forecast 的历史 onnx 是写死的 L_IN，放开后照样吃原长度输入。
             axes[nm] = {1: "N"}
         elif nm == "adj":
             axes[nm] = {1: "N", 2: "N"}
@@ -591,7 +643,7 @@ def export_one(spec: Spec, args) -> str:
 
     path = os.path.join(MODEL_DIR, f"{spec.name}.onnx")
     # 注意：每个模型的输入顺序可能不同（关键看 Spec.onnx_inputs）
-    torch.onnx.export(w, inputs, path, input_names=names, output_names=["out"],
+    torch.onnx.export(w, inputs, path, input_names=names, output_names=[spec.onnx_output],
                       dynamic_axes=axes, opset_version=17, dynamo=False)
     inline_weights(path)
     est = (1, spec.out_dim) if spec.pool else (
@@ -604,7 +656,7 @@ def export_one(spec: Spec, args) -> str:
         for n2 in (2, n):
             feed = {}
             for nm in names:
-                if nm in ("node_feat", "athlete_feat"):
+                if nm in ("node_feat", "athlete_feat", "x"):
                     feed[nm] = np.zeros((1, n2, spec.feat_dim), dtype=np.float32)
                 elif nm == "features":
                     feed[nm] = np.zeros((1, spec.feat_dim), dtype=np.float32)

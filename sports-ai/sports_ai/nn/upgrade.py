@@ -300,6 +300,12 @@ class UpgradedMoE(nn.Module):
             x = x.unsqueeze(1)
             mask = torch.ones(x.shape[0], 1, dtype=x.dtype, device=x.device)
         b, n, _ = x.shape
+        if mask is None:
+            # 序列型模型（``forecast_*``：输入就是 ``[B,L,F]``，每个时间步都是真实
+            # 样本）**没有** padding 概念，原模型也只有一个 ``forward(x)`` 参数。
+            # 这里补一张全 1 掩码，让池化 / 专家池的掩码口径统一；
+            # 不补的话下面 ``mask.unsqueeze(-1)`` 直接 AttributeError。
+            mask = torch.ones(b, n, dtype=x.dtype, device=x.device)
         h0 = self.in_norm(self.in_proj(x))                     # [B,N,H]
 
         # ① 原模型作为「共享专家」——保留它原有的全部能力
