@@ -645,7 +645,13 @@ def export_one(spec: Spec, args) -> str:
     ck = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
     if not os.path.exists(ck):
         raise SystemExit(f"缺少 {ck}，请先训练（去掉 --export-only）")
-    model.load_state_dict(torch.load(ck, map_location="cpu"))
+    # ⚠️ 用 load_with_aux 而不是 load_state_dict(strict=True)：
+    #    ckpt 可能还没带上预测分支（`forecast_steps` 是后加的）——
+    #    strict=True 会报 "Missing key(s): seq_proj.*, forecast_head.*"，
+    #    于是「旧的、但完全可用的权重」也导不出来。
+    #    这里只放行 `aux.` / `seq_proj.` / `forecast_head.` 三类，其余仍然严格。
+    from sports_ai.nn.forecast_aux import load_with_aux
+    load_with_aux(model, torch.load(ck, map_location="cpu"))
     model.eval()
 
     names = list(spec.onnx_inputs)

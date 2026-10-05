@@ -162,12 +162,15 @@ def load_with_aux(model: nn.Module, sd: dict) -> None:
     可它的参数在 ckpt 里 —— strict=True 会报 "Unexpected key(s): aux.*" 而导出失败。
     也不能简单用 `strict=False`：那会把真正的结构错误（少一层、维数不对）一起吞掉。
     """
+    # 三类前缀都是「预测分支」的，两侧都放行：
+    #   `aux.`            —— 可插拔模块挂在模型上的那套
+    #   `seq_proj.` / `forecast_head.` —— `UpgradedMoE` 内置的那套
+    # 两个方向都要放行：① ckpt 有而模型没建（导出时不挂）→ unexpected；
+    #                    ② ckpt 没带（旧权重）而模型挂了 → missing。
+    aux_prefixes = ("aux.", "seq_proj.", "forecast_head.")
     missing, unexpected = model.load_state_dict(sd, strict=False)
-    # 两侧都放行 aux.*：
-    #   ① ckpt 有、模型没建（导出时不挂预测分支）→ unexpected 里有 aux.*
-    #   ② ckpt 没带（旧权重）、模型挂了 → missing 里有 aux.*
-    real_missing = [k for k in missing if not k.startswith("aux.")]
-    real_unexpected = [k for k in unexpected if not k.startswith("aux.")]
+    real_missing = [k for k in missing if not k.startswith(aux_prefixes)]
+    real_unexpected = [k for k in unexpected if not k.startswith(aux_prefixes)]
     if real_missing:
         raise SystemExit(f"权重缺失关键层 {real_missing[:5]} —— 结构不匹配，导出中止")
     if real_unexpected:

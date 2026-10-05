@@ -1,32 +1,42 @@
 {
   "schema": "sports-ai/models-manifest@1",
   "note": "模型不入 git，按本清单独立分发；重训后请重新生成本清单。",
-  "count": 16,
-  "totalBytes": 91433228,
+  "count": 23,
+  "totalBytes": 935666312,
   "models": {
+    "ai.onnx": {
+      "bytes": 11775064,
+      "sha256": "fcc75459363e61406acc5aa634080e65815ec98280b4f5e41c885cfd0b8aa783",
+      "usage": "(未登记用途)"
+    },
     "algorithm_selector.onnx": {
-      "bytes": 3062966,
-      "sha256": "d0c4eda5f8e3b3481e11da34bc494556a574422b9d0a0e18bcc121da0d7a7014",
+      "bytes": 9058273,
+      "sha256": "2c7ff9fa614a921e7ee4375e6aecabeca42a78c3218c3d3fda01a3c9b551c623",
       "usage": "算法选择器（硬解/取消）；缺失 → 默认策略"
     },
+    "conflict_gnn.moe.onnx": {
+      "bytes": 10146086,
+      "sha256": "e13ed2e8c712ead7e2f2c591b7f63c21f578fb18c2355fe28ca804974921a782",
+      "usage": "(未登记用途)"
+    },
     "conflict_gnn.onnx": {
-      "bytes": 1419314,
-      "sha256": "1de256d778c3a1ee8fb814c4f82cafcb48fbb506ddc8e6bd7e5dd14945306a9c",
+      "bytes": 10146086,
+      "sha256": "1874b0bc2f0b6005222982570f6ed47af826adc5c3739f95c40713c122410b8a",
       "usage": "冲突簇着色 GNN；缺失 → 兼项退化为贪心着色"
     },
     "constraint_gnn.onnx": {
-      "bytes": 10896227,
-      "sha256": "1aeca2600d301d1b9f317a90d460fade39ef2784393a5523912d01839ff90f6d",
+      "bytes": 19773266,
+      "sha256": "1638ef33e6aa9e841dc4cd34f1f0d356b0fde82c7ea590b82c22ed32dc629f1d",
       "usage": "约束图神经网络；缺失 → 约束评估走规则"
     },
     "forecast_direct.onnx": {
-      "bytes": 57834,
-      "sha256": "7b9c9885b9a764c83160fe71bbbcdfb61bb48bacf7d9c9290a1ca66671eff3b2",
+      "bytes": 8779262,
+      "sha256": "27bf6e346a4954ce0bfe2471569243c546248497cbbb411e3aaade11948c8859",
       "usage": "趋势预测（单入单出）；缺失 → 不使用"
     },
     "forecast_mimo.onnx": {
-      "bytes": 59501,
-      "sha256": "2fe07f69feae8deb40ac4f78ea5d08a344b2ffd49eb817979e1217301b7a1b1b",
+      "bytes": 8781453,
+      "sha256": "da3fe90d3e7f13fb62ea2bfaf060b378817b966ea989a3d427d026b791a44a21",
       "usage": "趋势预测（多入多出）；缺失 → 不使用"
     },
     "heat_stagger_advisor.onnx": {
@@ -34,34 +44,44 @@
       "sha256": "10e464cec8c407e10f394839c70aa29deca877bcb7a9cad5bb02bff884f678bc",
       "usage": "组次错开专项 MoE（在已过滤的合法候选里建议换到第几组）；缺失 → 规则取间隔最大者"
     },
+    "lane_advisor.moe.onnx": {
+      "bytes": 8879039,
+      "sha256": "061562399a9d3c3d88fa04b48ee28204af1d44fcb1b4518041ed62edfd2793d6",
+      "usage": "(未登记用途)"
+    },
     "lane_advisor.onnx": {
-      "bytes": 162158,
-      "sha256": "96b48e71d009f2aa7a5e8d4d064778487fb4f1437dd0196866848ee7e17f2c25",
+      "bytes": 8879048,
+      "sha256": "9494b630a2e894098df201824211b9c3eeafc7ccfe1006b1c071b04cd34bd29a",
       "usage": "道次派遣优先级；缺失 → 规则分道"
     },
+    "referee_gnn.moe.onnx": {
+      "bytes": 11832061,
+      "sha256": "bf314ce5fe561d4eecdc4173d3a15764ca4c9019b42759f5832607bb4d43d1cb",
+      "usage": "(未登记用途)"
+    },
     "referee_gnn.onnx": {
-      "bytes": 3088772,
-      "sha256": "329201df57efab8e7a9985a381a8f1d630b6caed1a6066fe022104edb0fbc670",
+      "bytes": 11832061,
+      "sha256": "4994e707841cba382343473a85a773023d78d95f3fd2df57b4d1dc7a2b2aed01",
       "usage": "裁判编排独立模型；缺失 → 规则派遣"
     },
     "scheme_diffusion.onnx": {
-      "bytes": 1331037,
-      "sha256": "04ec12a4bb5dfd87c85622d477ebc1c53353f2ab84a3faf05296cdd7e2b6ac9f",
+      "bytes": 10782054,
+      "sha256": "72cf0c9e1e265352c46d6a7af21f0996770a26d8687c9862688cb528b6f7ab4d",
       "usage": "扩散式方案生成；缺失 → 不使用"
     },
     "scheme_discriminator.onnx": {
-      "bytes": 859056,
-      "sha256": "0358341c32655c9185dfbb8951f9880e0ecc3e4867e886c571e36b239665ad27",
+      "bytes": 14310064,
+      "sha256": "4be83fa595f18fd520fd7d9cf7baf60c8bf3fa837dc704269022b24660a4bf11",
       "usage": "方案评判器；缺失 → 跳过择优"
     },
     "scheme_generator.onnx": {
-      "bytes": 967786,
-      "sha256": "b8455fcfb8641ed1bbe37e5d3b2e711f8751ef12bd889c026355b6733a8df3fd",
+      "bytes": 14409321,
+      "sha256": "0e1f6c5f5d983c9959c3ffb58ee4e0f923c6989aa02fc9a39f4cc21692766c9d",
       "usage": "自对抗方案生成器；缺失 → 跳过生成式增强"
     },
     "scheme_refiner.onnx": {
-      "bytes": 879333,
-      "sha256": "6c0e67dfe594d94d3fa5b975955376ba6a8e5f24126b1729760c5fbdba89dee4",
+      "bytes": 14330400,
+      "sha256": "1eb7c99089fdf7f28040c5a372e4310841ab6f9ae5a03506d51b3605c3307624",
       "usage": "方案精修器；缺失 → 跳过精修"
     },
     "slot_split_advisor.onnx": {
@@ -70,18 +90,33 @@
       "usage": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆"
     },
     "super_moe.onnx": {
-      "bytes": 44077042,
-      "sha256": "959c8bac043b9395c5590ce225db38aab1222b10c6f7cdc8d952f56a06862bd6",
+      "bytes": 344811131,
+      "sha256": "987e91df869fac036798601ea0b890c8bef6abedcc1ef660c34bd1129845f4c3",
       "usage": "统一编排超级模型（19 类任务，19 专家含 4 个嵌套专项 MoE）；缺失 → L4 退化为 L3（优化链）"
     },
+    "super_moe_prev_backup.onnx": {
+      "bytes": 344811131,
+      "sha256": "beebfa4ef0a8a9dc41de2506d9b478ee81bf0e4d67897e367ebe64f5e5b3868f",
+      "usage": "(未登记用途)"
+    },
+    "teacher_gnn.moe.onnx": {
+      "bytes": 11829757,
+      "sha256": "4f2115c76dd92a42e500ef4f046e4a623668e6cd9a16c9a77a83aec2e3e0acf5",
+      "usage": "(未登记用途)"
+    },
     "teacher_gnn.onnx": {
-      "bytes": 3087492,
-      "sha256": "04b0e56ca40499652126ac6c641364795f35422366f8b4676ef58ff48ce8c876",
+      "bytes": 11829757,
+      "sha256": "fa465650bc4e96c6e9d675712809889ffe7a402239f8ffc2f47654e9b8953d44",
+      "usage": "(未登记用途)"
+    },
+    "tournament_gnn.moe.onnx": {
+      "bytes": 13752559,
+      "sha256": "9dd98ee6eac399b3ffae130a9017e6d580acc07f1663e3d1d4fec99477e75a4e",
       "usage": "(未登记用途)"
     },
     "tournament_gnn.onnx": {
-      "bytes": 5522243,
-      "sha256": "41daefd1a27e6807f83688c4c39b36b80d19e8e4a8eadd94628075f4ba9f306c",
+      "bytes": 18955972,
+      "sha256": "79bd1a5676bef15a2bf822dcae2f3f0d1557c20991ee74a233f32f71d78a4c71",
       "usage": "球类赛制 GNN（赛制/种子/公平性）；缺失 → 球类走规则赛制"
     }
   }
