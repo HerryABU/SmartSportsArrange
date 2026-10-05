@@ -82,6 +82,15 @@ class Spec:
     #: 这类模型（算法选择器）本就把整个实例压成一行向量，
     #: 用 `pool=True` 表达「输出是 [B,out_dim]」，用本字段表达「输入也是 [B,F]」。
     flat_input: bool = False
+    #: ONNX 的**输入名与顺序**（必须与 Java 侧的 feed 完全一致）。
+    #: ⚠️ 这不是可有可无的装饰：名字不符时 onnxruntime 直接报
+    #: "Invalid input name: X"，而调用方通常 try/catch 后**静默回退规则** ——
+    #: 于是「模型换了但一点用没有」。逐模型核实结果：
+    #:   lane_advisor                 → athlete_feat, mask        （**不是 node_feat**）
+    #:   conflict_gnn                 → node_feat, adj, mask      （邻接是 3 维、无 type_mask）
+    #:   referee/teacher/tournament   → node_feat, adj_by_type, type_mask, mask
+    #:   algorithm_selector / ai      → features                  （单个 [1,F]，无 N 轴）
+    onnx_inputs: tuple = ()
     extra: dict = field(default_factory=dict)
 
 
@@ -179,36 +188,44 @@ def registry() -> dict:
         # ── 高频：每次编排都会走 ──
         "lane_advisor": Spec("lane_advisor", "sports_ai.lane_advisor", "LaneAdvisor",
                              LANE_FEAT_DIM, loss="mse", make_batch="make_batch",
-                             pad_to=64, takes_pad_to=True, layout="xmL"),
+                             pad_to=64, takes_pad_to=True, layout="xmL",
+                             onnx_inputs=("athlete_feat", "mask")),
         "conflict_gnn": Spec("conflict_gnn", "sports_ai.train_gnn", "ConflictGnn",
                              17, loss="mse", make_batch="make_batch",
-                             legacy_mode="gnn3", layout="xamL", n_types=1),
+                             legacy_mode="gnn3", layout="xamL", n_types=1,
+                             onnx_inputs=("node_feat", "adj", "mask")),
         "referee_gnn": Spec("referee_gnn", "sports_ai.referee_advisor", "RefereeGnn",
                             N_REF_FEAT, loss="listwise", make_batch="make_dataset",
                             legacy_mode="gnn", batch_fn=make_torch_batch,
-                            layout="xmatL", n_types=N_REF_TYPES),
+                            layout="xmatL", n_types=N_REF_TYPES,
+                            onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
         "teacher_gnn": Spec("teacher_gnn", "sports_ai.teacher_advisor", "TeacherGnn",
                             N_TCH_FEAT, loss="listwise", make_batch="make_dataset",
                             legacy_mode="gnn", batch_fn=make_torch_batch,
                             layout="xmatL", n_types=N_TCH_TYPES,
-                            ctor={"node_feat": N_TCH_FEAT}),
+                            ctor={"node_feat": N_TCH_FEAT},
+                            onnx_inputs=("node_feat", "adj_by_type", "type_mask", "mask")),
         # ── 算法选择器（实例级，输入是 [B,F] 无节点维）──
         "algorithm_selector": Spec("algorithm_selector", "sports_ai.models.selector_v2",
                                    "AlgorithmSelectorV2", N_FEATURES, pool=True,
                                    flat_input=True, loss="bce",
                                    make_batch="make_dataset",
                                    data_module="sports_ai.train_selector",
-                                   layout="xL", batch_fn=make_selector_batch),
+                                   layout="xL", batch_fn=make_selector_batch,
+                                   onnx_inputs=("features",)),
         "ai": Spec("ai", "sports_ai.models.selector", "AlgorithmSelector", N_FEATURES,
                    pool=True, flat_input=True, loss="mse",
                    make_batch="make_dataset", data_module="sports_ai.train_selector",
-                   layout="xL", batch_fn=make_selector_batch),
+                   layout="xL", batch_fn=make_selector_batch,
+                   onnx_inputs=("features",)),
         "tournament_gnn": Spec("tournament_gnn", "sports_ai.models.tournament_gnn",
                                 "TournamentGnn", 14, out_dim=3, pool=True,
                                 loss="mse", make_batch="make_dataset",
                                 data_module="sports_ai.train_tournament_gnn",
                                 legacy_mode="gnn", layout="xmatL",
-                                n_types=N_TMT_TYPES, batch_fn=make_torch_batch),
+                                n_types=N_TMT_TYPES, batch_fn=make_torch_batch,
+                                onnx_inputs=("node_feat", "adj_by_type",
+                                             "type_mask", "mask")),
     }
 
 
@@ -407,9 +424,20 @@ def train_one(spec: Spec, args, device) -> str:
     torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
     return path
 
-
 def export_one(spec: Spec, args) -> str:
-    """导出 ONNX：只回**主输出**（形状与旧模型一致），next_step 不进图。"""
+    """导出 ONNX，**输入名/顺序严格按 Spec.onnx_inputs**。
+
+    ## 两条硬约束
+
+    1. **输入名必须与 Java 侧 feed 的一致**。名字不符时 onnxruntime 报
+       "Invalid input name: X"，而调用方 try/catch 后静默回退规则 ——
+       「模型换了却一点用没有」。各模型的名字已逐个人工核实（见 Spec.onnx_inputs）。
+
+    2. **文件名用原名**（如 ``lane_advisor.onnx``，不是 ``lane_advisor.moe.onnx``）。
+       这是适配器路线的意义所在：契约（输入名/形状/输出形状）与旧模型逐位一致，
+       所以新模型可以**直接覆盖投放**，Java 侧一行都不用改。
+       权重文件仍叫 ``<name>.moe.pt`` 以区分新旧。
+    """
     from sports_ai.onnx_utils import inline_weights
 
     legacy = new_legacy(spec)
@@ -421,61 +449,114 @@ def export_one(spec: Spec, args) -> str:
                         flat_input=spec.flat_input)
     ck = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
     if not os.path.exists(ck):
-        raise SystemExit(f"缺少 {ck}，请先 --iters 训练")
+        raise SystemExit(f"缺少 {ck}，请先训练（去掉 --export-only）")
     model.load_state_dict(torch.load(ck, map_location="cpu"))
     model.eval()
 
+    names = list(spec.onnx_inputs)
+    if not names:
+        raise SystemExit(f"{spec.name}: 未登记 onnx_inputs（名字对不上会静默失效）")
+
     n = spec.pad_to
-    x = torch.zeros(1, n, spec.feat_dim, dtype=torch.float32)
+    # 按名字构造输入张量。flat_input（选择器）是 [B,F]，无节点轴。
+    if spec.flat_input:
+        main = torch.zeros(1, spec.feat_dim, dtype=torch.float32)
+    else:
+        main = torch.zeros(1, n, spec.feat_dim, dtype=torch.float32)
     mask = torch.ones(1, n, dtype=torch.float32)
+    adj3 = torch.zeros(1, n, n, dtype=torch.float32)
+    adj4 = torch.zeros(1, spec.n_types, n, n, dtype=torch.float32)
+    tmask = torch.ones(1, spec.n_types, dtype=torch.float32)
+
+    def tensor_of(nm: str):
+        if nm in ("node_feat", "athlete_feat", "features"):
+            return main
+        if nm == "mask":
+            return mask
+        if nm == "adj":
+            return adj3
+        if nm == "adj_by_type":
+            return adj4
+        if nm == "type_mask":
+            return tmask
+        raise SystemExit(f"{spec.name}: 未知的 ONNX 输入名 {nm}")
+
+    inputs = tuple(tensor_of(nm) for nm in names)
+    device = next(model.parameters()).device
 
     class _Main(torch.nn.Module):
-        """只回主输出：next_step 是训练期辅助信号，不该出现在部署契约里。"""
+        """只回**主输出**：next_step 是训练期辅助信号，不进部署契约。"""
 
-        def __init__(self, m):
+        def __init__(self, m, nms, flat):
             super().__init__()
             self.m = m
+            self.nms = nms
+            self.flat = flat
 
         def forward(self, *a):
-            return self.m(*a)[0]
+            d = {nm: t for nm, t in zip(self.nms, a)}
+            x = d.get("node_feat", d.get("athlete_feat", d.get("features")))
+            if self.flat:
+                # 选择器：Java 喂 [1,F]，模型内部要 [1,1,F] + mask=[1,1]
+                x = x.unsqueeze(1)
+                mk = torch.ones(x.shape[0], 1, device=x.device, dtype=x.dtype)
+            else:
+                mk = d["mask"]
+            # ⚠️ UpgradedMoE.forward 只吃 4 个参数 (x, mask, adj, type_mask)：
+            #    「3 维压平邻接」与「4 维多边型邻接」是**同一个位置**的两种形态，
+            #    同时传会报 "takes 5 positional arguments but 6 were given"。
+            adj = d.get("adj_by_type", d.get("adj"))
+            return self.m(x, mk, adj, d.get("type_mask"))[0]
 
-    w = _Main(model)
-    inputs = (x, mask)
-    names = ["node_feat", "mask"]
-    axes = {"node_feat": {1: "N"}, "mask": {1: "N"}}
-    if spec.legacy_mode == "gnn3":
-        # ConflictGnn 的原签名是 (node_feat, adj, mask) —— **没有 type_mask**，
-        # 导出时多喂一个输入名会报 "Invalid input name: type_mask"
-        # （ONNX 的输入集合必须与 forward 声明完全一致）。
-        inputs = (x, mask, torch.zeros(1, n, n))
-        names = ["node_feat", "mask", "adj"]
-        axes.update({"adj": {1: "N", 2: "N"}})
-    elif spec.legacy_mode == "gnn":
-        t = spec.n_types
-        inputs = (x, mask, torch.zeros(1, t, n, n), torch.ones(1, t))
-        names = ["node_feat", "mask", "adj_by_type", "type_mask"]
-        axes.update({"adj_by_type": {2: "N", 3: "N"}, "type_mask": {}})
-    out_shape = (1, spec.out_dim) if spec.pool else ((1, n) if spec.out_dim == 1 else (1, n, spec.out_dim))
-    axes["out"] = {} if spec.pool else {1: "N"}
+    w = _Main(model, names, spec.flat_input).to(device).eval()
+    axes = {}
+    for nm in names:
+        if nm in ("node_feat", "athlete_feat"):
+            axes[nm] = {1: "N"}
+        elif nm == "adj":
+            axes[nm] = {1: "N", 2: "N"}
+        elif nm == "adj_by_type":
+            axes[nm] = {2: "N", 3: "N"}
+        elif nm == "mask":
+            axes[nm] = {1: "N"}
+    # 输出形状与旧模型一致：pool → [B,out_dim]；逐行 → [B,N] 或 [B,N,out_dim]
+    if spec.pool:
+        axes["out"] = {}
+    elif spec.out_dim == 1:
+        axes["out"] = {1: "N"}
+    else:
+        axes["out"] = {1: "N"}
 
-    path = os.path.join(MODEL_DIR, f"{spec.name}.moe.onnx")
+    path = os.path.join(MODEL_DIR, f"{spec.name}.onnx")
+    # 注意：每个模型的输入顺序可能不同（关键看 Spec.onnx_inputs）
     torch.onnx.export(w, inputs, path, input_names=names, output_names=["out"],
                       dynamic_axes=axes, opset_version=17, dynamo=False)
     inline_weights(path)
-    print(f"[{spec.name}] 导出 {os.path.basename(path)}  输出形状 {out_shape}")
+    est = (1, spec.out_dim) if spec.pool else (
+        (1, n) if spec.out_dim == 1 else (1, n, spec.out_dim))
+    print(f"[{spec.name}] 导出 {os.path.basename(path)}  输入 {names}  输出 {est}")
+
     if args.verify:
         import onnxruntime as ort
         sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
         for n2 in (2, n):
-            feed = {names[0]: np.zeros((1, n2, spec.feat_dim), dtype=np.float32),
-                    names[1]: np.ones((1, n2), dtype=np.float32)}
-            if spec.legacy_mode == "gnn3":
-                feed[names[2]] = np.zeros((1, n2, n2), dtype=np.float32)
-            elif spec.legacy_mode == "gnn":
-                t = spec.n_types
-                feed[names[2]] = np.zeros((1, t, n2, n2), dtype=np.float32)
-                feed[names[3]] = np.ones((1, t), dtype=np.float32)
-            print(f"  [verify] N={n2} → {sess.run(None, feed)[0].shape}")
+            feed = {}
+            for nm in names:
+                if nm in ("node_feat", "athlete_feat"):
+                    feed[nm] = np.zeros((1, n2, spec.feat_dim), dtype=np.float32)
+                elif nm == "features":
+                    feed[nm] = np.zeros((1, spec.feat_dim), dtype=np.float32)
+                elif nm == "mask":
+                    feed[nm] = np.ones((1, n2), dtype=np.float32)
+                elif nm == "adj":
+                    feed[nm] = np.zeros((1, n2, n2), dtype=np.float32)
+                elif nm == "adj_by_type":
+                    feed[nm] = np.zeros((1, spec.n_types, n2, n2), dtype=np.float32)
+                elif nm == "type_mask":
+                    feed[nm] = np.ones((1, spec.n_types), dtype=np.float32)
+            out = sess.run(None, feed)[0]
+            print(f"  [verify] {'features' if spec.flat_input else 'N=' + str(n2)}"
+                  f" → {out.shape}")
     return path
 
 

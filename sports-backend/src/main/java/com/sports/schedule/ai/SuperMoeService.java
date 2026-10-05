@@ -430,10 +430,27 @@ public class SuperMoeService {
         m.put("loaded", available());
         m.put("coversTasks", java.util.Arrays.asList(SuperScheduleEncoder.taskNames()));
         m.put("edgeTypes", java.util.List.of("兼项", "项目块", "场地", "并发池",
-                "道次", "装箱间隔", "晋级", "同队"));
+                "道次", "装箱间隔", "晋级", "同队", "组次撞车", "跨时段相邻"));
         m.put("maxNodes", SuperScheduleEncoder.MAX_NODES);
+        // 输出契约明细：运维排查「模型是不是新版」时最需要这一行 ——
+        // 只见 loaded=true 看不出磁盘上是 7 输出还是 8 输出。
+        m.put("nOutputs", 8);
+        m.put("outputs", java.util.List.of("priority", "slot_logits", "task_probs",
+                "format_logits", "days_estimate", "lane_logits", "quality_score", "next_step"));
+        // ⚠️ **error 键必须始终存在**。此前只在「加载失败」时写入，于是
+        //    「onnx 能加载但结构不匹配（磁盘上是旧版 7 输出、新代码按 8 输出读）」
+        //    这类**最常见**的失败会没有原因：调用方
+        //    `out.put("error", modelInfo().get("error"))` 塞进 null，
+        //    降级原因在响应里消失，现场只见 degraded=true 却不知为何。
+        //    典型静默失效 —— 必须兜底。
         if (loadError != null) {
             m.put("error", loadError);
+        } else if (!available()) {
+            m.put("error", "模型不可用（路径缺失或加载失败）");
+        } else if (lastInferenceError != null) {
+            m.put("error", lastInferenceError);
+        } else {
+            m.put("error", "");
         }
         return m;
     }
