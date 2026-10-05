@@ -56,9 +56,29 @@ class UpgradedMoE(nn.Module):
     def __init__(self, legacy: nn.Module, in_dim: int, out_dim: int = 1,
                  hidden: int = 128, n_layers: int = 6, n_experts: int = 9,
                  n_groups: int = 3, n_shared: int = 2, n_steps: int = 3,
-                 pool: bool = False, dropout: float = 0.1, warmup_steps: int = 200):
+                 pool: bool = False, dropout: float = 0.1, warmup_steps: int = 200,
+                 legacy_mode: str = "pair", n_types: int = 1,
+                 flat_input: bool = False):
         super().__init__()
+        self.flat_input = flat_input
+        # legacy_mode 决定怎么调原模型。实测小模型有**两种前向签名**：
+        #   "pair"  forward(x, mask)                     —— lane_advisor
+        #   "gnn"   forward(x, adj_by_type, type_mask, mask) —— referee_gnn/teacher_gnn/tournament_gnn
+        # 早前只按 (x, mask) 调，撞上 GNN 时报 "takes 3 positional arguments but 4 were given"。
+        self.legacy_mode = legacy_mode
         self.legacy = legacy
+        # 原模型输出维数：构造期探一次，据此建好投影层（不惰性创建，见 _adapt 注释）
+        self.n_types = n_types
+        self._legacy_out_dim = (self._probe_flat_out_dim(legacy, in_dim)
+                                if flat_input
+                                else self._probe_out_dim(legacy, in_dim, legacy_mode, n_types))
+        # ⚠️ **构造期就建好**，不能惰性创建：
+        #    惰性版（第一次 forward 才建）会让「训练过的权重」里带 `_adapt_lin.*`，
+        #    而导出时新建的实例还没跑过前向、结构里没有该层 →
+        #    load_state_dict 报 "Unexpected key(s): _adapt_lin.weight, _adapt_lin.bias"。
+        #    凡是会进 state_dict 的层，都必须在 __init__ 里建。
+        self._adapt_lin = nn.Linear(self._legacy_out_dim, hidden) \
+            if self._legacy_out_dim != hidden else None
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.pool = pool
@@ -91,8 +111,96 @@ class UpgradedMoE(nn.Module):
         # 后续步骤预测头
         self.predictor = NextStepHead(hidden, n_steps=n_steps)
 
+    @staticmethod
+    def _probe_flat_out_dim(legacy: nn.Module, in_dim: int) -> int:
+        """探实例级原模型（吃 ``[B,F]``）的输出维数。"""
+        was = legacy.training
+        legacy.eval()
+        try:
+            with torch.no_grad():
+                out = legacy(torch.zeros(2, in_dim))
+            if isinstance(out, (tuple, list)):
+                out = out[0]
+            return int(out.reshape(out.shape[0], -1).shape[-1])
+        except Exception:
+            return 1
+        finally:
+            legacy.train(was)
+
+    @staticmethod
+    def _probe_out_dim(legacy: nn.Module, in_dim: int, legacy_mode: str,
+                       n_types: int = 1) -> int:
+        """探一次原模型的**特征维**（构造期做，一次前向的代价可接受）。
+
+        用**两个不同节点数**分别探，靠「最后一维是否随节点数变化」区分：
+
+        ==========================  ==================  ==============
+        原输出形态                  探针 (N=4)          探针 (N=7)
+        ==========================  ==================  ==============
+        ``[B,N]``（逐行打分）        末维 = 4（= N）    末维 = 7（= N）
+        ``[B,N,K]`` / ``[B,K]``     末维 = K（不变）    末维 = K（不变）
+        ==========================  ==================  ==============
+
+        ⚠️ **只探一次会错**：早前固定用 N=4 探 ``lane_advisor``，
+        它的输出是 ``[B,N]``（末维就是节点数），于是被判成「特征维 = 4」，
+        真实推理时 N=20 → 投影层要吃 20 维而它只建了 4 维，
+        报 "mat1 and mat2 shapes cannot be multiplied (20x1 and 4x128)"。
+        两次不同 N 相减才能把「N」与「K」分开。
+        """
+        def once(n: int):
+            was = legacy.training
+            legacy.eval()
+            try:
+                x = torch.zeros(1, n, in_dim)
+                m = torch.ones(1, n)
+                with torch.no_grad():
+                    if legacy_mode == "gnn3":
+                        out = legacy(x, torch.eye(n).expand(1, n, n), m)
+                    elif legacy_mode == "gnn":
+                        # ⚠️ 必须给 **4 维** [B,E,N,N]：RefereeGnn 内部
+                        # torch.bmm(a, h) 要求邻接是 3 维而 a 是 [B,N,N]，
+                        # 传 [1,N,N]（少一个边型维）会报 "batch1 must be a 3D tensor"。
+                        # ⚠️ n_types 必须用模型**自己的**边型数（RefereeGnn 是 4），
+                        #    给 1 会在内部索引 rel[3] 时报
+                        #    "index 3 is out of bounds for dimension 1 with size 1"。
+                        adj = torch.eye(n).expand(1, n_types, n, n)
+                        out = legacy(x, adj, torch.ones(1, n_types), m)
+                    else:
+                        try:
+                            out = legacy(x, m)
+                        except TypeError:
+                            out = legacy(x)
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                # ① 末维 == 节点数 → [B,N]（逐行打分，特征维为 1）
+                if out.dim() >= 2 and out.shape[-1] == n:
+                    return 1
+                # ② 已经是 [B,K]（实例级，K 与 N 无关）→ 直接取 K。
+                #    ⚠️ 不能先 reshape：TournamentGnn 返回 [B,3]，
+                #    对 N=7 去 reshape(1,7,-1) 会因 3 不能整除而抛异常，
+                #    异常被吞后回退到 in_dim=14 —— 探成 14，
+                #    于是投影层建了 14 维，真实输入是 3 维，
+                #    报 "mat1 and mat2 shapes cannot be multiplied (56x3 and 14x128)"。
+                if out.dim() == 2:
+                    return int(out.shape[-1])
+                out = out.reshape(out.shape[0], n, -1)
+                return int(out.shape[-1])
+            except Exception:
+                return None
+            finally:
+                legacy.train(was)
+
+        d4, d7 = once(4), once(7)
+        if d4 is None:
+            return in_dim
+        if d7 is not None and d7 != d4:
+            return d4                      # 末维随 N 变 → 是 [B,N]，特征维取 1
+        return d4
+
     # ------------------------------------------------------------------
-    def _legacy_forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def _legacy_forward(self, x: torch.Tensor, mask: torch.Tensor,
+                        adj: Optional[torch.Tensor] = None,
+                        type_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """跑原模型并把输出统一成 ``[B,N,H]``（特征维）以便与专家池拼接。
 
         ⚠️ 原模型可能是三种形态之一，这里逐一处理且**都不过度假设**：
@@ -101,10 +209,31 @@ class UpgradedMoE(nn.Module):
           ③ 返回 ``[B,D]`` / ``[B,1]``  实例级 → 广播回每个节点
           ④ 返回 tuple/list     取第一项后按 ①~③ 处理
         """
-        try:
-            out = self.legacy(x, mask)
-        except TypeError:
-            out = self.legacy(x)
+        if self.flat_input:
+            # 实例级原模型：先把 [B,N,F] 压成 [B,F] 再喂（见 _pooled_legacy）
+            out = self._pooled_legacy(x, mask, adj, type_mask)
+        elif self.legacy_mode in ("gnn", "gnn3"):
+            # GNN 类：邻接缺失时造一个「自聚合」的单位邻接，
+            # 不能传 None（模型内部会直接解引用）。
+            if adj is None:
+                b, n = x.shape[0], x.shape[1]
+                adj = torch.eye(n, device=x.device, dtype=x.dtype).expand(b, self.n_types, n, n)
+            if self.legacy_mode == "gnn3":
+                # ConflictGnn 的签名是 (node_feat, adj, mask) —— **没有 type_mask**。
+                # 硬套四参会报 "takes 4 positional arguments but 5 were given"
+                # （含 self）。它的邻接是**已压平的 [B,N,N]**，多传一维会静默算错。
+                a = adj.sum(dim=1) if adj.dim() == 4 else adj
+                out = self.legacy(x, a, mask)
+            else:
+                if type_mask is None:
+                    type_mask = torch.ones(adj.shape[0], adj.shape[1],
+                                           device=x.device, dtype=x.dtype)
+                out = self.legacy(x, adj, type_mask, mask)
+        else:
+            try:
+                out = self.legacy(x, mask)
+            except TypeError:
+                out = self.legacy(x)
         if isinstance(out, (tuple, list)):
             out = out[0]
         if out.dim() == 1:
@@ -120,27 +249,60 @@ class UpgradedMoE(nn.Module):
         return out
 
     def _adapt(self, out: torch.Tensor) -> torch.Tensor:
-        """把任意维数的原输出投到 ``hidden`` 维（1×1 卷积语义，全局逐行）。"""
-        d = out.shape[-1]
-        if not hasattr(self, "_adapt_lin") or self._adapt_lin.in_features != d:
-            self._adapt_lin = nn.Linear(d, self.hidden).to(out.device)
+        """把任意维数的原输出投到 ``hidden`` 维。
+
+        ⚠️ 早前是**惰性创建**（第一次 forward 时才建 ``_adapt_lin``），
+        后果是：训练能跑、但 ``state_dict`` 里没这个层 →
+        导出时 ``load_state_dict`` 报 "Unexpected key(s): _adapt_lin.weight"，
+        或者反向的 "Missing key(s)"。
+        这是「惰性建模块」这一类写法的通病：**参数不在结构里，存档/加载/导出全都对不上**。
+        现在改成构造期建好（输入维数由 legacy 的实际输出决定）。
+        """
+        if self._adapt_lin is None:
+            return out          # 维数天然一致，无需投影
         return self._adapt_lin(out)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor):
+    def _pooled_legacy(self, x: torch.Tensor, mask: torch.Tensor,
+                       adj: Optional[torch.Tensor] = None,
+                       type_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """原模型吃的是 **2 维** ``[B,F]``（实例级，没有节点维）。
+
+        这类模型（``AlgorithmSelector`` 系列）本来就把整个实例压成一行特征向量，
+        没有「逐行打分」的概念。给它补一个长度 1 的节点维即可复用同一条路径 ——
+        而不是在 forward 里到处写 ``if x.dim()==2`` 的判断。
+        """
+        was3 = x.dim() == 3
+        if was3:
+            # 取掩码加权平均作为该「实例」的一行特征（mask 长度 == N）
+            m = mask.unsqueeze(-1)
+            flat = (x * m).sum(dim=1) / m.sum(dim=1).clamp(min=1.0)   # [B,F]
+        else:
+            flat = x
+        out = self.legacy(flat)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        return out
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                adj: Optional[torch.Tensor] = None,
+                type_mask: Optional[torch.Tensor] = None):
         """返回 (主输出, 后续步骤预测 ``[B,n_steps]``)。
 
         ``pool=True`` 时主输出是 ``[B,out_dim]``；否则 ``[B,N,out_dim]``（out_dim=1 时给 ``[B,N]``）。
+        GNN 类原模型还需传 ``adj`` / ``type_mask``（``legacy_mode="gnn"``）。
         """
         b, n, _ = x.shape
         h0 = self.in_norm(self.in_proj(x))                     # [B,N,H]
 
         # ① 原模型作为「共享专家」——保留它原有的全部能力
-        legacy = self._legacy_forward(x, mask)
+        legacy = self._legacy_forward(x, mask, adj, type_mask)
         # ② 多架构专家：稠密融合（每个专家都算、都拿梯度）
         w, top_i, _ = self.router(h0)
         acc = torch.zeros_like(h0)
         for i, ex in enumerate(self.experts):
-            acc = acc + w[..., i].unsqueeze(-1) * ex(h0, None, mask)
+            # 邻接压成单张图传给图卷积专家：4 维 [B,E,N,N] → 3 维 [B,N,N]（沿边型求和）
+            e_adj = adj.sum(dim=1) if (adj is not None and adj.dim() == 4) else adj
+            acc = acc + w[..., i].unsqueeze(-1) * ex(h0, e_adj, mask)
         # ③ 原模型输出与专家池融合（相加后过 LayerNorm，避免量纲打架）
         h = self.in_norm(h0 + acc + legacy)
         # ④ 深度主干（≥6 层）

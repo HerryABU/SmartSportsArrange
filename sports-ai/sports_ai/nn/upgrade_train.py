@@ -1,0 +1,525 @@
+"""把既有小模型批量升级为专项 MoE 并重训（统一训练器）。
+
+## 为什么不逐个改训练脚本
+
+11 个小模型各有各的 ``train()``、各自的 loss 形式（回归 / 二分类 /
+逐行打分）、各自的导出壳。逐个改意味着：
+
+* 11 处重复的「建模型 → 训 → 导出 → 搬 weights」样板；
+* 每处都可能漏掉 MoE 特有的两件事：**负载均衡正则**与**路由偏置更新**；
+* 改错一个不会报错、只是那个模型静默退化成单体网络。
+
+所以这里改成**声明式**：每个模型只登记 5 项（数据源、模型类、契约维度、
+legacy 调用模式、损失形式），训练循环只写一份。
+
+用法::
+
+    python -m sports_ai.nn.upgrade_train --model lane_advisor --iters 2000
+    python -m sports_ai.nn.upgrade_train --model all --iters 2000
+"""
+
+from __future__ import annotations
+
+import argparse
+import inspect
+import os
+import random
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from sports_ai.device import (add_device_arg, backup_before_overwrite, describe_device,
+                              resolve_device, seed_all, to_device)
+from sports_ai.lane_advisor import LANE_FEAT_DIM
+from sports_ai.referee_advisor import N_REF_FEAT, N_TYPES as N_REF_TYPES
+from sports_ai.teacher_advisor import N_TCH_FEAT, N_TYPES as N_TCH_TYPES
+from sports_ai.models.tournament_gnn import N_TYPES as N_TMT_TYPES
+from sports_ai.data.features import N_FEATURES
+from sports_ai.nn.upgrade import UpgradedMoE
+
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "models")
+
+
+@dataclass
+class Spec:
+    """一个小模型的升级登记项。"""
+    name: str                      # 模型名（也是 onnx 文件名主干）
+    module: str                    # 存放模型类的模块（延迟 import，避免循环依赖）
+    cls: str                       # 模型类名
+    feat_dim: int                  # 输入特征维数（**契约，必须与旧模型一致**）
+    legacy_mode: str = "pair"      # "pair"（x, mask） / "gnn"（x, adj, tmask, mask）
+    out_dim: int = 1               # 1 → [B,N]；>1 → [B,N,out_dim]
+    pool: bool = False             # True → 整个实例出一个向量
+    loss: str = "mse"              # "mse" | "bce" | "listwise"
+    make_batch: Optional[str] = None   # 数据源函数名
+    #: 数据源所在模块。**必须能独立于模型模块指定**：
+    #: ``TournamentGnn`` 在 ``models/tournament_gnn.py``（只放模型定义），
+    #: 而它的 ``make_dataset`` 在 ``train_tournament_gnn.py``（放训练逻辑）——
+    #: 早前只从模型模块里找，报「未登记 make_batch」而模型定义本身完全正常。
+    data_module: Optional[str] = None
+    pad_to: int = 16
+    takes_pad_to: bool = False         # 数据源是否接受 pad_to 参数
+    batch_fn: Optional[Callable] = None  # 把 List[Dict] 转成张量批的函数
+    #: 原生 make_batch 的元组布局。**必须显式登记，不能猜**：
+    #: 早前靠「谁是二维掩码」判别，而 lane_advisor 返回 (x, mask, label) ——
+    #: 掩码与标签**都是二维**，判别式抓到第一个（mask）当掩码、
+    #: 于是把真正的标签排除掉，loss 拿 label 当 mask 算，尺寸对不上直接崩。
+    #: 靠猜的代价是「换个模型就静默取到错的那一项」。
+    layout: str = "xmL"                # x=特征 m=掩码 a=邻接 t=类型掩码 L=标签
+    n_types: int = 1                   # 邻接的边型数（**取模型自己的常量**）
+    #: 构造原模型时额外要传的关键字参数。**必须显式登记**：
+    #: ``TeacherGnn`` 其实是 ``RefereeGnn`` 的复用（骨架同构、只换特征维），
+    #: 不传 ``node_feat=10`` 就会用默认的 12 ——
+    #: 报 "mat1 and mat2 shapes cannot be multiplied (4x10 and 12x160)"，
+    #: 而这是**构造参数错**、不是数据错，靠改数据永远修不好。
+    ctor: dict = field(default_factory=dict)
+    #: 原模型吃 **2 维** ``[B,F]``（实例级，无节点维）—— 见 UpgradedMoE._pooled_legacy。
+    #: 这类模型（算法选择器）本就把整个实例压成一行向量，
+    #: 用 `pool=True` 表达「输出是 [B,out_dim]」，用本字段表达「输入也是 [B,F]」。
+    flat_input: bool = False
+    extra: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# 批次转换：把各模型 ``make_dataset`` 的 List[Dict] 拉平成张量批
+# ---------------------------------------------------------------------------
+def make_selector_batch(items, spec: "Spec"):
+    """算法选择器的数据源返回 ``(x[B,F], y[B])`` 两元组（不是 List[Dict]）。"""
+    x, y = items[0], items[1]
+    T = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32))
+    xt = T(x)
+    return xt, torch.ones(xt.shape[0], 1), None, None, T(y)
+
+
+def make_torch_batch(items: list, spec: "Spec"):
+    """把各模型 ``make_dataset`` 的样本列表拉平成张量批。
+
+    返回 ``(x, mask, adj, type_mask, label)``，与 :func:`train_one` 的解包一致。
+
+    ## 为什么按模型分派而不是写一个通用转换
+
+    实测三种结构互不相同（硬凑通用函数只会埋坑）：
+
+    ==============  ==================================  ====================
+    模型            样本结构                            标签
+    ==============  ==================================  ====================
+    referee_gnn     ``{enc:{node_feat[1,N,F], adj, type_mask, mask}, n, y[N]}``  逐节点
+    teacher_gnn     同上但 F=10                        逐节点
+    tournament_gnn  ``{node_feat[1,N,F], adj[1,E,N,N], format[3], fair[N]}``  实例级
+    ==============  ==================================  ====================
+
+    变长样本 pad 到批内最大 N，**padding 区 mask 必须置 0** ——
+    否则假节点会进池化分母、把梯度稀释（这是 padding 区必须掩码的第二个理由，
+    第一个是它会经残差块被 LayerNorm「复活」）。
+
+    ⚠️ 三个 ``make_dataset`` 返回的是**已经带 batch 维的数组**（``[1,N,F]``），
+    直接 ``np.pad((0,pad),(0,0))`` 会 pad 错位置 —— 必须先去 batch 维。
+    """
+    width = max(int(d["n"]) for d in items)
+    xs, ms, as_, tms, ys = [], [], [], [], []
+    for d in items:
+        n, pad = int(d["n"]), width - int(d["n"])
+        if "enc" in d:                                   # referee / teacher
+            e = d["enc"]
+            x = np.asarray(e["node_feat"], dtype=np.float32)[0]      # [N,F]
+            # ⚠️ mask 同样是 [1,N]，**必须去 batch 维** ——
+            #    忘记去的话 np.pad(m,(0,pad)) 补在第 0 轴（长度 1）上，
+            #    补出来的 mask 仍是 [1, N+pad] 而非 [N+pad]，
+            #    于是 stack 时报 "inhomogeneous shape"。
+            m = np.asarray(e["mask"], dtype=np.float32).reshape(-1)
+            adj = np.asarray(e["adj_by_type"], dtype=np.float32)[0]  # [E,N,N]
+            tm = np.asarray(e["type_mask"], dtype=np.float32).reshape(-1)
+            # ⚠️ 标签长度是**该样本自己的 n**，不是批内 width ——
+            #    直接 stack 会报 "inhomogeneous shape"。必须补到 width。
+            y = np.asarray(d["y"], dtype=np.float32).reshape(-1)
+            if y.shape[0] < width:
+                y = np.pad(y, (0, width - y.shape[0]))
+            elif y.shape[0] > width:
+                y = y[:width]
+            xs.append(np.pad(x, ((0, pad), (0, 0))))
+            ms.append(np.pad(m, (0, pad)))
+            as_.append(np.pad(adj, ((0, 0), (0, pad), (0, pad))))
+            tms.append(tm)
+            ys.append(y)
+        else:                                            # tournament
+            x = np.asarray(d["node_feat"], dtype=np.float32)[0]
+            m = np.asarray(d["mask"], dtype=np.float32).reshape(-1)
+            adj = np.asarray(d["adj_by_type"], dtype=np.float32)[0]
+            tm = np.asarray(d["type_mask"], dtype=np.float32).reshape(-1)
+            xs.append(np.pad(x, ((0, pad), (0, 0))))
+            ms.append(np.pad(m, (0, pad)))
+            as_.append(np.pad(adj, ((0, 0), (0, pad), (0, pad))))
+            tms.append(tm)
+            # 标签是**赛制分布 [3]**（pool 目标），fair 是逐队伍公平度（辅助）
+            ys.append(np.asarray(d["format"], dtype=np.float32))
+    T = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32))
+    return T(xs), T(ms), T(as_), T(tms), T(ys)
+
+
+# ---------------------------------------------------------------------------
+# 登记：确有 Python 训练代码的小模型
+# ---------------------------------------------------------------------------
+def registry() -> dict:
+    """11 个在役小模型的升级登记。
+
+    ⚠️ **只登记确实存在 Python 训练代码的模型**。清点时发现：
+    ``scheme_generator / scheme_refiner / scheme_discriminator / scheme_diffusion``
+    这 4 个只有 Java 侧加载（``AdversarialSchemeService``），
+    **sports-ai 侧没有对应训练脚本** —— 它们的历史权重是别处训好拷进来的。
+    登记它们会在训练时直接 ``AttributeError``，属于「接线正确但从未通电」。
+
+    维数一律取自**各模型自己的常量**（而不是抄一遍），改维度时不会漂移。
+    """
+    return {
+        # ── 高频：每次编排都会走 ──
+        "lane_advisor": Spec("lane_advisor", "sports_ai.lane_advisor", "LaneAdvisor",
+                             LANE_FEAT_DIM, loss="mse", make_batch="make_batch",
+                             pad_to=64, takes_pad_to=True, layout="xmL"),
+        "conflict_gnn": Spec("conflict_gnn", "sports_ai.train_gnn", "ConflictGnn",
+                             17, loss="mse", make_batch="make_batch",
+                             legacy_mode="gnn3", layout="xamL", n_types=1),
+        "referee_gnn": Spec("referee_gnn", "sports_ai.referee_advisor", "RefereeGnn",
+                            N_REF_FEAT, loss="listwise", make_batch="make_dataset",
+                            legacy_mode="gnn", batch_fn=make_torch_batch,
+                            layout="xmatL", n_types=N_REF_TYPES),
+        "teacher_gnn": Spec("teacher_gnn", "sports_ai.teacher_advisor", "TeacherGnn",
+                            N_TCH_FEAT, loss="listwise", make_batch="make_dataset",
+                            legacy_mode="gnn", batch_fn=make_torch_batch,
+                            layout="xmatL", n_types=N_TCH_TYPES,
+                            ctor={"node_feat": N_TCH_FEAT}),
+        # ── 算法选择器（实例级，输入是 [B,F] 无节点维）──
+        "algorithm_selector": Spec("algorithm_selector", "sports_ai.models.selector_v2",
+                                   "AlgorithmSelectorV2", N_FEATURES, pool=True,
+                                   flat_input=True, loss="bce",
+                                   make_batch="make_dataset",
+                                   data_module="sports_ai.train_selector",
+                                   layout="xL", batch_fn=make_selector_batch),
+        "ai": Spec("ai", "sports_ai.models.selector", "AlgorithmSelector", N_FEATURES,
+                   pool=True, flat_input=True, loss="mse",
+                   make_batch="make_dataset", data_module="sports_ai.train_selector",
+                   layout="xL", batch_fn=make_selector_batch),
+        "tournament_gnn": Spec("tournament_gnn", "sports_ai.models.tournament_gnn",
+                                "TournamentGnn", 14, out_dim=3, pool=True,
+                                loss="mse", make_batch="make_dataset",
+                                data_module="sports_ai.train_tournament_gnn",
+                                legacy_mode="gnn", layout="xmatL",
+                                n_types=N_TMT_TYPES, batch_fn=make_torch_batch),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 训练
+# ---------------------------------------------------------------------------
+def new_legacy(spec: Spec):
+    """按登记构造原模型（带上它自己需要的构造参数）。"""
+    mod = __import__(spec.module, fromlist=[spec.cls])
+    return getattr(mod, spec.cls)(**spec.ctor)
+
+
+def build(spec: Spec, args) -> UpgradedMoE:
+    legacy = new_legacy(spec)
+    return UpgradedMoE(legacy, in_dim=spec.feat_dim, out_dim=spec.out_dim,
+                       hidden=args.hidden, n_layers=args.n_layers,
+                       n_experts=args.n_experts, n_groups=args.n_groups,
+                       pool=spec.pool, dropout=0.1,
+                       warmup_steps=args.warmup, legacy_mode=spec.legacy_mode,
+                       n_types=spec.n_types, flat_input=spec.flat_input)
+
+
+def data_source(spec: Spec):
+    """取回该模型的数据生成函数（若登记了）。
+
+    优先从 ``data_module`` 取；没登记时才回退到模型模块
+    （多数模型把数据生成与模型定义放在同一个文件里）。
+    """
+    if not spec.make_batch:
+        return None
+    mod = __import__(spec.data_module or spec.module, fromlist=[spec.make_batch])
+    fn = getattr(mod, spec.make_batch, None)
+    if fn is None and spec.data_module is None:
+        # 回退：模型模块里没有就去对应的 train_ 脚本找（命名约定）
+        base = spec.module.rsplit(".", 1)[0]
+        alt = f"{base}.train_{spec.module.rsplit('.', 1)[-1]}"
+        try:
+            mod2 = __import__(alt, fromlist=[spec.make_batch])
+            fn = getattr(mod2, spec.make_batch, None)
+        except Exception:
+            fn = None
+    return fn
+
+
+def normalize_out(out):
+    """把 (out, next) 或裸 out 统一成 (主输出, next)。"""
+    if isinstance(out, (tuple, list)) and len(out) >= 2:
+        return out[0], out[1]
+    return out, None
+
+
+def find_target(spec: Spec, batch, x, mask, adj, tmask):
+    """从批次里定位**标签张量**。
+
+    ⚠️ 不能用 ``batch[-1]``：原生 ``make_batch`` 的元组顺序各模型不同
+    （``lane_advisor`` 是 (x, adj, mask, label)、``train_gnn`` 是 (x, adj, mask, label)、
+    经 ``batch_fn`` 的则是 (x, mask, adj, type_mask, label)），
+    写死位置会在某个模型上静默取到错的那一项。
+    判据：**排除掉已知的输入张量，剩下的那个就是标签**。
+    """
+    used = {id(x), id(mask)}
+    for t in (adj, tmask):
+        if t is not None:
+            used.add(id(t))
+    for b in batch:
+        if id(b) in used:
+            continue
+        if hasattr(b, "dim") and b.dim() in (1, 2):
+            return b
+    return batch[-1]
+
+
+def compute_loss(spec: Spec, pred, batch, mask, target=None):
+    """按登记的损失形式算 loss。返回 (loss, 标量指标)。"""
+    if target is None:
+        target = batch[-1]
+    if spec.loss == "mse":
+        if spec.pool:
+            # 实例级：pred [B,out_dim] vs target [B,out_dim]（或 [B]）
+            t = target.float().reshape(pred.shape) if target.shape != pred.shape \
+                else target.float()
+            return F.mse_loss(pred, t), float(pred.mean())
+        # 逐行：pred [B,N] 或 [B,N,K]，mask [B,N]（或 [B,N,1]）
+        m = mask.reshape(mask.shape[0], -1).float()
+        if m.shape[1] != pred.shape[1]:
+            raise SystemExit(f"掩码宽度 {m.shape[1]} 与预测宽度 {pred.shape[1]} 不一致")
+        t = target.float().reshape(pred.shape) if target.shape != pred.shape \
+            else target.float()
+        # ⚠️ **不要**在这里写 pred.reshape(target.shape)：lane_advisor 的标签是
+        #    [B]（每批一个分组）而 pred 是 [B,N]，reshape 会把 pred 压成 [B]，
+        #    后面与 mask 相乘就报 "size of tensor a (B) must match (N)"。
+        # 掩码按 pred 的**尾部维数**决定要不要补轴：
+        #   pred [B,N]    → mm [B,N]
+        #   pred [B,N,K]  → mm [B,N,1]
+        # ⚠️ 判据必须用 pred.dim()，**不能用 target**：
+        #    pred/target/mask 三者都是 [4,64] 时，
+        #    写成「target 的最后一维是否为 1」会误判成需要补轴，
+        #    得到 mm [4,64,1] 与 [4,64] 广播成 [4,64,64] —— 不报错、结果全错。
+        mm = m if pred.dim() == 2 else m.unsqueeze(-1)
+        l = ((pred - t) ** 2 * mm).sum() / mm.sum().clamp(min=1.0)
+        return l, float(l.detach())
+    if spec.loss == "bce":
+        p = pred.reshape(-1) if spec.pool else pred.reshape(pred.shape[0], -1)[:, 0]
+        t = target.float().reshape(-1)
+        l = F.binary_cross_entropy_with_logits(p, t)
+        return l, float((p > 0).float().eq(t).float().mean())
+    # listwise：掩码内做 pairwise ranking（Spearman 的可微近似）
+    p = pred.reshape(pred.shape[0], -1)
+    t = target.float().reshape(pred.shape[0], -1)
+    m = mask.float()
+    pm = p.masked_fill(m <= 0, -1e9)
+    tm = t.masked_fill(m <= 0, -1e9)
+    # 软排序损失：让高分项排在低分项之前（成对 margin）
+    dp = pm.unsqueeze(2) - pm.unsqueeze(1)
+    dt = (tm.unsqueeze(2) - tm.unsqueeze(1))
+    valid = (dt > 0) & (m.unsqueeze(2) > 0) & (m.unsqueeze(1) > 0)
+    if valid.sum() == 0:
+        return torch.zeros((), device=p.device), 0.0
+    margin = F.relu(0.1 - dp) * valid.float()
+    l = margin.sum() / valid.float().sum().clamp(min=1.0)
+    return l, float(l.detach())
+
+
+def train_one(spec: Spec, args, device) -> str:
+    model = build(spec, args).to(device)
+    src = data_source(spec)
+    if src is None:
+        raise SystemExit(f"{spec.name}: 未登记 make_batch，无法自动重训")
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    print(f"[{spec.name}] 升级为专项 MoE：深度={model.depth()} 专家={len(model.experts)} "
+          f"（{','.join(sorted(set(type(e.inner).__name__ for e in model.experts)))}）"
+          f"  参数={sum(p.numel() for p in model.parameters()):,}")
+
+    for it in range(args.iters):
+        if spec.takes_pad_to:
+            batch = src(args.batch, seed=args.seed + it, pad_to=spec.pad_to)
+        else:
+            batch = src(args.batch, seed=args.seed + it)
+        if spec.batch_fn is not None:
+            batch = spec.batch_fn(batch, spec)
+        batch = tuple(b.to(device) if hasattr(b, "to") else b for b in batch)
+        x, mask = batch[0], batch[2]
+        # 严格按登记的 layout 解包（不猜）
+        x = batch[0]
+        pos = 1
+        adj = tmask = None
+        mask = None
+        target = None
+        for ch in spec.layout[1:]:
+            if pos >= len(batch):
+                break
+            t = batch[pos]
+            pos += 1
+            if ch == "m":
+                mask = t
+            elif ch == "a":
+                adj = t
+            elif ch == "t":
+                tmask = t
+            elif ch == "L":
+                target = t
+        if mask is None:
+            # flat_input（实例级）的模型本来没有节点维，掩码是长度 1 的占位
+            mask = torch.ones(x.shape[0], 1, dtype=x.dtype)
+        if target is None:
+            target = batch[-1]
+        # 邻接缺省时给「自聚合」单位阵（GNN 类原模型内部会直接解引用）
+        if spec.legacy_mode == "gnn" and adj is not None and adj.dim() == 3:
+            # referee/teacher/tournament 要 [B,E,N,N]（少一个边型维会在 bmm 处报
+            # "batch1 must be a 3D tensor"）；而 conflict_gnn（gnn3）本身就要 3 维，不要动。
+            adj = adj.unsqueeze(1)
+        if spec.legacy_mode in ("gnn", "gnn3") and adj is None:
+            b2, n2 = x.shape[0], x.shape[1]
+            adj = torch.eye(n2, dtype=x.dtype).expand(b2, 1, n2, n2)
+            if tmask is None:
+                tmask = torch.ones(b2, 1, dtype=x.dtype)
+        elif spec.legacy_mode != "gnn":
+            adj, tmask = None, None
+        pred, nxt = model(x, mask, adj, tmask)
+        loss, metric = compute_loss(spec, pred, batch, mask, target)
+        # MoE 特有的两件事：**必须**都做，否则等于白装 MoE
+        loss = loss + args.w_lb * model.load_balance_loss()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        model.update_router_bias()
+        if (it + 1) % args.log_every == 0:
+            u = model.expert_usage()
+            used = sum(1 for v in u.values() if v > 0.001)
+            print(f"  第 {it+1:5d} 步  loss={float(loss):.5f}  指标={metric:.4f}  "
+                  f"激活专家={used}/{len(u)}")
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    path = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
+    backup_before_overwrite(path, f"moe-{args.iters}")
+    torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
+    return path
+
+
+def export_one(spec: Spec, args) -> str:
+    """导出 ONNX：只回**主输出**（形状与旧模型一致），next_step 不进图。"""
+    from sports_ai.onnx_utils import inline_weights
+
+    legacy = new_legacy(spec)
+    model = UpgradedMoE(legacy, in_dim=spec.feat_dim, out_dim=spec.out_dim,
+                        hidden=args.hidden, n_layers=args.n_layers,
+                        n_experts=args.n_experts, n_groups=args.n_groups,
+                        pool=spec.pool, dropout=0.0, warmup_steps=0,
+                        legacy_mode=spec.legacy_mode, n_types=spec.n_types,
+                        flat_input=spec.flat_input)
+    ck = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
+    if not os.path.exists(ck):
+        raise SystemExit(f"缺少 {ck}，请先 --iters 训练")
+    model.load_state_dict(torch.load(ck, map_location="cpu"))
+    model.eval()
+
+    n = spec.pad_to
+    x = torch.zeros(1, n, spec.feat_dim, dtype=torch.float32)
+    mask = torch.ones(1, n, dtype=torch.float32)
+
+    class _Main(torch.nn.Module):
+        """只回主输出：next_step 是训练期辅助信号，不该出现在部署契约里。"""
+
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, *a):
+            return self.m(*a)[0]
+
+    w = _Main(model)
+    inputs = (x, mask)
+    names = ["node_feat", "mask"]
+    axes = {"node_feat": {1: "N"}, "mask": {1: "N"}}
+    if spec.legacy_mode == "gnn3":
+        # ConflictGnn 的原签名是 (node_feat, adj, mask) —— **没有 type_mask**，
+        # 导出时多喂一个输入名会报 "Invalid input name: type_mask"
+        # （ONNX 的输入集合必须与 forward 声明完全一致）。
+        inputs = (x, mask, torch.zeros(1, n, n))
+        names = ["node_feat", "mask", "adj"]
+        axes.update({"adj": {1: "N", 2: "N"}})
+    elif spec.legacy_mode == "gnn":
+        t = spec.n_types
+        inputs = (x, mask, torch.zeros(1, t, n, n), torch.ones(1, t))
+        names = ["node_feat", "mask", "adj_by_type", "type_mask"]
+        axes.update({"adj_by_type": {2: "N", 3: "N"}, "type_mask": {}})
+    out_shape = (1, spec.out_dim) if spec.pool else ((1, n) if spec.out_dim == 1 else (1, n, spec.out_dim))
+    axes["out"] = {} if spec.pool else {1: "N"}
+
+    path = os.path.join(MODEL_DIR, f"{spec.name}.moe.onnx")
+    torch.onnx.export(w, inputs, path, input_names=names, output_names=["out"],
+                      dynamic_axes=axes, opset_version=17, dynamo=False)
+    inline_weights(path)
+    print(f"[{spec.name}] 导出 {os.path.basename(path)}  输出形状 {out_shape}")
+    if args.verify:
+        import onnxruntime as ort
+        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        for n2 in (2, n):
+            feed = {names[0]: np.zeros((1, n2, spec.feat_dim), dtype=np.float32),
+                    names[1]: np.ones((1, n2), dtype=np.float32)}
+            if spec.legacy_mode == "gnn3":
+                feed[names[2]] = np.zeros((1, n2, n2), dtype=np.float32)
+            elif spec.legacy_mode == "gnn":
+                t = spec.n_types
+                feed[names[2]] = np.zeros((1, t, n2, n2), dtype=np.float32)
+                feed[names[3]] = np.ones((1, t), dtype=np.float32)
+            print(f"  [verify] N={n2} → {sess.run(None, feed)[0].shape}")
+    return path
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", default="lane_advisor",
+                   help="模型名，或 all / high（含高频）")
+    p.add_argument("--iters", type=int, default=2000)
+    p.add_argument("--batch", type=int, default=32)
+    p.add_argument("--seed", type=int, default=20261007)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--w-lb", type=float, default=0.01, help="负载均衡正则权重")
+    p.add_argument("--hidden", type=int, default=128)
+    p.add_argument("--n-layers", type=int, default=6)
+    p.add_argument("--n-experts", type=int, default=9)
+    p.add_argument("--n-groups", type=int, default=3)
+    p.add_argument("--warmup", type=int, default=200)
+    p.add_argument("--log-every", type=int, default=500)
+    add_device_arg(p)
+    p.add_argument("--export-only", action="store_true")
+    p.add_argument("--verify", action="store_true")
+    args = p.parse_args()
+
+    reg = registry()
+    high = ["lane_advisor", "conflict_gnn", "referee_gnn", "teacher_gnn",
+            "tournament_gnn", "algorithm_selector", "ai"]
+    if args.model == "all":
+        names = list(reg)
+    elif args.model == "high":
+        names = high
+    else:
+        names = [args.model]
+    device = resolve_device(getattr(args, "device", "auto"))
+    seed_all(args.seed)
+
+    for nm in names:
+        if nm not in reg:
+            raise SystemExit(f"未知模型 {nm}，可选：{list(reg)}")
+        spec = reg[nm]
+        if not args.export_only:
+            train_one(spec, args, device)
+        if args.verify or args.export_only:
+            export_one(spec, args)
+
+
+if __name__ == "__main__":
+    main()
