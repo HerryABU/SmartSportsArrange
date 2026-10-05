@@ -236,6 +236,10 @@ class SlotSplitAdvisor(nn.Module):
         self.moe = SpecialistMoE(in_dim=feat, hidden=hidden, n_layers=n_layers,
                                  n_experts=n_experts, n_groups=n_groups, top_k=2,
                                  n_shared=1, n_edges=1, dropout=dropout, n_steps=3)
+        # 预测分支（「未来 H 步时间槽」）：与主任务**共享 self.moe 主干**，
+        # 所以预测能力会回流到主表征；不进部署契约（导出只回主输出）。
+        from sports_ai.nn.forecast_aux import ForecastAux
+        self.aux = ForecastAux(hidden)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor):
         """x [B,P,F]  mask [B,P] → (逐项目优先级 [B,P], 后续步骤预测 [B,3])。"""
@@ -299,11 +303,23 @@ def train(args) -> str:
     print(f"[训练] 跨时段拆分专项 MoE：{args.iters} 步，batch={args.batch}  设备={describe_device(device)}")
     print(f"       架构：深度={model.depth()} 稀疏专家={len(model.moe.experts)} "
           f"共享专家={len(model.moe.shared)} 组数={model.moe.router.n_groups}")
+    # 预测分支的数据：一次预生成、训练期循环采样（现场每步生成要跑
+    # 「场景生成 + 贪心着色」，那是主要开销）。
+    from sports_ai.nn.forecast_aux import AuxData, aux_loss, specialist_trunk
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+    # 共享主干：取 SpecialistMoE 里**只吃 hidden 维**的那一段（不能直接调 encode，
+    # 它的 in_proj 吃原始特征维）。
+    share = specialist_trunk(model.moe)
+
     for it in range(args.iters):
         x, m, y = make_batch(args.batch, seed=args.seed + it)
         x, m, y = to_device((x, m, y), device)
         pred, _ = model(x, m)
         loss = (loss_fn(pred, y) * m).sum() / m.sum().clamp(min=1)
+        # 预测分支：未来 H 步时间槽 —— 过**同一个 moe 主干**，于是预测能力
+        # 会回流到主任务的表征里（不是外挂一条不相干的支路）。
+        sx, sy = aux_data.sample(args.batch)
+        loss = loss + aux_loss(model.aux, sx, sy, trunk_fn=share)
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -340,7 +356,10 @@ def export(args) -> str:
     from sports_ai.onnx_utils import inline_weights
 
     model = SlotSplitAdvisor()
-    model.load_state_dict(torch.load(
+    # ⚠️ load_with_aux：ckpt 带预测分支的 aux.* 参数，部署契约只要主输出 ——
+    #    strict=True 会报 "Unexpected key(s): aux.*" 让导出失败（＝训了导不出）。
+    from sports_ai.nn.forecast_aux import load_with_aux
+    load_with_aux(model, torch.load(
         os.path.join(MODEL_DIR, "slot_split_advisor.pt"), map_location="cpu"))
     model.eval()
     path = os.path.join(MODEL_DIR, "slot_split_advisor.onnx")

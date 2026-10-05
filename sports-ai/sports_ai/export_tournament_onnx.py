@@ -66,7 +66,11 @@ def main() -> None:
     hidden, layers = load_cfg()
     state, _meta = _unpack(torch.load(ckpt, map_location="cpu"))
     model = TournamentGnn(hidden=hidden, layers=layers)
-    model.load_state_dict(state)
+    # ⚠️ 用 load_with_aux 而不是 load_state_dict：ckpt 里带了预测分支的 aux.* 参数，
+    #    而部署契约只要主输出（三个头）—— strict=True 会报
+    #    "Unexpected key(s): aux.*" 直接让导出失败（＝训了导不出）。
+    from sports_ai.nn.forecast_aux import load_with_aux
+    load_with_aux(model, state)
     model.eval()
 
     B, N = 2, 24

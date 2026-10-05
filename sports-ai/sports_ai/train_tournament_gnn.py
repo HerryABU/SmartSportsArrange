@@ -180,6 +180,11 @@ def main() -> None:
     best = float("inf")
     best_state = None
     best_metrics: Dict[str, float] = {}
+    # 预测分支的数据与损失：一次预生成、训练期循环采样
+    # （现场每步生成要跑「场景生成 + 贪心着色」，那是主要开销）。
+    from sports_ai.nn.forecast_aux import AuxData, aux_loss
+    aux_data = AuxData(n=512, seed=args.seed + 4242, device=device)
+
     for epoch in range(args.epochs):
         model.train()
         tot = nb = 0.0
@@ -196,6 +201,12 @@ def main() -> None:
             # （漏掉不报错，只是静默退化成「一个贵一点的单体网络」）。
             if getattr(model, "moe", None) is not None:
                 loss = loss + 0.01 * model.moe.load_balance_loss()
+            # 预测分支：未来 H 步时间槽（与主任务共享 self.moe 主干，
+            # 所以预测能力会回流到表征里）。数据一次建好、循环采样。
+            sx, sy = aux_data.sample(args.batch)
+            loss = loss + aux_loss(model.aux, sx, sy,
+                                   trunk_fn=(lambda h: model.moe(h))
+                                   if getattr(model, "moe", None) is not None else None)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

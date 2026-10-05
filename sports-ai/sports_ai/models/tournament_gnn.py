@@ -134,6 +134,10 @@ class TournamentGnn(nn.Module):
         self.moe = (MoERepr(hidden, n_layers=moe_layers, n_experts=moe_experts,
                             dropout=dropout)
                     if moe else None)
+        # 预测分支（「未来 H 步时间槽」）：与主任务共享 self.moe 主干 ——
+        # 只挂在表征层，三个输出头与部署契约一个字都不用动（导出只回主输出）。
+        from sports_ai.nn.forecast_aux import ForecastAux
+        self.aux = ForecastAux(hidden)
         self.proj = nn.Linear(node_feat, hidden)
         self.in_norm = nn.LayerNorm(hidden)
         # 类型嵌入：告诉编码器「这份图里有哪些约束本体」。
