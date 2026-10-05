@@ -31,7 +31,19 @@ import torch.nn as nn
 
 from sports_ai.nn.blocks import (EXPERT_CYCLE, HierarchicalRouter, ResidualMLPBlock,
                                  build_expert)
-from sports_ai.generative.encoder import GnnEncoder, normalized_adj
+# ⚠️ **不能**在这里顶层 import GnnEncoder：导入本模块会触发
+#    `sports_ai.generative.__init__` → 它又 import generator/discriminator/...
+#    → 那些模块 import 本模块 → 循环导入
+#    （报 "cannot import name 'MoEEncoder' from partially initialized module"）。
+#    改成函数内惰性导入，打断这条环。
+def _gnn_encoder_cls():
+    from sports_ai.generative.encoder import GnnEncoder
+    return GnnEncoder
+
+
+def _normalized_adj(adj, mask):
+    from sports_ai.generative.encoder import normalized_adj
+    return normalized_adj(adj, mask)
 
 
 class MoEEncoder(nn.Module):
@@ -65,7 +77,7 @@ class MoEEncoder(nn.Module):
         super().__init__()
         self.hidden = hidden
         # 原编码器作为共享专家（恒定激活，不参与门控竞争）
-        self.legacy = legacy if legacy is not None else GnnEncoder(in_dim, hidden)
+        self.legacy = legacy if legacy is not None else _gnn_encoder_cls()(in_dim, hidden)
         # 多架构专家池
         self.experts = nn.ModuleList([
             build_expert(EXPERT_CYCLE[i % len(EXPERT_CYCLE)], hidden, 1, dropout)
@@ -82,7 +94,7 @@ class MoEEncoder(nn.Module):
     def forward(self, node_feat: torch.Tensor, adj: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:
         """``node_feat [B,N,F]`` / ``adj [B,N,N]`` / ``mask [B,N]`` → ``[B,N,hidden]``。"""
-        a_norm = normalized_adj(adj, mask)
+        a_norm = _normalized_adj(adj, mask)
         h0 = torch.relu(self.in_norm(self.in_proj(node_feat))) * mask.unsqueeze(-1)
         # ① 原编码器（共享专家）
         base = self.legacy(node_feat, adj, mask)
@@ -118,6 +130,73 @@ class MoEEncoder(nn.Module):
         return len(self.trunk) + 2
 
 
+class MoERepr(nn.Module):
+    """**表征增强块**：把已有的节点表征 ``[B,N,H]`` 再过一遍多架构专家池。
+
+    与 :class:`MoEEncoder` 的区别：那个从**原始特征** ``[B,N,F]`` 起步，
+    自带 ``in_proj`` 与原编码器；这个从**已成型的节点表征**起步 ——
+    适合「模型内部已经编码好了、只是表征能力不够」的场景。
+
+    ## 为什么需要它（而不是外部适配器）
+
+    ``TournamentGnn`` 有**三个输出头**（赛制 / 种子分 / 公平性），
+    且都读同一份内部表征 ``z``。用外部适配器包住它，
+    适配器只能回一个主输出 —— 而 Java 侧的 ``TournamentAiService``
+    读的是 ``r.get(0)/get(1)/get(2)`` **三个输出**，
+    少一个就抛异常 → 被 catch 后静默回退规则（实测踩到：
+    测试报「模型应可用 expected true but was false」，
+    而 onnx 单独加载推理完全正常 —— 因为问题不在能否加载，在输出**个数**）。
+
+    在表征层插一刀，三个头全部受益，输出个数与语义一个不动。
+    """
+
+    def __init__(self, dim: int, n_layers: int = 6, n_experts: int = 9,
+                 n_groups: int = 3, dropout: float = 0.0, warmup_steps: int = 200):
+        super().__init__()
+        self.experts = nn.ModuleList([
+            build_expert(EXPERT_CYCLE[i % len(EXPERT_CYCLE)], dim, 1, dropout)
+            for i in range(max(1, n_experts))])
+        self.router = HierarchicalRouter(len(self.experts), dim, n_groups=n_groups,
+                                         top_k=2, n_shared=0, warmup_steps=warmup_steps)
+        self.trunk = nn.ModuleList([ResidualMLPBlock(dim, dropout=dropout)
+                                    for _ in range(max(1, n_layers))])
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, h: torch.Tensor, adj: Optional[torch.Tensor] = None,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """``h [B,N,H]`` → ``[B,N,H]``（同样式、同样形状，可原地替换）。"""
+        w, top_i, _ = self.router(h)
+        # 邻接若为 4 维 [B,E,N,N]，压成单张图再交给图卷积专家
+        e_adj = adj.sum(dim=1) if (adj is not None and adj.dim() == 4) else adj
+        acc = torch.zeros_like(h)
+        for i, ex in enumerate(self.experts):
+            acc = acc + w[..., i].unsqueeze(-1) * ex(h, e_adj, mask)
+        y = h + acc
+        for blk in self.trunk:
+            y = blk(y)
+        y = self.norm(y)
+        if mask is not None and mask.dim() == 2:
+            y = y * mask.unsqueeze(-1)
+        if self.training:
+            self._last_idx = top_i.detach()
+        return y
+
+    def load_balance_loss(self) -> torch.Tensor:
+        return self.router.load_balance_loss()
+
+    @torch.no_grad()
+    def update_router_bias(self, rate: float = 0.02):
+        idx = getattr(self, "_last_idx", None)
+        if idx is not None:
+            self.router.update_bias(idx, rate)
+
+    def expert_usage(self) -> dict:
+        return self.router.expert_usage()
+
+    def depth(self) -> int:
+        return len(self.trunk) + 1
+
+
 def make_moe_encoder(in_dim: int, hidden: int, n_layers: int = 6,
                      n_experts: int = 9, **kw) -> MoEEncoder:
     """构造 :class:`MoEEncoder`，**并把原 GnnEncoder 作为共享专家灌进去**。
@@ -127,7 +206,7 @@ def make_moe_encoder(in_dim: int, hidden: int, n_layers: int = 6,
     不存在「改了这个忘了那个」。
     """
     return MoEEncoder(in_dim, hidden, n_layers=n_layers, n_experts=n_experts,
-                      legacy=GnnEncoder(in_dim, hidden), **kw)
+                      legacy=_gnn_encoder_cls()(in_dim, hidden), **kw)
 
 
 def upgrade_encoder(module: nn.Module, attr: str = "enc", n_layers: int = 6,

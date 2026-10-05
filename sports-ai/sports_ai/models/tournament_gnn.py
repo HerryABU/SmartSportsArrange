@@ -49,6 +49,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sports_ai.nn.moe_encoder import MoERepr
 
 # 边类型顺序即 adj_by_type 通道号 —— 双端契约，改序必须同步训练侧与 Java 端
 T_STRENGTH = 0  # 实力相近（同档位）
@@ -125,8 +126,14 @@ class TournamentGnn(nn.Module):
     """
 
     def __init__(self, node_feat: int = NODE_FEAT_DIM, hidden: int = 160,
-                 layers: int = 5, n_formats: int = 3, dropout: float = 0.1):
+                 layers: int = 5, n_formats: int = 3, dropout: float = 0.1,
+                 moe: bool = True, moe_layers: int = 6, moe_experts: int = 9):
         super().__init__()
+        # MoE 表征增强块（默认启用）。放在**表征层**而不是包住整个模型：
+        # 本模型有三个输出头、Java 读三个输出，外部适配器做不到（见 forward 注释）。
+        self.moe = (MoERepr(hidden, n_layers=moe_layers, n_experts=moe_experts,
+                            dropout=dropout)
+                    if moe else None)
         self.proj = nn.Linear(node_feat, hidden)
         self.in_norm = nn.LayerNorm(hidden)
         # 类型嵌入：告诉编码器「这份图里有哪些约束本体」。
@@ -191,6 +198,18 @@ class TournamentGnn(nn.Module):
             traces.append(h)
         g = torch.cat(traces, dim=-1)                    # [B,N,H*(L+1)]
         z = self.jk_norm(self.jk(g)) * mask.unsqueeze(-1)
+
+        # MoE 表征增强（2026-10-05）：把 z 再过一遍 9 架构专家池 + 层次门控 + 6 层主干。
+        #
+        # ⚠️ **必须在这里插刀，不能用外部适配器包住整个模型**：
+        #    本模型有**三个输出头**（赛制/种子分/公平性），而 Java 侧
+        #    `TournamentAiService` 读的是 r.get(0)/get(1)/get(2) 三个输出 ——
+        #    外部适配器只回一个主输出，少两个就抛异常被 catch，
+        #    表现为「模型静默回退规则」，而 onnx 单独加载推理完全正常
+        #    （问题不在能否加载，在输出**个数**）。在表征层插一刀，
+        #    三个头全部受益，输出个数与语义一个不动。
+        if self.moe is not None:
+            z = self.moe(z, adj, mask)
 
         # 全局池化（对规模鲁棒：均值池化而非 flatten，N 变化不会崩）。
         # ⚠️ denom 必须保持 [B,1]：**绝不能**再 unsqueeze(-1)——那会变成 [B,1,1]，

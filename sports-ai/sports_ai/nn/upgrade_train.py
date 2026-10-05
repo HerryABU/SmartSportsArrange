@@ -218,14 +218,13 @@ def registry() -> dict:
                    make_batch="make_dataset", data_module="sports_ai.train_selector",
                    layout="xL", batch_fn=make_selector_batch,
                    onnx_inputs=("features",)),
-        "tournament_gnn": Spec("tournament_gnn", "sports_ai.models.tournament_gnn",
-                                "TournamentGnn", 14, out_dim=3, pool=True,
-                                loss="mse", make_batch="make_dataset",
-                                data_module="sports_ai.train_tournament_gnn",
-                                legacy_mode="gnn", layout="xmatL",
-                                n_types=N_TMT_TYPES, batch_fn=make_torch_batch,
-                                onnx_inputs=("node_feat", "adj_by_type",
-                                             "type_mask", "mask")),
+        # ⚠️ tournament_gnn **不在这里登记**：它有三个输出头
+        # （赛制/种子分/公平性），而 Java 的 TournamentAiService 读 r.get(0..2)
+        # 三个输出 —— 外部适配器只回主输出，少两个会被 catch 后静默回退规则
+        # （实测：onnx 单独加载推理完全正常，测试却报「模型应可用 was false」，
+        #  因为问题在输出**个数**而不是能否加载）。
+        # 它已改为在 `models/tournament_gnn.py` 里就地插 `MoERepr` 增强表征，
+        # 训练/导出仍走它自己的 `train_tournament_gnn.py` / `export_tournament_onnx.py`。
     }
 
 
@@ -581,8 +580,9 @@ def main():
     args = p.parse_args()
 
     reg = registry()
+    # tournament_gnn 不在此列：它已改为就地插 MoERepr（见 registry 里的说明）
     high = ["lane_advisor", "conflict_gnn", "referee_gnn", "teacher_gnn",
-            "tournament_gnn", "algorithm_selector", "ai"]
+            "algorithm_selector", "ai"]
     if args.model == "all":
         names = list(reg)
     elif args.model == "high":

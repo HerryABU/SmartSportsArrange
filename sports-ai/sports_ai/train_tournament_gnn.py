@@ -192,10 +192,16 @@ def main() -> None:
             loss_seed = (((ps - sd) ** 2).sum(-1) / mk.sum(-1)).mean()
             loss_fair = (((pf - fr) ** 2).sum(-1) / mk.sum(-1)).mean()
             loss = loss_fmt + loss_seed + 0.5 * loss_fair
+            # MoE 两项：**必须都做**，否则等于装了 MoE 却没通电
+            # （漏掉不报错，只是静默退化成「一个贵一点的单体网络」）。
+            if getattr(model, "moe", None) is not None:
+                loss = loss + 0.01 * model.moe.load_balance_loss()
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
+            if getattr(model, "moe", None) is not None:
+                model.moe.update_router_bias()
             tot += float(loss.item())
             nb += 1
 
