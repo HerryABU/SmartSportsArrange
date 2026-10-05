@@ -81,7 +81,7 @@
     },
     "tournament_gnn.onnx": {
       "bytes": 18955972,
-      "sha256": "79bd1a5676bef15a2bf822dcae2f3f0d1557c20991ee74a233f32f71d78a4c71",
+      "sha256": "3b580d85f1a5e38602214fe24c6f4107299f67febfa13b368204ddf1903fd8e0",
       "usage": "球类赛制 GNN（赛制/种子/公平性）；缺失 → 球类走规则赛制"
     }
   }
