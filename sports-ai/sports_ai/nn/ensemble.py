@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -184,6 +185,11 @@ class TrainedMoEExpert(nn.Module):
         super().__init__()
         sd, prefix = load_sd(spec.name)
         in_dim, hidden, n_experts, n_groups, n_layers = infer_layout(sd)
+        # 记录**实际取用的权重文件与时刻**：`ckpt_path` 对 `.moe.pt` 有绝对优先权，
+        # 一次冒烟残留就能静默顶掉真实权重（已踩两次）。把这一行打进训练日志，
+        # 事后能直接对账「当时接的到底是哪份权重、是不是最新的」。
+        self.ckpt = ckpt_path(spec.name)
+        self.ckpt_mtime = os.path.getmtime(self.ckpt)
         # 判据取自权重本身 —— **三类**必须分清，二分类会把第三类悄悄归错：
         #   ① 有 `predictor.*`          → UpgradedMoE 适配器（body = 专家池+主干）
         #   ② 无 predictor、有 `legacy.*` → MoEEncoder（整条编码器，含 legacy 共享专家）
@@ -302,10 +308,11 @@ class TrainedMoEExpert(nn.Module):
     def describe(self) -> str:
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         pref = f"前缀'{self.prefix}'" if self.prefix else "无前缀"
+        when = time.strftime("%m-%d %H:%M", time.localtime(self.ckpt_mtime))
         return (f"{self.name:22s} [{self.kind:8s} {pref:12s}] {self.role:18s} "
                 f"in={self.src_in_dim} H={self.src_hidden} E={self.n_experts} "
                 f"深度={self.depth} | 继承 {self.inherited/1e6:.2f}M / 总 {self.total/1e6:.2f}M "
-                f"（可训 {trainable/1e6:.2f}M）")
+                f"（可训 {trainable/1e6:.2f}M）| 权重 {os.path.basename(self.ckpt)} @ {when}")
 
 
 def build_ensemble(names: Optional[List[str]] = None, dst_hidden: int = 192,
