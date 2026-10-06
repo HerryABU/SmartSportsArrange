@@ -197,6 +197,87 @@
       </template>
     </el-dialog>
 
+    <!-- ===== 算法详情：本次编排「用了哪些算法、各自有没有改进、瓶颈在哪」 =====
+         只读回显后端 algorithmPortfolio，不做任何推断 —— 数字对不上就是真对不上。 -->
+    <el-dialog v-model="algoDialog" title="算法详情（本次编排）" width="820px" top="7vh">
+      <template v-if="lastPortfolio">
+        <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
+          <el-descriptions-item label="编排模式">
+            {{ modeLabel(lastPortfolio.mode || lastArrangeMode) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="胜出策略">
+            {{ fmtCell(lastPortfolio.winningStrategy) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="放置趟数">
+            {{ fmtCell(lastPortfolio.conflictAvoidancePasses) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="时间目标">
+            {{ lastPortfolio.unlimitedMode ? '无限轮（跑到收敛）' : '限定尝试次数' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="收敛判定">
+            {{ lastPortfolio.converged ? '已收敛（连续多趟无改进）' : '未触发收敛判据' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="主 MoE 初始顺序">
+            <span v-if="primaryMoe && primaryMoe.applied">
+              已应用（{{ primaryMoe.units }} 个单元 · 建议下一步 {{ primaryMoe.style }}）
+            </span>
+            <span v-else>未应用<template v-if="primaryMoe && primaryMoe.reason">（{{ primaryMoe.reason }}）</template></span>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-alert v-if="refineChainOn === 0" type="warning" show-icon :closable="false"
+                  title="精修链五环都没有回执 —— 本次只用求解器 + 多趟放置出解"
+                  style="margin-bottom: 12px">
+          <div style="font-size: 12px; line-height: 1.8">
+            若配置里已写入非 0 的轮数/步数，说明调参没有生效（后端会在启动日志打印实际生效值）。
+            这不是「跑了但没改进」，而是「根本没跑」。
+          </div>
+        </el-alert>
+
+        <div style="font-weight: 600; margin-bottom: 6px">
+          精修链（在求解器结果上继续找改进，每环都只接受更优解）
+        </div>
+        <el-table :data="refineChain" size="small" border>
+          <el-table-column prop="name" label="环节" width="110" />
+          <el-table-column prop="desc" label="作用" min-width="220" />
+          <el-table-column label="回执" min-width="280">
+            <template #default="{ row }">
+              <span v-if="row.text">{{ row.text }}</span>
+              <el-tag v-else size="small" type="info" effect="plain">未启用</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="分数变化" width="180">
+            <template #default="{ row }">{{ fmtCell(row.score) }}</template>
+          </el-table-column>
+        </el-table>
+
+        <el-descriptions v-if="realRefine" :column="3" border size="small" style="margin-top: 12px">
+          <el-descriptions-item label="真实冲突精修上限">{{ fmtCell(realRefine.cap) }} 趟</el-descriptions-item>
+          <el-descriptions-item label="交付口径残余冲突">{{ fmtCell(realRefine.finalRealTotal) }} 处</el-descriptions-item>
+          <el-descriptions-item label="其中严重">{{ fmtCell(realRefine.finalRealSevere) }} 处</el-descriptions-item>
+        </el-descriptions>
+
+        <el-collapse v-if="portfolioFeatures.length" style="margin-top: 12px">
+          <el-collapse-item title="实例特征（算法组合据此选候选）">
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item v-for="f in portfolioFeatures" :key="f.key" :label="f.key">
+                {{ fmtCell(f.value) }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </el-collapse-item>
+          <el-collapse-item v-if="(lastPortfolio.candidates || []).length" title="候选算法（本次实例的规划）">
+            <el-tag v-for="c in lastPortfolio.candidates" :key="c" size="small" effect="plain"
+                    style="margin: 2px">{{ c }}</el-tag>
+            <div v-if="lastPortfolio.basis" class="hint" style="margin-top: 6px">{{ lastPortfolio.basis }}</div>
+          </el-collapse-item>
+        </el-collapse>
+      </template>
+      <el-empty v-else description="本次会话还没有编排记录，先执行一次「一键编排赛程」" />
+      <template #footer>
+        <el-button @click="algoDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <el-alert type="info" show-icon :closable="false" style="border-radius: 10px">
       <template #title>
         编排规则：项目按年级出场顺序展开（可在「运动会日程配置」中自定义，或跟随系统设置的年级管理）；
@@ -224,6 +305,18 @@
           <span v-if="lastAiReport.note" style="margin-left: 8px; font-size: 12px; color: #909399">
             {{ lastAiReport.note }}
           </span>
+        </template>
+        <!-- 精修链可观测性：后端 algorithmPortfolio 里有没有 ga/lns/mnsa/alns/fixopt 回执，
+             直接反映「精修链是不是真的跑了」。曾在生产环境整轮没跑（调参在构造期被读成 0），
+             页面却毫无异常 —— 所以这里必须显式回显，不能只在「有数据时」才展示。 -->
+        <template v-if="lastPortfolio">
+          <el-tag size="small" :type="refineChainOn > 0 ? 'success' : 'warning'" effect="plain"
+                  style="margin-left: 8px">
+            精修链：{{ refineChainOn > 0 ? `${refineChainOn}/5 环已启用` : '未启用（调参为 0，已回退仅求解器）' }}
+          </el-tag>
+          <el-button link type="primary" size="small" style="margin-left: 6px" @click="algoDialog = true">
+            算法详情
+          </el-button>
         </template>
       </div>
     </el-alert>
@@ -1072,6 +1165,49 @@ function modeLabel(m) {
 // 最近一次规则编排的观测信息（algorithmPortfolio.rule）
 const lastRuleInfo = ref(null)
 
+// ==================== 算法详情（精修链可观测性）====================
+// 编排结果里的 algorithmPortfolio 全量。后端在这个对象里给出「精修链到底跑了没有」：
+// ga / lns / mnsa / alns / fixopt 各自的回执文案与分数变化。
+// 前端此前只取 .rule 与 .aiReport 两处，精修链的观测数据**全部被丢弃**——而这条链曾因
+// 调参在构造期被读成 0（Spring 的 @Value 是字段注入，晚于构造器）而在生产环境整轮没跑，
+// 页面上却看不出任何异常。这里如实回显：有键=该环跑了，无键=该环未启用。
+const lastPortfolio = ref(null)
+const algoDialog = ref(false)
+
+/** 精修链五环：名称 / 作用 / 后端回执 / 分数变化。名称用语义名，不用 L1/L2/L3 这类内部代号。 */
+const refineChain = computed(() => {
+  const p = lastPortfolio.value || {}
+  return [
+    { key: 'ga', name: '遗传算法', desc: '种群 + 交叉 + 变异，让好解之间繁殖', text: p.ga, score: p.gaScore },
+    { key: 'lns', name: '大邻域搜索', desc: '破坏一块 → 只重建这一块 → 只接受更优', text: p.lns, score: p.lnsScore },
+    { key: 'mnsa', name: '多邻域退火', desc: '六种邻域移动 + UCB1 自适应 + 退火接受', text: p.mnsa, score: p.mnsaScore },
+    { key: 'alns', name: '自适应大邻域', desc: '四种破坏算子按实际收益由老虎机切换', text: p.alns, score: p.alnsScore },
+    { key: 'fixopt', name: '冲突切片精修', desc: '冻结其余，只对兼项冲突连通分量精确重排', text: p.fixopt, score: p.fixoptScore }
+  ]
+})
+
+/** 已启用的环数（后端有回执即视为跑了） */
+const refineChainOn = computed(() => refineChain.value.filter(s => !!s.text).length)
+
+/** 实例特征（后端 AlgorithmPortfolio.extract 的产物）→ 可渲染的键值行 */
+const portfolioFeatures = computed(() => {
+  const f = (lastPortfolio.value && lastPortfolio.value.features) || null
+  if (!f || typeof f !== 'object') return []
+  return Object.keys(f).map(k => ({ key: k, value: f[k] }))
+})
+
+/** 真实冲突精修（把「评估口径 ≡ 交付口径」后的真实残余冲突）→ 可渲染的行 */
+const realRefine = computed(() => (lastPortfolio.value && lastPortfolio.value.realConflictRefine) || null)
+
+/** 主 MoE 的介入情况（是否真的用它给出的优先级重排了求解初始顺序） */
+const primaryMoe = computed(() => (lastPortfolio.value && lastPortfolio.value.primaryMoe) || null)
+
+/** 数值/字符串统一格式化（分数变化形如 "12.5 → 11.8"） */
+function fmtCell(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  return typeof v === 'number' ? String(Math.round(v * 10000) / 10000) : String(v)
+}
+
 // 场地：名称 + 编码（并数上限取决于场地数量）
 const defaultVenueList = () => ([
   { name: '田径场', code: 'TRACK' },
@@ -1511,6 +1647,8 @@ async function resolveConflicts() {
     lastArrangeMode.value = res.mode || arrangeMode.value
     lastRuleInfo.value = res.algorithmPortfolio?.rule || null
     lastAiReport.value = res.aiReport || res.algorithmPortfolio?.aiReport || null
+    // 算法组合观测全量留存（精修链有没有跑、跑了有没有改进，看这一份）
+    lastPortfolio.value = res.algorithmPortfolio || null
     // 消解后自动重新检测，刷新表格与计数（权威来源为后端 detectConflicts 同口径）
     await loadConflicts()
     const auto = res.autoArrange || null
@@ -1679,6 +1817,8 @@ async function doAutoSchedule() {
     lastArrangeMode.value = res.mode || arrangeMode.value
     lastRuleInfo.value = res.algorithmPortfolio?.rule || null
     lastAiReport.value = res.aiReport || res.algorithmPortfolio?.aiReport || null
+    // 算法组合观测全量留存（精修链有没有跑、跑了有没有改进，看这一份）
+    lastPortfolio.value = res.algorithmPortfolio || null
     // B06/U05：编排响应本身已带 conflicts，直接用，省一次往返
     applyConflicts({ summary: null, list: res.conflicts })
     if (res.conflicts) {
