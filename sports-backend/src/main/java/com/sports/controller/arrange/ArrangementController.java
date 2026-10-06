@@ -195,12 +195,15 @@ public class ArrangementController {
         String gender = (String) body.get("gender");
         Integer advanceCount = body.get("advanceCount") instanceof Number n
                 ? n.intValue() : null;
-        log.info("预赛淘汰计算: eventId={}, grade={}, gender={}, advanceCount={}",
-                eventId, grade, gender, advanceCount);
-        Object r = arrangementService.computeQualifiers(eventId, grade, gender, advanceCount);
+        // 百分比折算基数（可选）：actual（默认）= 实际参与人数；max = 最大报名人数。
+        // 两者不等时算出的名额不同，所以由调用方显式选、并在响应里回显实际用的基数。
+        String base = body.get("base") == null ? null : String.valueOf(body.get("base"));
+        log.info("预赛淘汰计算: eventId={}, grade={}, gender={}, advanceCount={}, base={}",
+                eventId, grade, gender, advanceCount, base);
+        Object r = arrangementService.computeQualifiers(eventId, grade, gender, advanceCount, base);
         auditService.record("ARRANGE_QUALIFY", "EVENT", eventId,
                 "二次编排/晋级计算: grade=" + grade + ", gender=" + gender + ", advanceCount=" + advanceCount
-                        + ", 结果=" + r);
+                        + ", base=" + base + ", 结果=" + r);
         return ApiResponse.success("晋级计算完成", r);
     }
 

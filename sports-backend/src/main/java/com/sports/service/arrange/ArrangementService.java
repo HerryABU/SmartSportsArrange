@@ -3,6 +3,7 @@ package com.sports.service.arrange;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.common.util.Grades;
+import com.sports.common.util.QualifyPolicy;
 import com.sports.collab.ScheduleCollaborationService;
 import com.sports.entity.arrange.Arrangement;
 import com.sports.entity.arrange.ArrangementReservation;
@@ -424,14 +425,16 @@ public class ArrangementService {
             arrangementRepository.save(arr);
         }
 
-        // 组内名次（heatRank 语义：同组按成绩排）
+        // 组内名次（heatRank 语义：同组按成绩排）——方向同样取自项目表的排名顺序（筛选链口径）。
+        // 田赛成绩是距离/高度（越大越好），原先写死升序会把组内名次整体排反。
+        boolean prelimDesc = QualifyPolicy.isDesc(eventRepository.findById(eventId)
+                .map(Event::getRankOrder).orElse(null));
         Map<Integer, List<Arrangement>> byHeat = prelims.stream()
                 .filter(a -> a.getPrelimTimeSeconds() != null)
                 .collect(Collectors.groupingBy(Arrangement::getHeat, TreeMap::new, Collectors.toList()));
         for (Map.Entry<Integer, List<Arrangement>> e : byHeat.entrySet()) {
             List<Arrangement> sorted = e.getValue().stream()
-                    .sorted(Comparator.comparing(Arrangement::getPrelimTimeSeconds,
-                            Comparator.nullsLast(Double::compareTo)))
+                    .sorted(QualifyPolicy.byResult(prelimDesc, Arrangement::getPrelimTimeSeconds))
                     .collect(Collectors.toList());
             int r = 1;
             for (Arrangement a : sorted) {
@@ -454,7 +457,13 @@ public class ArrangementService {
      * 预赛淘汰「立刻计算」：按预赛成绩全场取前 advanceCount 名晋级，
      * 标记 qualified/prelimRank 后自动生成决赛编排（round=final）。
      */
+    /** 兼容重载：不指定百分比折算基数（默认按「实际参与人数」）。 */
     public Map<String, Object> computeQualifiers(Long eventId, String grade, String gender, Integer advanceCount) {
+        return computeQualifiers(eventId, grade, gender, advanceCount, null);
+    }
+
+    public Map<String, Object> computeQualifiers(Long eventId, String grade, String gender, Integer advanceCount,
+                                                 String base) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new RuntimeException("项目不存在: " + eventId));
 
@@ -464,12 +473,23 @@ public class ArrangementService {
             throw new RuntimeException("该项目没有预赛编排，无需淘汰计算");
         }
 
-        int quota = advanceCount != null && advanceCount > 0
-                ? advanceCount : (event.getAdvanceCount() != null ? event.getAdvanceCount() : 8);
-
+        // 名额与排序方向都取自项目表配置（筛选链口径，见 QualifyPolicy）：
+        // 径赛是时间（越小越好 → 升序）、田赛是距离/高度（越大越好 → 降序）。
+        // 方向原先写死为升序，于是田赛会把成绩最差的先"晋级"。
+        // 百分比折算基数由调用方指定（实际参与人数 / 最大报名人数）——两者不等时结果不同，必须显式选。
+        QualifyPolicy.BaseMode baseMode = "max".equalsIgnoreCase(String.valueOf(base))
+                ? QualifyPolicy.BaseMode.MAX : QualifyPolicy.BaseMode.ACTUAL;
+        int baseCount = QualifyPolicy.resolveBase(baseMode, prelims.size(), event.getMaxParticipants());
+        QualifyPolicy.Quota quota = QualifyPolicy.resolveQuota(
+                advanceCount, event.getAdvanceCount(), event.getAdvancePercent(),
+                prelims.size(), event.getMaxParticipants(), baseMode);
+        boolean desc = QualifyPolicy.isDesc(event.getRankOrder());
+        // 方向与「成绩缺失排最后」都由策略统一提供：reversed() 会把 nullsLast 一起反转，
+        // 那种写法会让没录成绩的人反而排进晋级区（见 QualifyPolicy.byResult）。
+        Comparator<Arrangement> byResult = QualifyPolicy.byResult(desc, Arrangement::getPrelimTimeSeconds);
         List<Arrangement> timed = prelims.stream()
                 .filter(a -> a.getPrelimTimeSeconds() != null)
-                .sorted(Comparator.comparing(Arrangement::getPrelimTimeSeconds))
+                .sorted(byResult)
                 .collect(Collectors.toList());
 
         List<Arrangement> untimed = prelims.stream()
@@ -484,7 +504,7 @@ public class ArrangementService {
 
         for (Arrangement a : ordered) {
             a.setQualified(false);
-            if (globalRank <= quota) {
+            if (globalRank <= quota.count()) {
                 a.setQualified(true);
                 qualifiers.add(a);
             }
@@ -531,7 +551,7 @@ public class ArrangementService {
         EventSchedule finalRow = appendFinalScheduleRow(event, grade, gender, qualifiers.size(), qualifiers);
 
         log.info("预赛淘汰计算完成: eventId={}, grade={}, gender={}, 报名{}人, 晋级{}人 (取前{})",
-                eventId, grade, gender, prelims.size(), qualifiers.size(), quota);
+                eventId, grade, gender, prelims.size(), qualifiers.size(), quota.count());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("eventId", eventId);
@@ -539,7 +559,19 @@ public class ArrangementService {
         result.put("grade", grade);
         result.put("gender", gender);
         result.put("participants", prelims.size());
-        result.put("advanceCount", quota);
+        // 名额口径回显：让「按人数还是按百分比生效」可见——否则「填了百分比却按人数走」
+        // 这类配了不生效的静默失效，在页面上与「跑对了」无法区分。
+        result.put("advanceCount", quota.count());
+        result.put("quotaSource", quota.source().name());
+        result.put("quotaSourceText", QualifyPolicy.describeQuotaSource(quota.source(), event.getAdvancePercent()));
+        // 基数回显：百分比折算用的分母是「实际参与人数」还是「最大报名人数」——两者不等时结果不同，
+        // 不写出来就无法核对"表里算的名额"与"这里真正用的名额"为什么不一样。
+        result.put("baseMode", baseMode.name());
+        result.put("baseCount", baseCount);
+        result.put("participants", prelims.size());
+        result.put("maxParticipants", event.getMaxParticipants());
+        result.put("rankOrder", QualifyPolicy.normalizeRankOrder(event.getRankOrder()));
+        result.put("rankOrderText", QualifyPolicy.describeRankOrder(event.getRankOrder()));
         result.put("qualifierCount", qualifiers.size());
         result.put("qualifiers", qualifierView(qualifiers));
         result.put("final", finalResult);

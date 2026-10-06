@@ -304,6 +304,26 @@ Step 6: 结果验证 → 保存（支持版本回滚）
 
 **两阶段编排（报名后 → 预赛后）**：第一阶段＝**报名后**编排（`needHeats` 项目先排预赛，其余直接决赛）；第二阶段＝**预赛淘汰后**编排（录入成绩 → 立即计算晋级 → 生成决赛）。工具栏「重排全部决赛」按钮可在**全部预赛完成后**一次性重排所有已录成绩项目的决赛：`POST /api/arrange/finals/rebuild-all`（遍历 `needHeats` 项目 → 已录预赛成绩的「年级×性别」切片 → 重算晋级并生成决赛，返回 `{needHeatsEvents, rebuiltSlices, details}`）。
 
+**筛选链口径（项目表新增两个字段，⚠️ 只进筛选链，不进编排）**：晋级计算与组内名次需要知道「哪一端算好成绩」，这是**项目属性**而不是全局约定——径赛是时间（越小越好），田赛是距离/高度（越大越好）。
+
+| 字段 | 取值 | 作用 | 默认 |
+|---|---|---|---|
+| `event.rankOrder` | `1` = 从大到小；`0` = 从小到大 | 按成绩排名的方向（预赛淘汰晋级、组内名次）。**田赛必须设 1**，否则会把成绩最差的先晋级 | `0` |
+| `event.advanceCount` | `1..99` | 筛选后剩下的**人数**（原有字段） | `8` |
+| `event.advancePercent` | `0.1..100`（可空） | 筛选后剩下的**百分比** | 空 |
+
+**`advanceCount` 与 `advancePercent` 是双向折算的一对**：前端表格/表单里改任意一个，另一个立即算出（人数向上取整并夹在 `[1, 基数]`，百分比保留 1 位小数）；批量修改时只填一个，由后端按**每行自己的基数**逐行算出另一个（各项目报名数不同，前端算不出能套用全部行的通用值）。
+
+**折算基数（分母）可选**：比例转人数必须有分母，而分母有两种——`最大报名人数`（配置上限，默认）与`实际报名人数`。**两者相等时结果一样；实际 < 最大报名人数时由用户选择**：
+
+- 项目列表回填 `approvedCount`（已审核报名人数，`@Transient` 派生值，一次分组查询，不逐项目 count）；
+- 前端工具栏「折算基数」下拉切换；表格在「筛选后百分比」列下方显示本次所用基数，实际 < 最大时标 ⚠️；
+- `POST /api/arrange/events/{id}/qualify` 的 body 可带 `"base": "max" | "actual"`（默认 `actual`，即真实参与人数），响应回显 `baseMode` / `baseCount` / `participants` / `maxParticipants`。
+
+**口径优先级**：接口临时指定 > 百分比 > 人数 > 兜底 8。**百分比优先**是因为 `advanceCount` 带默认值 8，若人数优先，新填的百分比会被默认值悄悄顶掉（典型「配了不生效」）。若两列都填，以用户填的为准（允许有意不等）。所有取整与折算规则**唯一实现在 `common/util/QualifyPolicy`**（含「成绩缺失者两种方向下都排最后」这条不可退化的语义），前端 `Events.vue` 的 `countToPercent/percentToCount` 与之逐条对齐。
+
+⚠️ **这三个字段不参与编排**：赛程与时长计算不读它们，改排名顺序或筛选名额不会影响赛程表、道次与场地分配。前端「比赛项目（表格2）」的表单、批量新增与**批量修改**三处均可设置。
+
 **裁判分配（可视化）**：执行编排后，每个组次卡片底部以蓝色徽标展示本组次分配的裁判姓名（来自「智能编排」自动分配，详见 §7.1）。工具栏「裁判调整」按钮可打开对话框，按「年级组 / 性别 / 赛次 / 组次」逐组勾选裁判（裁判池带专长提示），保存后立即生效，并写入审计日志 `ARRANGE_REFEREE_ADJUST`；再次「执行编排」会按「组次裁判数量」自动重排并覆盖手工调整。
 
 **裁判编排开关** 🧑‍⚖️：可在「设置 → 编排规则 → 裁判编排」一键**启用/关闭裁判编排**（配置键 `arrange.referee_enabled`，默认**开启**）。关闭后编排**照常进行但不分配裁判**（项目「组次裁判数量」被忽略，并清理该切片旧分配）；**裁判池为空时同样自动跳过**，绝不阻断分组/分道等其它编排。编排页在关闭状态会显示「🧑‍⚖️ 裁判编排已关闭」提示。接口：`GET/PUT /api/arrange/referee-arrange-enabled`。
@@ -838,7 +858,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 
 **项目关键字段**：`concurrency`（项目内并发人数：径赛留空=按道次数、田赛默认 1）、`isTrack`（是否径赛）、`laneCount`（道次）、`isTeam`/`teamSize`（团体）、`gradeGroup`（年级组）、`gender`（性别组）、`maxDurationMinutes`/`intervalMinutes`（时长与间隔）、`sortOrder`（排序号，可经 Excel「顺序号」列批量导入）、`bundleGroup`（并行捆绑组字母，可经 Excel「并行捆绑组」列批量导入）、`refereesPerGroup`（组次裁判数量：每个组次所需裁判人数，智能编排时按此数自动分配裁判；留空/0=不安排裁判）、`drawLots`（抽签：组内道次随机分配）、`defaultVenue`/`defaultVenueCode`（默认场地/场地编码）、`scoringType`/`scoringRules`（计分）。
 
-**项目字典 JSON 往返**：`export/json` 输出**全部字段 + `defaults` 默认值块**（`eventType/isTrack/laneCount/concurrency/groupSize/refereesPerGroup/drawLots/maxDurationMinutes/intervalMinutes/needHeats/maxPerHeat/advanceCount/scoringType/sortOrder/enabled` 等），既可用于**备份/跨机迁移**，也可**导出→编辑→导入**做批量维护。`import/json` 接受完整导出结构或裸数组，按 `code` 判定：**已存在→仅覆盖 JSON 中出现的字段（安全 PATCH 语义）；不存在→新建（缺省字段用默认值）**，逐条独立、单条失败不影响其余。Excel 布局列同步扩展了「组次裁判数量 / 抽签」两列，保持 Excel 与 JSON 口径一致。
+**项目字典 JSON 往返**：`export/json` 输出**全部字段 + `defaults` 默认值块**（`eventType/isTrack/laneCount/concurrency/groupSize/refereesPerGroup/drawLots/maxDurationMinutes/intervalMinutes/needHeats/maxPerHeat/advanceCount/rankOrder/advancePercent/scoringType/sortOrder/enabled` 等），既可用于**备份/跨机迁移**，也可**导出→编辑→导入**做批量维护。`import/json` 接受完整导出结构或裸数组，按 `code` 判定：**已存在→仅覆盖 JSON 中出现的字段（安全 PATCH 语义）；不存在→新建（缺省字段用默认值）**，逐条独立、单条失败不影响其余。Excel 布局列同步扩展了「组次裁判数量 / 抽签」两列，保持 Excel 与 JSON 口径一致。
 
 ---
 
@@ -901,7 +921,7 @@ multipart 表单，参数名统一为 `file`，单文件/单请求上限 **50MB*
 | POST | `/api/arrange/events/{eventId}/rollback` | Path eventId | T/SA | 回滚编排 |
 | POST | `/api/arrange/events/{eventId}/preliminary` | Path eventId, Body `{grade, gender}` | T/SA | 生成预赛编排 |
 | POST | `/api/arrange/events/{eventId}/prelim-results` | Body `{grade, gender, items[]}` | T/SA | 录入预赛成绩 |
-| POST | `/api/arrange/events/{eventId}/qualify` | Body `{grade, gender, advanceCount}` | T/SA | 预赛淘汰「立即计算」并生成决赛 |
+| POST | `/api/arrange/events/{eventId}/qualify` | Body `{grade, gender, advanceCount}` | T/SA | 预赛淘汰「立即计算」并生成决赛；响应回显 `quotaSource/quotaSourceText/rankOrder/rankOrderText`（名额到底按人数还是百分比生效） |
 | GET | `/api/arrange/events/{eventId}/qualifiers` | Path eventId, Query grade/gender | S/CT/T/SA | 查看晋级名单 |
 | **POST** | **`/api/arrange/events/{eventId}/rearrange`** | Body `{grade, gender, round}`（auto→null） | T/SA | **再次排道**：按报名实际性别逐组调 arrange 重新编排（成绩录入后调整道次/分组） |
 | **GET** | **`/api/arrange/events/{eventId}/verify`** | Path eventId | S/CT/T/SA | **编排自检（对抗式校验）：`{valid, violations[], violationCount, checkedHeats}`** |

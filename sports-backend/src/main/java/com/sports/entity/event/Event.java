@@ -245,6 +245,40 @@ public class Event {
     @Builder.Default
     private Integer advanceCount = 8;
 
+    /**
+     * 排名顺序（1 = 从大到小，0 = 从小到大）。口径见 {@link com.sports.common.util.QualifyPolicy}。
+     *
+     * <p>径赛是时间（越小越好）→ 0；田赛是距离/高度（越大越好）→ 1。
+     * 默认 0 是<b>为了与历史行为一致</b>：加字段不能悄悄改写已有项目的晋级名单。</p>
+     *
+     * <p>⚠️ <b>只进入筛选链</b>（预赛淘汰晋级、组内名次），<b>不进入编排</b>——
+     * 编排不读本字段，改它不会影响赛程与道次。</p>
+     */
+    @Column
+    @Builder.Default
+    private Integer rankOrder = 0;
+
+    /**
+     * 筛选后剩下的百分比（如 30 = 前 30% 晋级），与 {@link #advanceCount} 二选一。
+     *
+     * <p>两者都配时<b>百分比优先</b>——因为 advanceCount 带默认值 8，若人数优先，
+     * 新填的百分比会被默认值悄悄顶掉。优先级与折算法见
+     * {@link com.sports.common.util.QualifyPolicy#resolveQuota}。</p>
+     *
+     * <p>⚠️ 同 {@link #rankOrder}：只进筛选链，不进编排。</p>
+     */
+    @Column
+    private Double advancePercent;
+
+    /**
+     * 已审核报名人数（<b>派生值，不入库</b>）：供前端在「筛选后百分比 ↔ 筛选后人数」双向折算时
+     * 选基数——实际报名人数 &lt; 最大报名人数时，两种基数算出的名额不同，必须让用户看得见并可选。
+     *
+     * <p>由 {@code EventService.list} 用一次分组查询回填；单条 getById 不回填（列表页才有必要）。</p>
+     */
+    @Transient
+    private Long approvedCount;
+
     @Column(length = 20)
     @Builder.Default
     private String scoringType = "global";

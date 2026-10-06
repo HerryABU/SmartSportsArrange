@@ -29,6 +29,16 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
     @Query("SELECT COUNT(r) FROM Registration r WHERE r.event.id = :eventId AND r.status = 'approved'")
     long countApprovedByEventId(@Param("eventId") Long eventId);
 
+    /**
+     * 各项目的「已审核报名」人数 —— 一次分组查询取回，供项目列表回填
+     * （前端「百分比 ↔ 人数」双向折算要选基数：最大报名人数 or 实际报名人数）。
+     *
+     * <p>刻意用分组而不是逐项目 countApprovedByEventId：后者是 N 次查询，列表一页就有几十个项目。
+     * 返回 {@code Object[]{eventId, count}}。</p>
+     */
+    @Query("SELECT r.event.id, COUNT(r) FROM Registration r WHERE r.status = 'approved' GROUP BY r.event.id")
+    List<Object[]> countApprovedGroupByEvent();
+
     @Query("SELECT COUNT(r) FROM Registration r WHERE r.athlete.classInfo.id = :classId AND r.event.id = :eventId AND r.status = 'approved'")
     long countByClassAndEvent(@Param("classId") Long classId, @Param("eventId") Long eventId);
 

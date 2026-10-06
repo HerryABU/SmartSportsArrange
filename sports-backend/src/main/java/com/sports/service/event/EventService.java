@@ -3,7 +3,9 @@ package com.sports.service.event;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sports.entity.event.Event;
+import com.sports.common.util.QualifyPolicy;
 import com.sports.repository.event.EventRepository;
+import com.sports.repository.registration.RegistrationRepository;
 import com.sports.service.excel.ExcelService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,11 @@ public class EventService {
 
     private final EventRepository eventRepository;
     private final ExcelService excelService;
+    /**
+     * 报名仓储：只用于两件事——① 列表回填「已审核报名人数」（前端折算基数要显示实际人数）；
+     * ② 双向折算时按所选基数（实际报名人数）换算。都不改报名本身。
+     */
+    private final RegistrationRepository registrationRepository;
 
     /** 仅用于「部分更新」的字段合并；忽略未知属性，避免前端多传键导致 400 */
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -39,18 +46,45 @@ public class EventService {
     /** 查询所有启用的项目 */
     @Transactional(readOnly = true)
     public List<Event> list() {
-        return eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
+        return fillApprovedCounts(eventRepository.findByIsEnabledTrueOrderBySortOrderAsc());
     }
 
     /** 查询启用的项目，支持筛选 */
     @Transactional(readOnly = true)
     public List<Event> list(String grade, String gender, String eventType) {
         List<Event> all = eventRepository.findByIsEnabledTrueOrderBySortOrderAsc();
-        return all.stream()
+        List<Event> filtered = all.stream()
                 .filter(e -> isGradeVisible(e.getGradeGroup(), grade))
                 .filter(e -> gender == null || gender.isBlank() || gender.equals(e.getGenderLimit()))
                 .filter(e -> eventType == null || eventType.isBlank() || eventType.equals(e.getCategory()))
                 .toList();
+        return fillApprovedCounts(filtered);
+    }
+
+    /**
+     * 回填「已审核报名人数」（{@code Event.approvedCount}，派生值不入库）。
+     *
+     * <p><b>为什么要在项目列表里带上它：</b>「筛选后百分比 ↔ 筛选后人数」是双向折算，比例转人数必须
+     * 有分母。分母有两种——<b>最大报名人数</b>（配置上限）与<b>实际报名人数</b>；两者不等时算出的名额
+     * 不同。用户口径是「实际 = 最大则一样；实际 &lt; 最大时由用户选择」，所以两个数都必须摆在表里。</p>
+     *
+     * <p>用一次分组查询而不是逐项目 count：列表一页就有几十个项目。</p>
+     */
+    private List<Event> fillApprovedCounts(List<Event> events) {
+        if (events == null || events.isEmpty()) {
+            return events;
+        }
+        Map<Long, Long> counts = new HashMap<>();
+        for (Object[] row : registrationRepository.countApprovedGroupByEvent()) {
+            if (row != null && row.length >= 2 && row[0] != null) {
+                counts.put(((Number) row[0]).longValue(),
+                        row[1] == null ? 0L : ((Number) row[1]).longValue());
+            }
+        }
+        for (Event e : events) {
+            e.setApprovedCount(counts.getOrDefault(e.getId(), 0L));
+        }
+        return events;
     }
 
     /**
@@ -131,17 +165,71 @@ public class EventService {
         patch.remove("createdAt");
         patch.remove("updatedAt");
         patch.remove("deletedAt");
+        // qualifyBaseMode 只是本次折算的基数选择，不是实体字段 → 先摘掉再合并，避免被当成未知属性
+        patch.remove("qualifyBaseMode");
+        boolean hasCount = patch.containsKey("advanceCount");
+        boolean hasPercent = patch.containsKey("advancePercent");
         try {
             objectMapper.updateValue(existing, patch);
         } catch (Exception e) {
             throw new IllegalArgumentException("更新参数解析失败: " + e.getMessage(), e);
         }
+        // 双向折算放在合并之后：同一次请求里若还改了「最大报名人数」，用的就是新上限
+        applyQualifyPairSync(existing, body, hasCount, hasPercent);
 
         syncDerivedFields(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Event saved = eventRepository.save(existing);
         log.info("更新项目成功: {}", saved.getName());
         return saved;
+    }
+
+    /**
+     * 「筛选后百分比 ↔ 筛选后人数」双向补齐：请求里<b>只填了其中一个</b>时，另一个按所选基数算出来。
+     *
+     * <p>只在「恰好填了一个」时补。两个都填就以用户为准——用户可能有意让它们不等
+     * （例如按最大报名人数折算显示、但真实晋级按实际人数）。</p>
+     *
+     * <p>基数的两种取值（用户口径：「实际=最大则一样；实际&lt;最大时让用户选择」）：</p>
+     * <ul>
+     *   <li>{@code qualifyBaseMode=max}（默认）→ 用「最大报名人数」，配置期就能算；</li>
+     *   <li>{@code qualifyBaseMode=actual} → 用该项目的「已审核报名人数」；为 0 时如实退回最大值，
+     *       绝不静默用一个 0 当分母算出 0 人。</li>
+     * </ul>
+     *
+     * <p>换算逻辑唯一实现在 {@link QualifyPolicy#convert}——前后端与批量修改共用同一套取整规则，
+     * 否则同一项目会出现三个不同的名额。</p>
+     */
+    private void applyQualifyPairSync(Event e, Map<String, Object> body, boolean hasCount, boolean hasPercent) {
+        if (hasCount == hasPercent) {
+            return;   // 都没填（不涉及）或都填了（以用户为准）→ 不补
+        }
+        boolean byActual = "actual".equalsIgnoreCase(String.valueOf(body.get("qualifyBaseMode")));
+        int base = 0;
+        if (byActual && e.getId() != null) {
+            base = (int) registrationRepository.countApprovedByEventId(e.getId());
+        }
+        String baseLabel = "实际报名";
+        if (base <= 0) {
+            base = e.getMaxParticipants() == null ? 0 : e.getMaxParticipants();
+            baseLabel = "最大报名";
+        }
+        if (base <= 0) {
+            // 两个基数都不可用（未报名且未设上限）→ 不猜：留空由用户自己填，前端会显示"无法折算"
+            log.info("筛选口径双向折算跳过（无可用的换算基数）: eventId={}, maxParticipants={}",
+                    e.getId(), e.getMaxParticipants());
+            return;
+        }
+        QualifyPolicy.Pair pair = QualifyPolicy.convert(base,
+                e.getAdvanceCount(), e.getAdvancePercent(),
+                hasCount ? QualifyPolicy.Edited.COUNT : QualifyPolicy.Edited.PERCENT);
+        if (hasCount) {
+            e.setAdvancePercent(pair.percent());
+        } else {
+            e.setAdvanceCount(pair.count());
+        }
+        log.info("筛选口径双向折算: eventId={}, 基数={}({}人), 筛选后人数={}, 筛选后百分比={}",
+                e.getId(), baseLabel, base, e.getAdvanceCount(), e.getAdvancePercent());
     }
 
     /** 启用/禁用项目 */

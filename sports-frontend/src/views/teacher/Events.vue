@@ -101,6 +101,16 @@
           <el-option label="径赛" value="径赛" />
           <el-option label="田赛" value="田赛" />
         </el-select>
+        <!-- 「筛选后百分比 ↔ 人数」双向折算的基数：实际 = 最大则两种一样；
+             实际 < 最大报名人数时两种基数算出的名额不同，所以由用户选，并把所用基数显示在表里。 -->
+        <el-select
+          v-model="qualifyBaseMode"
+          style="width: 210px"
+          title="筛选后百分比折算时用的分母"
+        >
+          <el-option label="折算基数：最大报名人数" value="max" />
+          <el-option label="折算基数：实际报名人数" value="actual" />
+        </el-select>
       </div>
     </div>
 
@@ -163,6 +173,35 @@
         <template #default="{ row }">
           <span v-if="row.maxParticipants && Number(row.maxParticipants) > 0">{{ row.maxParticipants }}</span>
           <span v-else style="color: var(--el-text-color-secondary)">不限</span>
+        </template>
+      </el-table-column>
+      <!-- 筛选链字段：只影响「预赛淘汰晋级 / 组内名次」，与编排、赛程无关 -->
+      <el-table-column label="排名顺序" width="120" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" :type="row.rankOrder === 1 ? 'warning' : 'info'" effect="plain">
+            {{ row.rankOrder === 1 ? '从大到小' : '从小到大' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="筛选后人数" width="110" align="center">
+        <template #default="{ row }">
+          <span v-if="row.advanceCount">{{ row.advanceCount }}</span>
+          <span v-else style="color: var(--el-text-color-secondary)">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="筛选后百分比" width="150" align="center">
+        <template #default="{ row }">
+          <template v-if="row.advancePercent">
+            <span>{{ row.advancePercent }}%</span>
+            <!-- 把「折算用的分母」摆在表象里：实际报名 < 最大报名时两种基数结果不同，
+                 不显示基数就没法解释「表里算出的名额」和「筛选时真正用的名额」为何不一致。 -->
+            <div :title="resolveQualifyBase(row).label"
+                 style="font-size: 11px; color: var(--el-text-color-secondary)">
+              基数 {{ resolveQualifyBase(row).base || '—' }} 人<template
+                v-if="row.approvedCount > 0 && row.maxParticipants > 0 && row.approvedCount < row.maxParticipants"> ⚠️</template>
+            </div>
+          </template>
+          <span v-else style="color: var(--el-text-color-secondary)">—</span>
         </template>
       </el-table-column>
       <el-table-column label="场地" min-width="170">
@@ -344,15 +383,41 @@
               inactive-text="直接决赛" />
             <div class="form-tip">需要预赛的项目：编排页先「生成预赛 → 录预赛成绩 → 立即计算晋级」，系统自动排出决赛</div>
           </el-form-item>
-          <el-form-item label="晋级人数" v-if="formData.needHeats">
-            <el-input-number v-model="formData.advanceCount" :min="1" :max="99" style="width: 100%" />
-            <div class="form-tip">预赛结束后全场取前 N 名晋级决赛</div>
+          <el-form-item label="排名顺序" v-if="formData.needHeats">
+            <el-select v-model="formData.rankOrder" style="width: 100%">
+              <el-option label="从小到大（成绩越小越靠前 · 径赛时间）" :value="0" />
+              <el-option label="从大到小（成绩越大越靠前 · 田赛距离/高度）" :value="1" />
+            </el-select>
+            <div class="form-tip">筛选链口径：决定按成绩排名时哪一端靠前。<b>田赛必须选「从大到小」</b>，
+              否则会把成绩最差的先晋级。只影响预赛淘汰与组内名次，<b>不影响编排与赛程</b>。</div>
+          </el-form-item>
+          <el-form-item label="筛选后人数" v-if="formData.needHeats">
+            <el-input-number v-model="formData.advanceCount" :min="1" :max="99" :clearable="true"
+              value-on-clear="null" placeholder="留空 = 按百分比" style="width: 100%"
+              @change="onFormCountChange" />
+            <div class="form-tip">按<b>人数</b>筛选：全场取前 N 名晋级决赛。
+              改这里会自动算出下面的百分比（基数：{{ formQualifyBaseLabel() }}）</div>
+          </el-form-item>
+          <el-form-item label="筛选后百分比" v-if="formData.needHeats">
+            <el-input-number v-model="formData.advancePercent" :min="0.1" :max="100" :step="0.1" :clearable="true"
+              value-on-clear="null" placeholder="留空 = 按人数" style="width: 100%"
+              @change="onFormPercentChange" />
+            <div class="form-tip">按<b>百分比</b>筛选：取前 P%（向上取整、至少 1 人、至多全员）。
+              改这里会自动算出上面的人数；两者都填时<b>百分比优先</b>（人数带默认值 8，否则会被它悄悄顶掉）</div>
           </el-form-item>
           <el-form-item label="每组上限">
             <el-input-number v-model="formData.maxPerHeat" :min="1" :max="12" style="width: 100%" />
             <div class="form-tip">单组最多人数（一般等于道次数）</div>
           </el-form-item>
         </template>
+        <el-form-item label="排名顺序" v-if="formData.eventType !== '径赛'">
+          <el-select v-model="formData.rankOrder" style="width: 100%">
+            <el-option label="从大到小（成绩越大越靠前 · 田赛距离/高度）" :value="1" />
+            <el-option label="从小到大（成绩越小越靠前）" :value="0" />
+          </el-select>
+          <div class="form-tip">筛选链口径：田赛成绩是距离/高度，通常选「从大到小」。
+            只影响成绩排名与组内名次，<b>不影响编排与赛程</b>。</div>
+        </el-form-item>
         <el-form-item label="团体每队人数" prop="teamSize">
           <el-input-number
             v-model="formData.teamSize"
@@ -508,10 +573,30 @@
             <el-switch v-model="batchAddForm.needHeats" inline-prompt active-text="预赛→决赛"
               inactive-text="直接决赛" />
             <template v-if="batchAddForm.needHeats">
-              <div class="form-tip" style="margin-top:4px">晋级人数
-                <el-input-number v-model="batchAddForm.advanceCount" :min="1" :max="99" size="small" style="width:120px" />
+              <div class="form-tip" style="margin-top:4px">筛选后人数
+                <el-input-number v-model="batchAddForm.advanceCount" :min="1" :max="99" size="small"
+                  :clearable="true" value-on-clear="null" style="width:130px"
+                  @change="onBatchAddCountChange" />
+                <span style="margin-left:8px">或百分比</span>
+                <el-input-number v-model="batchAddForm.advancePercent" :min="0.1" :max="100" :step="0.1"
+                  size="small" :clearable="true" value-on-clear="null" style="width:120px;margin-left:6px"
+                  @change="onBatchAddPercentChange" />
+                <span style="margin-left:4px">%</span>
               </div>
+              <div class="form-tip">改一个另一个自动算出（基数：最大报名人数，新增时还没有报名数）。百分比向上取整、至少 1 人</div>
             </template>
+          </el-form-item>
+          <el-form-item v-if="batchAddForm.eventType === '径赛'" label="排名顺序">
+            <el-select v-model="batchAddForm.rankOrder" size="small" style="width: 100%">
+              <el-option label="从小到大（成绩越小越靠前 · 径赛时间）" :value="0" />
+              <el-option label="从大到小（成绩越大越靠前）" :value="1" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="batchAddForm.eventType === '田赛'" label="排名顺序">
+            <el-select v-model="batchAddForm.rankOrder" size="small" style="width: 100%">
+              <el-option label="从大到小（成绩越大越靠前 · 田赛距离/高度）" :value="1" />
+              <el-option label="从小到大（成绩越小越靠前）" :value="0" />
+            </el-select>
           </el-form-item>
           <el-form-item label="最大报名人数">
             <el-input-number v-model="batchAddForm.maxParticipants" :min="1" :max="999" style="width: 100%" />
@@ -569,6 +654,25 @@
             <el-option label="女子组" value="女子组" />
             <el-option label="混合组" value="混合组" />
           </el-select>
+        </el-form-item>
+        <!-- 筛选链字段（只影响预赛淘汰晋级与组内名次，不影响编排与赛程） -->
+        <el-form-item label="排名顺序">
+          <el-select v-model="batchPatch.rankOrder" placeholder="不修改" clearable style="width: 100%">
+            <el-option label="从小到大（成绩越小越靠前 · 径赛时间）" :value="0" />
+            <el-option label="从大到小（成绩越大越靠前 · 田赛距离/高度）" :value="1" />
+          </el-select>
+          <div class="form-tip">筛选链口径。田赛项目批量改成「从大到小」，否则晋级会取到成绩最差的</div>
+        </el-form-item>
+        <el-form-item label="筛选后人数">
+          <el-input-number v-model="batchPatch.advanceCount" :min="1" :max="99" :clearable="true"
+            value-on-clear="null" placeholder="不修改（按人数）" style="width: 100%" />
+          <div class="form-tip">按人数筛选：取前 N 名晋级</div>
+        </el-form-item>
+        <el-form-item label="筛选后百分比">
+          <el-input-number v-model="batchPatch.advancePercent" :min="0.1" :max="100" :step="0.1" :clearable="true"
+            value-on-clear="null" placeholder="不修改（按百分比）" style="width: 100%" />
+          <div class="form-tip">按百分比筛选：取前 P%。<b>只填一个即可</b>——另一个由后端按每行自己的基数逐行算出
+            （各项目报名数不同，所以不能在界面上算一个通用值）。两个都填时以你填的为准</div>
         </el-form-item>
         <el-form-item label="年级组">
             <el-select v-model="batchPatch.gradeGroup" placeholder="不修改（多选覆盖）" clearable filterable multiple collapse-tags collapse-tags-tooltip style="width: 100%">
@@ -665,6 +769,12 @@ interface EventItem {
   // 预赛淘汰字段（径赛 needHeats=true 时先预赛后晋级决赛）
   needHeats?: boolean
   advanceCount?: number
+  /** 排名顺序（筛选链专用）：1=从大到小，0=从小到大；不进编排 */
+  rankOrder?: number
+  /** 筛选后剩下的百分比（与 advanceCount 二选一，百分比优先）；不进编排 */
+  advancePercent?: number
+  /** 已审核报名人数（后端回填的派生值，不入库）——双向折算选基数时要用 */
+  approvedCount?: number
   maxPerHeat?: number
   /** 组次裁判数量：每个组次(heat/组/轮)需安排的裁判人数；0/空 = 不安排裁判 */
   refereesPerGroup?: number
@@ -761,6 +871,13 @@ const formData = reactive<EventItem>({
   intervalMinutes: undefined,
   needHeats: true,
   advanceCount: 8,
+  /** 排名顺序（筛选链专用）：1 = 从大到小（田赛距离/高度），0 = 从小到大（径赛时间）。
+   *  ⚠️ 只影响「预赛淘汰晋级 / 组内名次」，不影响编排与赛程。 */
+  rankOrder: 0,
+  /** 筛选后剩下的百分比（与 advanceCount 二选一，百分比优先）；不进编排 */
+  advancePercent: undefined,
+  /** 已审核报名人数（服务端回填）——编辑态下按「实际报名人数」折算时的分母 */
+  approvedCount: 0,
   maxPerHeat: 8,
   refereesPerGroup: undefined,
   drawLots: false,
@@ -777,6 +894,76 @@ const formRules: FormRules = {
   gender: [{ required: true, message: '请选择性别组', trigger: 'change' }],
   gradeGroup: [{ required: true, message: '请选择年级组', trigger: 'change' }],
   maxParticipants: [{ required: true, message: '请输入最大报名人数', trigger: 'blur' }],
+}
+
+function onFormCountChange() {
+  syncQualifyPair(formData, 'count', () => resolveQualifyBase(formData).base)
+}
+function onFormPercentChange() {
+  syncQualifyPair(formData, 'percent', () => resolveQualifyBase(formData).base)
+}
+function formQualifyBaseLabel() {
+  return resolveQualifyBase(formData).label
+}
+
+// ==================== 筛选口径：百分比 ↔ 人数 双向折算 ====================
+// 分母（基数）有两种：最大报名人数（配置上限，表内可得）与实际报名人数。
+// 用户口径：「实际 = 最大则一样；实际 < 最大报名人数时，让用户选择」——所以基数可切换，
+// 且在所选基数不可用时如实退回另一个（并把用到的基数显示出来，绝不静默换分母）。
+// 取整规则必须与后端 QualifyPolicy.convert 一致：人数向上取整并夹在 [1, 基数]，百分比保留 1 位小数。
+const qualifyBaseMode = ref<'max' | 'actual'>('max')
+
+/** 解析某行的折算基数；返回基数与一句可显示给用户的说明。 */
+function resolveQualifyBase(row: { maxParticipants?: number | null; approvedCount?: number | null }) {
+  const max = Number(row.maxParticipants) > 0 ? Number(row.maxParticipants) : 0
+  const actual = Number(row.approvedCount) > 0 ? Number(row.approvedCount) : 0
+  if (qualifyBaseMode.value === 'actual' && actual > 0) {
+    return { base: actual, label: `实际报名 ${actual} 人` }
+  }
+  if (max > 0) {
+    const extra = actual > 0 && actual < max ? `（实际仅 ${actual} 人报名，按实际折算结果会不同）` : ''
+    return { base: max, label: `最大报名 ${max} 人${extra}` }
+  }
+  if (actual > 0) {
+    return { base: actual, label: `实际报名 ${actual} 人` }
+  }
+  return { base: 0, label: '无可用基数（未设最大报名人数、也没有已审核报名）' }
+}
+
+/** 人数 → 百分比（保留 1 位小数，夹在 [0.1, 100]）。base<=0 返回 null = 无法折算。 */
+function countToPercent(count: number | null | undefined, base: number): number | null {
+  if (!base || base <= 0) return null
+  const c = Number(count)
+  if (!c || c <= 0) return null
+  const capped = Math.min(c, base)
+  return Math.min(100, Math.max(0.1, Math.round((capped * 1000) / base) / 10))
+}
+
+/** 百分比 → 人数（向上取整，夹在 [1, base]）。与后端同一套规则。 */
+function percentToCount(percent: number | null | undefined, base: number): number | null {
+  if (!base || base <= 0) return null
+  const p = Number(percent)
+  if (!p || p <= 0) return null
+  return Math.max(1, Math.min(base, Math.ceil((base * p) / 100)))
+}
+
+/**
+ * 双向联动：改了其中一个输入框，另一个立即算出。
+ * @param target 承载 advanceCount / advancePercent 的对象（表单或批量新增表单）
+ * @param edited 'count' | 'percent' —— 用户刚编辑的是哪一个
+ * @param baseProvider 取当前基数（表单用表单自己的最大报名人数；批量修改用所选行的最大值）
+ */
+function syncQualifyPair(
+  target: { advanceCount?: number | null; advancePercent?: number | null },
+  edited: 'count' | 'percent',
+  baseProvider: () => number,
+) {
+  const base = baseProvider()
+  if (edited === 'count') {
+    target.advancePercent = countToPercent(target.advanceCount, base)
+  } else {
+    target.advanceCount = percentToCount(target.advancePercent, base)
+  }
 }
 
 // ==================== 导入/导出 ====================
@@ -1006,6 +1193,9 @@ function resetFormData() {
   formData.intervalMinutes = undefined
   formData.needHeats = true
   formData.advanceCount = 8
+  formData.rankOrder = 0
+  formData.advancePercent = undefined
+  formData.approvedCount = 0
   formData.maxPerHeat = 8
   formData.refereesPerGroup = undefined
   formData.drawLots = false
@@ -1026,6 +1216,10 @@ function buildPayload() {
     teamSize: formData.teamSize ?? 0,
     needHeats: isTrack ? (formData.needHeats ?? true) : false,
     advanceCount: isTrack ? (formData.advanceCount ?? 8) : null,
+    // 筛选链：排名顺序对径赛/田赛都生效（田赛不预赛，但组内名次与成绩排名仍要方向）；
+    // 百分比与人数同属预赛淘汰口径，非径赛一并置空。
+    rankOrder: formData.rankOrder === 1 ? 1 : 0,
+    advancePercent: isTrack ? (formData.advancePercent ?? null) : null,
     maxPerHeat: isTrack ? (formData.maxPerHeat ?? formData.laneCount ?? 8) : 1,
     refereesPerGroup: formData.refereesPerGroup ?? 0,
     drawLots: formData.drawLots === true,
@@ -1061,6 +1255,11 @@ function fillFormFromRow(row: EventItem) {
   formData.intervalMinutes = row.intervalMinutes ?? undefined
   formData.needHeats = row.needHeats ?? true
   formData.advanceCount = row.advanceCount ?? 8
+  // 筛选链字段：服务端没值时的兜底必须与后端一致（排名顺序缺省=从小到大；百分比缺省=不启用），
+  // 否则表单会显示一个与真实生效值不同的默认，用户以为改了其实没改。
+  formData.rankOrder = row.rankOrder === 1 ? 1 : 0
+  formData.advancePercent = row.advancePercent ?? undefined
+  formData.approvedCount = row.approvedCount ?? 0
   formData.maxPerHeat = row.maxPerHeat ?? (isTrack ? (row.laneCount ?? 8) : 1)
   formData.refereesPerGroup = row.refereesPerGroup ?? undefined
   formData.drawLots = row.drawLots === true
@@ -1185,26 +1384,27 @@ const batchAddForm = reactive({
   teamSize: 0,
   needHeats: true,
   advanceCount: 8,
+  /** 筛选链：排名顺序（1=从大到小 / 0=从小到大）与筛选后百分比；两者都只进筛选链 */
+  rankOrder: 0,
+  advancePercent: null as number | null,
   maxParticipants: 1,
   defaultVenue: '',
   defaultVenueCode: '',
 })
 
-const batchPatch = reactive<Record<string, any>>({
-  eventType: undefined,
-  gender: undefined,
-  gradeGroup: [] as string[],
-  laneCount: null,
-  teamSize: null,
-  concurrency: undefined,
-  groupSize: undefined,
-  bundleGroup: undefined,
-  refereesPerGroup: undefined,
-  drawLots: undefined,
-  defaultVenue: undefined,
-  defaultVenueCode: undefined,
-  enabled: undefined,
-})
+/** 批量修改的空白载荷：留空(null/undefined) = 不修改该属性。集中一处，避免「打开时重置」与
+ *  「关闭时重置」两份清单各写一遍、改一处漏一处（此前 `@closed` 挂的 resetBatchEdit 根本没定义）。 */
+function emptyBatchPatch(): Record<string, any> {
+  return {
+    eventType: undefined, gender: undefined, gradeGroup: [] as string[],
+    laneCount: null, teamSize: null, concurrency: undefined, groupSize: undefined, bundleGroup: undefined,
+    refereesPerGroup: undefined, drawLots: undefined,
+    rankOrder: null, advanceCount: null, advancePercent: null,
+    defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
+  }
+}
+
+const batchPatch = reactive<Record<string, any>>(emptyBatchPatch())
 
 function onSelectionChange(rows: EventItem[]) {
   multipleSelection.value = rows
@@ -1231,12 +1431,26 @@ function removePreviewItem(i: number) {
   batchAddNames.value = batchItems.value.map(x => (x.code ? `${x.name},${x.code}` : x.name)).join('\n')
 }
 
-function openBatchAdd() {
+function onBatchAddCountChange() {
+  syncQualifyPair(batchAddForm, 'count', () => Number(batchAddForm.maxParticipants) || 0)
+}
+function onBatchAddPercentChange() {
+  syncQualifyPair(batchAddForm, 'percent', () => Number(batchAddForm.maxParticipants) || 0)
+}
+
+/** 批量新增表单的复位：与 openBatchAdd 共用一份清单（原先 `@closed` 挂的 resetBatchAdd 根本没定义，
+ *  靠 openBatchAdd 里的 Object.assign 兜住，改动时极易漏一处）。 */
+function resetBatchAdd() {
   Object.assign(batchAddForm, {
     eventType: '径赛', gender: '男子组', gradeGroup: [] as string[], teamSize: 0,
-    needHeats: true, advanceCount: 8, maxParticipants: 1, defaultVenue: '', defaultVenueCode: '',
+    needHeats: true, advanceCount: 8, rankOrder: 0, advancePercent: null,
+    maxParticipants: 1, defaultVenue: '', defaultVenueCode: '',
   })
   batchAddNames.value = ''
+}
+
+function openBatchAdd() {
+  resetBatchAdd()
   batchAddVisible.value = true
 }
 
@@ -1254,6 +1468,9 @@ function buildBatchItem(it: { name: string; code?: string }, idx: number) {
     teamSize: batchAddForm.teamSize || 0,
     needHeats,
     advanceCount: needHeats ? batchAddForm.advanceCount : null,
+    // 筛选链：排名顺序对径赛/田赛都生效；百分比属预赛淘汰口径，非预赛项目置空。
+    rankOrder: batchAddForm.rankOrder === 1 ? 1 : 0,
+    advancePercent: needHeats ? (batchAddForm.advancePercent ?? null) : null,
     maxPerHeat: isTrack ? 8 : 1,
     concurrency: isTrack ? 8 : 1,
     groupSize: isTrack ? 8 : 1,
@@ -1288,12 +1505,12 @@ async function submitBatchAdd() {
   }
 }
 
+function resetBatchEdit() {
+  Object.assign(batchPatch, emptyBatchPatch())
+}
+
 function openBatchEdit() {
-  Object.assign(batchPatch, {
-    eventType: undefined, gender: undefined, gradeGroup: [] as string[],
-    laneCount: null, teamSize: null, concurrency: undefined, groupSize: undefined, bundleGroup: undefined,
-    refereesPerGroup: undefined, drawLots: undefined, defaultVenue: undefined, defaultVenueCode: undefined, enabled: undefined,
-  })
+  resetBatchEdit()
   batchEditVisible.value = true
 }
 
@@ -1327,6 +1544,19 @@ function buildPatchPayload(): Record<string, any> {
   }
   if (batchPatch.drawLots !== undefined && batchPatch.drawLots !== null) {
     p.drawLots = batchPatch.drawLots === true
+  }
+  // 筛选链字段（只影响预赛淘汰晋级与组内名次，不影响编排与赛程）
+  if (batchPatch.rankOrder !== undefined && batchPatch.rankOrder !== null) {
+    p.rankOrder = batchPatch.rankOrder === 1 ? 1 : 0
+  }
+  const hasCount = batchPatch.advanceCount !== undefined && batchPatch.advanceCount !== null
+  const hasPercent = batchPatch.advancePercent !== undefined && batchPatch.advancePercent !== null
+  if (hasCount) p.advanceCount = batchPatch.advanceCount
+  if (hasPercent) p.advancePercent = batchPatch.advancePercent
+  // 只填一个时，把「基数」一并交给后端，由它按【每行自己的】基数算出另一个：
+  // 各项目的报名数与最大报名人数都不同，前端算不出一个能套用全部行的通用值。
+  if (hasCount !== hasPercent) {
+    p.qualifyBaseMode = qualifyBaseMode.value
   }
   if (batchPatch.defaultVenue && String(batchPatch.defaultVenue).trim()) {
     p.defaultVenue = String(batchPatch.defaultVenue).trim()

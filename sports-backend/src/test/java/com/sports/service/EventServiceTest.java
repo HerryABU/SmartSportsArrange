@@ -40,6 +40,8 @@ class EventServiceTest {
 
     @Mock private EventRepository eventRepository;
     @Mock private ExcelService excelService;
+    /** 列表回填「已审核报名人数」与双向折算的基数查询要用（缺 @Mock 会注入 null） */
+    @Mock private com.sports.repository.registration.RegistrationRepository registrationRepository;
 
     @InjectMocks private EventService eventService;
 
