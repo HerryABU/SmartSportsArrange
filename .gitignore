@@ -96,3 +96,7 @@ sports-ai/models/*.onnx
 # 分发方式见 docs/MODELS.md：模型清单 + sha256 校验 + 一键同步脚本。
 *.onnx
 models-dist/
+
+# 发布包：只版本化启动程序与说明文本；大件（jar / 便携 JDK / 模型）不进库
+release/**/jdk-*/
+release/**/models/

@@ -1,9 +1,13 @@
-param([int]$Port = -1, [string]$Host = "")
+# ⚠️ 参数名不能叫 $Host：它是 PowerShell 的只读内置变量，`param([string]$Host = "")`
+#    连「默认值绑定」都会抛「无法覆盖变量 Host，因为它是只读变量或常量」，
+#    于是整段脚本体从不执行 —— 表现为「双击/运行 start.ps1 毫无反应、也不报错」。
+#    改用 $BindHost，并用 [Alias("Host")] 保住 `.\start.ps1 -Port 8899 -Host ::` 的既有用法。
+param([int]$Port = -1, [Alias("Host")][string]$BindHost = "")
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
 $root = $PSScriptRoot
-$jar = Join-Path $root "sports-2.8.5.jar"
+$jar = Join-Path $root "sports-2.8.7.jar"
 
 if (-not (Test-Path $jar)) {
   Write-Host "[ERROR] JAR not found, run .\build.ps1 first" -ForegroundColor Red
@@ -29,10 +33,10 @@ if ($Port -lt 0) { $Port = 8080 }
 # 兜底 8080 交给 jar 内部优先级链（OS 环境变量 > .env SERVER_PORT > 默认），否则会压住 .env。
 $extra = @()
 if ($Port -gt 0) { $extra += @("--app.port=$Port") }
-if ($Host -ne "") { $extra += @("--app.host=$Host") }
+if ($BindHost -ne "") { $extra += @("--app.host=$BindHost") }
 
 if ($Port -gt 0) {
-  Write-Host "=== Starting on port $Port ($(if ($Host -ne '') { "host $Host" } else { 'all interfaces' })) ===" -ForegroundColor Green
+  Write-Host "=== Starting on port $Port ($(if ($BindHost -ne '') { "host $BindHost" } else { 'all interfaces' })) ===" -ForegroundColor Green
   Write-Host "    Open: http://localhost:$Port" -ForegroundColor Cyan
 } else {
   Write-Host "=== Port: following OS env / .env SERVER_PORT (default 8080) ===" -ForegroundColor Green

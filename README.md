@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.8.5
+> Sports Meet Intelligent Arrangement System v2.8.7
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -67,7 +67,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.8.5.jar
+java -jar sports-2.8.7.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -1484,27 +1484,27 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.8.5.jar
+java -jar sports-2.8.7.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.8.5.jar --app.port=8899 --app.host=::
+java -jar sports-2.8.7.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.8.5.jar --server.port=9090
+java -jar sports-2.8.7.jar --server.port=9090
 
 # 内置帮助页（端口 / 网口 / 数据库选型 / .env 说明）：只打印并退出，不启动 Web 服务
-java -jar sports-2.8.5.jar -h        # 亦可 --help / -? / /?
+java -jar sports-2.8.7.jar -h        # 亦可 --help / -? / /?
 
 # 后台运行
-nohup java -jar sports-2.8.5.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.8.7.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.8.5.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.5.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.8.7.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.7.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -1628,6 +1628,13 @@ netstat -ano | findstr :8080                                                    
 
 **训练侧与部署侧彻底解耦**：训练用 Python（根目录独立目录 `sports-ai/`，**不在 `sports-backend` 内**，不参与任何后端构建），交付用 ONNX，推理在 JVM 内由 onnxruntime 完成——**生产环境不依赖 Python 解释器**。
 
+> 📘 **训练方法、推理链路（一次编排请求怎么走到模型）、以及模型文件的完整流转，
+> 见 [`sports-ai/README.md`](sports-ai/README.md) 的三节**：
+> ① 训练方法（合成场景 + 贪心标签、主 MoE 如何从 19 专家长成 34 专家、续训与预算守卫）；
+> ② 推理链路（三档梯度 → 5 个模型介入点 → 「模型只改顺序、不直接改解」的约束 → 失败即回退）；
+> ③ 模型文件流转（训练 → 导出 → 刷清单 → 部署 → 打进 jar → 运行时加载，以及外置模型目录的用法）。
+> 逐模型的契约与升级边界见 [`docs/MODELS.md`](docs/MODELS.md)。
+
 ```
 sports-ai/（Python 3.12 + venv）            sports-backend/（Java 21 + Spring Boot）
   data/  合成数据与特征契约                    com.sports.schedule.ai
@@ -1638,18 +1645,19 @@ sports-ai/（Python 3.12 + venv）            sports-backend/（Java 21 + Spring
   plan/ 规划层（启发式+神经搜索+预测+回退）        ├─ LaneAdvisorService     道次 AI
   solve/ 拆批 + 分批装箱 + 可解性                 ├─ SuperMoeService       统一超级模型
   tournament/ 球赛赛制 + 适配层                   ├─ AiController  /api/ai/status
-  models/*.onnx ──导出──► src/main/resources/models/ ──打包──► jar（单包交付）
+  models/*.onnx ──导出──► src/main/resources/models/ ──打包──► jar（默认单包交付；也可用
+                                                              --sports.schedule.ai.model-dir 指向 jar 外目录）
                                                 com.sports.schedule.plan
                                                  ├─ PredictivePlanner     规划层（搜索 + 3R 恢复）
                                                  ├─ PlanCost              加权代价口径
                                                  └─ PlanAdvice            结构性断裂 → 加容量建议
 ```
 
-### 一、模型清单（随 jar 交付，共 13 个 / ≈69 MB）
+### 一、模型清单（随 jar 交付，共 16 个 / ≈647 MB，其中主 MoE 475 MB）
 
 | 模型 | 文件 | 类型 | 作用 |
 |:--|:--|:--|:--|
-| **统一超级模型（MoE）** | `super_moe.onnx` | GNN + CNN + Diffusion，**异构门控** | **十七类编排能力统一决策**：11 位「任务专家」按**节点**路由（项目/道次/球类/淘汰赛/块完整性/兼项/容量/工期/二次编排/裁判/教师），6 位「能力专家」按**实例（图级）**路由（生成/精修/扩散/派遣/判别）。合并了此前独立服役的 GAN、refiner、diffusion、lane_advisor、forecast 等模型 |
+| **统一超级模型（MoE）** | `super_moe.onnx` | **34 专家 = 19 主干 + 15 个专项 MoE 能力专家**（9 种专家架构轮转 + 两级门控 + 稠密融合 + 主干 8 层） | **19 类编排能力统一决策**，并把其他 15 个专项模型当「能力专家」接进专家池（扩容成本仅 +11%）。当前 val 1.35064 / 122.19M 参数 / 路由熵 0.990（无专家塌缩） |
 | 算法选择器 | `algorithm_selector.onnx` | 残差 MLP | 16 维实例特征 → **硬解** vs **取消报名**路径（标签 = 真实可解性，含团下界）|
 | 冲突簇 GNN | `conflict_gnn.onnx` | 4 层 GNN | 冲突图 → 各单元**着色优先级**，中心冲突簇先着色（构造启发式初始顺序）|
 | 约束满足 GNN | `constraint_gnn.onnx` | 图神经网络 | 约束满足度评估与节点打分（编码器就绪）|
@@ -2113,8 +2121,47 @@ curl -s -H "Authorization: Bearer <token>" http://localhost:8080/api/ai/status
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.5.jar`**（内含前端静态资源 + 13 个 ONNX 模型，约 69 MB），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.7.jar`**（内含前端静态资源 + **16 个 ONNX 模型**：19 类任务的统一编排超级模型 + 15 个专项 MoE；其中 `super_moe.onnx` 约 475 MB，故整包约 500 MB），部署无需额外目录。
+>
+> ⚠️ 模型与代码的**配套关系**由 `sports-ai/models/MANIFEST.json` 固定（逐模型记录 `bytes` + `sha256` + 用途）。
+> 换模型务必重跑 `scripts/finalize_models.py`（导出 → 部署 → 刷清单）并用 `--check` 复核；
+> 该脚本必须用 `sports-ai/venv/Scripts/python.exe` 运行（默认解释器没有 torch/onnx，会静默失败）。
+
+### 发布包（`release/`）：两个版本 + 便携 JDK
+
+`release/` 是**解压即用**的交付目录，目标机器**无需安装 Java**：
+
 ```
+release/
+├─ jdk-21.0.12.1+1/          便携 JDK 21
+├─ sports-2.8.7.jar          嵌入式版：前端 + 16 个 ONNX 都在 jar 内（≈736 MB）
+├─ start.bat / start.ps1     启动程序（优先用随包 JDK）
+├─ 使用说明.txt
+└─ external-models/          外置模型版：自成一包，模型在 jar 外，换模型无需重新打包
+    ├─ jdk-21.0.12.1+1/      自带一份便携 JDK（两个版本可各自单独分发）
+    ├─ sports-2.8.7.jar      （≈147 MB，不含模型）
+    ├─ models/               16 个 ONNX
+    ├─ start.bat / start.ps1 启动时传 --sports.schedule.ai.model-dir=<models 目录>
+    └─ 使用说明.txt
+```
+
+两个版本**代码完全相同**，只差模型来源：嵌入式版用默认 `classpath:/models`（读 jar 内），
+外置模型版由启动程序指定 `sports.schedule.ai.model-dir`（**10 个 AI 服务共用这一个键**）。
+JDK 查找顺序：本目录 → 上级目录 → JAVA_HOME → 系统 PATH。
+
+```powershell
+.\start.ps1                        # 默认端口（跟随 data/app-config.json，兜底 8080）
+.\start.ps1 -Port 8899             # 指定端口
+.\start.ps1 -Port 8899 -Host ::    # 指定绑定地址（-Host 是 -BindHost 的别名）
+```
+
+> ⚠️ `start.ps1` 的参数名不能叫 `$Host` —— 它是 PowerShell 的只读内置变量，
+> `param([string]$Host = "")` 连默认值绑定都会抛错，导致**整段脚本体从不执行**
+> （表现为「运行毫无反应、也不报错」）。故用 `$BindHost` + `[Alias("Host")]` 保住旧写法。
+>
+> ⚠️ 外置模型版启动前会检查 `models/` 与其中的 onnx 数量：目录缺失或一个都没有就**直接报错退出**，
+> 少于 16 个则告警。原因：**缺模型不会让程序启动失败**，而是让对应 AI 能力**静默**退化为规则模式。
+
 
 ---
 
@@ -2130,7 +2177,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.8.5.jar .
+copy sports-backend\target\sports-2.8.7.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -2195,4 +2242,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.8.5 | **API 端点**: 33 Controller / 276 个 | **构建日期**: 2026-10-02
+> **版本**: v2.8.7 | **API 端点**: 33 Controller / 276 个 | **构建日期**: 2026-10-06
