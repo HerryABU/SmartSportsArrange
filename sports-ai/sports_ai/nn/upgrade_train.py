@@ -21,6 +21,7 @@ legacy 调用模式、损失形式），训练循环只写一份。
 from __future__ import annotations
 
 import argparse
+import json
 import inspect
 import os
 import random
@@ -44,6 +45,7 @@ from sports_ai.forecast.dataset import (H_OUT as FC_H_OUT, IN_DIM as FC_IN_DIM,
                                         L_IN as FC_L_IN, build_sequence)
 from sports_ai.data.features import N_FEATURES
 from sports_ai.nn.upgrade import UpgradedMoE
+from sports_ai.nn.forecast_aux import load_with_aux
 
 #: ``ConstraintGnn`` 的节点特征维（模型模块 docstring 写明 ``node_feat[B,N,16]``，
 #: 与 Java 侧 ``ConstraintGnnService`` 的 feed 维度对应）。
@@ -333,7 +335,14 @@ def registry() -> dict:
                                    flat_input=True, loss="ce", out_dim=2,
                                    make_batch="make_dataset",
                                    data_module="sports_ai.train_selector",
-                                   layout="xL", batch_fn=make_selector_batch,
+                                   # ⚠️ layout 必须是 "xm"，**不能**写 "xL"：
+                                   # `make_selector_batch` 返回 (x, mask, None, None, y)，
+                                   # 索引 1 是**掩码**而不是标签。写成 "xL" 会让 prepare_batch
+                                   # 认为掩码缺失、另合成一个全 1 张量，于是 find_target 的
+                                   # 身份排除失效、取到那个全 1 张量 ⇒ **标签恒为 1，模型被训成
+                                   # 常量函数**；而日志上还显示「指标 1.0000」，看起来非常成功。
+                                   # 规则：**layout 只描述输入，标签一律由 find_target 定位**。
+                                   layout="xm", batch_fn=make_selector_batch,
                                    # 实测该数据源基于 generate_scenario 且逐场景 1 样本、
                                    # 场景长度足够 → 三条对齐条件全过，可吃上预测嵌入。
                                    forecast_steps=FC_H_OUT,
@@ -341,7 +350,7 @@ def registry() -> dict:
         "ai": Spec("ai", "sports_ai.models.selector", "AlgorithmSelector", N_FEATURES,
                    pool=True, flat_input=True, loss="ce", out_dim=2,
                    make_batch="make_dataset", data_module="sports_ai.train_selector",
-                   layout="xL", batch_fn=make_selector_batch,
+                   layout="xm", batch_fn=make_selector_batch,
                    onnx_inputs=("features",)),
         # ── 序列型：多步预测（把「时间步」当节点序列，长度固定 L_IN）──
         # ⚠️ 三处必须照抄旧契约，漏一处就是「模型换了但读不出来」：
@@ -549,44 +558,8 @@ def train_one(spec: Spec, args, device) -> str:
             batch = src(args.batch, seed=args.seed + it)
         if spec.batch_fn is not None:
             batch = spec.batch_fn(batch, spec)
-        batch = tuple(b.to(device) if hasattr(b, "to") else b for b in batch)
-        x, mask = batch[0], batch[2]
-        # 严格按登记的 layout 解包（不猜）
-        x = batch[0]
-        pos = 1
-        adj = tmask = None
-        mask = None
-        target = None
-        for ch in spec.layout[1:]:
-            if pos >= len(batch):
-                break
-            t = batch[pos]
-            pos += 1
-            if ch == "m":
-                mask = t
-            elif ch == "a":
-                adj = t
-            elif ch == "t":
-                tmask = t
-            elif ch == "L":
-                target = t
-        if mask is None:
-            # flat_input（实例级）的模型本来没有节点维，掩码是长度 1 的占位
-            mask = torch.ones(x.shape[0], 1, dtype=x.dtype)
-        if target is None:
-            target = batch[-1]
-        # 邻接缺省时给「自聚合」单位阵（GNN 类原模型内部会直接解引用）
-        if spec.legacy_mode == "gnn" and adj is not None and adj.dim() == 3:
-            # referee/teacher/tournament 要 [B,E,N,N]（少一个边型维会在 bmm 处报
-            # "batch1 must be a 3D tensor"）；而 conflict_gnn（gnn3）本身就要 3 维，不要动。
-            adj = adj.unsqueeze(1)
-        if spec.legacy_mode in ("gnn", "gnn3") and adj is None:
-            b2, n2 = x.shape[0], x.shape[1]
-            adj = torch.eye(n2, dtype=x.dtype).expand(b2, 1, n2, n2)
-            if tmask is None:
-                tmask = torch.ones(b2, 1, dtype=x.dtype)
-        elif spec.legacy_mode != "gnn":
-            adj, tmask = None, None
+        batch = prepare_batch(spec, batch, device)
+        x, mask, adj, tmask, target = batch
         pred, nxt = model(x, mask, adj, tmask)
         loss, metric = compute_loss(spec, pred, batch, mask, target)
         if aux_on:
@@ -613,6 +586,141 @@ def train_one(spec: Spec, args, device) -> str:
     backup_before_overwrite(path, f"moe-{args.iters}")
     torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
     return path
+
+def prepare_batch(spec: Spec, batch, device):
+    """把 ``make_batch`` 的原始元组解成 ``(x, mask, adj, tmask, target)``。
+
+    ⚠️ 抽成独立函数是**为了评估与训练走同一条解包路径**：留出集评估若自己再解一遍，
+    两处迟早会分叉（比如漏掉「gnn 类要补边型维」），于是评估出来的数字与训练时
+    看到的不是同一件事 —— 这种「度量与实际不同源」比不度量更糟。
+    """
+    batch = tuple(b.to(device) if hasattr(b, "to") else b for b in batch)
+    # 严格按登记的 layout 解包（不猜）
+    x = batch[0]
+    pos = 1
+    adj = tmask = None
+    mask = None
+    target = None
+    for ch in spec.layout[1:]:
+        if pos >= len(batch):
+            break
+        t = batch[pos]
+        pos += 1
+        if ch == "m":
+            mask = t
+        elif ch == "a":
+            adj = t
+        elif ch == "t":
+            tmask = t
+        elif ch == "L":
+            target = t
+    if mask is None:
+        # flat_input（实例级）的模型本来没有节点维，掩码是长度 1 的占位
+        mask = torch.ones(x.shape[0], 1, dtype=x.dtype)
+    if target is None:
+        target = batch[-1]
+    # 邻接缺省时给「自聚合」单位阵（GNN 类原模型内部会直接解引用）
+    if spec.legacy_mode == "gnn" and adj is not None and adj.dim() == 3:
+        # referee/teacher/tournament 要 [B,E,N,N]（少一个边型维会在 bmm 处报
+        # "batch1 must be a 3D tensor"）；而 conflict_gnn（gnn3）本身就要 3 维，不要动。
+        adj = adj.unsqueeze(1)
+    if spec.legacy_mode in ("gnn", "gnn3") and adj is None:
+        b2, n2 = x.shape[0], x.shape[1]
+        adj = torch.eye(n2, dtype=x.dtype).expand(b2, 1, n2, n2)
+        if tmask is None:
+            tmask = torch.ones(b2, 1, dtype=x.dtype)
+    elif spec.legacy_mode != "gnn":
+        adj, tmask = None, None
+    # ⚠️ 标签一律由 find_target 定位，**不用上面按 layout 解出来的那个**：
+    #    `make_selector_batch` 返回 (x, mask, None, None, y)，而 layout "xL" 的第二
+    #    个字符指向索引 1 —— 那是**掩码**（全 1）。按 layout 取会得出「240 条样本全是
+    #    同一个类、准确率 1.0、多数类基线也 1.0」这种既荒谬又自洽的评估结论。
+    #    另外 find_target 靠**对象身份**排除输入，所以必须喂它这份**已搬到 device 的**
+    #    批（`batch`），喂外面那份原始批会身份不匹配、退化成「取第一个二维张量」。
+    target = find_target(spec, batch, x, mask, adj, tmask)
+    return x, mask, adj, tmask, target
+
+
+def _macro_f1(y_true, y_pred, n_cls):
+    """多类 macro-F1（纯 numpy 实现，与 sklearn 口径一致：按类求 P/R 再取宏平均）。"""
+    f1s = []
+    for c in range(n_cls):
+        tp = int(np.sum((y_pred == c) & (y_true == c)))
+        fp = int(np.sum((y_pred == c) & (y_true != c)))
+        fn = int(np.sum((y_pred != c) & (y_true == c)))
+        prec = tp / (tp + fp) if (tp + fp) else 0.0
+        rec = tp / (tp + fn) if (tp + fn) else 0.0
+        f1s.append(2 * prec * rec / (prec + rec) if (prec + rec) else 0.0)
+    return float(np.mean(f1s)) if f1s else 0.0
+
+
+def evaluate(spec: Spec, args, device, n_holdout: int, seed: int) -> dict:
+    """在**未参与训练的留出集**上评估，产出可跨版本对照的指标。
+
+    为什么必须单独做这件事：训练循环打印的「指标」是**训练批次**上的值。对合成数据
+    它很快到 1.000（模型把生成器拟合了），因此它对「这一版是不是真的更好」**毫无判别力**。
+    留出集用另一个种子重新生成，并且**同时报出多数类基线** —— 否则一个 69% 多数类的
+    数据集上 90% 的准确率看着不错，其实只比瞎猜好一点。
+    """
+    src = data_source(spec)
+    if src is None:
+        raise SystemExit(f"{spec.name}: 未登记 make_batch，无法评估")
+    model = build(spec, args)
+    ck = os.path.join(MODEL_DIR, f"{spec.name}.moe.pt")
+    if not os.path.exists(ck):
+        raise SystemExit(f"{spec.name}: 找不到权重 {ck}，无法评估")
+    load_with_aux(model, torch.load(ck, map_location="cpu"))
+    model.to(device).eval()
+
+    preds, tgts = [], []
+    done = 0
+    with torch.no_grad():
+        while done < n_holdout:
+            k = min(args.batch, n_holdout - done)
+            # 留出集的种子与训练种子**刻意错开**，且每批递进 —— 训练用
+            # seed+it（it=0..iters），这里从 10_000_000 起，确保两边样本不重叠。
+            if spec.takes_pad_to:
+                b = src(k, seed=seed + done, pad_to=spec.pad_to)
+            else:
+                b = src(k, seed=seed + done)
+            if spec.batch_fn is not None:
+                b = spec.batch_fn(b, spec)
+            x, mask, adj, tmask, target = prepare_batch(spec, b, device)
+            # ⚠️ **必须用 find_target 重新定位标签**，不能直接用 prepare_batch 按 layout
+            #    解出来的那个：`make_selector_batch` 返回 (x, mask, None, None, y)，
+            #    而 layout "xL" 的第二个字符指向索引 1 —— 那是**掩码**（全 1）。
+            #    用它评估会得出「全部样本同一个类、准确率 1.0、多数类基线也 1.0」这种
+            #    既荒谬又自洽的结论。训练侧一直是对的（compute_loss 内部走 find_target），
+            #    所以只有评估需要对齐 —— 这正是「度量与实际不同源」的典型症状。
+            target = find_target(spec, b, x, mask, adj, tmask)
+            pred, _nxt = model(x, mask, adj, tmask)
+            preds.append(pred.detach().cpu().numpy().reshape(-1, pred.shape[-1]))
+            t = target.detach().cpu().numpy()
+            tgts.append(t.reshape(-1) if t.ndim > 1 else t)
+            done += k
+    P = np.concatenate(preds, axis=0)
+    Y = np.concatenate(tgts, axis=0)
+
+    out = {"name": spec.name, "loss": spec.loss, "n_holdout": int(Y.shape[0]), "seed": seed}
+    if spec.loss in ("ce", "bce"):
+        n_cls = P.shape[1] if spec.loss == "ce" else 2
+        yp = P.argmax(axis=1) if spec.loss == "ce" else (P.reshape(-1) > 0).astype(int)
+        yt = Y.astype(int)
+        acc = float((yp == yt).mean())
+        # 多数类基线：不做任何建模、永远预测训练集里最常见的类
+        vals, cnts = np.unique(yt, return_counts=True)
+        base = float(cnts.max() / cnts.sum())
+        out.update({"accuracy": acc, "macro_f1": _macro_f1(yt, yp, n_cls),
+                    "majority_baseline": base, "lift_over_baseline": acc - base,
+                    "per_class_recall": {
+                        int(v): float(((yp == v) & (yt == v)).sum() / max(1, (yt == v).sum()))
+                        for v in vals},
+                    "class_count": {int(v): int(c) for v, c in zip(vals, cnts)}})
+    else:
+        err = P.reshape(-1) - Y.reshape(-1)
+        out.update({"mse": float((err ** 2).mean()), "mae": float(np.abs(err).mean())})
+    return out
+
 
 def export_one(spec: Spec, args) -> str:
     """导出 ONNX，**输入名/顺序严格按 Spec.onnx_inputs**。
@@ -782,7 +890,11 @@ def main():
     p.add_argument("--log-every", type=int, default=500)
     add_device_arg(p)
     p.add_argument("--export-only", action="store_true")
+    p.add_argument("--eval-holdout", type=int, default=0,
+                   help="在留出集上评估（0=不评估）；配合 --eval-only 可单独评估")
     p.add_argument("--verify", action="store_true")
+    p.add_argument("--eval-only", action="store_true",
+                   help="跳过训练与导出，只做留出集评估")
     args = p.parse_args()
 
     reg = registry()
@@ -802,10 +914,21 @@ def main():
         if nm not in reg:
             raise SystemExit(f"未知模型 {nm}，可选：{list(reg)}")
         spec = reg[nm]
-        if not args.export_only:
+        if not (args.export_only or args.eval_only):
             train_one(spec, args, device)
         if args.verify or args.export_only:
             export_one(spec, args)
+        if args.eval_holdout > 0:
+            res = evaluate(spec, args, device, args.eval_holdout,
+                           seed=args.seed + 10_000_000)
+            print(f"[{spec.name}] 留出集评估（{res['n_holdout']} 条，独立种子）: "
+                  + "  ".join(f"{k}={v}" for k, v in res.items()
+                              if isinstance(v, (int, float)) and k != "seed"))
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            fp = os.path.join(MODEL_DIR, f"{spec.name}_eval.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(res, fh, ensure_ascii=False, indent=2)
+            print(f"[{spec.name}] 已写入 {fp}")
 
 
 if __name__ == "__main__":
