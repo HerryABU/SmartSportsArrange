@@ -71,8 +71,8 @@
     },
     "super_moe.onnx": {
       "bytes": 497966538,
-      "sha256": "f5c474c29fd76252a7ede93a88498c617d7085fecbdf92b709463a506dbcf261",
-      "usage": "统一编排超级模型（19 类任务，19 专家含 4 个嵌套专项 MoE）；缺失 → L4 退化为 L3（优化链）"
+      "sha256": "e3c5c5f1dc4a28b5a3c2afdd18d25d67f17cc04e85fe12eba3974a7b8e5ee4b7",
+      "usage": "统一编排超级模型（19 类任务，34 专家 = 19 主干 + 15 个专项 MoE 能力专家）；缺失 → L4 退化为 L3（优化链）"
     },
     "teacher_gnn.onnx": {
       "bytes": 11829757,
