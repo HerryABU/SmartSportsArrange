@@ -6,7 +6,7 @@
   "models": {
     "algorithm_selector.onnx": {
       "bytes": 9058273,
-      "sha256": "2fd47a3f82b4841224bdbfeac71b4e96e2233eb639805e9c406cf81d6c1c6dcd",
+      "sha256": "e166bde623eff18d755c49e15ec93cc1ef908b883b4b6cb4d44224195600ea2e",
       "usage": "算法选择器（硬解/取消）；缺失 → 默认策略"
     },
     "conflict_gnn.onnx": {
