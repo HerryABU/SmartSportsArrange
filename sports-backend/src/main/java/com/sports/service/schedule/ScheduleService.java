@@ -31,6 +31,7 @@ import com.sports.schedule.rule.RuleUnit;
 import com.sports.schedule.verify.ScheduleVerifier;
 import com.sports.schedule.opt.solver.SchedulePlan;
 import com.sports.schedule.opt.solver.ScheduleUnit;
+import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -140,16 +141,53 @@ public class ScheduleService {
         this.heatStaggerService = heatStaggerService;
         this.buildComponent = new ScheduleBuildComponent(eventRepository, registrationRepository, systemService);
         this.selfCheckComponent = new ScheduleSelfCheckComponent(lowerBoundEstimator, buildComponent);
-        // AI 自对抗是「AI 模式」的可选增强：静态入口拿不到（单测 / 未启用 AI）时传 null，
-        // SolveComponent 自动跳过自对抗，其余 AI 能力（AI 派遣款型、AI 可解性诊断）不受影响。
+        // ⚠️ 精修链调参与自对抗服务都必须**延迟读取**（传 supplier，不传值）：
+        //    · @Value 字段在构造器执行时还没注入（全是 0），而精修链以「>0 才启用」为开关
+        //      ⇒ 直接传值会让 GA/LNS/MNSA/ALNS/Fix-opt 在生产环境静默全部关闭；
+        //    · AdversarialSchemeService 在自身构造器里写静态 CURRENT，与本体谁先创建由 Spring 决定
+        //      ⇒ 直接传值可能永久拿到 null，AI 模式的自对抗静默降级。
+        //    这一处曾同时踩中两条（见 ScheduleTuning 类注释与 ScheduleServiceWiringTest）。
         this.solveComponent = new ScheduleSolveComponent(scheduleOptimizer, ruleBasedScheduler, geneticAlgorithm, lnsImprover,
                 mnsaAnnealer, alnsImprover, fixAndOptimizer, buildComponent,
-                lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate, gaIndividualMillis,
-                mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis,
-                AdversarialSchemeService.current());
+                this::tuning, AdversarialSchemeService::current);
         this.placementComponent = new SchedulePlacementComponent(arrangementService, arrangementRepository, scheduleRepository, buildComponent);
         this.queryExportComponent = new ScheduleQueryExportComponent(scheduleRepository, eventRepository, arrangementRepository,
                 eventRefereeRepository, arrangementReservationRepository, collaborationService, auditService);
+    }
+
+    /**
+     * 精修链调参快照——<b>每次读取都现取</b>，绝不在构造期缓存成字段。
+     *
+     * <p>本方法存在的唯一理由是修一个真实的静默失效：{@code @Value} 是字段注入（构造之后），
+     * 而 {@code ScheduleSolveComponent} 对每个算法都以「&gt;0 才启用」为开关。旧实现把 10 个
+     * 字段值直接传进构造器 ⇒ 拿到的全是 0 ⇒ GA/LNS/MNSA/ALNS/Fix-opt 在生产环境从未跑过，
+     * 而日志、前端、接口全部正常。详见 {@link ScheduleTuning}。</p>
+     */
+    private ScheduleTuning tuning() {
+        return new ScheduleTuning(lnsRounds, lnsRoundMillis, gaPopulation, gaGenerations, gaMutationRate,
+                gaIndividualMillis, mnsaIterations, alnsRounds, fixoptRounds, fixoptSliceMillis);
+    }
+
+    /** 装配自检用（与 facade 同包，见 {@code ScheduleServiceWiringTest}）。 */
+    ScheduleSolveComponent solveComponent() {
+        return solveComponent;
+    }
+
+    /**
+     * 启动期把「精修链实际生效参数」打进日志，并在全部关闭时显式告警。
+     *
+     * <p>纪律：凡是「配了不生效」的静默失效，都要有一个启动期可观测的口子。这里既打印开/关，
+     * 也打印实际取值——否则「没跑」与「跑了但没改进」在事后无法区分。</p>
+     */
+    @PostConstruct
+    void logEffectiveTuning() {
+        ScheduleTuning t = tuning();
+        if (!t.refineChainEnabled()) {
+            log.warn("[schedule] ⚠️ 精修链全部关闭（{}）。若配置里已写入非 0 值，说明参数未生效——"
+                    + "检查是否在构造期就读走了 @Value 字段（见 ScheduleTuning 类注释）", t.describe());
+        } else {
+            log.info("[schedule] 精修链生效参数: {}", t.describe());
+        }
     }
 
 

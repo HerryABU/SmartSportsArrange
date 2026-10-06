@@ -71,17 +71,13 @@ public class ScheduleSolveComponent {
      */
     private final ScheduleFeasibilityService feasibilityService = new ScheduleFeasibilityService();
 
-    // 算法调参（与 facade 的 @Value 同源，由构造器注入；仅 fillSolvedFromSolver 使用）
-    private final int lnsRounds;
-    private final long lnsRoundMillis;
-    private final int gaPopulation;
-    private final int gaGenerations;
-    private final double gaMutationRate;
-    private final long gaIndividualMillis;
-    private final int mnsaIterations;
-    private final int alnsRounds;
-    private final int fixoptRounds;
-    private final long fixoptSliceMillis;
+    /**
+     * 精修链调参的<b>延迟读取</b>入口——见 {@link ScheduleTuning} 的类注释。
+     *
+     * <p>⚠️ 绝不能在构造期把值快照成字段：facade 的 {@code @Value} 字段此时尚未注入，全是 0，
+     * 而「&gt;0 才启用」的判据会让整条精修链静默关闭。这里持有一个 supplier，每次求解现取。</p>
+     */
+    private final java.util.function.Supplier<ScheduleTuning> tuningSupplier;
 
     public ScheduleSolveComponent(ScheduleOptimizer scheduleOptimizer,
                                   RuleBasedScheduler ruleBasedScheduler,
@@ -91,17 +87,8 @@ public class ScheduleSolveComponent {
                                   AlnsImprover alnsImprover,
                                   FixAndOptimizer fixAndOptimizer,
                                   ScheduleBuildComponent buildComponent,
-                                  int lnsRounds,
-                                  long lnsRoundMillis,
-                                  int gaPopulation,
-                                  int gaGenerations,
-                                  double gaMutationRate,
-                                  long gaIndividualMillis,
-                                  int mnsaIterations,
-                                  int alnsRounds,
-                                  int fixoptRounds,
-                                  long fixoptSliceMillis,
-                                  AdversarialSchemeService adversarialSchemeService) {
+                                  java.util.function.Supplier<ScheduleTuning> tuningSupplier,
+                                  java.util.function.Supplier<AdversarialSchemeService> adversarialSupplier) {
         this.scheduleOptimizer = scheduleOptimizer;
         this.ruleBasedScheduler = ruleBasedScheduler;
         this.geneticAlgorithm = geneticAlgorithm;
@@ -110,26 +97,39 @@ public class ScheduleSolveComponent {
         this.alnsImprover = alnsImprover;
         this.fixAndOptimizer = fixAndOptimizer;
         this.buildComponent = buildComponent;
-        this.lnsRounds = lnsRounds;
-        this.lnsRoundMillis = lnsRoundMillis;
-        this.gaPopulation = gaPopulation;
-        this.gaGenerations = gaGenerations;
-        this.gaMutationRate = gaMutationRate;
-        this.gaIndividualMillis = gaIndividualMillis;
-        this.mnsaIterations = mnsaIterations;
-        this.alnsRounds = alnsRounds;
-        this.fixoptRounds = fixoptRounds;
-        this.fixoptSliceMillis = fixoptSliceMillis;
-        this.adversarialSchemeService = adversarialSchemeService;
+        this.tuningSupplier = tuningSupplier;
+        this.adversarialSupplier = adversarialSupplier;
     }
 
     /**
      * AI 模式专属的推理时自对抗服务（G↔D 在推理时继续博弈），可为 null = 未接入，自动跳过。
      *
-     * <p>用构造参数而非静态入口，是为了让求解链仍然可独立构造（单测）；
-     * 生产侧由 {@link com.sports.schedule.ai.AdversarialSchemeService#current()} 注入。</p>
+     * <p>用 supplier 而非构造参数，是为了让求解链仍然可独立构造（单测传 {@code () -> null}）；
+     * 生产侧由 facade 传 {@link com.sports.schedule.ai.AdversarialSchemeService#current()}。</p>
+     *
+     * <p>⚠️ 同样不能缓存静态入口的<b>当时</b>返回值：{@code AdversarialSchemeService} 在自身构造器里
+     * 写 {@code CURRENT}，与 facade 的创建先后由 Spring 决定——谁先谁后都可能。缓存一次就可能永久拿到
+     * null，于是「AI 模式的自对抗」静默变成 unavailable。改成用时取值后与顺序无关。</p>
      */
-    private final AdversarialSchemeService adversarialSchemeService;
+    private final java.util.function.Supplier<AdversarialSchemeService> adversarialSupplier;
+
+    /** 当前生效的精修链调参（每次读取都取最新值；求解链与启动期日志共用同一口径）。 */
+    public ScheduleTuning tuning() {
+        return tuningSupplier.get();
+    }
+
+    /**
+     * 容器里的推理时自对抗服务；未创建（单测 / 未启用 AI）返回 null，调用方必须判空。
+     * package-private 而非 private：装配自检测试要验证它确实是「用时取值」（见 ScheduleServiceWiringTest）。
+     */
+    AdversarialSchemeService adversarial() {
+        return adversarialSupplier.get();
+    }
+
+    /** 精修链是否至少有一环被启用——装配自检用，见 {@link ScheduleTuning#refineChainEnabled()}。 */
+    public boolean refineChainEnabled() {
+        return tuning().refineChainEnabled();
+    }
     /** 自对抗择优的冲突惩罚权重：越大越偏向「真零冲突」而非「像真解」 */
     private static final double ADVERSARIAL_LAMBDA = 0.5;
 
@@ -147,7 +147,7 @@ public class ScheduleSolveComponent {
         Map<String, Object> rep = new LinkedHashMap<>();
         rep.put("laneStyle", cfg.aiLaneStyle());
         rep.put("rounds", Math.max(0, cfg.aiAdversarialRounds()));
-        AdversarialSchemeService adv = this.adversarialSchemeService;
+        AdversarialSchemeService adv = adversarial();
         if (adv == null) {
             rep.put("adversarial", "unavailable");
             rep.put("note", "推理时自对抗服务未接入（AI 增强组件未创建），本次 AI 模式仅启用 AI 派遣款型与 AI 可解性诊断");
@@ -453,20 +453,25 @@ public class ScheduleSolveComponent {
             return;
         }
 
+        // 精修链调参：**在这里取一次**（而不是构造期快照）。facade 的 @Value 字段到这一步早已注入，
+        // 因此拿到的就是配置文件里的真实值；构造期取值只会拿到 0 并把整条链关掉。
+        final ScheduleTuning tuning = tuning();
+
         // ④b **遗传算法（GA）**：种群 + 交叉 + 变异，全局并行探索。
         //     与多起点波次的区别：波次是「各跑各的、跑完比大小」，GA 让好解之间繁殖——
         //     好的落位模式被交叉重组、坏的被变异扰动，能组合出任何单个起点都到不了的结构。
         try {
-            if (gaPopulation >= 2 && gaGenerations >= 1) {
+            if (tuning.gaEnabled()) {
                 SchedulePlan before = solvedPlan;
                 Optional<SchedulePlan> evolved = geneticAlgorithm.evolve(
-                        before, gaPopulation, gaGenerations,
-                        java.time.Duration.ofMillis(Math.max(200, gaIndividualMillis)),
-                        gaMutationRate);
+                        before, tuning.gaPopulation(), tuning.gaGenerations(),
+                        java.time.Duration.ofMillis(Math.max(200, tuning.gaIndividualMillis())),
+                        tuning.gaMutationRate());
                 if (evolved.isPresent()) {
                     solvedPlan = evolved.get();
                     if (portfolioInfo != null) {
-                        portfolioInfo.put("ga", "已启用：种群 " + gaPopulation + "、" + gaGenerations + " 代");
+                        portfolioInfo.put("ga", "已启用：种群 " + tuning.gaPopulation()
+                                + "、" + tuning.gaGenerations() + " 代");
                         portfolioInfo.put("gaScore", String.format("%s → %s",
                                 before.getScore(), solvedPlan.getScore()));
                     }
@@ -483,9 +488,9 @@ public class ScheduleSolveComponent {
         //     某个最忙运动员的全部项目」，在子空间里重新优化，其余部分用 @PlanningPin 锁定不动。
         //     因此每轮代价很小，能在同样预算里做很多次真正触到"根"的调整。
         try {
-            if (lnsRounds > 0) {
-                int rounds = Math.min(lnsRounds, 20);
-                long perRound = Math.max(200, lnsRoundMillis);
+            if (tuning.lnsEnabled()) {
+                int rounds = Math.min(tuning.lnsRounds(), 20);
+                long perRound = Math.max(200, tuning.lnsRoundMillis());
                 SchedulePlan before = solvedPlan;
                 Optional<SchedulePlan> improved =
                         lnsImprover.improve(before, rounds, java.time.Duration.ofMillis(perRound));
@@ -509,8 +514,8 @@ public class ScheduleSolveComponent {
         //     改得深但步数少；MNSA 一步只是「改一两个单元的落位/时长 + 快速评分」，能在同样预算里
         //     做几十上百步。中途允许暂时变差（退火爬坡），但只把严格更优的解交给下游。
         try {
-            if (mnsaIterations > 0) {
-                int iters = Math.min(mnsaIterations, 200);
+            if (tuning.mnsaEnabled()) {
+                int iters = Math.min(tuning.mnsaIterations(), 200);
                 SchedulePlan before = solvedPlan;
                 Map<String, Object> mnsaInfo = new LinkedHashMap<>();
                 Optional<SchedulePlan> annealed =
@@ -535,8 +540,8 @@ public class ScheduleSolveComponent {
         //     由老虎机按实际收益选择——冲突簇破坏直接利用兼项冲突的图结构；修复端
         //     贪心/随机插入代替完整求解，单轮成本降低一个数量级，同样预算能做更多轮。
         try {
-            if (alnsRounds > 0) {
-                int rounds = Math.min(alnsRounds, 30);
+            if (tuning.alnsEnabled()) {
+                int rounds = Math.min(tuning.alnsRounds(), 30);
                 SchedulePlan before = solvedPlan;
                 Map<String, Object> alnsInfo = new LinkedHashMap<>();
                 Optional<SchedulePlan> improved =
@@ -565,9 +570,9 @@ public class ScheduleSolveComponent {
         //     2026-09-27 升级为多轮重排：每轮治至多 10 个切片、预算逐轮翻倍（封顶 ×4），
         //     切片全部消除或整轮无接受即停——旧实现只治一轮、剩余切片原样残留。
         try {
-            if (fixoptRounds > 0) {
-                int passes = Math.min(fixoptRounds, 5);
-                long sliceMillis = Math.max(200, fixoptSliceMillis);
+            if (tuning.fixoptEnabled()) {
+                int passes = Math.min(tuning.fixoptRounds(), 5);
+                long sliceMillis = Math.max(200, tuning.fixoptSliceMillis());
                 SchedulePlan before = solvedPlan;
                 Map<String, Object> fixoptInfo = new LinkedHashMap<>();
                 Optional<SchedulePlan> repaired = fixAndOptimizer.optimizeMultiPass(
