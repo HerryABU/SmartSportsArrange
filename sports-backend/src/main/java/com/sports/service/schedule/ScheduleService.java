@@ -580,14 +580,14 @@ public class ScheduleService {
         int stale = 0;            // 连续未改进趟数（无限轮模式的收敛判据）
         int passesRun = 0;
         for (int p = 0; p < hardCap; p++) {
-            List<Integer> order = strategyAt(units, p);
-            String name = strategyNameAt(p);
+            List<Integer> order = MultiStartPlacementStrategy.strategyAt(units, p);
+            String name = MultiStartPlacementStrategy.strategyNameAt(p);
             PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                     mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                     event2Group, defaultInterval, minInterval, compressionWarnRatio,
                     solvedPlacement, eventsWithRegs, eventBlocked, laneStyleRule);
             passesRun++;
-            if (best == null || passIsBetter(r, best)) {
+            if (best == null || MultiStartPlacementStrategy.passIsBetter(r, best)) {
                 best = r;
                 bestOrder = order;
                 winningStrategy = name;
@@ -625,7 +625,7 @@ public class ScheduleService {
         final int REAL_CONVERGE_STALE = 8;
         if (realBest[0] > 0) {
             for (int q = 0; q < REAL_REFINE_CAP; q++) {
-                List<Integer> order = orderByShuffle(units.size(), 0xC0FFEEL + ((long) q) * 0x85ebca6bL);
+                List<Integer> order = MultiStartPlacementStrategy.orderByShuffle(units.size(), 0xC0FFEEL + ((long) q) * 0x85ebca6bL);
                 PlacementPassResult r = runPlacementPass(units, order, windows, trackSlots, fieldSlots,
                         mainVenue, fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax,
                         event2Group, defaultInterval, minInterval, compressionWarnRatio,
@@ -893,14 +893,6 @@ public class ScheduleService {
 
     // ==================== 兼项冲突规避：多策略自适应放置 ====================
 
-    /** 单趟放置结果：落库的赛程行 + 冲突统计 + 道次编排计数 + 放置相关告警 */
-    private static final class PlacementPassResult {
-        final List<EventSchedule> saved = new ArrayList<>();
-        final List<String> warnings = new ArrayList<>();
-        final List<String> autoArrangeFails = new ArrayList<>();
-        final int[] conflictStat = {0, 0};
-        int autoArrangeOk = 0;
-    }
 
     /** 把「项目 id → 保护列表」展开为「项目 id → 受保护区间」，区间为 {day(-1=全天), startMin, endMin} */
     private Map<Long, List<int[]>> teacherEventBlocksToIntervals(Map<Long, List<AdminTimeProtection>> blocks) {
@@ -1039,76 +1031,6 @@ public class ScheduleService {
     }
 
     /** 两趟放置结果比较：残余冲突更少优先；其次零冲突单元更多；最后放置失败更少 */
-    private boolean passIsBetter(PlacementPassResult a, PlacementPassResult b) {
-        if (a.conflictStat[1] != b.conflictStat[1]) return a.conflictStat[1] < b.conflictStat[1];
-        if (a.conflictStat[0] != b.conflictStat[0]) return a.conflictStat[0] > b.conflictStat[0];
-        return a.autoArrangeFails.size() < b.autoArrangeFails.size();
-    }
-
-    /**
-     * 第 p 套放置顺序策略（确定性、可复现）：0=原始顺序，1=按参与人数降序，2=按兼项度降序，
-     * 其后为固定种子随机扰动（种子随 p 递增）。供「多策略自适应重试」逐趟取用——
-     * 既支持有限轮（p 上限=请求轮数），也支持无限轮（p 一直递增直到收敛判据触发）。
-     * 随机扰动用固定种子保证同一份数据下结果稳定，便于核对与回归。
-     */
-    private List<Integer> strategyAt(List<Unit> units, int p) {
-        if (p == 0) return identityOrder(units.size());
-        if (p == 1) return orderByParticipants(units);
-        if (p == 2) return orderByDegree(units);
-        return orderByShuffle(units.size(), 0x9e3779b97f4a7c15L + ((long) (p - 2)) * 0x85ebca6bL);
-    }
-
-    private String strategyNameAt(int p) {
-        if (p == 0) return "original";
-        if (p == 1) return "byParticipantsDesc";
-        if (p == 2) return "byDegreeDesc";
-        return "shuffle#" + (p - 2);
-    }
-
-    private List<Integer> identityOrder(int n) {
-        List<Integer> idx = new ArrayList<>(n);
-        for (int i = 0; i < n; i++) idx.add(i);
-        return idx;
-    }
-
-    /** 参与人数多的项目先排，先占无冲突时段 */
-    private List<Integer> orderByParticipants(List<Unit> units) {
-        List<Integer> idx = new ArrayList<>();
-        for (int i = 0; i < units.size(); i++) idx.add(i);
-        idx.sort((x, y) -> {
-            int px = units.get(x).participants, py = units.get(y).participants;
-            if (px != py) return Integer.compare(py, px);
-            return Integer.compare(x, y);
-        });
-        return idx;
-    }
-
-    /** 与别的项目共享运动员越多的项目先排（兼项度高者先占位，余者避让） */
-    private List<Integer> orderByDegree(List<Unit> units) {
-        Map<Long, Integer> freq = new HashMap<>();
-        for (Unit u : units) for (Long a : u.athleteIds) freq.put(a, freq.getOrDefault(a, 0) + 1);
-        List<Integer> idx = new ArrayList<>();
-        for (int i = 0; i < units.size(); i++) idx.add(i);
-        idx.sort((x, y) -> {
-            int dx = degreeOf(units.get(x), freq), dy = degreeOf(units.get(y), freq);
-            if (dx != dy) return Integer.compare(dy, dx);
-            return Integer.compare(x, y);
-        });
-        return idx;
-    }
-
-    private int degreeOf(Unit u, Map<Long, Integer> freq) {
-        int d = 0;
-        for (Long a : u.athleteIds) if (freq.getOrDefault(a, 0) >= 2) d++;
-        return d;
-    }
-
-    private List<Integer> orderByShuffle(int n, long seed) {
-        List<Integer> idx = identityOrder(n);
-        // 固定种子可复现：同一份配置/数据下结果稳定，便于核对与回归
-        Collections.shuffle(idx, new Random(seed));
-        return idx;
-    }
 
     /**
      * 自动消解兼项冲突（一键编排的「冲突最小化」专精入口）。
