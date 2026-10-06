@@ -2,7 +2,7 @@
   "schema": "sports-ai/models-manifest@1",
   "note": "模型不入 git，按本清单独立分发；重训后请重新生成本清单。",
   "count": 16,
-  "totalBytes": 522640615,
+  "totalBytes": 675796022,
   "models": {
     "algorithm_selector.onnx": {
       "bytes": 9058273,
@@ -70,8 +70,8 @@
       "usage": "跨时段拆分专项 MoE（多个项目抢同一段上午余量时排序「先拆谁」）；缺失 → 按原顺序逐个试拆"
     },
     "super_moe.onnx": {
-      "bytes": 344811131,
-      "sha256": "987e91df869fac036798601ea0b890c8bef6abedcc1ef660c34bd1129845f4c3",
+      "bytes": 497966538,
+      "sha256": "fcd5658f5e9d9ab90b1f0d884e541da450d3f678a5e758fe95f614a08c851b9e",
       "usage": "统一编排超级模型（19 类任务，19 专家含 4 个嵌套专项 MoE）；缺失 → L4 退化为 L3（优化链）"
     },
     "teacher_gnn.onnx": {
