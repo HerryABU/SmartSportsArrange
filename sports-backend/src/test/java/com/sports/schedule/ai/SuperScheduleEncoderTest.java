@@ -272,8 +272,14 @@ class SuperScheduleEncoderTest {
         assertTrue(a.isPresent() && b.isPresent(), "模型应可用");
 
         assertEquals(4, a.get().n(), "输出长度必须等于单元数");
-        assertEquals(SuperScheduleEncoder.N_TASKS, a.get().taskProbs().length,
-                "任务权重应为 17 维（11 任务专家 + 6 能力专家）");
+        // ⚠️ 用 `>=` 而不是 `==`：`N_TASKS`(=19) 描述的是**编码器输入侧**的任务/能力专家数，
+        //    而模型输出侧的 `task_probs` 在「主 MoE = 其他 MoE 的混合体」改造后会**追加**
+        //    外部专项专家的权重（当前 19 内建 + 15 外部 = 34）。
+        //    写 `==` 会在每次扩容后假失败；而"前 N_TASKS 项语义不变"才是真正要守的契约
+        //    （Java 侧按名字取前 9 项且双重限界，见 BallTournamentService）。
+        assertTrue(a.get().taskProbs().length >= SuperScheduleEncoder.N_TASKS,
+                "task_probs 至少应含全部内建任务/能力专家（N_TASKS=" + SuperScheduleEncoder.N_TASKS
+                        + "），实际 " + a.get().taskProbs().length);
         assertEquals(4, a.get().formatLogits().length, "赛制应为 4 维");
         assertEquals(4, a.get().slotLogits().length, "槽位 logits 应为 [N][K]");
         assertEquals(SuperScheduleEncoder.MAX_SLOTS, a.get().slotLogits()[0].length);
@@ -340,14 +346,23 @@ class SuperScheduleEncoderTest {
             }
         }
         assertTrue(maxTask > 0, "任务权重必须为正");
-        assertTrue(argmax >= 0 && argmax < SuperScheduleEncoder.N_TASKS);
+        // ⚠️ 上界必须用 `taskProbs().length`，**不能**用 `N_TASKS`：
+        //    「主 MoE = 其他 MoE 的混合体」改造后，专家池里追加了 15 个外部专项专家
+        //    （排在尾部），而纯球类场景**理应**路由到 `tournament_gnn`
+        //    （球类赛制 / 种子 / 公平性）—— 它就在尾部 idx ≥ N_TASKS。
+        //    用 N_TASKS 当上界，会把「路由正确」误判成失败。
+        assertTrue(argmax >= 0 && argmax < a.taskProbs().length,
+                "argmax 应落在专家池范围内：argmax=" + argmax
+                        + " ｜ 池大小=" + a.taskProbs().length
+                        + "（前 " + SuperScheduleEncoder.N_TASKS + " 为内建，其后为外部专项专家）");
         // 专家权重应有区分度（若全相等说明路由退化）
         float mn = Float.MAX_VALUE, mx = -Float.MAX_VALUE;
         for (double v : a.taskProbs()) {
             mn = Math.min(mn, (float) v);
             mx = Math.max(mx, (float) v);
         }
-        assertTrue(mx - mn > 1e-4, "九类任务权重应互不相同（路由退化则全等）");
+        assertTrue(mx - mn > 1e-4, "任务权重应互不相同（路由退化则全等）"
+                + "：实测 min=" + mn + " max=" + mx + " 跨 " + a.taskProbs().length + " 项");
     }
 
     @Test
