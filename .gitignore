@@ -97,6 +97,12 @@ sports-ai/models/*.onnx
 *.onnx
 models-dist/
 
-# 发布包：只版本化启动程序与说明文本；大件（jar / 便携 JDK / 模型）不进库
+# 发布包：只版本化启动程序与说明文本；大件（jar / 便携 JDK / 模型 / 压缩交付件）不进库
 release/**/jdk-*/
 release/**/models/
+# ⚠️ 交付用压缩包（release.7z ≈883MB、external-models.7z ≈874MB）绝不可入库：
+#    单个就超过 GitHub 100MB 硬限，两者合计 1.75GB 会让仓库彻底无法推送。
+#    分发走 GitHub Releases 附件或网盘，不要走 git。
+release/**/*.7z
+release/**/*.zip
+release/**/*.tar.gz
