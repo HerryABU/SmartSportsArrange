@@ -4,6 +4,214 @@
 训练完成后导出 `.onnx`，运行时由 Java 端 `com.sports.schedule.ai` 通过 onnxruntime 加载推理，
 生产环境无需 Python 解释器。
 
+---
+
+## 现状（2026-10-06 校正）
+
+**16 个在役模型全部是「专项 MoE」**（无豁免项）：9 种专家架构轮转（残差 MLP / 图卷积 / CNN /
+Transformer / 交叉 / SSM / ROI 池化 / 指针 / 搜索式）+ 两级门控 + **稠密融合** + 主干 8 层 +
+`next_step` 附加输出。**稠密而非稀疏 Top-K**：稀疏在「CPU + 几千步 + 小 batch」下必然专家塌缩。
+
+**主 MoE 是「其他 MoE 的混合体」**：`nn/ensemble.py` 把 15 个专项模型当「能力专家」接进主 MoE 的专家池
+（`extra_experts`），主体参数 95%+ 原样继承，只需为新专家训两片投影 ⇒ 扩容成本仅 **+11%**。
+当前 **34 专家**（19 主干 + 15 专项）/ **122.19M 参数** / 4528 专家层 / 14 门控，导出 `super_moe.onnx` 475 MB。
+
+| 指标 | 34 专家主 MoE | 旧 19 专家 |
+|---|---|---|
+| val_loss | **1.35064** | 1.4994 |
+| pri_mse | **0.00403** | 0.0547 |
+| slot_mse | **0.82275** | 0.8964 |
+| 最低专家使用率 | 0.01188 | 0.0095 |
+| 路由熵（无塌缩判据） | **0.99015** | 0.9866 |
+
+> 本节取代下文「五大 AI 能力」的旧口径；逐模型的契约与升级边界见
+> [`docs/MODELS.md`](../docs/MODELS.md)，模型清单见 [`models/MANIFEST.json`](models/MANIFEST.json)。
+
+---
+
+## 一、训练方法
+
+### 1.1 数据从哪来：合成场景 + 贪心标签
+
+训练不依赖真实历史数据 —— 用 `data/generator.py` 的**场景生成器**按五档难度造报名数据
+（REGULAR / BLOCK / LANE / TEAM / HELL），标签由**确定性贪心启发式**产出。
+这样做的两个理由：① 真实数据里兼项冲突的「冲突簇」结构太稀疏，直接学不到；
+② 贪心标签可复现、可无限采样，且与线上推理同源（不会有训练/推理口径漂移）。
+
+关键开关 —— 要造出「排不下」的场景必须给 `extra_days`：
+
+```bash
+python -m sports_ai.train_super_moe --samples 700 --extra-days 2   # 否则「未排」分量恒为 0，学不到
+```
+
+### 1.2 主 MoE：从 19 专家长成 34 专家
+
+```
+第 1 步  各专项模型独立训练 / 升级为 MoE
+         python -m sports_ai.nn.upgrade_train --model lane_advisor --verify
+         （登记表是唯一来源；漏登记 = 永远不升级且文档过度声称）
+
+第 2 步  把小模型当「能力专家」接进主 MoE 的专家池
+         python -m sports_ai.train_super_moe --ensemble --resume --epochs 6
+
+第 3 步  导出 + 部署 + 刷清单（三步必须一起做）
+         scripts/finalize_models.py --only super_moe
+```
+
+**升级方式三选一**（选错会静默接不上）：
+
+| 方式 | 适用 | 判据（按 key 前缀，先剥外层前缀） |
+|---|---|---|
+| `UpgradedMoE` 外部适配器 | 单入单出的普通模型 | 有 `predictor.*` |
+| `MoEEncoder` 就地换编码器 | 生成式四模型 | 无 predictor 有 `legacy.*` |
+| `MoERepr` 就地增强表征 | **多输出**模型（适配器回不了多输出） | 两者皆无 |
+
+> ⚠️ 判据一旦退化成二分类，`MoERepr` 会落到 encoder 分支报「缺少 in_proj」，
+> 而 `build_ensemble` 只打印一行 `[skip]` ⇒ 该模型**静默缺席专家池**，日志上却像全部接入成功。
+
+### 1.3 续训与预算守卫
+
+- `--resume` 从 `models/super_moe.pt` 继续；`hidden` / `steps` 必须一致。
+- 训练器会打印**预算守卫**：轮数明显低于该深度的建议值时告警（深层网络未加预算时 val 未收敛，
+  极易被误读成「深层架构更差」——这个坑踩过）。
+- 自动续训到达标：`scripts/train_super_moe_until.sh`（目标 `val < 阈值`，一段接一段跑到达标）。
+- 刷新最优时会自动备份旧权重为 `super_moe.pt.bak.*`（**这些备份会迅速堆到几个 GB**，
+  体检与清理见 `docs/MODELS.md`）。
+
+### 1.4 训练侧的三条硬纪律
+
+1. **改训练脚本后先小步试跑（4 步）**：变量名写错要跑到那一行才炸，正式训练几分钟才推进到那里。
+2. **动态挂子模块必须在优化器创建之前**：`Adam(X.parameters())` 构造时即固化参数列表，
+   之后挂的 `X.aux` **永远不更新**（症状＝loss 里算得到、梯度也回传主干、唯独自己的头一动不动）。
+3. **加辅助任务用真序列分支**（`nn/forecast_aux.py` + `UpgradedMoE.forward_seq`），
+   不要用软标签蒸馏：主任务特征里没有时间步语义，拿它预测未来等于让模型猜，只会训出常数输出。
+
+---
+
+## 二、推理链路：一次编排请求是怎么走到模型的
+
+### 2.1 三档梯度（`POST /api/schedule/auto` 的 `mode`）
+
+| 档 | 走什么 | 量级 | 是否用模型 |
+|---|---|---|---|
+| `rule` | 确定性 first-fit（蛇形分组 + 固定分道 + 时间栅格） | 毫秒 | 否 |
+| `optimize` | Timefold 组合求解 + GA/LNS/MNSA/ALNS/Fix-and-Optimize 精修链 | 秒 | 否 |
+| `ai` | 优化链 + ONNX 本地推理（默认 3 轮推理时自对抗） | **分钟** | 是 |
+
+三档共用同一个下游分道（`assignLanes`）与同一套自检 / 下界评估 / 协作广播。
+
+### 2.2 ai 档内模型的介入点（按调用顺序）
+
+```
+① 求解前的「初始顺序」—— 主 MoE
+   SuperScheduleEncoder.encode(units, windows)          实例 → 定长张量
+        ↓ PrimaryMoeBridge.advise(encoded)              （静态桥，见 §3.2）
+   SuperMoeService 输出 Advice{ priority[], nextStepName }
+        ↓ 按 priority 降序稳定排序 optUnits             （只改顺序，不改解）
+   → portfolioInfo.primaryMoe = {applied, units, style}
+
+② 求解器出解后再叠加精修（GA → LNS → MNSA → ALNS → Fix-and-Optimize）
+
+③ 求解期自对抗（仅 ai 档）
+   G 采样候选 → Refiner 残差精修 → D 打分 → 服务自算候选真实残余冲突
+        ↓ 综合分 = D分 − λ·冲突（λ = ADVERSARIAL_LAMBDA = 0.5），多轮择优
+   → portfolioInfo.aiReport = {roundsRun, dScore, conflict, conflictBefore, refined}
+
+④ 道次编排（AI 派遣款型 laneStyle=ai）
+   LaneAdvisorService 输出运动员派遣优先级 → AssignLanes 按它分道
+
+⑤ 三个专项微调模型（正交维度，非「挪时间」）
+   SlotSplitAdvisor  跨时段拆分排序「先拆谁」
+   HeatStaggerAdvisor 组次顺序错开（项目时间窗一分不动，只换 heat）
+   Referee/Teacher GNN 裁判与班主任派遣
+```
+
+### 2.3 输出怎么用：**模型只影响「顺序/优先级」，不直接改解**
+
+这条是刻意的设计约束：模型给出的 priority 只用来重排**求解器的初始顺序**（`primaryMoe.applied`），
+最终解仍由求解器 + 精修链产出。好处是**模型坏了不会产出非法赛程**，最差只是不发挥作用。
+同理自对抗候选只做评估与上报，不覆盖主方案（二者粒度不同：槽着色 vs 并发位时段）。
+
+### 2.4 失败即回退（绝不阻塞主链路）
+
+每一个 AI 服务都是「锦上添花」：模型缺失 / 加载失败 / 推理异常一律 → 记 WARN + 回退规则，
+编排照常出结果。因此**「没报错」不等于「跑到了模型」** —— 必须靠 §3.3 的观测手段确认。
+
+---
+
+## 三、模型文件怎么加载、怎么流转
+
+### 3.1 全流程（训练侧 → 生产）
+
+```
+① 训练            sports-ai/models/<name>.pt            （升级后的权重叫 <name>.moe.pt）
+                                                          ⚠️ .moe.pt 优先于 .pt，且不看新旧
+② 导出            <name>.onnx                            需把 extra_experts / forecast_steps 一起传，
+                                                          否则「训了导不出」（expert_embed 形状不匹配）
+③ 刷清单          models/MANIFEST.json                   白名单制：USAGE 里登记过的才进清单
+                                                          逐条记 bytes + sha256 + 用途
+④ 部署            sports-backend/src/main/resources/models/*.onnx
+                                                          scripts/finalize_models.py（必须用 venv 的 python）
+⑤ 打包            BOOT-INF/classes/models/*.onnx          mvn package 一并打进 jar
+⑥ 运行            ModelSource.read(modelDir, name)        onnxruntime 会话惰性加载（首次用到才读）
+```
+
+命令一条龙（**必须用 `sports-ai/venv/Scripts/python.exe`**，默认解释器没有 torch/onnx，
+「导出」与「刷清单」会**静默失败且照样打印 ✅**）：
+
+```bash
+./sports-ai/venv/Scripts/python.exe scripts/finalize_models.py --only super_moe
+./sports-ai/venv/Scripts/python.exe scripts/gen_models_manifest.py --check      # 16 个模型与清单一致
+./sports-ai/venv/Scripts/python.exe scripts/check_models_freshness.py           # 时间戳 + 架构指纹 + 遮蔽判据
+```
+
+### 3.2 运行时的模型目录（可完全外置）
+
+只有**一个**配置键，10 个 AI 服务全部共用：
+
+```yaml
+sports:
+  schedule:
+    ai:
+      model-dir: classpath:/models      # 默认：读 jar 内的 /models
+      # model-dir: ./models            # 或 jar 旁边的目录（普通路径 / file: 前缀都支持）
+      # model-dir: file:/opt/ai-models # 热替换模型，无需重新打包
+```
+
+`ModelSource` 的三种形态：`classpath:/models`（jar 内）、普通磁盘路径、`file:` 前缀。
+这也是发布包两个版本的区别 —— **嵌入式版**用默认值（模型在 jar 内，单文件交付）；
+**外置模型版**由启动程序传 `--sports.schedule.ai.model-dir=<jar 旁的 models 目录>`，
+换模型只要覆盖 `models/*.onnx` 再重启。
+
+### 3.3 怎么确认「模型真的被用上了」
+
+| 手段 | 看什么 |
+|---|---|
+| `GET /api/ai/status` | `modelSource`（实际生效的模型目录）、`models.*.modelInfo`（逐模型来源与文件）、`tiers`（分层调用计数 + **`wiredButNeverCalled`**） |
+| 启动日志 | 模型加载/回退的 WARN（「不可用，回退规则编排」） |
+| 编排响应的 `algorithmPortfolio` | `primaryMoe.applied`、`aiReport.roundsRun`、精修链各环回执 |
+| 前端「算法详情」 | 上面这些字段的可视化回显（含「精修链未启用」这类**否定态**） |
+
+> ⭐ 通用纪律：**「模型可用但一次没被调用」是接线断了的唯一可观测信号** ——
+> 它不报错、只是功能一直没生效。所以 `tiers` 里带 `calls` 与 `wiredButNeverCalled`，
+> 前端与 `/api/ai/status` 都要把它显示出来。
+>
+> ⚠️ 历史上在这里栽过两次，都是**同一类**静默失效：
+> ① 调参在构造期被读成 0（`@Value` 是字段注入，晚于构造器）⇒ 整条精修链从未运行；
+> ② 一次冒烟留下的 `.moe.pt` **永久遮蔽**真实权重（`ckpt_path` 只按优先级、不看新旧）。
+> 两者都「日志正常、接口正常」。详见仓库根 `MEMORY.md` 的「静默失效通则」。
+
+### 3.4 契约（改了就重训全部模型）
+
+- 实例特征 **16 维**：Python `data/features.py` ↔ Java `InstanceFeatures`，逐位对齐；
+- 冲突图 **16 维节点 + 带权二值邻接**，`MAX_NODES = 1024`，边去重口径一致；
+- 归一化**只固化在 ONNX 内部**（Python 侧不做，Java 侧也不做）；
+- 排序模型（`algorithm_selector` / 两个 advisor）的标签方向必须显式验证：
+  **标签方向错了会低于随机基线且不报错**；
+- 近零方差特征不做标准化（`std < 1e-3 → 1.0`），否则噪声被放大。
+
+---
+
 ## 目录结构
 
 ```
