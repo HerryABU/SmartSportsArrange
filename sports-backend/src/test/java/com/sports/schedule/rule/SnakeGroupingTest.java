@@ -205,6 +205,34 @@ class SnakeGroupingTest {
     }
 
     @Test
+    @DisplayName(" 剩余/不满员组：标准「中间向两翼」，两端边道不选")
+    void laneAssignmentEdgeAvoidanceForPartialHeat() {
+        // 8 道：不满员优先占中间道、空出两端 1/8 道
+        assertArrayEquals(new int[]{4, 5, 3}, SnakeGrouping.assignLanes(3, 8));
+        assertArrayEquals(new int[]{4, 5, 3, 6, 2}, SnakeGrouping.assignLanes(5, 8));
+        assertArrayEquals(new int[]{4, 5, 3, 6, 2, 7}, SnakeGrouping.assignLanes(6, 8)); // 空 1、8 道
+        assertArrayEquals(new int[]{4, 5, 3, 6, 2, 7, 1}, SnakeGrouping.assignLanes(7, 8)); // 仅空 8 道
+        // 满员及以上保持原蛇形往返（全部道次都用上）
+        assertArrayEquals(new int[]{1, 2, 3, 4, 5, 6, 7, 8}, SnakeGrouping.assignLanes(8, 8));
+        assertArrayEquals(new int[]{1, 2, 3, 4, 4}, SnakeGrouping.assignLanes(5, 4));
+        // 4 道：不满员时占中间 2、3 道，空两端 1、4 道
+        assertArrayEquals(new int[]{2, 3}, SnakeGrouping.assignLanes(2, 4));
+        assertArrayEquals(new int[]{2, 3, 1}, SnakeGrouping.assignLanes(3, 4));
+        // 不变量：不满员(heatSize < lanes)时，两端边道(1 与 lanes)不应被占用（除非只剩一条边道可填）
+        for (int lanes = 2; lanes <= 8; lanes++) {
+            for (int hs = 1; hs < lanes; hs++) {
+                int[] lanesAssigned = SnakeGrouping.assignLanes(hs, lanes);
+                Set<Integer> used = new HashSet<>();
+                for (int l : lanesAssigned) used.add(l);
+                // 仅当剩余人数已无法同时避开两端时才允许占用一条边道
+                boolean bothEdgesUsed = used.contains(1) && used.contains(lanes);
+                assertFalse(bothEdgesUsed, "不满员组不应同时占两端边道 lanes=" + lanes + " hs=" + hs
+                        + " -> " + java.util.Arrays.toString(lanesAssigned));
+            }
+        }
+    }
+
+    @Test
     @DisplayName(" 入口非法参数直接抛出")
     void l1InvalidArgs() {
         assertThrows(IllegalArgumentException.class, () -> SnakeGrouping.assignByGradeClass(null, 2));

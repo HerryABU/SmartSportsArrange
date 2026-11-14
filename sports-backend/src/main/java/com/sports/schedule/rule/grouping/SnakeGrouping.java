@@ -184,6 +184,14 @@ public final class SnakeGrouping {
         if (heatSize < 0) throw new IllegalArgumentException("人数不能为负: " + heatSize);
         if (lanes <= 0) throw new IllegalArgumentException("道次数必须 ≥ 1: " + lanes);
         int[] out = new int[heatSize];
+        // 不满员（剩余/部分组）：标准方法——「中间向两翼」填充，优先占中间道、两端边道不选。
+        // 例如 8 道下 6 人进 {4,5,3,6,2,7}（空 1、8 道），7 人进 {4,5,3,6,2,7,1}（仅空 8 道）。
+        if (heatSize < lanes) {
+            int[] pattern = FixedLaneAssignment.centerOutPattern(lanes);
+            for (int i = 0; i < heatSize; i++) out[i] = pattern[i];
+            return out;
+        }
+        // 满员及以上（含多波次复用道次）：保持原有蛇形往返填充
         boolean leftToRight = true;
         int pos = 0;
         while (pos < heatSize) {

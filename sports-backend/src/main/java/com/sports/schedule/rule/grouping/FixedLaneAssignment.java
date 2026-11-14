@@ -63,7 +63,7 @@ public final class FixedLaneAssignment {
             return out;
         }
         // PERFORMANCE：标准 8 道「中间向两翼」；其它道位数按「靠近中线的道次优先」实时生成同型序列
-        int[] pattern = lanePattern(lanes);
+        int[] pattern = centerOutPattern(lanes);
         for (int i = 0; i < groupSize; i++) {
             out[i] = pattern[i];
         }
@@ -96,7 +96,7 @@ public final class FixedLaneAssignment {
                     "组内人数(" + groupSize + ")超过剩余空闲道位(" + free + ")");
         }
         // 按策略序生成「空闲道次」序列：REGISTRATION=1..lanes；PERFORMANCE=中间向两翼
-        int[] pattern = lanePattern(lanes);
+        int[] pattern = centerOutPattern(lanes);
         int[] out = new int[groupSize];
         int idx = 0;
         if (policy == Policy.REGISTRATION) {
@@ -113,13 +113,16 @@ public final class FixedLaneAssignment {
     }
 
     /**
-     * 生成 n 道的「中间向两翼」序列。
+     * 生成 n 道的「中间向两翼」序列（8 道经典序 {4,5,3,6,2,7,1,8} 的通用推导）。
+     *
+     * <p>供外部（如 {@code SnakeGrouping} 的部分组/剩余组分道）复用，使「不满员时优先占中间道、
+     * 不选两端边道」的标准排法在规则层只有唯一实现。</p>
      *
      * <p>8 道固化经典序 {4,5,3,6,2,7,1,8}（与人工惯例完全一致，避免浮点生成的顺序漂移）；
      * 其它道位数（6/9/10…）按同一几何规则推导：|lane - center| 升序，平局时<b>较小道次优先</b>
      * （与 8 道经典序「4 在 5 前」保持同一惯例），保证确定性与经典序的一致性。</p>
      */
-    static int[] lanePattern(int lanes) {
+    public static int[] centerOutPattern(int lanes) {
         if (lanes == 8) return CENTER_OUT_8.clone();
         int center2 = lanes + 1;   // 2×center，避免半道浮点
         Integer[] order = new Integer[lanes];
