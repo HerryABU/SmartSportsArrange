@@ -635,7 +635,7 @@ public class ScheduleFeasibilityService {
         final Map<String, List<Bin>> byPool = new LinkedHashMap<>();
         final Map<Integer, String> assign = new HashMap<>();
         final Map<String, Integer> load = new HashMap<>();
-        final Map<Integer, Map<Long, Integer>> periodAth = new HashMap<>();
+        final Map<Integer, Map<Long, Map<String, Integer>>> periodAth = new HashMap<>();
         final Map<Integer, Integer> periodConf = new HashMap<>();
         final Set<String> related = new LinkedHashSet<>();
         final Map<String, TreeMap<Integer, Integer>> prelimAt = new HashMap<>();
@@ -670,38 +670,42 @@ public class ScheduleFeasibilityService {
         }
 
         void add(HeatTask t, Bin b) {
-            Map<Long, Integer> c = periodAth.computeIfAbsent(b.periodIdx(), k -> new HashMap<>());
+            Map<Long, Map<String, Integer>> c = periodAth.computeIfAbsent(b.periodIdx(), k -> new HashMap<>());
             int conf = periodConf.getOrDefault(b.periodIdx(), 0);
             for (long a : t.athletes()) {
-                Integer cur = c.get(a);
-                if (cur != null && cur >= 1) conf++;
-                c.put(a, cur == null ? 1 : cur + 1);
+                Map<String, Integer> m = c.computeIfAbsent(a, k -> new HashMap<>());
+                Integer cur = m.get(t.pool());
+                if (cur != null && cur >= 1) conf++;   // 同池已有人 → 兼项冲突；径赛+田赛不同池不算
+                m.merge(t.pool(), 1, Integer::sum);
             }
             periodConf.put(b.periodIdx(), conf);
         }
 
         void rm(HeatTask t, Bin b) {
-            Map<Long, Integer> c = periodAth.get(b.periodIdx());
+            Map<Long, Map<String, Integer>> c = periodAth.get(b.periodIdx());
             if (c == null) return;
             int conf = periodConf.getOrDefault(b.periodIdx(), 0);
             for (long a : t.athletes()) {
-                Integer cur = c.get(a);
+                Map<String, Integer> m = c.get(a);
+                if (m == null) continue;
+                Integer cur = m.get(t.pool());
                 if (cur == null) continue;
+                if (cur >= 2) conf--;   // 仅当该池原本 ≥2 人（此前已贡献冲突）才回退
                 int next = cur - 1;
-                if (next >= 1) conf--;
-                if (next <= 0) c.remove(a);
-                else c.put(a, next);
+                if (next <= 0) m.remove(t.pool());
+                else m.put(t.pool(), next);
+                if (m.isEmpty()) c.remove(a);
             }
             periodConf.put(b.periodIdx(), conf);
         }
 
         int conflictDelta(HeatTask t, Bin b) {
-            Map<Long, Integer> c = periodAth.get(b.periodIdx());
+            Map<Long, Map<String, Integer>> c = periodAth.get(b.periodIdx());
             if (c == null) return 0;
             int d = 0;
             for (long a : t.athletes()) {
-                Integer cur = c.get(a);
-                if (cur != null && cur >= 1) d++;
+                Map<String, Integer> m = c.get(a);
+                if (m != null && m.getOrDefault(t.pool(), 0) >= 1) d++;
             }
             return d;
         }

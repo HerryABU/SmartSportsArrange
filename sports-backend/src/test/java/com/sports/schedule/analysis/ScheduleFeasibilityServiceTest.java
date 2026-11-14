@@ -238,11 +238,14 @@ class ScheduleFeasibilityServiceTest {
         assertEquals(Boolean.FALSE, bounds.get("cliqueFeasible"),
                 "2 天仅 4 个时段，冲突图最大团为 5 → 结构性不可解");
 
+        // 不可解的权威信号 = feasible==false + 下界分析（团下界/超大单元/容量）给出的可解释冲突类型。
+        // 注意：修正「赛道(径赛)+田赛同一时段可顺延（不视为致命兼项）」后，贪心+局部搜索可能把可见组次
+        // 全部排下（未排组次未必 > 0），但结构性下界仍判定 2 天不可解，并由 conflicts 说明原因。
+        // 因此这里不再以「未排组次 > 0」作为不可解的判据（那恰恰依赖被废除的误判）。
         @SuppressWarnings("unchecked")
         Map<String, Object> summary = (Map<String, Object>) report.get("summary");
-        assertTrue((Integer) summary.get("unplaced") > 0, "应如实报告未排组次");
+        assertNotNull(summary.get("unplaced"));
         assertNotNull(summary.get("unplacedUnits"));
-        assertFalse(((List<?>) summary.get("unplacedUnits")).isEmpty(), "未排清单必须能定位到具体单元");
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> conflicts = (List<Map<String, Object>>) report.get("conflicts");
@@ -350,5 +353,31 @@ class ScheduleFeasibilityServiceTest {
         Map<String, Object> scene = (Map<String, Object>) report.get("scene");
         assertTrue((Integer) scene.get("athletes") > 0);
         assertNotNull(scene.get("poolLanes"));
+    }
+
+    // ------------------------------------------------------------------
+    // 兼项冲突口径：径赛+田赛同可顺延，不计入致命兼项冲突
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("可行性求解：同一运动员的径赛+田赛落同一时段不算兼项冲突，但同池同运动员仍算冲突")
+    void trackAndFieldSamePeriodIsNotConflict() {
+        // 运动员 A(1) 同时报了径赛 u1 与田赛 u2，二者都放进 periodIdx=1
+        ScheduleFeasibilityService.HeatTask track = new ScheduleFeasibilityService.HeatTask(0, 0, "u1", 1L, "径赛", "高一", "50米", 1, 1, 10, new long[]{1L}, 0);
+        ScheduleFeasibilityService.HeatTask field = new ScheduleFeasibilityService.HeatTask(1, 0, "u2", 2L, "田赛", "高一", "跳高", 1, 1, 10, new long[]{1L}, 0);
+        ScheduleFeasibilityService.HeatTask track2 = new ScheduleFeasibilityService.HeatTask(2, 0, "u3", 3L, "径赛", "高一", "100米", 1, 1, 10, new long[]{1L}, 0);
+        ScheduleFeasibilityService.Bin bTrack = new ScheduleFeasibilityService.Bin("bt", 1, 0, "径赛", 0, 240, 1);
+        ScheduleFeasibilityService.Bin bField = new ScheduleFeasibilityService.Bin("bf", 1, 0, "田赛", 0, 240, 1);
+        ScheduleFeasibilityService.Bin bTrack2 = new ScheduleFeasibilityService.Bin("bt2", 1, 0, "径赛", 1, 240, 1);
+        ScheduleFeasibilityService.State st = new ScheduleFeasibilityService.State(List.of(track, field, track2), List.of(bTrack, bField, bTrack2));
+        st.apply(track, bTrack);
+        st.apply(field, bField);
+        assertEquals(0, st.periodConf.getOrDefault(1, 0),
+                "径赛+田赛同一时段（不同池）不应计入兼项冲突，可在时段内先后进行");
+
+        // 对照：同一运动员又报第二个径赛，与第一个径赛同落 periodIdx=1 → 同池应计为冲突
+        st.apply(track2, bTrack2);
+        assertEquals(1, st.periodConf.getOrDefault(1, 0),
+                "两个径赛（同池）落同一时段应计为 1 例兼项冲突");
     }
 }
