@@ -60,10 +60,13 @@ public class ConflictService {
 
     public static final String SEVERITY_BLOCKER = "严重";
     public static final String SEVERITY_WARN = "一般";
+    /** 径田可顺延：非致命（同一运动员的径赛+田赛可在时间段内先后，不视为致命冲突） */
+    public static final String SEVERITY_SEQUENCED = "可顺延";
 
     public static final String TYPE_SAME_VENUE = "同场地同时开赛";
     public static final String TYPE_OVERLAP = "时间重叠";
     public static final String TYPE_TIGHT_GAP = "间隔不足";
+    public static final String TYPE_SEQUENCED = "径田可顺延";
 
     /**
      * 检测全部运动员的兼项冲突。
@@ -160,14 +163,18 @@ public class ConflictService {
                     .add(a.getEvent().getId());
         }
         List<ConflictMath.SchedEntry> entries = new ArrayList<>();
+        Map<Long, Boolean> eventTrack = new HashMap<>();
         for (EventSchedule s : schedules) {
-            if (s.getEvent() == null || s.getStartTime() == null || s.getEndTime() == null) continue;
+            if (s.getEvent() == null || s.getEvent().getId() == null) continue;
+            eventTrack.putIfAbsent(s.getEvent().getId(), s.getEvent().getTrack());
+            if (s.getStartTime() == null || s.getEndTime() == null) continue;
             Integer xs = toMin(s.getStartTime()), xe = toMin(s.getEndTime());
             if (xs == null || xe == null) continue;
             entries.add(new ConflictMath.SchedEntry(
                     s.getId() != null ? s.getId() : -1L,
-                    s.getEvent().getId() != null ? s.getEvent().getId() : -1L,
-                    s.getDay() == null ? 1 : s.getDay(), xs, xe, s.getVenue()));
+                    s.getEvent().getId(),
+                    s.getDay() == null ? 1 : s.getDay(), xs, xe, s.getVenue(),
+                    eventTrack.get(s.getEvent().getId())));
         }
         return ConflictMath.countConflicts(entries, athleteEvents, CONFLICT_BUFFER_MIN);
     }
@@ -198,18 +205,24 @@ public class ConflictService {
         ConflictMath.SchedEntry xa = new ConflictMath.SchedEntry(
                 x.getId() != null ? x.getId() : -1L,
                 x.getEvent() != null && x.getEvent().getId() != null ? x.getEvent().getId() : -1L,
-                dx, xs, xe, x.getVenue());
+                dx, xs, xe, x.getVenue(), trackOf(x));
         ConflictMath.SchedEntry yb = new ConflictMath.SchedEntry(
                 y.getId() != null ? y.getId() : -1L,
                 y.getEvent() != null && y.getEvent().getId() != null ? y.getEvent().getId() : -1L,
-                dy, ys, ye, y.getVenue());
+                dy, ys, ye, y.getVenue(), trackOf(y));
         return ConflictMath.gapOf(xa, yb, CONFLICT_BUFFER_MIN);
+    }
+
+    /** 取赛程条目所属项目的径赛标记（null = 未知） */
+    private static Boolean trackOf(EventSchedule s) {
+        return s.getEvent() != null ? s.getEvent().getTrack() : null;
     }
 
     /** 把纯函数 {@link ConflictMath.Kind} 映射回检测端严重度文本 */
     private static String toSeverity(ConflictMath.Gap gap) {
         return switch (gap.kind()) {
             case OVERLAP, SAME_VENUE_START -> SEVERITY_BLOCKER;
+            case SEQUENCED -> SEVERITY_SEQUENCED;
             default -> SEVERITY_WARN;
         };
     }
@@ -219,6 +232,7 @@ public class ConflictService {
         return switch (gap.kind()) {
             case SAME_VENUE_START -> TYPE_SAME_VENUE;
             case OVERLAP -> TYPE_OVERLAP;
+            case SEQUENCED -> TYPE_SEQUENCED;
             case TIGHT -> TYPE_TIGHT_GAP;
             default -> TYPE_TIGHT_GAP;
         };
@@ -246,6 +260,14 @@ public class ConflictService {
         String name = String.valueOf(ath.get("name"));
         String ea = nameOf(x);
         String eb = nameOf(y);
+        if (gap.kind() == ConflictMath.Kind.SEQUENCED) {
+            boolean xTrack = Boolean.TRUE.equals(trackOf(x));
+            String track = xTrack ? ea : eb;
+            String field = xTrack ? eb : ea;
+            return String.format("「%s」同时报了「%s」(径赛) 与「%s」(田赛)：二者性质不同，"
+                            + "可在同一时间段内先后进行，不视为致命兼项冲突——径赛优先、田赛后放即可。",
+                    name, track, field);
+        }
         if (gap.kind() == ConflictMath.Kind.SAME_VENUE_START) {
             return String.format("「%s」同时报了「%s」与「%s」，两者同在 %s、同在 %s 开始："
                             + "建议把「%s」调整到其它场地（或把两项拆到不同时段），否则该运动员只能二选一。",

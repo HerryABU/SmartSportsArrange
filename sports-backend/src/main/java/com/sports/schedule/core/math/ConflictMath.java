@@ -22,19 +22,25 @@ public final class ConflictMath {
     }
 
     /** 一条赛程条目（已解析为绝对分钟），供纯函数消费 */
-    public record SchedEntry(long schedId, long eventId, int day, int startMin, int endMin, String venue) {
+    public record SchedEntry(long schedId, long eventId, int day, int startMin, int endMin, String venue,
+                             Boolean track) {
     }
 
     /** 冲突类型（与 {@code ConflictService} 的 severity/type 一一对应） */
     public enum Kind {
         /** 无冲突 */
         NONE,
-        /** 间隔不足（一般） */
+        /** 间隔不足（一般，非致命） */
         TIGHT,
         /** 时间重叠（严重） */
         OVERLAP,
         /** 同场地同时开赛（严重，最典型的撞车） */
-        SAME_VENUE_START
+        SAME_VENUE_START,
+        /**
+         * 径赛 + 田赛可顺延（非致命）：同一运动员同时报了径赛与田赛，二者性质不同、
+         * 可在同一时间段内先后进行（径赛优先、田赛后放），故不视为致命兼项冲突。
+         */
+        SEQUENCED
     }
 
     /** 冲突判定结果 */
@@ -58,11 +64,16 @@ public final class ConflictMath {
         boolean overlapping = x.startMin < ye && y.startMin < xe;
         int gap = Math.max(y.startMin - xe, x.startMin - ye);   // 对称间隔
 
+        // 径赛 + 田赛：性质不同，可在同一时间段内先后进行（径赛优先、田赛后放），
+        // 因此即便时间重叠/紧间隔也不视为致命冲突，降级为「可顺延」。
+        boolean trackField = x.track != null && y.track != null && x.track != y.track;
         if (overlapping) {
+            if (trackField) return new Gap(Kind.SEQUENCED, 0);
             boolean sameVenueSameStart = sameText(x.venue, y.venue) && x.startMin == y.startMin;
             return new Gap(sameVenueSameStart ? Kind.SAME_VENUE_START : Kind.OVERLAP, 0);
         }
         if (gap < bufferMin) {
+            if (trackField) return new Gap(Kind.SEQUENCED, gap);
             return new Gap(Kind.TIGHT, gap);
         }
         return new Gap(Kind.NONE, gap);
@@ -74,7 +85,8 @@ public final class ConflictMath {
      * <p>对每位运动员，逐一比对它名下不同项目的赛程条目两两组合：
      * 仅当两条来自<b>不同项目</b>且 {@link #gapOf} 非 {@link Kind#NONE} 时计一次。</p>
      *
-     * @return {@code int[]{total, severe}}，severe = 严重（重叠 / 同场地同时开赛）冲突数
+     * @return {@code int[]{total, severe}}，severe = 严重（重叠 / 同场地同时开赛）冲突数；
+     *         径田「可顺延(SEQUENCED)」计入 total 但不计入 severe。
      */
     public static int[] countConflicts(List<SchedEntry> entries, Map<Long, Set<Long>> athleteEvents, int bufferMin) {
         Map<Long, List<SchedEntry>> byEvent = new HashMap<>();

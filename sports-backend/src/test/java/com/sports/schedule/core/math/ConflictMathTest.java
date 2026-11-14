@@ -23,9 +23,14 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 @DisplayName("兼项冲突纯函数核心")
 class ConflictMathTest {
 
-    /** 构造一条赛程条目（绝对分钟，day 从 1 起） */
+    /** 构造一条赛程条目（绝对分钟，day 从 1 起；不指定径/田则按 null 处理，不触发降级） */
     private static ConflictMath.SchedEntry e(long schedId, long eventId, int day, int s, int en, String venue) {
-        return new ConflictMath.SchedEntry(schedId, eventId, day, s, en, venue);
+        return new ConflictMath.SchedEntry(schedId, eventId, day, s, en, venue, null);
+    }
+
+    /** 构造一条带径/田标记的赛程条目（track=true 径赛，false 田赛） */
+    private static ConflictMath.SchedEntry e(long schedId, long eventId, int day, int s, int en, String venue, Boolean track) {
+        return new ConflictMath.SchedEntry(schedId, eventId, day, s, en, venue, track);
     }
 
     /** 构造「运动员 -> 项目集合」 */
@@ -96,6 +101,80 @@ class ConflictMathTest {
         assertEquals(g1.kind(), g2.kind(), "对称间隔口径下顺序不应影响判定");
         assertEquals(g1.gapMinutes(), g2.gapMinutes());
         assertEquals(ConflictMath.Kind.TIGHT, g1.kind()); // 间隔 10 < 15
+    }
+
+    // ===== 田径兼项：径赛 + 田赛「可顺延」（非致命）=====
+
+    @Test
+    @DisplayName("同一运动员径赛+田赛时间重叠 -> 可顺延(SEQUENCED)，非致命")
+    void gapOf_trackFieldOverlapIsSequenced() {
+        ConflictMath.SchedEntry track = e(1, 10, 1, 60, 120, "径赛A", true);   // 10:00-11:00 径赛
+        ConflictMath.SchedEntry field = e(2, 20, 1, 90, 150, "田赛B", false);  // 10:30-11:30 田赛
+        ConflictMath.Gap g = ConflictMath.gapOf(track, field, 15);
+        assertEquals(ConflictMath.Kind.SEQUENCED, g.kind());
+    }
+
+    @Test
+    @DisplayName("径赛+田赛同场地同时开赛 -> 仍可顺延(SEQUENCED)，非同场地致命冲突")
+    void gapOf_trackFieldSameVenueStartIsSequenced() {
+        ConflictMath.SchedEntry track = e(1, 10, 1, 60, 120, "主田径场", true);
+        ConflictMath.SchedEntry field = e(2, 20, 1, 60, 130, "主田径场", false);
+        assertEquals(ConflictMath.Kind.SEQUENCED, ConflictMath.gapOf(track, field, 15).kind());
+    }
+
+    @Test
+    @DisplayName("径赛+田赛紧间隔 -> 仍可顺延(SEQUENCED)，非一般(TIGHT)")
+    void gapOf_trackFieldTightGapIsSequenced() {
+        ConflictMath.SchedEntry track = e(1, 10, 1, 60, 120, "径赛A", true);
+        ConflictMath.SchedEntry field = e(2, 20, 1, 125, 180, "田赛B", false); // 间隔 5 < 15
+        assertEquals(ConflictMath.Kind.SEQUENCED, ConflictMath.gapOf(track, field, 15).kind());
+    }
+
+    @Test
+    @DisplayName("降级仅对一径一田成立：两径赛/两田赛重叠仍判严重(OVERLAP)")
+    void gapOf_sameKindOverlapStaysSevere() {
+        ConflictMath.SchedEntry a = e(1, 10, 1, 60, 120, "径赛A", true);
+        ConflictMath.SchedEntry b = e(2, 20, 1, 90, 150, "径赛B", true);
+        assertEquals(ConflictMath.Kind.OVERLAP, ConflictMath.gapOf(a, b, 15).kind());
+        ConflictMath.SchedEntry c = e(3, 30, 1, 60, 120, "田赛A", false);
+        ConflictMath.SchedEntry d = e(4, 40, 1, 90, 150, "田赛B", false);
+        assertEquals(ConflictMath.Kind.OVERLAP, ConflictMath.gapOf(c, d, 15).kind());
+    }
+
+    @Test
+    @DisplayName("径/田标记未知(null)时不误降级：重叠仍判严重")
+    void gapOf_nullTrackStaysSevere() {
+        ConflictMath.SchedEntry a = e(1, 10, 1, 60, 120, "项目A", null);
+        ConflictMath.SchedEntry b = e(2, 20, 1, 90, 150, "项目B", true);
+        assertEquals(ConflictMath.Kind.OVERLAP, ConflictMath.gapOf(a, b, 15).kind());
+    }
+
+    @Test
+    @DisplayName("计数：径田可顺延计入 total 但不计入 severe")
+    void count_trackFieldSequencedNotSevere() {
+        List<ConflictMath.SchedEntry> entries = new ArrayList<>(List.of(
+                e(1, 10, 1, 60, 120, "径赛A", true),
+                e(2, 20, 1, 90, 150, "田赛B", false)));
+        Map<Long, Set<Long>> ae = athEvs(1L, Set.of(10L, 20L));
+        int[] r = ConflictMath.countConflicts(entries, ae, 15);
+        assertEquals(1, r[0], "total");
+        assertEquals(0, r[1], "severe（径田可顺延，非致命）");
+    }
+
+    @Test
+    @DisplayName("计数：两径赛重叠仍计入 severe，与可顺延互不串扰")
+    void count_twoTrackOverlapStillSevere() {
+        List<ConflictMath.SchedEntry> entries = new ArrayList<>(List.of(
+                e(1, 10, 1, 60, 120, "径赛A", true),
+                e(2, 20, 1, 90, 150, "径赛B", true),
+                e(3, 30, 1, 60, 120, "田赛C", false),
+                e(4, 40, 1, 90, 150, "田赛D", false)));
+        Map<Long, Set<Long>> ae = athEvs(
+                1L, Set.of(10L, 20L),   // 两径赛重叠 -> severe
+                2L, Set.of(30L, 40L));  // 两田赛重叠 -> severe
+        int[] r = ConflictMath.countConflicts(entries, ae, 15);
+        assertEquals(2, r[0], "total");
+        assertEquals(2, r[1], "severe");
     }
 
     // ===== countConflicts：总量统计 =====
