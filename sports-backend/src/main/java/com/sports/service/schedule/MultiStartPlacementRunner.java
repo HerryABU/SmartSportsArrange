@@ -76,6 +76,8 @@ public class MultiStartPlacementRunner {
             int trackSlots,
             int fieldSlots,
             String mainVenue,
+            /** 全部径赛场地名：每条场地 1 个串行槽位，多场地才并行（见 AutoScheduleContext#trackVenues） */
+            List<String> trackVenues,
             List<String> fieldVenues,
             String mainVenueCode,
             Set<String> fieldVenueCodes,
@@ -204,6 +206,23 @@ public class MultiStartPlacementRunner {
     }
 
     /**
+     * 落库路径的径赛池（抽成纯函数以便单测）。
+     *
+     * <p><b>径赛天生串行</b>：每条径赛场地同一时刻只能进行 1 个径赛项目，只有多场地才并行。
+     * 因此并发槽位必须绑定「全部径赛场地」里的不同场地 —— 只绑 {@code mainVenue} 会让
+     * 多场地下的两个槽位复用同一条跑道，等于「一条跑道同时跑两个径赛项目」。
+     * 准备阶段已保证 {@code trackSlots == 径赛场地数}，此处只负责把场地清单如实落到槽位上。</p>
+     *
+     * @param trackVenues 全部径赛场地名（来自 {@code AutoScheduleContext#trackVenues}）；
+     *                    为空时回退主场地，兼容无类型信息的旧配置
+     */
+    static Pool trackPoolForPass(int trackSlots, String mainVenue, List<String> trackVenues) {
+        List<String> venues = (trackVenues == null || trackVenues.isEmpty())
+                ? new ArrayList<>(List.of(mainVenue)) : trackVenues;
+        return new Pool("径赛", trackSlots, venues);
+    }
+
+    /**
      * 单趟赛程放置：独立 {@code deleteAllSchedules} + 按给定单元顺序放置，返回本趟结果。
      *
      * <p>每趟都即时落库（{@code placementComponent} 内部 save），故「保留最优一趟」只需保证
@@ -217,7 +236,7 @@ public class MultiStartPlacementRunner {
         PlacementPassResult r = new PlacementPassResult();
         scheduleRepository.deleteAllSchedules();
         // 每趟重建池（游标状态不可复用）+ 专用池表（resolvePool 会按需新建并缓存）
-        Pool trackPool = new Pool("径赛", env.trackSlots(), new ArrayList<>(List.of(env.mainVenue())));
+        Pool trackPool = trackPoolForPass(env.trackSlots(), env.mainVenue(), env.trackVenues());
         Pool fieldPool = new Pool("田赛", env.fieldSlots(), env.fieldVenues());
         Map<String, Pool> dedicatedPools = new LinkedHashMap<>();
         int[] orderCounter = {1};

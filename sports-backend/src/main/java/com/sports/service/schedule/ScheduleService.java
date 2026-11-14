@@ -77,10 +77,12 @@ import com.sports.service.system.SystemService;
  *   <li><b>年级顺序</b>：取自 gradeOrder（缺省按 grades 的 sortOrder 升序），
  *       默认高一→高二→高三仅是可修改的默认值，不写死在代码里；</li>
  *   <li><b>并发位数（取代串行/并行开关）</b>：trackSlots / fieldSlots —— 1 = 串行，
- *       n = 同一时刻可同时进行 n 个项目。槽位与场地一一对应（场地不足时复用并告警）；</li>
- *   <li><b>场地表（并行上限）</b>：当数据库存在启用的场地（venue 表）时，其 {@code parallelMax}
- *       即该场地并发上限，主场地/首个田赛场地的 parallelMax 分别作为径赛池/田赛池的槽位数；
- *       项目通过 defaultVenueCode 绑定场地后，其并发数受该场地 parallelMax 约束（1=串行，n=并行）。</li>
+ *       n = 同一时刻可同时进行 n 个项目。<b>径赛严格串行</b>：trackSlots 由「径赛场地数量」决定
+ *       （每条场地 1 个串行槽位，多场地才并行），与单场地 parallelMax 无关；田赛同场地可多工位并行。</li>
+ *   <li><b>场地表（并行上限）</b>：当数据库存在启用的场地（venue 表）时，田赛池取首个田赛场地的
+ *       {@code parallelMax} 作槽位数；<b>径赛池忽略单场地 parallelMax，槽位数恒等于径赛场地数量</b>
+ *       （单条跑道同一时刻只能跑 1 个径赛项目）。项目通过 defaultVenueCode 绑定场地后，仍受该场地
+ *       parallelMax 约束（1=串行，n=并行）。</li>
  *   <li><b>自定义项目顺序</b>：eventOrder（eventId 有序列表，田赛+径赛混排）优先，
  *       未列入的项目按 sortOrder 追加；</li>
  *   <li><b>田赛分组</b>：fieldGroups 中同一组的田赛项目安排在同一时段并行进行；</li>
@@ -356,6 +358,8 @@ public class ScheduleService {
         Map<String, Pool> dedicatedPools = ctx.dedicatedPools;
         String mainVenue = ctx.mainVenue;
         String mainVenueCode = ctx.mainVenueCode;
+        // 全部径赛场地：落库路径会按趟重建径赛池，必须传全量场地，保证每个并发槽位各占一条跑道
+        List<String> trackVenues = ctx.trackVenues;
         List<String> fieldVenues = ctx.fieldVenues;
         Set<String> fieldVenueCodes = ctx.fieldVenueCodes;
         List<String> venueWarnings = ctx.venueWarnings;
@@ -443,8 +447,8 @@ public class ScheduleService {
 
         // 多趟择优 + 真实冲突精修整段交给 MultiStartPlacementRunner（含「评估口径 ≡ 交付口径」的口径修复）
         MultiStartPlacementRunner.SearchOutcome outcome = placementRunner.search(
-                new MultiStartPlacementRunner.PassEnv(units, windows, trackSlots, fieldSlots, mainVenue, fieldVenues,
-                        mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax, event2Group,
+                new MultiStartPlacementRunner.PassEnv(units, windows, trackSlots, fieldSlots, mainVenue, trackVenues,
+                        fieldVenues, mainVenueCode, fieldVenueCodes, codeToName, codeToParallelMax, event2Group,
                         defaultInterval, minInterval, compressionWarnRatio, solvedPlacement, eventsWithRegs,
                         eventBlocked, laneStyleRule),
                 hardCap, unlimited, convergeStale);

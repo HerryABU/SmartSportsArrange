@@ -57,6 +57,13 @@ public class AutoScheduleContext {
     public boolean hasType;
     public String mainVenue;
     public String mainVenueCode;
+    /**
+     * 全部径赛场地名（每条场地 1 个串行槽位）。
+     * <p><b>径赛天生串行</b>：单跑道 → 1 个槽位；只有多场地才提供并行能力，且每个槽位必须绑定
+     * <b>不同</b>场地。该清单必须一路传到 {@code MultiStartPlacementRunner.runPass}（它会按趟
+     * 重建池），否则落库时两个并发槽位会复用同一条跑道，等于「一条跑道同时跑两个径赛项目」。</p>
+     */
+    public List<String> trackVenues;
     public List<String> fieldVenues;
     public Set<String> fieldVenueCodes;
     public Pool trackPool;

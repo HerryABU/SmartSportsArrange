@@ -27,7 +27,7 @@ import static com.sports.schedule.support.ScheduleSupport.*;
  * <p>职责边界很清楚——把「排布之前必须先定下来的东西」全部算完：</p>
  * <ol>
  *   <li><b>配置合并</b>：前端覆盖 &gt; 已存编排规则 &gt; 内置默认（含此前只落库、从未被读取的 max_attempts）；</li>
- *   <li><b>场地与并发位</b>：数据库场地表的 parallelMax 决定池并发位，按 type 区分主场地/田赛池；</li>
+ *   <li><b>场地与并发位</b>：田赛池取首个田赛场地的 parallelMax；<b>径赛池严格串行</b>——并发位 = 径赛场地数量（每条场地 1 个串行槽位，多场地才并行），与单场地的 parallelMax 无关；</li>
  *   <li><b>单元与时长</b>：按年级顺序与项目顺序展开单元、估算时长；</li>
  *   <li><b>时间窗</b>：时间三态（指定 / 不限 / 尽可能减少）决定天数，再按 (天, 时段) 铺开；</li>
  *   <li><b>行政时间保护</b>：GLOBAL 避让切分时间窗（硬约束）、TEACHER 时段展开为项目黑名单；</li>
@@ -179,18 +179,34 @@ public class AutoSchedulePreparer {
         c.hasType = !c.trackTypeVenues.isEmpty() || !c.fieldTypeVenues.isEmpty();
         if (useDbVenues && c.hasType) {
             if (!c.trackTypeVenues.isEmpty()) {
-                Integer mainPm = codeToParallelMax.get(codeOf(c.trackTypeVenues.get(0)));
-                if (mainPm != null) {
-                    c.trackSlots = Math.max(1, mainPm);
-                }
+                // 径赛天生串行：每条径赛场地同一时刻只能进行 1 个径赛项目（单条跑道不可并行）。
+                // 只有「多场地」才提供并行能力，因此径赛并发位 = 径赛场地数量，
+                // 与单场地的 parallelMax 无关——避免把「8 条道」误当成「8 个项目并行」。
+                // 多场地本身罕见，绝大多数部署为单跑道 → trackSlots=1（严格串行）。
+                c.trackSlots = deriveTrackSlots(c.trackTypeVenues);
             }
             if (!c.fieldTypeVenues.isEmpty()) {
+                // 田赛同场地可多工位并行，仍按首个田赛场地的 parallelMax 取并发上限。
                 Integer fPm = codeToParallelMax.get(codeOf(c.fieldTypeVenues.get(0)));
                 if (fPm != null) {
                     c.fieldSlots = Math.max(1, fPm);
                 }
             }
         }
+    }
+
+    /**
+     * 径赛并发位推导：严格串行，恒等于径赛场地数量。
+     *
+     * <p>每条径赛场地同一时刻只能进行 1 个径赛项目（单条跑道不可并行）；只有「多场地」才提供并行能力，
+     * 因此并发位 = 径赛场地数，与单场地的 {@code parallelMax} 无关——避免把「8 条道」误当成
+     * 「8 个项目并行」。无径赛场地时回退 1（串行保底）。</p>
+     *
+     * @param trackTypeVenues type=track 的场地列表（已含 parallelMax 等信息，但此处只用其数量）
+     * @return 径赛并发位（≥1）
+     */
+    static int deriveTrackSlots(List<Map<String, Object>> trackTypeVenues) {
+        return Math.max(1, trackTypeVenues == null ? 0 : trackTypeVenues.size());
     }
 
     // ==================== ⑦ 资源池 ====================
@@ -227,7 +243,15 @@ public class AutoSchedulePreparer {
             }
         }
         c.fieldVenueCodes = fieldVenueCodes;
-        c.trackPool = new Pool("径赛", c.trackSlots, new ArrayList<>(List.of(c.mainVenue)));
+        // 径赛池的场地清单 = 全部径赛场地：每条场地对应 1 个串行槽位（多场地才并行），
+        // 与 trackSlots(=径赛场地数) 一致，避免两槽位绑到同一条跑道上「并行」跑两个径赛项目。
+        List<String> trackVenueNames = c.trackTypeVenues.isEmpty()
+                ? new ArrayList<>(List.of(c.mainVenue))
+                : c.trackTypeVenues.stream().map(v -> nameOf(v)).collect(java.util.stream.Collectors.toList());
+        // 落库路径（MultiStartPlacementRunner）会按趟重建径赛池，必须把「全部径赛场地」一并传下去；
+        // 只传 mainVenue 会让多场地时的两个并发槽位复用同一条跑道，破坏径赛串行语义。
+        c.trackVenues = trackVenueNames;
+        c.trackPool = new Pool("径赛", c.trackSlots, trackVenueNames);
         c.fieldPool = new Pool("田赛", c.fieldSlots, c.fieldVenues);
         // 项目级指定场地时按需创建的独立并发池（key=场地编码），与主/田赛池并行
         c.dedicatedPools = new LinkedHashMap<>();

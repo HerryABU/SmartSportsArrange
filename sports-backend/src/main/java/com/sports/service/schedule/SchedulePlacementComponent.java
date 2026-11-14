@@ -311,12 +311,19 @@ public class SchedulePlacementComponent {
 
     /**
      * 占道冲突告警：实体占用跑道的项目（真实径赛 flag=true 或 占道但用田赛法 occupiesTrack=true）
-     * 彼此时间不得重叠——否则跑道被同时占用。趣味运动会(funSports)走田赛并行逻辑、不占道，可正常与径赛并行。
-     * 这里只做告警（不擅自挪动位置），把「哪些项目在何时撞了跑道」如实列清，由编排者错开。
+     * 在<b>同一条跑道</b>上时间不得重叠——否则跑道被同时占用。趣味运动会(funSports)走田赛并行逻辑、
+     * 不占道，可正常与径赛并行。
+     *
+     * <p><b>按场地分组比较</b>：径赛天生串行，唯一例外是「多场地」——两条不同跑道同一时刻各跑一个
+     * 项目是合法的，不能因为时间重叠就误报「跑道被同时占用」。旧实现把所有占道项目混在一起两两比较，
+     * 会把双跑道部署的合法并行误判为冲突，进而让 {@code businessOk} 变 false（接口 success=false）。
+     * 场地为空时归入同一组（保守按共享跑道处理，维持旧口径）。</p>
+     *
+     * <p>这里只做告警（不擅自挪动位置），把「哪些项目在何时撞了同一条跑道」如实列清，由编排者错开。</p>
      */
     public void warnTrackOccupancy(List<String> warnings, List<EventSchedule> saved) {
-        List<long[]> spans = new ArrayList<>();
-        List<EventSchedule> items = new ArrayList<>();
+        // 场地 → 该场地上占用跑道的项目 (span, row)
+        Map<String, List<Map.Entry<long[], EventSchedule>>> byVenue = new LinkedHashMap<>();
         for (EventSchedule s : saved) {
             Event e = s.getEvent();
             if (e == null || s.getDurationMinutes() == null) continue;
@@ -325,22 +332,27 @@ public class SchedulePlacementComponent {
             int start = SchedulePlacementMath.parseHHmm(s.getStartTime());
             if (start < 0) continue;
             int absStart = (s.getDay() != null ? (s.getDay() - 1) : 0) * 1440 + start;
-            spans.add(new long[]{absStart, absStart + s.getDurationMinutes()});
-            items.add(s);
+            long[] span = new long[]{absStart, absStart + s.getDurationMinutes()};
+            String venue = (s.getVenue() == null || s.getVenue().isBlank()) ? "(未指定场地)" : s.getVenue().trim();
+            byVenue.computeIfAbsent(venue, k -> new ArrayList<>())
+                    .add(new AbstractMap.SimpleEntry<>(span, s));
         }
         List<String> clashes = new ArrayList<>();
-        for (int i = 0; i < items.size(); i++) {
-            for (int j = i + 1; j < items.size(); j++) {
-                long[] a = spans.get(i), b = spans.get(j);
-                if (a[0] < b[1] && b[0] < a[1]) {
-                    clashes.add(String.format("「%s」(%s %s) 与「%s」(%s %s)",
-                            items.get(i).getEvent().getName(), items.get(i).getScheduleDate(), items.get(i).getStartTime(),
-                            items.get(j).getEvent().getName(), items.get(j).getScheduleDate(), items.get(j).getStartTime()));
+        for (List<Map.Entry<long[], EventSchedule>> group : byVenue.values()) {
+            for (int i = 0; i < group.size(); i++) {
+                for (int j = i + 1; j < group.size(); j++) {
+                    long[] a = group.get(i).getKey(), b = group.get(j).getKey();
+                    if (a[0] < b[1] && b[0] < a[1]) {
+                        EventSchedule sa = group.get(i).getValue(), sb = group.get(j).getValue();
+                        clashes.add(String.format("「%s」(%s %s) 与「%s」(%s %s)",
+                                sa.getEvent().getName(), sa.getScheduleDate(), sa.getStartTime(),
+                                sb.getEvent().getName(), sb.getScheduleDate(), sb.getStartTime()));
+                    }
                 }
             }
         }
         if (!clashes.isEmpty()) {
-            warnings.add(String.format("占道冲突告警：以下占用跑道的项目时间重叠（跑道被同时占用，需错开）：%s",
+            warnings.add(String.format("占道冲突告警：以下占用同一跑道的项目时间重叠（跑道被同时占用，需错开）：%s",
                     String.join("；", clashes)));
         }
     }
