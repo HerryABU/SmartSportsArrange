@@ -23,7 +23,10 @@
             <el-radio-group v-model="arrangeMode" size="default" class="mode-switch" @change="onArrangeModeChange">
               <el-radio-button value="rule">规则模式</el-radio-button>
               <el-radio-button value="optimize">优化模式</el-radio-button>
-              <el-radio-button value="ai" :class="{ 'is-ai-mode': true }">AI 模式</el-radio-button>
+              <!-- 无 onnx 模型时（CI / 仓库默认源码包）后端 aiAvailable=false，AI 模式置灰不可用 -->
+              <el-radio-button value="ai" :disabled="!aiAvailable" :class="{ 'is-ai-mode': true }">
+                AI 模式<span v-if="!aiAvailable" style="font-size:11px">（模型未就绪）</span>
+              </el-radio-button>
             </el-radio-group>
           </el-tooltip>
           <el-button :icon="Setting" @click="openMeetConfig">运动会日程配置</el-button>
@@ -1078,6 +1081,23 @@ const useCustomOrder = ref(false)
 // U39/B36：编排模式（rule=规则模式，确定性毫秒级；optimize=优化模式，Timefold+GA+LNS）。
 // 记忆到 localStorage：用户上次的选择在下次登录后保持，避免误用不期望的模式
 const arrangeMode = ref(localStorage.getItem('spt.arrangeMode') || 'optimize')
+// AI 模式可用性：由后端 /api/ai/status 的聚合开关 aiAvailable 决定。
+// 源码包不含 *.onnx 时为 false → AI 模式置灰；探测失败一律按不可用处理（保守，避免灰条点了报错）。
+const aiAvailable = ref(false)
+async function loadAiAvailability() {
+  try {
+    const st = (await request.get('/api/ai/status')) || {}
+    const d = st?.data ?? st
+    aiAvailable.value = !!d?.aiAvailable
+  } catch {
+    aiAvailable.value = false
+  }
+  // 上次若选了 AI 模式，但本次环境无模型 → 自动回退优化模式，避免进来就卡在灰色 AI 上
+  if (!aiAvailable.value && arrangeMode.value === 'ai') {
+    arrangeMode.value = 'optimize'
+    localStorage.setItem('spt.arrangeMode', 'optimize')
+  }
+}
 
 /**
  * 编排请求体：模式 + 约束参数。
@@ -1980,6 +2000,7 @@ function isNonFinish(t) {
 onMounted(() => {
   fetchList()
   fetchEvents()
+  loadAiAvailability()
   loadVenueCodes()
   loadResultEventIds()
   // 兼项统计自动跑一次：进入编排页就能看到「有多少人兼项、兼了几项」

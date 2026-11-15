@@ -70,7 +70,15 @@ public class ScheduleVerifier {
      */
     public record Row(long eventId, String eventName, String grade, int day, String date,
                       String slotName, int startMinute, int endMinute, String venue,
-                      String groupKey, Set<Long> athletes, Map<Long, String> athleteNames) {
+                      String groupKey, Set<Long> athletes, Map<Long, String> athleteNames, Boolean track) {
+
+        /** 兼容旧调用（track 未知）：兼项判定在 track 缺失时走保守口径，不影响既有自检用例。 */
+        public Row(long eventId, String eventName, String grade, int day, String date,
+                   String slotName, int startMinute, int endMinute, String venue,
+                   String groupKey, Set<Long> athletes, Map<Long, String> athleteNames) {
+            this(eventId, eventName, grade, day, date, slotName, startMinute, endMinute,
+                    venue, groupKey, athletes, athleteNames, null);
+        }
 
         /** 自然键：项目 × 年级，用于与「编排表应有的单元」对齐 */
         public String key() {

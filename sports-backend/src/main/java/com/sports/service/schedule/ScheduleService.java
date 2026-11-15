@@ -836,7 +836,7 @@ public class ScheduleService {
                     s.getDay() == null ? 0 : s.getDay(), s.getScheduleDate(), s.getTimeSlot(),
                     start, end, s.getVenue(),
                     group == null ? null : group + "@" + (s.getGrade() == null ? "" : s.getGrade()),
-                    athletes, names));
+                    athletes, names, e.getTrack()));
             String key = ScheduleVerifier.keyOf(e.getId(), s.getGrade());
             if (seen.add(key)) {
                 // rawDuration 传 0 = 「真实用时未知」：本入口读不到编排意图，

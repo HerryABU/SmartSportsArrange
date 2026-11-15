@@ -68,7 +68,7 @@ public class ScheduleSelfCheckComponent {
             rows.add(new ScheduleVerifier.Row(e.getId(), e.getName(), s.getGrade(),
                     s.getDay() == null ? 0 : s.getDay(), s.getScheduleDate(), s.getTimeSlot(),
                     parseMinute(s.getStartTime()), parseMinute(s.getEndTime()), s.getVenue(),
-                    groupKey, athletes, names));
+                    groupKey, athletes, names, e.getTrack()));
         }
         return rows;
     }

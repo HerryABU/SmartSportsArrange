@@ -87,8 +87,8 @@
                     模型缺失或加载失败时自动回退成绩种子，编排照常出结果。
                   </div>
                 </template>
-                <el-button type="danger" @click="useAiArrangeMode" :icon="MagicStick">
-                  AI 模式
+                <el-button type="danger" @click="useAiArrangeMode" :icon="MagicStick" :disabled="!aiStyleReady">
+                  AI 模式<span v-if="!aiStyleReady" style="font-size:11px">（模型未就绪）</span>
                 </el-button>
               </el-tooltip>
               <el-button-group>

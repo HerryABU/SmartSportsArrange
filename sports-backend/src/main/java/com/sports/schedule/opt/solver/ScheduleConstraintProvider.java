@@ -376,12 +376,17 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         return aS < bE + gap && bS < aE + gap;
     }
 
-    /** 运动员是否有两个项目赶不上（跨天用绝对分钟比较；口径同 ConflictService） */
+    /**
+     * 运动员是否有两个项目赶不上——口径同 ConflictMath / ConflictService：
+     * ① 跨天隔离（隔夜不算赶不上）；② 径田同段属可顺延、非致命，求解器不应为此罚分。
+     */
     public static boolean athleteClash(ScheduleUnit a, ScheduleUnit b) {
         if (a.getPlacement() == null || b.getPlacement() == null
                 || a.getDuration() == null || b.getDuration() == null) {
             return false;   // 未排入的单元不参与冲突判定（约束流/修复算子在混合状态下也会调用）
         }
+        if (a.getPlacement().getDay() != b.getPlacement().getDay()) return false;  // 跨天隔离
+        if (a.isTrack() != b.isTrack()) return false;  // 径田可顺延：径赛后直接去田赛
         return athleteClash(a.getPlacement().getAbsoluteStartMinute(), a.getDuration(),
                 b.getPlacement().getAbsoluteStartMinute(), b.getDuration());
     }

@@ -51,6 +51,16 @@ public class AiController {
         out.put("laneAdvisorAvailable", laneAdvisor.isAvailable());
         out.put("heatStaggerAdvisorAvailable", heatStaggerAdvisor.isAvailable());
         out.put("slotSplitAdvisorAvailable", slotSplitAdvisor.isAvailable());
+        // 聚合能力开关：供前端决定「AI 模式」是否可选。源码包不含 *.onnx（CI / 仓库默认形态）时，
+        // 六个 isAvailable() 全为 false → aiAvailable=false → 前端把 AI 模式置灰；
+        // 反之只要任一模型已加载就放开。缺模型本身不阻断编译/启动，仅影响这个开关。
+        boolean aiAvailable = inference.isAvailable()
+                || schemeGenerator.isAvailable()
+                || adversarial.isAvailable()
+                || laneAdvisor.isAvailable()
+                || heatStaggerAdvisor.isAvailable()
+                || slotSplitAdvisor.isAvailable();
+        out.put("aiAvailable", aiAvailable);
         out.put("mode", inference.isAvailable() ? "AI 建议优先" : "规则编排（AI 未就绪）");
         out.put("adversarialMode", "推理时自对抗：G 生成 → 精修器精修 → D 评判 → 多轮择优");
         out.put("laneMode", laneAdvisor.isAvailable()

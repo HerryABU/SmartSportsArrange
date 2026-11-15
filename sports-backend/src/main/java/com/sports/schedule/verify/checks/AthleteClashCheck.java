@@ -53,8 +53,20 @@ public final class AthleteClashCheck {
         }
     }
 
-    /** 同一运动员两个项目是否赶不上（跨天用绝对分钟比较；口径同 ConflictService） */
+    /**
+     * 同一运动员两个项目是否「赶不上」——必须与主检测链 ConflictMath 同口径：
+     *
+     * <p>① <b>跨天隔离</b>：不同天的项目隔了整夜，绝不算兼项冲突（原先只用绝对分钟裸算，
+     * day1 23:50 与 day2 00:00 会被误判为赶不上）。</p>
+     * <p>② <b>径田可顺延</b>：径赛与田赛同段重叠属于 Kind.SEQUENCED——运动员跑完径赛可直接去田赛，
+     * 非致命、不阻塞。只有同类项目（径径 / 田田）重叠才是真兼项冲突。</p>
+     *
+     * <p>track 任一为 null（旧调用）时退回保守口径：仅按时间重叠判，兼容历史自检用例。</p>
+     */
     static boolean athleteClash(Row a, Row b) {
+        if (a.day() != b.day()) return false;   // 跨天隔离：隔夜不算赶不上
+        Boolean ta = a.track(), tb = b.track();
+        if (ta != null && tb != null && ta != tb) return false;  // 径田同段：可顺延，非致命
         int aS = a.absoluteStart();
         int aE = aS + a.durationMinutes();
         int bS = b.absoluteStart();
