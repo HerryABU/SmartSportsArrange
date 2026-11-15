@@ -1,6 +1,6 @@
 # 🏃 运动会智能编排系统
 
-> Sports Meet Intelligent Arrangement System v2.8.7
+> Sports Meet Intelligent Arrangement System v2.9.0
 
 基于 **Spring Boot 3.4 + Vue 3 + Element Plus** 的全栈运动会管理系统。支持**超级管理员 / 体育老师 / 班主任 / 学生**多角色协作，覆盖**建站向导 → 班级名单导入 → 运动会报名 → 智能分组编排 → 赛程编排 → 成绩录入 → 排名积分 → 报表导出**全流程。
 
@@ -67,7 +67,7 @@
 如已生成 JAR，也可直接运行：
 
 ```bash
-java -jar sports-2.8.7.jar
+java -jar sports-2.9.0.jar
 ```
 
 浏览器访问 **http://localhost:8080**
@@ -1484,27 +1484,27 @@ sys_user ──┐
 
 ```bash
 # 默认 SQLite（零配置）
-java -jar sports-2.8.7.jar
+java -jar sports-2.9.0.jar
 
 # 自定义端口 + 绑定地址（推荐写法）
-java -jar sports-2.8.7.jar --app.port=8899 --app.host=::
+java -jar sports-2.9.0.jar --app.port=8899 --app.host=::
 
 # 等价的 Spring 标准写法
-java -jar sports-2.8.7.jar --server.port=9090
+java -jar sports-2.9.0.jar --server.port=9090
 
 # 内置帮助页（端口 / 网口 / 数据库选型 / .env 说明）：只打印并退出，不启动 Web 服务
-java -jar sports-2.8.7.jar -h        # 亦可 --help / -? / /?
+java -jar sports-2.9.0.jar -h        # 亦可 --help / -? / /?
 
 # 后台运行
-nohup java -jar sports-2.8.7.jar --app.port=8899 > app.log 2>&1 &
+nohup java -jar sports-2.9.0.jar --app.port=8899 > app.log 2>&1 &
 ```
 
 ### 🔄 更换服务端口与绑定地址（优先级从高到低）
 
 | 方式 | 操作 | 生效方式 |
 |------|------|----------|
-| ① 命令行参数 | `java -jar sports-2.8.7.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
-| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.8.7.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
+| ① 命令行参数 | `java -jar sports-2.9.0.jar --app.port=8899 --app.host=::`<br>`.\start.ps1 -Port 8899 -Host ::` / `start.bat --app.port=8899`<br>（也可用标准 `--server.port=9090`） | 立即（本次运行） |
+| ② 环境变量 | `SERVER_PORT=9090 java -jar sports-2.9.0.jar`（Linux/macOS）<br>`$env:SERVER_PORT="9090"; java -jar ...`（PowerShell） | 立即（本次运行） |
 | ③ 配置文件 | 编辑 `data/app-config.json`：`{"port": 9090, "host": "::"}` | 重启后生效 |
 | ④ 界面操作 | 登录后 **系统设置 → 基本设置 → 服务端口** → 保存 → 重启应用 | 重启后生效 |
 
@@ -2121,7 +2121,7 @@ curl -s -H "Authorization: Bearer <token>" http://localhost:8080/api/ai/status
 .\start.ps1                 # 启动（-Port 9090 自定义）
 ```
 
-> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.8.7.jar`**（内含前端静态资源 + **16 个 ONNX 模型**：19 类任务的统一编排超级模型 + 15 个专项 MoE；其中 `super_moe.onnx` 约 475 MB，故整包约 500 MB），部署无需额外目录。
+> 打包时 `build.ps1` 会自动把训练侧 `sports-ai/models/*.onnx` 同步进 `sports-backend/src/main/resources/models` 并打进 jar，**最终产物只有一个 `sports-2.9.0.jar`**（内含前端静态资源 + **16 个 ONNX 模型**：19 类任务的统一编排超级模型 + 15 个专项 MoE；其中 `super_moe.onnx` 约 475 MB，故整包约 500 MB），部署无需额外目录。
 >
 > ⚠️ 模型与代码的**配套关系**由 `sports-ai/models/MANIFEST.json` 固定（逐模型记录 `bytes` + `sha256` + 用途）。
 > 换模型务必重跑 `scripts/finalize_models.py`（导出 → 部署 → 刷清单）并用 `--check` 复核；
@@ -2134,12 +2134,12 @@ curl -s -H "Authorization: Bearer <token>" http://localhost:8080/api/ai/status
 ```
 release/
 ├─ jdk-21.0.12.1+1/          便携 JDK 21
-├─ sports-2.8.7.jar          嵌入式版：前端 + 16 个 ONNX 都在 jar 内（≈736 MB）
+├─ sports-2.9.0.jar          嵌入式版：前端 + 16 个 ONNX 都在 jar 内（≈736 MB）
 ├─ start.bat / start.ps1     启动程序（优先用随包 JDK）
 ├─ 使用说明.txt
 └─ external-models/          外置模型版：自成一包，模型在 jar 外，换模型无需重新打包
     ├─ jdk-21.0.12.1+1/      自带一份便携 JDK（两个版本可各自单独分发）
-    ├─ sports-2.8.7.jar      （≈147 MB，不含模型）
+    ├─ sports-2.9.0.jar      （≈147 MB，不含模型）
     ├─ models/               16 个 ONNX
     ├─ start.bat / start.ps1 启动时传 --sports.schedule.ai.model-dir=<models 目录>
     └─ 使用说明.txt
@@ -2177,7 +2177,7 @@ cd sports-frontend && npm install && npx vite build
 cd sports-backend && .\mvnw.cmd clean package -Dmaven.test.skip=true
 
 # 输出
-copy sports-backend\target\sports-2.8.7.jar .
+copy sports-backend\target\sports-2.9.0.jar .
 ```
 
 > ⚠️ 构建需 `-Dmaven.test.skip=true` 跳过测试编译（`src/test` 缺 `junit-platform-launcher`，既有问题）。
@@ -2242,4 +2242,4 @@ JAR 已内置终端编码自动检测。Windows CMD 用户建议用 `start.bat`�
 
 ---
 
-> **版本**: v2.8.7 | **API 端点**: 33 Controller / 276 个 | **构建日期**: 2026-10-06
+> **版本**: v2.9.0 | **API 端点**: 33 Controller / 276 个 | **构建日期**: 2026-10-06

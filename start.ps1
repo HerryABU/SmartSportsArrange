@@ -7,7 +7,7 @@ param([int]$Port = -1, [Alias("Host")][string]$BindHost = "")
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
 $root = $PSScriptRoot
-$jar = Join-Path $root "sports-2.8.7.jar"
+$jar = Join-Path $root "sports-2.9.0.jar"
 
 if (-not (Test-Path $jar)) {
   Write-Host "[ERROR] JAR not found, run .\build.ps1 first" -ForegroundColor Red
