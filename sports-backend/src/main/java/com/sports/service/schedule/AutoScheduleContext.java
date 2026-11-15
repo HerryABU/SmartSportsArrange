@@ -85,6 +85,11 @@ public class AutoScheduleContext {
     public boolean autoDays;
     /** 自动推算出的比赛天数（0 = 显式指定天数，未启用自动推算） */
     public int estimatedDays;
+    /** 时间三态（与日程配置契约一致）：fixed=硬约束天数；unlimited=不限；minimize=尽可能减少 */
+    public String dayMode;
+    /** 自动推算（unlimited/minimize）时给算法放宽的「天数上界」：estimatedDays + 缓冲，
+     *  使求解器有空间把兼项事件错开到不同天——无时间约束，而非卡死在 estimatedDays 这一硬上限 */
+    public int maxDays;
     public List<Window> windows;
     /** 全校避让时段（GLOBAL） */
     public List<AdminTimeProtection> globalBlocks;

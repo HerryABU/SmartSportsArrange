@@ -350,7 +350,9 @@ public class ScheduleService {
         List<Long> eventOrder = ctx.eventOrder;
         Map<Long, String> event2Group = ctx.event2Group;
         boolean minimizeDays = ctx.minimizeDays;
+        String dayMode = ctx.dayMode;
         int estimatedDays = ctx.estimatedDays;
+        int maxDays = ctx.maxDays;
         Map<Long, List<int[]>> eventBlocked = ctx.eventBlocked;
         Map<String, Object> feasibility = ctx.feasibility;
         Pool trackPool = ctx.trackPool;
@@ -611,6 +613,9 @@ public class ScheduleService {
         result.put("configUsed", cfg);
         // 空时间限制：本次自动推算的比赛天数（0 = 显式指定天数，未启用自动推算）
         result.put("estimatedDays", estimatedDays);
+        // 时间三态（交给算法的「无时间约束」口径）：fixed=硬约束天数；unlimited/minimize=无时间约束
+        result.put("dayMode", dayMode);
+        result.put("maxDays", maxDays);
         result.put("autoArrange", Map.of("ok", autoArrangeOk, "failed", autoArrangeFails.size(), "fails", autoArrangeFails));
         // B01/U01/B17：本次自动编排补回的决赛赛程条目数（0 = 无需补，赛程表已与编排一致）
         result.put("restoredFinalScheduleRows", restoredFinals);

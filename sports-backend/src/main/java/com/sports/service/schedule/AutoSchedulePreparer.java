@@ -285,10 +285,18 @@ public class AutoSchedulePreparer {
      */
     private void buildWindows(AutoScheduleContext c) {
         Map<String, Object> cfg = c.cfg;
+        // I/O 归一化（三态只认 0 / -1 / 正整数）：任何 < -1 的输入统一视作「尽可能减少」(-1)，
+        // 既不接受无意义的极小值，也保证下游 dayMode 只会出现 fixed/unlimited/minimize 三态。
         int rawDays = intVal(cfg.get("days"), Integer.MIN_VALUE);
+        if (rawDays < -1) {
+            rawDays = -1;
+            cfg.put("days", rawDays);
+        }
         c.minimizeDays = rawDays < 0;
         c.autoDays = Boolean.TRUE.equals(cfg.get("autoDays")) || rawDays == 0;
+        c.dayMode = deriveDayMode(c.minimizeDays, c.autoDays);
         c.estimatedDays = 0;
+        c.maxDays = 0;
         if (c.autoDays || c.minimizeDays) {
             List<Map<String, Object>> dayConfigs = castList(cfg.get("dayConfigs"));
             List<Map<String, Object>> template = dayConfigs.isEmpty()
@@ -301,18 +309,52 @@ public class AutoSchedulePreparer {
                 dailyMinutes = 30 * 60;   // 兜底：半小时级单日容量
             }
             c.estimatedDays = DaysEstimator.estimateDays(c.units, dailyMinutes, c.trackSlots, c.fieldSlots, c.unitInterval);
-            cfg.put("dayConfigs", buildAutoDayConfigs(cfg, c.estimatedDays, template));
-            cfg.put("days", c.estimatedDays);
-            log.info("{}：按每日 {} 分钟自动推算需 {} 天",
+            // 「无时间约束」的落地：unlimited / minimize 不能被卡死在 estimatedDays 这一个硬上限上——
+            // 否则兼项事件无处错开，所谓「无时间约束」只是一句空话。这里在估算下界之上放宽一个
+            // 缓冲天数上界（dayMode 已置为 unlimited/minimize，成本模型 dayLimitOf 据此返回 0，
+            // 即「工期不算超限」），把「能否多占几天来错开兼项」交给算法自行权衡。
+            c.maxDays = noConstraintMaxDays(c.estimatedDays);
+            cfg.put("dayConfigs", buildAutoDayConfigs(cfg, c.maxDays, template));
+            cfg.put("days", c.maxDays);
+            // 显式回写 dayMode，使成本模型与求解器口径一致（此前从未回写，
+            // 导致 0/-1 被 dayLimitOf 按「旧配置 days>0」分支误判成固定上限）。
+            cfg.put("dayMode", c.dayMode);
+            log.info("{}：按每日 {} 分钟自动推算至少需 {} 天，放宽至 {} 天（无时间约束，交由算法错开兼项）",
                     c.minimizeDays ? "时间目标=尽可能减少(压缩工期)" : "时间限制=不限",
-                    dailyMinutes, c.estimatedDays);
+                    dailyMinutes, c.estimatedDays, c.maxDays);
+        } else {
+            // fixed：显式写 dayMode，避免下游 dayLimitOf 把固定天数误判
+            cfg.put("dayMode", c.dayMode);
         }
 
-        // 时间窗：按 (天, 时段) 顺序铺开
+        // 时间窗：按 (天, 时段) 顺序铺开（unlimited/minimize 已含缓冲天，求解器可自由使用）
         c.windows = buildComponent.buildWindows(cfg);
         if (c.windows.isEmpty()) {
             throw new RuntimeException("运动会日程未配置可用时段，请先在「系统设置 → 运动会日程」中配置日期与时段");
         }
+    }
+
+    /**
+     * 时间三态 → dayMode（与日程配置契约一致，单一裁决点）：
+     * {@code minimizeDays}（days&lt;0）→ {@code minimize}；{@code autoDays}（days==0 或开启 autoDays）→ {@code unlimited}；
+     * 其余（days&gt;0 且未开启 autoDays）→ {@code fixed}。
+     *
+     * <p>抽成纯函数是为了可测：调用方与测试共用同一份三态推导，
+     * 避免「前端说不限、求解器却按固定上限算」这类两套口径的静默失效。</p>
+     */
+    static String deriveDayMode(boolean minimizeDays, boolean autoDays) {
+        if (minimizeDays) return "minimize";
+        if (autoDays) return "unlimited";
+        return "fixed";
+    }
+
+    /**
+     * 「无时间约束」下的天数上界：在估算下界之上加一个缓冲，使求解器有空间把兼项事件错开到不同天。
+     * 缓冲随规模温和增长但封顶（最多 +6），既给足错开余地，又不至于把搜索空间撑爆。
+     */
+    static int noConstraintMaxDays(int estimatedDays) {
+        int buffer = Math.min(6, Math.max(2, estimatedDays / 4));
+        return estimatedDays + buffer;
     }
 
     /** 日期按 startDate 顺延；各天时段统一采用模板（自动模式下不区分各天差异）。 */
