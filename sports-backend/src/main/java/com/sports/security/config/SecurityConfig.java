@@ -123,6 +123,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/system/meet-schedule/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/system/grade-order/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
                         .requestMatchers("/api/system/arrange-rule/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        // 命名预设方案（编排顺序 / 项目模板）：体育老师可维护
+                        .requestMatchers("/api/system/order-presets/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
+                        .requestMatchers("/api/system/template-presets/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")
 
                         // ===== 数据一致性校验（U10/B15）：体育老师及以上 =====
                         .requestMatchers("/api/validate/**").hasAnyAuthority("ROLE_TEACHER", "ROLE_SUPER_ADMIN")

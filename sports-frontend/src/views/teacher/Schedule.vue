@@ -601,6 +601,29 @@
     <el-dialog v-model="showConfigDialog" title="运动会日程配置" width="860px" :close-on-click-modal="false"
       top="4vh">
       <el-form label-width="130px" label-position="left">
+        <!-- 编排顺序命名方案：整份日程配置快照，多套保存/切换/应用/删除/恢复 -->
+        <el-form-item label="编排顺序方案">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%">
+            <el-select v-model="activeOrderPresetId" style="width:220px" placeholder="选择命名方案">
+              <el-option v-for="p in orderPresets" :key="p.id"
+                         :label="p.name + (p.deleted ? '（已删除）' : '')" :value="p.id" />
+            </el-select>
+            <el-button size="small" type="success" plain @click="saveOrderPreset">另存为</el-button>
+            <el-button size="small" type="primary" plain
+                       :disabled="!activeOrderPreset || activeOrderPreset.deleted"
+                       @click="updateOrderPreset">覆盖更新</el-button>
+            <el-button v-if="activeOrderPreset?.deleted" size="small" type="warning" plain
+                       @click="restoreOrderPreset">恢复</el-button>
+            <el-button v-else size="small" type="danger" plain :disabled="!activeOrderPreset"
+                       @click="deleteOrderPreset">删除</el-button>
+            <el-button size="small" type="warning" plain
+                       :disabled="!activeOrderPreset || activeOrderPreset.deleted"
+                       @click="applyOrderPreset">应用此方案</el-button>
+            <span class="hint" style="flex-basis:100%">
+              方案保存整份日程配置（日期/时段/年级顺序/项目顺序/田赛分组/并数）；「应用」立即写回当前配置，重新编排后生效。
+            </span>
+          </div>
+        </el-form-item>
         <el-form-item label="运动会名称">
           <el-input v-model="meetForm.meetName" maxlength="40" />
         </el-form-item>
@@ -1473,6 +1496,105 @@ async function fetchList() {
   }
 }
 
+// ==================== 编排顺序命名方案 ====================
+// 本 SFC 是纯 JS（<script setup> 无 lang="ts"），此处不写 TS 类型标注
+const orderPresets = ref([])
+const activeOrderPresetId = ref(null)
+const activeOrderPreset = computed(() =>
+  orderPresets.value.find(p => p.id === activeOrderPresetId.value) || null)
+
+async function loadOrderPresets() {
+  try {
+    const res = await request.get('/system/order-presets')
+    const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : [])
+    orderPresets.value = list
+    // 列表含软删方案（供恢复），默认选中第一个未删除的
+    if (!activeOrderPresetId.value
+        || !list.some(p => p.id === activeOrderPresetId.value && !p.deleted)) {
+      const first = list.find(p => !p.deleted)
+      activeOrderPresetId.value = first ? first.id : (list.length ? list[0].id : null)
+    }
+  } catch {
+    orderPresets.value = []
+    activeOrderPresetId.value = null
+  }
+}
+
+/** 快照与「保存配置」共用同一份提交体，避免预设与当前配置口径漂移 */
+function currentOrderSnapshot() { return buildMeetSchedulePayload() }
+
+async function saveOrderPreset() {
+  try {
+    const { value: name } = await ElMessageBox.prompt('给这套编排顺序起个名字', '另存为顺序方案', {
+      confirmButtonText: '保存', cancelButtonText: '取消', inputPattern: /\S+/,
+      inputErrorMessage: '方案名不能为空'
+    })
+    await request.post('/system/order-presets', {
+      name, note: '自定义编排顺序方案', snapshot: currentOrderSnapshot()
+    })
+    ElMessage.success('顺序方案已保存')
+    await loadOrderPresets()
+  } catch (e) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '保存失败')
+  }
+}
+
+async function updateOrderPreset() {
+  const p = activeOrderPreset.value
+  if (!p || p.deleted) return
+  try {
+    await ElMessageBox.confirm(`用当前配置覆盖方案「${p.name}」？`, '覆盖更新', { type: 'warning' })
+    await request.put(`/system/order-presets/${p.id}`, {
+      note: p.note || '', snapshot: currentOrderSnapshot()
+    })
+    ElMessage.success('方案已更新')
+    await loadOrderPresets()
+  } catch (e) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '更新失败')
+  }
+}
+
+async function applyOrderPreset() {
+  const p = activeOrderPreset.value
+  if (!p || p.deleted) return
+  try {
+    await ElMessageBox.confirm(
+      `应用方案「${p.name}」会覆盖当前日程配置，确定继续？`, '应用顺序方案', { type: 'warning' })
+    await request.post(`/system/order-presets/${p.id}/apply`)
+    // 复用配置加载：回填表单并重建项目顺序列表，保证界面与库里一致
+    await openMeetConfig()
+    ElMessage.success('方案已应用，重新点击「一键编排赛程」后生效')
+  } catch (e) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '应用失败')
+  }
+}
+
+async function deleteOrderPreset() {
+  const p = activeOrderPreset.value
+  if (!p) return
+  try {
+    await ElMessageBox.confirm(`确定删除顺序方案「${p.name}」？`, '提示', { type: 'warning' })
+    await request.delete(`/system/order-presets/${p.id}`)
+    ElMessage.success('已删除')
+    activeOrderPresetId.value = null
+    await loadOrderPresets()
+  } catch (e) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '删除失败')
+  }
+}
+
+async function restoreOrderPreset() {
+  const p = activeOrderPreset.value
+  if (!p || !p.deleted) return
+  try {
+    await request.post(`/system/order-presets/${p.id}/restore`)
+    ElMessage.success('方案已恢复')
+    await loadOrderPresets()
+  } catch (e) {
+    if (e?.message) ElMessage.error(e.message || '恢复失败')
+  }
+}
+
 // ==================== 运动会日程配置 ====================
 function blankSlots() {
   return [{ key: 'AM', name: '上午', start: '08:00', end: '11:30' },
@@ -1481,6 +1603,8 @@ function blankSlots() {
 
 async function openMeetConfig() {
   showConfigDialog.value = true
+  // 每次打开都刷新命名方案列表（多端/其他会话的改动即时可见）
+  loadOrderPresets()
   try {
     const res = await request.get('/system/meet-schedule')
     Object.assign(meetForm, res)

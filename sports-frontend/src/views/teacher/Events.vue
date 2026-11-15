@@ -268,18 +268,62 @@
       width="700px"
       :close-on-click-modal="false"
     >
+      <!-- 命名模板方案：多套可切换 / 另存为 / 覆盖更新 / 删除 / 恢复（内置方案不可改删） -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:13px;color:#606266">模板方案：</span>
+        <el-select v-model="activePresetId" style="width:200px" @change="onPresetChange"
+                   placeholder="选择模板方案">
+          <el-option v-for="p in templatePresets" :key="p.id"
+                     :label="p.name + (p.deleted ? '（已删除）' : (p.builtin ? '（内置）' : ''))"
+                     :value="p.id" />
+        </el-select>
+        <el-button size="small" type="success" plain @click="saveCurrentAsPreset">另存为</el-button>
+        <el-button size="small" type="primary" plain
+                   :disabled="!activePreset || activePreset.builtin || activePreset.deleted"
+                   @click="updateCurrentPreset">覆盖更新</el-button>
+        <el-button v-if="activePreset?.deleted" size="small" type="warning" plain
+                   @click="restoreCurrentPreset">恢复</el-button>
+        <el-button v-else size="small" type="danger" plain
+                   :disabled="!activePreset || activePreset.builtin"
+                   @click="deleteCurrentPreset">删除</el-button>
+        <span class="hint" style="margin-left:auto">
+          点下方任一项目即可套用；内置方案不可改，可「另存为」后自定义
+        </span>
+      </div>
+      <!-- 自定义方案可增删模板项；改动先落在本地列表，点「覆盖更新」才写回后端 -->
+      <div v-if="editablePreset"
+           style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <el-input v-model="newTemplate.name" size="small" placeholder="项目名称（如 3000米）"
+                  style="width:160px" clearable />
+        <el-select v-model="newTemplate.eventType" size="small" style="width:100px">
+          <el-option label="径赛" value="径赛" />
+          <el-option label="田赛" value="田赛" />
+        </el-select>
+        <el-select v-model="newTemplate.gender" size="small" style="width:110px">
+          <el-option label="男子组" value="男子组" />
+          <el-option label="女子组" value="女子组" />
+          <el-option label="混合组" value="混合组" />
+        </el-select>
+        <el-select v-model="newTemplate.category" size="small" style="width:110px">
+          <el-option v-for="c in ['跑步类', '跳跃类', '投掷类', '接力类']" :key="c" :label="c" :value="c" />
+        </el-select>
+        <el-button size="small" type="primary" plain :icon="Plus" @click="addTemplateItem">添加</el-button>
+        <span class="hint">增删后需点「覆盖更新」才会保存到方案</span>
+      </div>
       <el-tabs v-model="templateCategory" type="border-card">
         <el-tab-pane label="跑步类" name="跑步类">
           <div class="template-list">
             <div
               v-for="tpl in runningTemplates"
-              :key="tpl.name"
+              :key="tpl.name + '_' + tpl.gender"
               class="template-item"
               @click="selectTemplate(tpl)"
             >
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.gender }} · {{ tpl.eventType }}</span>
               <el-icon :size="18" color="#67c23a"><CircleCheck /></el-icon>
+              <el-button v-if="editablePreset" link type="danger" size="small" title="从本方案中移除"
+                         @click.stop="removeTemplateItem(tpl)">移除</el-button>
             </div>
           </div>
         </el-tab-pane>
@@ -287,13 +331,15 @@
           <div class="template-list">
             <div
               v-for="tpl in jumpingTemplates"
-              :key="tpl.name"
+              :key="tpl.name + '_' + tpl.gender"
               class="template-item"
               @click="selectTemplate(tpl)"
             >
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.gender }} · {{ tpl.eventType }}</span>
               <el-icon :size="18" color="#67c23a"><CircleCheck /></el-icon>
+              <el-button v-if="editablePreset" link type="danger" size="small" title="从本方案中移除"
+                         @click.stop="removeTemplateItem(tpl)">移除</el-button>
             </div>
           </div>
         </el-tab-pane>
@@ -301,13 +347,15 @@
           <div class="template-list">
             <div
               v-for="tpl in throwingTemplates"
-              :key="tpl.name"
+              :key="tpl.name + '_' + tpl.gender"
               class="template-item"
               @click="selectTemplate(tpl)"
             >
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.gender }} · {{ tpl.eventType }}</span>
               <el-icon :size="18" color="#67c23a"><CircleCheck /></el-icon>
+              <el-button v-if="editablePreset" link type="danger" size="small" title="从本方案中移除"
+                         @click.stop="removeTemplateItem(tpl)">移除</el-button>
             </div>
           </div>
         </el-tab-pane>
@@ -315,13 +363,15 @@
           <div class="template-list">
             <div
               v-for="tpl in relayTemplates"
-              :key="tpl.name"
+              :key="tpl.name + '_' + tpl.gender"
               class="template-item"
               @click="selectTemplate(tpl)"
             >
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.gender }} · {{ tpl.eventType }}</span>
               <el-icon :size="18" color="#67c23a"><CircleCheck /></el-icon>
+              <el-button v-if="editablePreset" link type="danger" size="small" title="从本方案中移除"
+                         @click.stop="removeTemplateItem(tpl)">移除</el-button>
             </div>
           </div>
         </el-tab-pane>
@@ -786,41 +836,166 @@ interface TemplateItem {
   name: string
   eventType: string
   gender: string
+  category?: string
 }
 
-// ==================== 预设模板数据 ====================
-const runningTemplates: TemplateItem[] = [
-  { name: '100米', eventType: '径赛', gender: '男子组' },
-  { name: '100米', eventType: '径赛', gender: '女子组' },
-  { name: '200米', eventType: '径赛', gender: '男子组' },
-  { name: '200米', eventType: '径赛', gender: '女子组' },
-  { name: '400米', eventType: '径赛', gender: '男子组' },
-  { name: '400米', eventType: '径赛', gender: '女子组' },
-  { name: '800米', eventType: '径赛', gender: '男子组' },
-  { name: '800米', eventType: '径赛', gender: '女子组' },
-  { name: '1500米', eventType: '径赛', gender: '男子组' },
-  { name: '1500米', eventType: '径赛', gender: '女子组' },
+// ==================== 预设模板数据（来自后端命名方案，失败时回退内置） ====================
+const FALLBACK_TEMPLATES: TemplateItem[] = [
+  { name: '100米', eventType: '径赛', gender: '男子组', category: '跑步类' },
+  { name: '100米', eventType: '径赛', gender: '女子组', category: '跑步类' },
+  { name: '200米', eventType: '径赛', gender: '男子组', category: '跑步类' },
+  { name: '200米', eventType: '径赛', gender: '女子组', category: '跑步类' },
+  { name: '400米', eventType: '径赛', gender: '男子组', category: '跑步类' },
+  { name: '400米', eventType: '径赛', gender: '女子组', category: '跑步类' },
+  { name: '800米', eventType: '径赛', gender: '男子组', category: '跑步类' },
+  { name: '800米', eventType: '径赛', gender: '女子组', category: '跑步类' },
+  { name: '1500米', eventType: '径赛', gender: '男子组', category: '跑步类' },
+  { name: '1500米', eventType: '径赛', gender: '女子组', category: '跑步类' },
+  { name: '跳高', eventType: '田赛', gender: '男子组', category: '跳跃类' },
+  { name: '跳高', eventType: '田赛', gender: '女子组', category: '跳跃类' },
+  { name: '跳远', eventType: '田赛', gender: '男子组', category: '跳跃类' },
+  { name: '跳远', eventType: '田赛', gender: '女子组', category: '跳跃类' },
+  { name: '铅球', eventType: '田赛', gender: '男子组', category: '投掷类' },
+  { name: '铅球', eventType: '田赛', gender: '女子组', category: '投掷类' },
+  { name: '实心球', eventType: '田赛', gender: '男子组', category: '投掷类' },
+  { name: '实心球', eventType: '田赛', gender: '女子组', category: '投掷类' },
+  { name: '4×100米接力', eventType: '径赛', gender: '男子组', category: '接力类' },
+  { name: '4×100米接力', eventType: '径赛', gender: '女子组', category: '接力类' },
+  { name: '4×100米接力', eventType: '径赛', gender: '混合组', category: '接力类' },
 ]
 
-const jumpingTemplates: TemplateItem[] = [
-  { name: '跳高', eventType: '田赛', gender: '男子组' },
-  { name: '跳高', eventType: '田赛', gender: '女子组' },
-  { name: '跳远', eventType: '田赛', gender: '男子组' },
-  { name: '跳远', eventType: '田赛', gender: '女子组' },
-]
+interface TemplatePreset {
+  id: number
+  name: string
+  note?: string
+  templates: TemplateItem[]
+  builtin?: boolean
+  deleted?: boolean
+}
+const templatePresets = ref<TemplatePreset[]>([])
+const activePresetId = ref<number | null>(null)
+const activePreset = computed(() => templatePresets.value.find(p => p.id === activePresetId.value) || null)
+// 当前方案的项目，按分类投影给四个 Tab；分类缺失的按项目类型兜底归入跑步/跳跃类
+const activeTemplates = computed<TemplateItem[]>(() =>
+  activePreset.value?.templates || FALLBACK_TEMPLATES)
+const runningTemplates = computed(() => activeTemplates.value.filter(t =>
+  (t.category || (t.eventType === '径赛' ? '跑步类' : '跳跃类')) === '跑步类'))
+const jumpingTemplates = computed(() => activeTemplates.value.filter(t =>
+  (t.category || '') === '跳跃类'))
+const throwingTemplates = computed(() => activeTemplates.value.filter(t =>
+  (t.category || '') === '投掷类'))
+const relayTemplates = computed(() => activeTemplates.value.filter(t =>
+  (t.category || '') === '接力类' || (t.name || '').includes('接力')))
+// 仅「自定义 + 未删除」方案允许增删模板项与覆盖更新；内置/已删方案只读
+const editablePreset = computed(() =>
+  !!activePreset.value && !activePreset.value.builtin && !activePreset.value.deleted)
+const newTemplate = reactive({ name: '', eventType: '径赛', gender: '男子组', category: '跑步类' })
 
-const throwingTemplates: TemplateItem[] = [
-  { name: '铅球', eventType: '田赛', gender: '男子组' },
-  { name: '铅球', eventType: '田赛', gender: '女子组' },
-  { name: '实心球', eventType: '田赛', gender: '男子组' },
-  { name: '实心球', eventType: '田赛', gender: '女子组' },
-]
+async function loadTemplatePresets() {
+  try {
+    const res: any = await request.get('/system/template-presets')
+    const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : [])
+    templatePresets.value = list
+    // 列表含软删方案（供恢复），默认选中第一个「未删除」的方案
+    if (!activePresetId.value || !list.some((p: TemplatePreset) => p.id === activePresetId.value && !p.deleted)) {
+      const first = list.find((p: TemplatePreset) => !p.deleted)
+      activePresetId.value = first ? first.id : (list.length ? list[0].id : null)
+    }
+  } catch {
+    templatePresets.value = []
+    activePresetId.value = null
+  }
+}
 
-const relayTemplates: TemplateItem[] = [
-  { name: '4×100米接力', eventType: '径赛', gender: '男子组' },
-  { name: '4×100米接力', eventType: '径赛', gender: '女子组' },
-  { name: '4×100米接力', eventType: '径赛', gender: '混合组' },
-]
+function onPresetChange() { /* activeTemplates 是 computed，切换 id 自动重算 */ }
+
+async function saveCurrentAsPreset() {
+  try {
+    const { value: name } = await ElMessageBox.prompt('给这套模板起个名字', '另存为模板方案', {
+      confirmButtonText: '保存', cancelButtonText: '取消', inputPattern: /\S+/,
+      inputErrorMessage: '方案名不能为空'
+    })
+    await request.post('/system/template-presets', {
+      name, note: '自定义模板方案', templates: activeTemplates.value.map(t => ({
+        name: t.name, eventType: t.eventType, gender: t.gender, category: t.category || ''
+      }))
+    })
+    ElMessage.success('模板方案已保存')
+    await loadTemplatePresets()
+  } catch (e: any) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '保存失败')
+  }
+}
+
+async function deleteCurrentPreset() {
+  const p = activePreset.value
+  if (!p || p.builtin) { ElMessage.warning('内置方案不可删除'); return }
+  try {
+    await ElMessageBox.confirm(`确定删除模板方案「${p.name}」？`, '提示', { type: 'warning' })
+    await request.delete(`/system/template-presets/${p.id}`)
+    ElMessage.success('已删除')
+    activePresetId.value = null
+    await loadTemplatePresets()
+  } catch (e: any) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '删除失败')
+  }
+}
+
+/** 覆盖更新：把当前（可能已增删过）的模板列表写回自定义方案 */
+async function updateCurrentPreset() {
+  const p = activePreset.value
+  if (!p || !editablePreset.value) return
+  try {
+    await ElMessageBox.confirm(
+      `用当前 ${activeTemplates.value.length} 条模板覆盖方案「${p.name}」？`, '覆盖更新',
+      { type: 'warning' })
+    await request.put(`/system/template-presets/${p.id}`, {
+      note: p.note || '', templates: activeTemplates.value.map(t => ({
+        name: t.name, eventType: t.eventType, gender: t.gender, category: t.category || ''
+      }))
+    })
+    ElMessage.success('方案已更新')
+    await loadTemplatePresets()
+  } catch (e: any) {
+    if (e !== 'cancel' && e?.message) ElMessage.error(e.message || '更新失败')
+  }
+}
+
+async function restoreCurrentPreset() {
+  const p = activePreset.value
+  if (!p || !p.deleted) return
+  try {
+    await request.post(`/system/template-presets/${p.id}/restore`)
+    ElMessage.success('方案已恢复')
+    await loadTemplatePresets()
+  } catch (e: any) {
+    if (e?.message) ElMessage.error(e.message || '恢复失败')
+  }
+}
+
+/** 本地增删模板项：直接改响应式方案对象，computed 的四个分类会自动重算 */
+function addTemplateItem() {
+  const p = activePreset.value
+  if (!p || !editablePreset.value) return
+  const name = String(newTemplate.name || '').trim()
+  if (!name) { ElMessage.warning('请填写项目名称'); return }
+  if (!Array.isArray(p.templates)) p.templates = []
+  if (p.templates.some(t => t.name === name && t.gender === newTemplate.gender)) {
+    ElMessage.warning('同名同组别的项目已存在'); return
+  }
+  p.templates.push({
+    name, eventType: newTemplate.eventType, gender: newTemplate.gender, category: newTemplate.category
+  })
+  newTemplate.name = ''
+  ElMessage.success('已加入当前方案，点「覆盖更新」保存')
+}
+
+function removeTemplateItem(tpl: TemplateItem) {
+  const p = activePreset.value
+  if (!p || !editablePreset.value || !Array.isArray(p.templates)) return
+  const i = p.templates.indexOf(tpl)
+  if (i >= 0) p.templates.splice(i, 1)
+}
 
 // ==================== 状态 ====================
 const loading = ref(false)
@@ -1130,6 +1305,8 @@ function handleSizeChange(size: number) {
 function openTemplateDialog() {
   templateCategory.value = '跑步类'
   templateDialogVisible.value = true
+  // 每次打开都重新拉取命名方案，保证多端/其他会话的改动即时可见
+  loadTemplatePresets()
 }
 
 // 选择模板
