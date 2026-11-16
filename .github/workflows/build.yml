@@ -1,6 +1,7 @@
 name: Build
 
-# CI 自动化构建：前端 vite 产物 → resources/static，后端 mvn package，产出可下载 jar。
+# CI 自动化构建（只构建，不跑测试；测试门禁由 test.yml 负责）：
+# 前端 vite 产物 → resources/static，后端 mvn package，产出可下载 jar。
 # - 分支 push / PR：构建并上传 artifact，不发布。
 # - tag push（v*）：额外校验 tag 与 pom 版本一致，并创建 GitHub Release 附带 jar。
 # 版本号唯一来源是 pom.xml（<project><version>），前端 package.json 由本地脚本同步；
@@ -77,6 +78,19 @@ jobs:
           test -f sports-backend/src/main/resources/static/index.html \
             || { echo "::error::Frontend build produced no index.html"; exit 1; }
           echo "Frontend output OK"
+
+      # AI 能力可选：onnx 模型不入 git（.gitignore *.onnx），全新 checkout 必然没有模型。
+      # 这里只「报告」不「拦截」——无模型时后端 lazy 加载返回不可用，前端据此把 AI 模式置灰，
+      # 编排自动回退规则链，构建照常成功（不 fail）。目的：让「无模型也能构建」在 CI 日志可见可审计。
+      - name: Report AI model availability (build never fails on missing onnx)
+        shell: bash
+        run: |
+          COUNT=$(find sports-backend/src/main/resources/models -maxdepth 1 -name '*.onnx' 2>/dev/null | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::notice::No ONNX models present (expected in CI). AI capability disabled, frontend will grey out AI mode; rule-based orchestration is used. Build continues."
+          else
+            echo "::notice::Found $COUNT ONNX model(s) in source tree; they will be packaged."
+          fi
 
       - name: Build jar (skip tests)
         working-directory: sports-backend
