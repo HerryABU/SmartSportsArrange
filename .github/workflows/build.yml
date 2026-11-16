@@ -85,7 +85,12 @@ jobs:
       - name: Report AI model availability (build never fails on missing onnx)
         shell: bash
         run: |
-          COUNT=$(find sports-backend/src/main/resources/models -maxdepth 1 -name '*.onnx' 2>/dev/null | wc -l)
+          MODELS_DIR="sports-backend/src/main/resources/models"
+          # 先判目录存在再统计：CI 全新 checkout 无 models 目录，直接 find 会因 pipefail 让步骤失败
+          COUNT=0
+          if [ -d "$MODELS_DIR" ]; then
+            COUNT=$(find "$MODELS_DIR" -maxdepth 1 -name '*.onnx' -type f | wc -l)
+          fi
           if [ "$COUNT" -eq 0 ]; then
             echo "::notice::No ONNX models present (expected in CI). AI capability disabled, frontend will grey out AI mode; rule-based orchestration is used. Build continues."
           else
