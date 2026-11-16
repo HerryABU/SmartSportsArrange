@@ -1,0 +1,110 @@
+name: Build
+
+# CI 自动化构建：前端 vite 产物 → resources/static，后端 mvn package，产出可下载 jar。
+# - 分支 push / PR：构建并上传 artifact，不发布。
+# - tag push（v*）：额外校验 tag 与 pom 版本一致，并创建 GitHub Release 附带 jar。
+# 版本号唯一来源是 pom.xml（<project><version>），前端 package.json 由本地脚本同步；
+# CI 从 pom 解析，不写死版本，避免 tag/版本漂移。
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: sports-frontend/package-lock.json
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # 解析版本号，供 artifact 命名、tag 校验、release 标题复用（单一来源 pom.xml）
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('sports-backend/pom.xml').getroot(); print(r.find('{http://maven.apache.org/POM/4.0.0}version').text)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved project version: $VERSION"
+
+      # tag push 时强校验：tag 必须等于 v<pom 版本>，打错直接 fail（如 v2.9.0 对 2.9.0）
+      - name: Verify tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          EXPECTED="v${{ steps.ver.outputs.version }}"
+          if [ "$TAG_NAME" != "$EXPECTED" ]; then
+            echo "::error::Tag '$TAG_NAME' does not match project version '$EXPECTED'. Refusing to build release."
+            exit 1
+          fi
+          echo "Tag $TAG_NAME matches project version."
+
+      - name: Install frontend dependencies
+        working-directory: sports-frontend
+        run: npm ci
+
+      # CI 是全新 checkout，static 目录不存在；先清一次保证产物干净（本地是重命名清理，
+      # CI 无安全删除限制，可直接删）。emptyOutDir:false 不影响，vite 会重建目录。
+      - name: Clean stale static output
+        run: rm -rf sports-backend/src/main/resources/static
+
+      - name: Build frontend
+        working-directory: sports-frontend
+        run: npm run build
+
+      - name: Verify frontend output
+        shell: bash
+        run: |
+          test -f sports-backend/src/main/resources/static/index.html \
+            || { echo "::error::Frontend build produced no index.html"; exit 1; }
+          echo "Frontend output OK"
+
+      - name: Build jar (skip tests)
+        working-directory: sports-backend
+        run: mvn -B clean package -DskipTests
+
+      - name: Verify jar
+        shell: bash
+        run: |
+          JAR="sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar"
+          test -f "$JAR" || { echo "::error::Expected jar not found: $JAR"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Implementation-Version: ${{ steps.ver.outputs.version }}" \
+            || { echo "::error::Jar manifest version mismatch"; exit 1; }
+          unzip -p "$JAR" BOOT-INF/classes/static/index.html | grep -q . \
+            || { echo "::error::Frontend index.html missing from jar"; exit 1; }
+          echo "Jar verified: $JAR"
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-${{ steps.ver.outputs.version }}
+          path: sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar
+          if-no-files-found: error
+
+      # 仅 tag push 发布 Release，jar 作为 release asset 供下载
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.ver.outputs.version }}
+          files: sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar
+          generate_release_notes: true
