@@ -1,0 +1,121 @@
+name: Release
+
+# 打 tag 即打包发布：v2.9.0 → 校验 tag 与版本一致 → 编译打包 jar → GitHub Release 附带 jar。
+# 参考 nvs/.github/workflows/release.yml。
+# - 只认 v<数字> 开头的 tag（如 v2.9.0），打错版本校验直接失败，不发错误包。
+# - 构建链与 ci.yml 一致：前端 vite → resources/static → mvn package -DskipTests；
+#   无 onnx 自动跳过、照常打包（AI 能力缺失不影响发布）。
+# - workflow_dispatch 手动触发只构建留 artifact，不创建 Release（避免误发）。
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 打包并发布 jar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: sports-frontend/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Resolve & check version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          POM=$(python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('sports-backend/pom.xml').getroot(); print(r.find('{http://maven.apache.org/POM/4.0.0}version').text)")
+          NPM=$(python3 -c "import json; print(json.load(open('sports-frontend/package.json'))['version'])")
+          if [ "$POM" != "$NPM" ]; then
+            echo "::error::版本不一致：pom.xml=$POM, package.json=$NPM"
+            exit 1
+          fi
+          echo "version=$POM" >> "$GITHUB_OUTPUT"
+          echo "Project version: $POM"
+
+      # tag push 时强校验：tag 必须等于 v<pom 版本>，打错直接 fail
+      - name: Verify tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          EXPECTED="v${{ steps.ver.outputs.version }}"
+          if [ "$TAG_NAME" != "$EXPECTED" ]; then
+            echo "::error::Tag '$TAG_NAME' 与项目版本 '$EXPECTED' 不一致，拒绝发布。"
+            exit 1
+          fi
+          echo "Tag $TAG_NAME 与项目版本一致。"
+
+      - name: Install frontend dependencies
+        working-directory: sports-frontend
+        run: npm ci
+
+      - name: Clean stale static output
+        run: rm -rf sports-backend/src/main/resources/static
+
+      - name: Build frontend (vite)
+        working-directory: sports-frontend
+        run: npm run build
+
+      - name: Verify frontend output
+        shell: bash
+        run: |
+          test -f sports-backend/src/main/resources/static/index.html \
+            || { echo "::error::前端构建未产出 index.html"; exit 1; }
+
+      - name: Report AI model availability (missing onnx never fails build)
+        shell: bash
+        run: |
+          MODELS_DIR="sports-backend/src/main/resources/models"
+          COUNT=0
+          if [ -d "$MODELS_DIR" ]; then
+            COUNT=$(find "$MODELS_DIR" -maxdepth 1 -name '*.onnx' -type f | wc -l)
+          fi
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::notice::无 ONNX 模型（预期）。AI 能力禁用、前端置灰、回退规则编排；构建继续。"
+          else
+            echo "::notice::发现 $COUNT 个 ONNX 模型，将随 jar 打包。"
+          fi
+
+      - name: Build jar (skip tests)
+        working-directory: sports-backend
+        run: mvn -B clean package -DskipTests
+
+      - name: Verify jar
+        shell: bash
+        run: |
+          JAR="sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar"
+          test -f "$JAR" || { echo "::error::未找到 jar: $JAR"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Implementation-Version: ${{ steps.ver.outputs.version }}" \
+            || { echo "::error::jar manifest 版本不符"; exit 1; }
+          unzip -p "$JAR" BOOT-INF/classes/static/index.html | grep -q . \
+            || { echo "::error::jar 内缺少前端 index.html"; exit 1; }
+          echo "Jar verified: $JAR"
+
+      # 仅 tag push 创建 Release，jar 作为 release asset 供下载
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.ver.outputs.version }}
+          files: sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -1,0 +1,115 @@
+name: CI
+
+# CI 的定位：编译打包 jar（不是跑测试）。每次 push / PR / 手动都构建出可下载的 jar 快照，
+# 保证「源码能构建出可交付 jar」这件事始终被验证。参考 nvs/.github/workflows/ci.yml。
+# - 前端 npm ci → vite build（产物落到 resources/static）→ 后端 mvn clean package -DskipTests
+# - 无 onnx 时自动跳过 AI 能力：后端 lazy 加载回退规则编排、前端 AI 模式置灰，构建照常成功
+# - 版本唯一来源 pom.xml，CI 解析并校验 package.json 一致，不写死版本
+# - 全量测试不在此跑（含重型 BallTournamentServiceTest，见 test.yml，已改手动触发）
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧运行，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  jar:
+    name: 编译打包 jar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: sports-frontend/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # 版本一致性：pom.xml 是唯一来源，package.json 必须同步。
+      # package-lock.json 顶层版本是历史字段（2.0.0），不参与校验，否则每次都会误报。
+      - name: Resolve & check version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          POM=$(python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('sports-backend/pom.xml').getroot(); print(r.find('{http://maven.apache.org/POM/4.0.0}version').text)")
+          NPM=$(python3 -c "import json; print(json.load(open('sports-frontend/package.json'))['version'])")
+          if [ "$POM" != "$NPM" ]; then
+            echo "::error::版本不一致：pom.xml=$POM, package.json=$NPM"
+            exit 1
+          fi
+          echo "version=$POM" >> "$GITHUB_OUTPUT"
+          echo "Project version: $POM"
+
+      - name: Install frontend dependencies
+        working-directory: sports-frontend
+        run: npm ci
+
+      # CI 全新 checkout 无 static 目录；先删一次保证产物干净（emptyOutDir:false 不影响，vite 会重建）
+      - name: Clean stale static output
+        run: rm -rf sports-backend/src/main/resources/static
+
+      - name: Build frontend (vite)
+        working-directory: sports-frontend
+        run: npm run build
+
+      - name: Verify frontend output
+        shell: bash
+        run: |
+          test -f sports-backend/src/main/resources/static/index.html \
+            || { echo "::error::前端构建未产出 index.html"; exit 1; }
+
+      # onnx 不入 git（*.onnx 被 .gitignore 忽略），全新 checkout 必然无模型。
+      # 无模型只报告不拦截：后端回退规则编排、前端 AI 置灰，构建继续。
+      # GitHub Actions 默认 bash -e -o pipefail，find|wc 前必须先判目录存在。
+      - name: Report AI model availability (missing onnx never fails build)
+        shell: bash
+        run: |
+          MODELS_DIR="sports-backend/src/main/resources/models"
+          COUNT=0
+          if [ -d "$MODELS_DIR" ]; then
+            COUNT=$(find "$MODELS_DIR" -maxdepth 1 -name '*.onnx' -type f | wc -l)
+          fi
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::notice::无 ONNX 模型（CI 预期）。AI 能力禁用、前端置灰、回退规则编排；构建继续。"
+          else
+            echo "::notice::发现 $COUNT 个 ONNX 模型，将随 jar 打包。"
+          fi
+
+      - name: Build jar (skip tests)
+        working-directory: sports-backend
+        run: mvn -B clean package -DskipTests
+
+      - name: Verify jar
+        shell: bash
+        run: |
+          JAR="sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar"
+          test -f "$JAR" || { echo "::error::未找到 jar: $JAR"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Implementation-Version: ${{ steps.ver.outputs.version }}" \
+            || { echo "::error::jar manifest 版本不符"; exit 1; }
+          unzip -p "$JAR" BOOT-INF/classes/static/index.html | grep -q . \
+            || { echo "::error::jar 内缺少前端 index.html"; exit 1; }
+          echo "Jar verified: $JAR"
+
+      # 每次 push 都留一份可下载的 jar 快照（PR 也留，方便直接下载试跑）
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-${{ steps.ver.outputs.version }}-jar
+          path: sports-backend/target/sports-${{ steps.ver.outputs.version }}.jar
+          if-no-files-found: error
+          retention-days: 14
